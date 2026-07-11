@@ -36,7 +36,7 @@ precision, Linux/KVM, window resizing/scaling options, savestates.
 ## Architecture
 
 Five Odin packages with one seam each. Every source file carries the SPDX
-GPL-3.0-only header; comments in Spanish, sparse; tests in `*_tests.odin`.
+GPL-3.0-only header; comments in English, sparse; tests in `*_tests.odin`.
 
 ### `host` — shell and presentation
 
