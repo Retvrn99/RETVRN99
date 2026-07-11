@@ -12,7 +12,7 @@ Dma_Channel :: struct {
 Dma :: struct {
 	ch:        [4]Dma_Channel,
 	flip_flop: bool,
-	status:    u8, // bits 0-3: TC por canal
+	status:    u8, // bits 0-3: per-channel TC
 }
 
 dma_out :: proc(d: ^Dma, port: u16, v: u8) {
@@ -25,7 +25,7 @@ dma_out :: proc(d: ^Dma, port: u16, v: u8) {
 		c := &d.ch[port >> 1]
 		if !d.flip_flop { c.count = (c.count & 0xFF00) | u16(v) } else { c.count = (c.count & 0x00FF) | u16(v) << 8 }
 		d.flip_flop = !d.flip_flop
-	case 0x08: // registro de comando: ignorado
+	case 0x08: // command register: ignored
 	case 0x0A:
 		d.ch[v & 3].masked = v & 4 != 0
 	case 0x0B:
@@ -57,7 +57,7 @@ dma_in :: proc(d: ^Dma, port: u16) -> u8 {
 		b := d.flip_flop ? u8(c.count >> 8) : u8(c.count)
 		d.flip_flop = !d.flip_flop
 		return b
-	case 0x08: // leer estado limpia los bits TC
+	case 0x08: // reading status clears the TC bits
 		s := d.status
 		d.status &= 0xF0
 		return s
@@ -67,7 +67,7 @@ dma_in :: proc(d: ^Dma, port: u16) -> u8 {
 	return 0xFF
 }
 
-// dispositivo → RAM del invitado
+// device -> guest RAM
 dma_write_mem :: proc(d: ^Dma, ch: int, ram: []u8, data: []u8) {
 	c := &d.ch[ch]
 	for b in data {
@@ -79,7 +79,7 @@ dma_write_mem :: proc(d: ^Dma, ch: int, ram: []u8, data: []u8) {
 	}
 }
 
-// RAM del invitado → dispositivo
+// guest RAM -> device
 dma_read_mem :: proc(d: ^Dma, ch: int, ram: []u8, n: int, allocator := context.allocator) -> []u8 {
 	c := &d.ch[ch]
 	out := make([]u8, n, allocator)

@@ -26,13 +26,13 @@ test_bus_unknown_port :: proc(t: ^testing.T) {
 	bus: Bus
 	bus_init(&bus)
 	defer bus_destroy(&bus)
-	bus_whitelist(&bus, 0x80) // puerto POST
+	bus_whitelist(&bus, 0x80) // POST port
 	testing.expect_value(t, bus_io_read(&bus, 0x80, 1), 0xFF)
 	testing.expect(t, !bus.frozen)
 	{
-		// el runner de tests falla ante logs de error; silenciar el congelado esperado
+		// the test runner fails on error logs; silence the expected freeze
 		context.logger = log.nil_logger()
 		_ = bus_io_read(&bus, 0x1234, 1)
 	}
-	testing.expect(t, bus.frozen) // puerto desconocido congela la VM
+	testing.expect(t, bus.frozen) // unknown port freezes the VM
 }

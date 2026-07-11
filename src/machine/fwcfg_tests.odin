@@ -3,7 +3,7 @@ package machine
 
 import "core:testing"
 
-// lee len(buf) bytes del puerto de datos
+// reads len(buf) bytes from the data port
 fwcfg_test_read :: proc(f: ^Fwcfg, buf: []u8) {
 	for i in 0 ..< len(buf) {
 		buf[i] = u8(fwcfg_in(f, FWCFG_PORT_DATA, 1))
@@ -47,7 +47,7 @@ test_fwcfg_e820_via_file_dir :: proc(t: ^testing.T) {
 	fwcfg_init(&f, 64 * 1024 * 1024)
 	defer fwcfg_destroy(&f)
 
-	// directorio de ficheros: count u32 BE + entradas de 64 bytes
+	// file directory: count u32 BE + 64-byte entries
 	fwcfg_out(&f, FWCFG_PORT_SEL, 2, FWCFG_FILE_DIR)
 	hdr: [4]u8
 	fwcfg_test_read(&f, hdr[:])
@@ -64,7 +64,7 @@ test_fwcfg_e820_via_file_dir :: proc(t: ^testing.T) {
 	testing.expect_value(t, size, u32(40))
 	testing.expect_value(t, sel, u16(FWCFG_E820))
 
-	// seleccionar etc/e820 y verificar la segunda entrada
+	// select etc/e820 and verify the second entry
 	fwcfg_out(&f, FWCFG_PORT_SEL, 2, u32(sel))
 	e820: [40]u8
 	fwcfg_test_read(&f, e820[:])

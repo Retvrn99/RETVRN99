@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package disk
 
-// Interfaz de dispositivo de bloques, sectores de 512 bytes
+// Block device interface, 512-byte sectors
 Block_Device :: struct {
 	ctx:          rawptr,
 	sector_count: u64,

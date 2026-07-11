@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package vga
 
-// Dispositivo VGA en modo texto. El búfer B8000 es RAM ordinaria del huésped.
+// Text-mode VGA device. The B8000 buffer is ordinary guest RAM.
 
 Vga :: struct {
-	crtc:        [25]u8, // registros CRTC; se interpretan 0x0A/0x0B, 0x0C/0x0D, 0x0E/0x0F
+	crtc:        [25]u8, // CRTC registers; 0x0A/0x0B, 0x0C/0x0D, 0x0E/0x0F are interpreted
 	crtc_ix:     u8,
 	misc:        u8,
 	attr:        [32]u8,
 	attr_ix:     u8,
-	attr_flip:   bool, // false = índice, true = dato
+	attr_flip:   bool, // false = index, true = data
 	seq:         [8]u8,
 	seq_ix:      u8,
 	gfx:         [16]u8,
@@ -19,11 +19,11 @@ Vga :: struct {
 	dac_write:   u8,
 	dac_sub:     u8,
 	dac:         [256 * 3]u8,
-	status_flip: bool, // alterna retrazado vertical en 0x3DA
+	status_flip: bool, // toggles vertical retrace on 0x3DA
 }
 
 Text_Snapshot :: struct {
-	cells:      [80 * 25]u16, // carácter | atributo<<8
+	cells:      [80 * 25]u16, // character | attribute<<8
 	cursor_row: int,
 	cursor_col: int,
 	cursor_on:  bool,
@@ -76,7 +76,7 @@ vga_in :: proc(v: ^Vga, port: u16) -> u8 {
 	case 0x3CC:
 		return v.misc
 	case 0x3DA:
-		// alterna bit0|bit3; leer también reinicia el flip-flop del atributo
+		// toggles bit0|bit3; reading also resets the attribute flip-flop
 		v.attr_flip = false
 		v.status_flip = !v.status_flip
 		return v.status_flip ? 0x09 : 0x00

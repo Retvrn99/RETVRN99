@@ -3,7 +3,7 @@ package machine
 
 Pic :: struct {
 	irr, isr, imr, base: u8,
-	icw_step:            u8, // 0=listo, 1..3 en inicialización
+	icw_step:            u8, // 0=ready, 1..3 during init
 	read_isr:            bool,
 }
 
@@ -12,7 +12,7 @@ Pic_Pair :: struct { master, slave: Pic }
 pic_chip_out :: proc(p: ^Pic, cmd: bool, v: u8) {
 	if cmd {
 		if v & 0x10 != 0 { p.icw_step = 1; p.imr = 0; p.isr = 0; p.irr = 0; return } // ICW1
-		if v == 0x20 { // EOI no específico: limpia el bit ISR más prioritario
+		if v == 0x20 { // non-specific EOI: clears the highest-priority ISR bit
 			for i in u8(0) ..< 8 do if p.isr & (1 << i) != 0 { p.isr &~= 1 << i; break }
 			return
 		}
@@ -55,7 +55,7 @@ pic_in :: proc(pp: ^Pic_Pair, port: u16) -> u8 {
 pic_raise :: proc(pp: ^Pic_Pair, irq: u8) {
 	if irq < 8 { pp.master.irr |= 1 << irq } else {
 		pp.slave.irr |= 1 << (irq - 8)
-		pp.master.irr |= 1 << 2 // cascada
+		pp.master.irr |= 1 << 2 // cascade
 	}
 }
 
@@ -63,13 +63,13 @@ pic_chip_pending :: proc(p: ^Pic) -> (u8, bool) {
 	avail := p.irr &~ p.imr
 	for i in u8(0) ..< 8 {
 		bit := u8(1) << i
-		if p.isr & bit != 0 { return 0, false } // en servicio de mayor prioridad
+		if p.isr & bit != 0 { return 0, false } // higher-priority IRQ in service
 		if avail & bit != 0 { return i, true }
 	}
 	return 0, false
 }
 
-// devuelve el vector si hay IRQ lista y la marca en servicio
+// returns the vector if an IRQ is ready and marks it in service
 pic_ack :: proc(pp: ^Pic_Pair) -> (u8, bool) {
 	i, ok := pic_chip_pending(&pp.master)
 	if !ok { return 0, false }

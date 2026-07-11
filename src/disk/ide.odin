@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package disk
 
-// Canal IDE primario (0x1F0-0x1F7, 0x3F6), solo maestro, PIO.
+// Primary IDE channel (0x1F0-0x1F7, 0x3F6), master only, PIO.
 
 IDE_STATUS_ERR :: 0x01
 IDE_STATUS_DRQ :: 0x08
@@ -21,10 +21,10 @@ Ide :: struct {
 	state:        Ide_State,
 	buf:          [512]u8,
 	buf_pos:      int,
-	pending:      int, // sectores restantes de la transferencia
+	pending:      int, // sectors remaining in the transfer
 	lba:          u64,
 	cmd:          u8,
-	// registros
+	// registers
 	reg_error:    u8,
 	reg_features: u8,
 	reg_seccount: u8,
@@ -34,7 +34,7 @@ Ide :: struct {
 	reg_drive:    u8,
 	reg_status:   u8,
 	reg_ctrl:     u8,
-	// IRQ14 al completar comandos
+	// IRQ14 on command completion
 	irq:          proc(ctx: rawptr),
 	irq_ctx:      rawptr,
 }
@@ -45,7 +45,14 @@ ide_init :: proc(ide: ^Ide, bd: Block_Device) {
 	ide.reg_status = IDE_STATUS_DRDY
 }
 
+// bit4 of drive/head register selects the absent slave: it reads as all zeros
+@(private = "file")
+ide_slave_selected :: proc(ide: ^Ide) -> bool {
+	return ide.reg_drive & 0x10 != 0
+}
+
 ide_io_read :: proc(ide: ^Ide, port: u16, size: u8) -> u32 {
+	if ide_slave_selected(ide) { return 0 }
 	switch port {
 	case 0x1F0:
 		return ide_data_read(ide, size)
@@ -70,6 +77,7 @@ ide_io_read :: proc(ide: ^Ide, port: u16, size: u8) -> u32 {
 ide_io_write :: proc(ide: ^Ide, port: u16, size: u8, val: u32) {
 	switch port {
 	case 0x1F0:
+		if ide_slave_selected(ide) { return } // absent slave: ignore data
 		ide_data_write(ide, size, val)
 	case 0x1F1:
 		ide.reg_features = u8(val)
@@ -84,6 +92,7 @@ ide_io_write :: proc(ide: ^Ide, port: u16, size: u8, val: u32) {
 	case 0x1F6:
 		ide.reg_drive = u8(val)
 	case 0x1F7:
+		if ide_slave_selected(ide) { return } // absent slave: ignore command
 		ide_command(ide, u8(val))
 	case 0x3F6:
 		ide.reg_ctrl = u8(val)
@@ -96,7 +105,7 @@ ide_raise_irq :: proc(ide: ^Ide) {
 	if ide.irq != nil { ide.irq(ide.irq_ctx) }
 }
 
-// bit6 del registro drive/head elige LBA28; si no, CHS con 16 cabezas / 63 spt
+// bit6 of drive/head register selects LBA28; otherwise CHS with 16 heads / 63 spt
 @(private = "file")
 ide_current_lba :: proc(ide: ^Ide) -> u64 {
 	if ide.reg_drive & 0x40 != 0 {
@@ -227,16 +236,16 @@ ide_put_word :: proc(buf: ^[512]u8, w: int, v: u16) {
 ide_fill_identify :: proc(ide: ^Ide) {
 	ide.buf = {}
 	ide_put_word(&ide.buf, 0, 0x0040)
-	ide_put_word(&ide.buf, 1, 16383) // cilindros
-	ide_put_word(&ide.buf, 3, 16)    // cabezas
-	ide_put_word(&ide.buf, 6, 63)    // sectores por pista
+	ide_put_word(&ide.buf, 1, 16383) // cylinders
+	ide_put_word(&ide.buf, 3, 16)    // heads
+	ide_put_word(&ide.buf, 6, 63)    // sectors per track
 	ide_put_word(&ide.buf, 47, 0x8000)
-	ide_put_word(&ide.buf, 49, 0x0200) // LBA soportado
+	ide_put_word(&ide.buf, 49, 0x0200) // LBA supported
 	sectors := ide.bd.sector_count
 	if sectors > 0x0FFF_FFFF { sectors = 0x0FFF_FFFF }
 	ide_put_word(&ide.buf, 60, u16(sectors & 0xFFFF))
 	ide_put_word(&ide.buf, 61, u16(sectors >> 16))
-	// modelo en palabras 27-46, bytes intercambiados por palabra
+	// model in words 27-46, bytes swapped per word
 	model := "MATE98 VDISK"
 	for w in 0 ..< 20 {
 		c0: u8 = 0x20

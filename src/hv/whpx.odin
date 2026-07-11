@@ -28,7 +28,7 @@ whpx_create :: proc(vm: ^Vm, ram_size: int) -> bool {
 		whpx_destroy(vm)
 		return false
 	}
-	ext_exits: u64 = 0 // X64CpuidExit=0, sin salidas extendidas
+	ext_exits: u64 = 0 // X64CpuidExit=0, no extended exits
 	if WHvSetPartitionProperty(part, .ExtendedVmExits, &ext_exits, size_of(ext_exits)) < 0 {
 		whpx_destroy(vm)
 		return false
@@ -89,7 +89,7 @@ whpx_destroy :: proc(vm: ^Vm) {
 	}
 }
 
-// estado de encendido: modo real, CS F000:FFF0
+// power-on state: real mode, CS F000:FFF0
 whpx_reset_vcpu :: proc(vm: ^Vm) {
 	code_seg := WHV_X64_SEGMENT_REGISTER {
 		Base       = 0xFFFF0000,
@@ -132,9 +132,18 @@ whpx_set_realmode_entry :: proc(vm: ^Vm, cs_base: u32, ip: u16) {
 	WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0])
 }
 
+// Max IO/MMIO emulation exits handled per whpx_run call. Keeps a port-polling
+// guest from starving timers/IRQ injection: after the budget is spent, run
+// returns Exit{kind = .Io} and the caller simply calls run again after
+// pumping timers/IRQs.
+WHPX_EXIT_BUDGET :: 32
+
 whpx_run :: proc(vm: ^Vm) -> Exit {
 	exit_ctx: WHV_RUN_VP_EXIT_CONTEXT
-	for {
+	for handled := 0; ; handled += 1 {
+		if handled >= WHPX_EXIT_BUDGET {
+			return Exit{kind = .Io}
+		}
 		hr := WHvRunVirtualProcessor(vm.part, 0, &exit_ctx, size_of(exit_ctx))
 		if hr < 0 {
 			return Exit{kind = .Failed, detail = fmt.tprintf("WHvRunVirtualProcessor hr=0x%08x", u32(hr))}
@@ -146,7 +155,7 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			if hr < 0 || status.AsUINT32 & 1 == 0 {
 				return Exit{
 					kind = .Failed,
-					detail = fmt.tprintf("emulación E/S puerto 0x%04x hr=0x%08x estado=0x%08x",
+					detail = fmt.tprintf("IO emulation port 0x%04x hr=0x%08x status=0x%08x",
 						exit_ctx.u.IoPortAccess.PortNumber, u32(hr), status.AsUINT32),
 				}
 			}
@@ -156,12 +165,12 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			if hr < 0 || status.AsUINT32 & 1 == 0 {
 				return Exit{
 					kind = .Failed,
-					detail = fmt.tprintf("emulación MMIO gpa=0x%x hr=0x%08x estado=0x%08x",
+					detail = fmt.tprintf("MMIO emulation gpa=0x%x hr=0x%08x status=0x%08x",
 						exit_ctx.u.MemoryAccess.Gpa, u32(hr), status.AsUINT32),
 				}
 			}
 		case .X64Halt:
-			// avanzar RIP más allá del HLT
+			// advance RIP past the HLT
 			whpx_advance_rip(vm, &exit_ctx.VpContext)
 			return Exit{kind = .Halt}
 		case .X64InterruptWindow:
@@ -170,11 +179,16 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			return Exit{kind = .Canceled}
 		case .None, .UnrecoverableException, .InvalidVpRegisterValue, .UnsupportedFeature,
 		     .X64ApicEoi, .X64MsrAccess, .X64Cpuid, .Exception:
-			return Exit{kind = .Failed, detail = fmt.tprintf("salida no manejada: %v", exit_ctx.ExitReason)}
+			return Exit{kind = .Failed, detail = fmt.tprintf("unhandled exit: %v", exit_ctx.ExitReason)}
 		case:
-			return Exit{kind = .Failed, detail = fmt.tprintf("salida desconocida: %d", u32(exit_ctx.ExitReason))}
+			return Exit{kind = .Failed, detail = fmt.tprintf("unknown exit: %d", u32(exit_ctx.ExitReason))}
 		}
 	}
+}
+
+// safe to call from another thread while whpx_run is blocked
+whpx_cancel :: proc(vm: ^Vm) {
+	WHvCancelRunVirtualProcessor(vm.part, 0, 0)
 }
 
 whpx_advance_rip :: proc(vm: ^Vm, vp_ctx: ^WHV_VP_EXIT_CONTEXT) {
@@ -187,7 +201,7 @@ whpx_advance_rip :: proc(vm: ^Vm, vp_ctx: ^WHV_VP_EXIT_CONTEXT) {
 whpx_inject_irq :: proc(vm: ^Vm, vector: u8) {
 	name := WHV_REGISTER_NAME.PendingInterruption
 	val: WHV_REGISTER_VALUE
-	// bit0 pendiente, tipo 0 (interrupción externa), vector en bits 16..31
+	// bit0 pending, type 0 (external interrupt), vector in bits 16..31
 	val.Reg64 = 0x1 | (u64(vector) << 16)
 	WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &val)
 }
@@ -200,14 +214,16 @@ whpx_request_irq_window :: proc(vm: ^Vm, enable: bool) {
 }
 
 whpx_can_inject :: proc(vm: ^Vm) -> bool {
-	names := [?]WHV_REGISTER_NAME{.Rflags, .PendingInterruption}
+	names := [?]WHV_REGISTER_NAME{.Rflags, .PendingInterruption, .InterruptState}
 	vals: [len(names)]WHV_REGISTER_VALUE
 	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0]) < 0 {
 		return false
 	}
 	if_set := vals[0].Reg64 & 0x200 != 0
 	pending := vals[1].Reg64 & 0x1 != 0
-	return if_set && !pending
+	// WHV_X64_INTERRUPT_STATE_REGISTER: bit0 InterruptShadow, bit1 NmiMasked
+	shadow := vals[2].Reg64 & 0x1 != 0
+	return if_set && !pending && !shadow
 }
 
 whpx_reg_rax :: proc(vm: ^Vm) -> u64 {
@@ -217,7 +233,7 @@ whpx_reg_rax :: proc(vm: ^Vm) -> u64 {
 	return val.Reg64
 }
 
-// --- callbacks del emulador (WinHvEmulation) ---
+// --- emulator callbacks (WinHvEmulation) ---
 
 whpx_emu_io :: proc "system" (ctx: rawptr, io: ^WHV_EMULATOR_IO_ACCESS_INFO) -> HRESULT {
 	context = runtime.default_context()
@@ -259,7 +275,7 @@ whpx_emu_set_regs :: proc "system" (ctx: rawptr, names: [^]WHV_REGISTER_NAME, co
 	return WHvSetVirtualProcessorRegisters(vm.part, 0, names, count, values)
 }
 
-// sin paginación en M1: GVA == GPA
+// no paging in M1: GVA == GPA
 whpx_emu_translate :: proc "system" (ctx: rawptr, gva: u64, flags: u32, result: ^u32, gpa: ^u64) -> HRESULT {
 	result^ = 0 // WHvTranslateGvaResultSuccess
 	gpa^ = gva

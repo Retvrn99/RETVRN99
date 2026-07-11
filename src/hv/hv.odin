@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package hv
 
-// Interfaz del hipervisor. M1: solo backend WHPX (la costura para KVM llega después).
+// Hypervisor interface. M1: WHPX backend only (the KVM seam comes later).
 
 Exit_Kind :: enum {
 	Io,
@@ -14,12 +14,12 @@ Exit_Kind :: enum {
 
 Exit :: struct {
 	kind:   Exit_Kind,
-	detail: string, // solo para Failed
+	detail: string, // Failed only
 }
 
 Vm :: struct {
 	part:     rawptr, // WHV_PARTITION_HANDLE
-	ram:      []u8,   // 64MB, mapeado en GPA 0
+	ram:      []u8,   // 64MB, mapped at GPA 0
 	emu:      rawptr, // WHV_EMULATOR_HANDLE
 	io_ctx:   rawptr,
 	io_read:  proc(ctx: rawptr, port: u16, size: u8) -> u32,
@@ -43,7 +43,7 @@ run :: proc(vm: ^Vm) -> Exit {
 	return whpx_run(vm)
 }
 
-// fija PendingInterruption
+// sets PendingInterruption
 inject_irq :: proc(vm: ^Vm, vector: u8) {
 	whpx_inject_irq(vm, vector)
 }
@@ -53,12 +53,17 @@ request_irq_window :: proc(vm: ^Vm, enable: bool) {
 	whpx_request_irq_window(vm, enable)
 }
 
-// RFLAGS.IF y no hay pendiente
+// RFLAGS.IF set, nothing pending, and no interrupt shadow
 can_inject :: proc(vm: ^Vm) -> bool {
 	return whpx_can_inject(vm)
 }
 
-// para tests
+// forces the vcpu out of run() from another thread (e.g. UI)
+cancel :: proc(vm: ^Vm) {
+	whpx_cancel(vm)
+}
+
+// for tests
 set_realmode_entry :: proc(vm: ^Vm, cs_base: u32, ip: u16) {
 	whpx_set_realmode_entry(vm, cs_base, ip)
 }

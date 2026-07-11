@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package hv
 
-// Enlaces WHPX. Disposición de structs copiada de WinHvPlatform.h /
-// WinHvEmulation.h (SDK 10.0.26100) — los tamaños importan.
+// WHPX bindings. Struct layout copied from WinHvPlatformDefs.h /
+// WinHvEmulation.h (SDK 10.0.26100) — sizes matter.
 
 import win32 "core:sys/windows"
 
@@ -77,8 +77,9 @@ WHV_X64_TABLE_REGISTER :: struct {
 	Base:  u64,
 }
 
-// unión de 16 bytes
-WHV_REGISTER_VALUE :: struct #raw_union {
+// 16-byte union; the SDK aligns it to 16 via WHV_UINT128 (DECLSPEC_ALIGN(16)) —
+// WinHvPlatform.dll does aligned SSE access on register value arrays.
+WHV_REGISTER_VALUE :: struct #raw_union #align(16) {
 	Reg128:  [2]u64,
 	Reg64:   u64,
 	Reg32:   u32,
@@ -89,6 +90,7 @@ WHV_REGISTER_VALUE :: struct #raw_union {
 }
 
 #assert(size_of(WHV_REGISTER_VALUE) == 16)
+#assert(align_of(WHV_REGISTER_VALUE) == 16)
 #assert(size_of(WHV_X64_SEGMENT_REGISTER) == 16)
 
 WHV_RUN_VP_EXIT_REASON :: enum u32 {
@@ -110,7 +112,7 @@ WHV_RUN_VP_EXIT_REASON :: enum u32 {
 // 40 bytes
 WHV_VP_EXIT_CONTEXT :: struct {
 	ExecutionState:       u16,
-	InstructionLengthCr8: u8, // bits 0-3 longitud, 4-7 CR8
+	InstructionLengthCr8: u8, // bits 0-3 length, 4-7 CR8
 	Reserved:             u8,
 	Reserved2:            u32,
 	Cs:                   WHV_X64_SEGMENT_REGISTER,
@@ -132,20 +134,23 @@ WHV_MEMORY_ACCESS_CONTEXT :: struct {
 #assert(size_of(WHV_MEMORY_ACCESS_CONTEXT) == 40)
 
 WHV_X64_IO_PORT_ACCESS_CONTEXT :: struct {
-	AccessInfo: u32,
-	PortNumber: u16,
-	Reserved2:  [3]u16,
-	Rax:        u64,
-	Rcx:        u64,
-	Rsi:        u64,
-	Rdi:        u64,
-	Ds:         WHV_X64_SEGMENT_REGISTER,
-	Es:         WHV_X64_SEGMENT_REGISTER,
+	InstructionByteCount: u8,
+	Reserved:             [3]u8,
+	InstructionBytes:     [16]u8,
+	AccessInfo:           u32,
+	PortNumber:           u16,
+	Reserved2:            [3]u16,
+	Rax:                  u64,
+	Rcx:                  u64,
+	Rsi:                  u64,
+	Rdi:                  u64,
+	Ds:                   WHV_X64_SEGMENT_REGISTER,
+	Es:                   WHV_X64_SEGMENT_REGISTER,
 }
 
-#assert(size_of(WHV_X64_IO_PORT_ACCESS_CONTEXT) == 80)
+#assert(size_of(WHV_X64_IO_PORT_ACCESS_CONTEXT) == 96)
 
-// el relleno cubre los miembros de la unión que no usamos (SDK: 224 en total)
+// padding covers the union members we do not use (SDK: 224 total)
 WHV_RUN_VP_EXIT_CONTEXT :: struct {
 	ExitReason: WHV_RUN_VP_EXIT_REASON,
 	Reserved:   u32,
@@ -165,7 +170,7 @@ WHV_EMULATOR_STATUS :: struct #raw_union {
 
 WHV_EMULATOR_MEMORY_ACCESS_INFO :: struct {
 	GpaAddress: u64,
-	Direction:  u8, // 0 = lectura, 1 = escritura
+	Direction:  u8, // 0 = read, 1 = write
 	AccessSize: u8,
 	Data:       [8]u8,
 }
@@ -201,6 +206,7 @@ foreign whp {
 	WHvMapGpaRange :: proc(part: WHV_PARTITION_HANDLE, source: rawptr, gpa: u64, size: u64, flags: u32) -> HRESULT ---
 	WHvCreateVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, flags: u32) -> HRESULT ---
 	WHvRunVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, exit_ctx: rawptr, exit_ctx_size: u32) -> HRESULT ---
+	WHvCancelRunVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, flags: u32) -> HRESULT ---
 	WHvGetVirtualProcessorRegisters :: proc(part: WHV_PARTITION_HANDLE, index: u32, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT ---
 	WHvSetVirtualProcessorRegisters :: proc(part: WHV_PARTITION_HANDLE, index: u32, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT ---
 	WHvDeletePartition :: proc(part: WHV_PARTITION_HANDLE) -> HRESULT ---

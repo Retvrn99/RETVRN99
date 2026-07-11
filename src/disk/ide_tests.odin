@@ -3,7 +3,7 @@ package disk
 
 import "core:testing"
 
-// Respaldo RAM de 1MB para pruebas
+// 1MB RAM backing for tests
 Ide_Test_Ram :: struct {
 	data: []u8,
 }
@@ -59,8 +59,8 @@ ide_test_identify :: proc(t: ^testing.T) {
 	ide_test_outb(&ide, 0x1F7, 0xEC)
 
 	st := ide_test_inb(&ide, 0x1F7)
-	testing.expect(t, st & 0x80 == 0) // BSY libre
-	testing.expect(t, st & 0x08 != 0) // DRQ activo
+	testing.expect(t, st & 0x80 == 0) // BSY clear
+	testing.expect(t, st & 0x08 != 0) // DRQ set
 
 	words: [256]u16
 	for i in 0 ..< 256 { words[i] = ide_test_inw(&ide, 0x1F0) }
@@ -70,15 +70,15 @@ ide_test_identify :: proc(t: ^testing.T) {
 	testing.expect_value(t, words[3], 16)
 	testing.expect_value(t, words[6], 63)
 	testing.expect_value(t, words[47], 0x8000)
-	testing.expect(t, words[49] & 0x0200 != 0) // LBA soportado
+	testing.expect(t, words[49] & 0x0200 != 0) // LBA supported
 	sectors := u32(words[60]) | (u32(words[61]) << 16)
 	testing.expect_value(t, sectors, u32(2048))
-	// "MATE98 VDISK" con bytes intercambiados
+	// "MATE98 VDISK" with swapped bytes
 	testing.expect_value(t, words[27], u16('M') << 8 | u16('A'))
 	testing.expect_value(t, words[28], u16('T') << 8 | u16('E'))
 
 	st = ide_test_inb(&ide, 0x1F7)
-	testing.expect(t, st & 0x08 == 0) // DRQ apagado tras 256 palabras
+	testing.expect(t, st & 0x08 == 0) // DRQ clear after 256 words
 }
 
 @(test)
@@ -92,32 +92,32 @@ ide_test_pio_roundtrip :: proc(t: ^testing.T) {
 	ide.irq_ctx = &irq_count
 	ide.irq = proc(ctx: rawptr) { (^int)(ctx)^ += 1 }
 
-	// WRITE SECTORS a LBA 3
+	// WRITE SECTORS to LBA 3
 	ide_test_set_lba28(&ide, 3, 1)
 	ide_test_outb(&ide, 0x1F7, 0x30)
 
 	st := ide_test_inb(&ide, 0x1F7)
-	testing.expect(t, st & 0x80 == 0) // BSY libre
-	testing.expect(t, st & 0x08 != 0) // DRQ pide datos
+	testing.expect(t, st & 0x80 == 0) // BSY clear
+	testing.expect(t, st & 0x08 != 0) // DRQ requests data
 
 	for i in 0 ..< 256 { ide_test_outw(&ide, 0x1F0, u16(i) ~ 0xBEEF) }
 
 	st = ide_test_inb(&ide, 0x1F7)
-	testing.expect(t, st & 0x08 == 0) // DRQ apagado
+	testing.expect(t, st & 0x08 == 0) // DRQ clear
 	testing.expect(t, st & 0x40 != 0) // DRDY
-	testing.expect(t, st & 0x01 == 0) // sin error
+	testing.expect(t, st & 0x01 == 0) // no error
 	testing.expect(t, irq_count > 0)
 
-	// el respaldo RAM contiene la palabra 0 (0xBEEF) en little-endian
+	// RAM backing holds word 0 (0xBEEF) in little-endian
 	testing.expect_value(t, ram.data[3 * 512], u8(0xEF))
 	testing.expect_value(t, ram.data[3 * 512 + 1], u8(0xBE))
 
-	// READ SECTORS de LBA 3
+	// READ SECTORS from LBA 3
 	ide_test_set_lba28(&ide, 3, 1)
 	ide_test_outb(&ide, 0x1F7, 0x20)
 
 	st = ide_test_inb(&ide, 0x1F7)
-	testing.expect(t, st & 0x08 != 0) // DRQ ofrece datos
+	testing.expect(t, st & 0x08 != 0) // DRQ offers data
 
 	ok := true
 	for i in 0 ..< 256 {
@@ -159,14 +159,14 @@ ide_test_chs_read :: proc(t: ^testing.T) {
 	ide_test_setup(&ram, &ide)
 	defer delete(ram.data)
 
-	// CHS 0/1/1 con 16 cabezas y 63 spt = LBA 63
+	// CHS 0/1/1 with 16 heads and 63 spt = LBA 63
 	ram.data[63 * 512] = 0x7A
 
 	ide_test_outb(&ide, 0x1F2, 1)
 	ide_test_outb(&ide, 0x1F3, 1)    // sector 1
-	ide_test_outb(&ide, 0x1F4, 0)    // cilindro bajo
-	ide_test_outb(&ide, 0x1F5, 0)    // cilindro alto
-	ide_test_outb(&ide, 0x1F6, 0xA1) // cabeza 1, sin bit LBA
+	ide_test_outb(&ide, 0x1F4, 0)    // cylinder low
+	ide_test_outb(&ide, 0x1F5, 0)    // cylinder high
+	ide_test_outb(&ide, 0x1F6, 0xA1) // head 1, no LBA bit
 	ide_test_outb(&ide, 0x1F7, 0x20)
 
 	w := ide_test_inw(&ide, 0x1F0)
@@ -187,6 +187,37 @@ ide_test_nodata_commands :: proc(t: ^testing.T) {
 		ide_test_outb(&ide, 0x1F7, cmd)
 		st := ide_test_inb(&ide, 0x1F7)
 		testing.expect(t, st & 0x40 != 0) // DRDY
-		testing.expect(t, st & 0x88 == 0) // ni BSY ni DRQ
+		testing.expect(t, st & 0x88 == 0) // neither BSY nor DRQ
 	}
+}
+
+@(test)
+ide_test_slave_not_present :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	// Select the absent slave: every register reads back 0x00
+	ide_test_outb(&ide, 0x1F6, 0xB0)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F6), u8(0x00)) // dh readback fails
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(0x00)) // status reads zero
+
+	ide_test_outb(&ide, 0x1F2, 0x55)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F2), u8(0x00))
+
+	// Commands to the absent slave are ignored
+	ide_test_outb(&ide, 0x1F7, 0xEC)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(0x00))
+
+	// Reselect master: no leftover state, IDENTIFY still works
+	ide_test_outb(&ide, 0x1F6, 0xA0)
+	st := ide_test_inb(&ide, 0x1F7)
+	testing.expect(t, st & 0x08 == 0) // ignored command left no DRQ
+
+	ide_test_outb(&ide, 0x1F7, 0xEC)
+	st = ide_test_inb(&ide, 0x1F7)
+	testing.expect(t, st & 0x80 == 0) // BSY clear
+	testing.expect(t, st & 0x08 != 0) // DRQ set
+	testing.expect_value(t, ide_test_inw(&ide, 0x1F0), u16(0x0040))
 }

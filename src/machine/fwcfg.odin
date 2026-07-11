@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
-// fw_cfg mínimo estilo QEMU: selector en 0x510, flujo de bytes en 0x511
+// Minimal QEMU-style fw_cfg: selector on 0x510, byte stream on 0x511
 
 FWCFG_PORT_SEL :: 0x510
 FWCFG_PORT_DATA :: 0x511
@@ -52,7 +52,7 @@ fwcfg_init :: proc(f: ^Fwcfg, ram_bytes: u64) {
 	append(&cpus, 1, 0) // u16 LE
 	f.items[FWCFG_NB_CPUS] = cpus[:]
 
-	// tabla e820: {addr u64, len u64, tipo u32} LE
+	// e820 table: {addr u64, len u64, type u32} LE
 	e820: [dynamic]u8
 	fwcfg_put_le64(&e820, 0)
 	fwcfg_put_le64(&e820, 0xA0000)
@@ -62,7 +62,7 @@ fwcfg_init :: proc(f: ^Fwcfg, ram_bytes: u64) {
 	fwcfg_put_le32(&e820, 1)
 	f.items[FWCFG_E820] = e820[:]
 
-	// directorio: count u32 BE + por fichero {size u32 BE, select u16 BE, reservado u16, nombre[56]}
+	// directory: count u32 BE + per file {size u32 BE, select u16 BE, reserved u16, name[56]}
 	dir: [dynamic]u8
 	fwcfg_put_be32(&dir, 1)
 	fwcfg_put_be32(&dir, u32(len(e820)))
@@ -85,7 +85,7 @@ fwcfg_out :: proc(f: ^Fwcfg, port: u16, size: u8, val: u32) {
 		f.sel = u16(val)
 		f.pos = 0
 	}
-	// escrituras al puerto de datos: ignoradas
+	// writes to the data port: ignored
 }
 
 fwcfg_in :: proc(f: ^Fwcfg, port: u16, size: u8) -> u32 {
@@ -97,7 +97,7 @@ fwcfg_in :: proc(f: ^Fwcfg, port: u16, size: u8) -> u32 {
 	return v
 }
 
-// selectores desconocidos o agotados leen 0x00
+// unknown or exhausted selectors read 0x00
 fwcfg_read_byte :: proc(f: ^Fwcfg) -> u8 {
 	blob, ok := f.items[f.sel]
 	if !ok || f.pos >= len(blob) { return 0 }
