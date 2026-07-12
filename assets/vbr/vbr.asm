@@ -1,5 +1,5 @@
 ; SPDX-License-Identifier: GPL-3.0-only
-; mate98 clean-room FAT32 VBR: read the first 4 sectors of IO.SYS (absolute
+; retvrn99 clean-room FAT32 VBR: read the first 4 sectors of IO.SYS (absolute
 ; LBA patched by the synthesizer at offset 0x1F0) to 0000:0700 via INT 13h
 ; AH=42h, then enter MSLOAD per the MS-DOS 7 boot protocol:
 ; DL=80h, BP=7C00h (our BPB), SS:SP=0000:7C00, DS=0, far jump 0070:0200.

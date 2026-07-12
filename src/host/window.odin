@@ -19,7 +19,7 @@ host_init :: proc(h: ^Host) -> bool {
 		return false
 	}
 	// no RESIZABLE flag: fixed-size window
-	h.win = sdl3.CreateWindow("Mate98", WIN_W, WIN_H, {})
+	h.win = sdl3.CreateWindow("RETVRN99", WIN_W, WIN_H, {})
 	if h.win == nil {
 		return false
 	}

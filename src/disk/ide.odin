@@ -246,7 +246,7 @@ ide_fill_identify :: proc(ide: ^Ide) {
 	ide_put_word(&ide.buf, 60, u16(sectors & 0xFFFF))
 	ide_put_word(&ide.buf, 61, u16(sectors >> 16))
 	// model in words 27-46, bytes swapped per word
-	model := "MATE98 VDISK"
+	model := "RETVRN99 VDISK"
 	for w in 0 ..< 20 {
 		c0: u8 = 0x20
 		c1: u8 = 0x20

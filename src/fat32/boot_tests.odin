@@ -87,7 +87,7 @@ boot_test_volume_vbr :: proc(t: ^testing.T) {
 
 	// without IO.SYS the int 18h stub stays
 	base, _ := os.temp_directory(context.allocator)
-	dir2, _ := filepath.join({base, fmt.tprintf("mate98_noio_%d", time.now()._nsec)})
+	dir2, _ := filepath.join({base, fmt.tprintf("retvrn99_noio_%d", time.now()._nsec)})
 	testing.expect(t, os.make_directory_all(dir2) == nil)
 	defer os.remove_all(dir2)
 	p, _ := filepath.join({dir2, "COMMAND.COM"})

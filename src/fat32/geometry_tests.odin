@@ -51,7 +51,7 @@ fat32_test_vbr :: proc(t: ^testing.T) {
 	testing.expect(t, fat32_rd16le(vbr[:], 48) == 1)               // fsinfo sector
 	testing.expect(t, fat32_rd16le(vbr[:], 50) == 6)               // boot backup
 	testing.expect(t, vbr[66] == 0x29)                             // ext signature
-	testing.expect(t, string(vbr[71:82]) == "MATE98     ")
+	testing.expect(t, string(vbr[71:82]) == "RETVRN99   ")
 	testing.expect(t, string(vbr[82:90]) == "FAT32   ")
 	testing.expect(t, vbr[510] == 0x55)
 	testing.expect(t, vbr[511] == 0xAA)

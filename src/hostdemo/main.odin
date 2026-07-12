@@ -18,9 +18,9 @@ demo_snapshot :: proc() -> vga.Text_Snapshot {
 	for i in 0 ..< len(s.cells) {
 		s.cells[i] = u16(' ') | 0x07 << 8
 	}
-	text := "MATE98"
+	text := "RETVRN99"
 	// white, yellow-on-blue, green, red bg, magenta bg, blink bit = bright bg
-	attrs := [6]u8{0x0F, 0x1E, 0x2A, 0x4F, 0x5F, 0x9E}
+	attrs := [8]u8{0x0F, 0x1E, 0x2A, 0x4F, 0x5F, 0x9E, 0x0F, 0x1E}
 	for i in 0 ..< len(text) {
 		s.cells[2 * 80 + 4 + i] = u16(text[i]) | u16(attrs[i]) << 8
 	}

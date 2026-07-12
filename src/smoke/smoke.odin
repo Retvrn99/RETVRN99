@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package main
 
-// Headless M1 smoke test: boot MS-DOS 7.1 from ~/.mate98/c_drive, wait for
+// Headless M1 smoke test: boot MS-DOS 7.1 from ~/.retvrn99/c_drive, wait for
 // the C:\> prompt, type DIR, and expect a known filename in the text grid.
 // Exits 0 on success, 1 on failure, 0 with a SKIP note when WHPX or the
 // user-provided DOS files are absent.
@@ -36,7 +36,7 @@ main :: proc() {
 	}
 	home := os.get_env("USERPROFILE", context.allocator)
 	if home == "" { home = os.get_env("HOME", context.allocator) }
-	c_drive, _ := filepath.join({home, ".mate98", "c_drive"})
+	c_drive, _ := filepath.join({home, ".retvrn99", "c_drive"})
 	io_sys, _ := filepath.join({c_drive, "IO.SYS"})
 	if !os.exists(io_sys) {
 		fmt.printfln("SKIP: %s not found (user-provided MS-DOS 7.1 files required)", io_sys)

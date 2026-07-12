@@ -596,6 +596,6 @@ dump_state :: proc(m: ^machine.Machine) {
 default_c_drive :: proc() -> string {
 	home := os.get_env("USERPROFILE", context.allocator)
 	if home == "" { home = os.get_env("HOME", context.allocator) }
-	path, _ := filepath.join({home, ".mate98", "c_drive"})
+	path, _ := filepath.join({home, ".retvrn99", "c_drive"})
 	return path
 }

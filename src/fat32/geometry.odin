@@ -107,7 +107,7 @@ make_vbr :: proc(g: ^Geometry, total: u32, io_sys_lba: u64 = 0) -> (vbr: [512]u8
 	vbr[64] = 0x80 // drive
 	vbr[66] = 0x29 // ext signature
 	put32(vbr[:], 67, 0x19980625) // serial
-	copy(vbr[71:82], "MATE98     ")
+	copy(vbr[71:82], "RETVRN99   ")
 	copy(vbr[82:90], "FAT32   ")
 	vbr[510] = 0x55
 	vbr[511] = 0xAA

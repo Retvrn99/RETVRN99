@@ -73,9 +73,9 @@ ide_test_identify :: proc(t: ^testing.T) {
 	testing.expect(t, words[49] & 0x0200 != 0) // LBA supported
 	sectors := u32(words[60]) | (u32(words[61]) << 16)
 	testing.expect_value(t, sectors, u32(2048))
-	// "MATE98 VDISK" with swapped bytes
-	testing.expect_value(t, words[27], u16('M') << 8 | u16('A'))
-	testing.expect_value(t, words[28], u16('T') << 8 | u16('E'))
+	// "RETVRN99 VDISK" with swapped bytes
+	testing.expect_value(t, words[27], u16('R') << 8 | u16('E'))
+	testing.expect_value(t, words[28], u16('T') << 8 | u16('V'))
 
 	st = ide_test_inb(&ide, 0x1F7)
 	testing.expect(t, st & 0x08 == 0) // DRQ clear after 256 words

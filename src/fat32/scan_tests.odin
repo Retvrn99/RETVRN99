@@ -11,7 +11,7 @@ import "core:time"
 fat32_test_fixture :: proc(t: ^testing.T) -> string {
 	base, terr := os.temp_directory(context.allocator)
 	testing.expect(t, terr == nil)
-	dir, _ := filepath.join({base, fmt.tprintf("mate98_fixture_%d", time.now()._nsec)})
+	dir, _ := filepath.join({base, fmt.tprintf("retvrn99_fixture_%d", time.now()._nsec)})
 	testing.expect(t, os.make_directory_all(dir) == nil)
 	sub, _ := filepath.join({dir, "DOS"})
 	testing.expect(t, os.make_directory(sub) == nil)
@@ -123,7 +123,7 @@ fat32_test_allocate_empty_file :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	base, terr := os.temp_directory(context.allocator)
 	testing.expect(t, terr == nil)
-	dir, _ := filepath.join({base, fmt.tprintf("mate98_empty_%d", time.now()._nsec)})
+	dir, _ := filepath.join({base, fmt.tprintf("retvrn99_empty_%d", time.now()._nsec)})
 	testing.expect(t, os.make_directory_all(dir) == nil)
 	defer os.remove_all(dir)
 	p, _ := filepath.join({dir, "NUL.TXT"})

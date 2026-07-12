@@ -1,5 +1,5 @@
 ; SPDX-License-Identifier: GPL-3.0-only
-; mate98 clean-room MBR: relocate 0000:7C00 -> 0000:0600, read the active
+; retvrn99 clean-room MBR: relocate 0000:7C00 -> 0000:0600, read the active
 ; partition's first sector via INT 13h AH=42h (EDD) and jump to it.
 ; Build (NASM 3.01): nasm -f bin mbr.asm -o mbr.bin
 
