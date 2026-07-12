@@ -40,7 +40,7 @@ read_sector :: proc(v: ^Volume, lba: u64, out: []u8) -> bool {
 	}
 	switch rel {
 	case 0, 6:
-		vbr := make_vbr(geo, geo.total_sectors, v.io_sys_lba)
+		vbr := make_vbr(geo, geo.total_sectors, v.io_sys_lba, v.io_sys_cluster)
 		copy(out, vbr[:])
 		return true
 	case 1, 7:

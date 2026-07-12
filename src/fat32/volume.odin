@@ -9,7 +9,8 @@ Volume :: struct {
 	alloc:      Allocation,
 	root_dir:   string,
 	journal:    Journal,
-	io_sys_lba: u64, // absolute LBA of IO.SYS first sector, 0 if absent
+	io_sys_lba:     u64, // absolute LBA of IO.SYS first sector, 0 if absent
+	io_sys_cluster: u32, // first cluster of IO.SYS, 0 if absent
 	frozen:     bool,
 	on_fail:    proc(ctx: rawptr, msg: string),
 	fail_ctx:   rawptr,
@@ -32,6 +33,7 @@ volume_open :: proc(path: string, volume_mb: u32) -> ^Volume {
 	for child in root.children {
 		if !child.is_dir && child.first_cluster != 0 && strings.equal_fold(child.name, "IO.SYS") {
 			v.io_sys_lba = u64(PART_START_LBA) + u64(cluster_to_lba(&geo, child.first_cluster))
+			v.io_sys_cluster = child.first_cluster
 			break
 		}
 	}

@@ -3,11 +3,11 @@ package host
 
 import sdl3 "vendor:sdl3"
 
-// Traducción SDL scancode -> scancode set 1 para el i8042.
+// SDL scancode to set-1 scancode translation for the i8042.
 
 Set1 :: struct {
 	code: u8,
-	ext:  bool, // prefijo 0xE0
+	ext:  bool, // 0xE0 prefix
 }
 
 scancode_to_set1 :: proc(sc: sdl3.Scancode) -> (s: Set1, ok: bool) {

@@ -54,6 +54,23 @@ boot_test_vbr_patched :: proc(t: ^testing.T) {
 	testing.expect_value(t, vbr[511], u8(0xAA))
 }
 
+// MS-DOS 7 MSLOAD handoff: the VBR must know the absolute LBA of the first
+// data sector (pushed at 0:7BFC) and IO.SYS's first cluster (passed in SI:DI)
+@(test)
+boot_test_vbr_msload_handoff_fields :: proc(t: ^testing.T) {
+	g := geometry_make(2048)
+	lba := u64(10464)
+	cluster := u32(26)
+	vbr := make_vbr(&g, g.total_sectors, lba, cluster)
+	testing.expect_value(t, fat32_rd32le(vbr[:], VBR_DATA_LBA_OFFSET),
+		u32(PART_START_LBA) + g.data_start)
+	testing.expect_value(t, fat32_rd32le(vbr[:], VBR_CLUSTER_OFFSET), cluster)
+	// consistency: data start + (cluster-2)*spc must equal the IO.SYS LBA
+	got := u64(fat32_rd32le(vbr[:], VBR_DATA_LBA_OFFSET)) +
+		u64((fat32_rd32le(vbr[:], VBR_CLUSTER_OFFSET) - 2) * SECTORS_PER_CLUSTER)
+	testing.expect_value(t, got, lba)
+}
+
 @(test)
 boot_test_vbr_stub_without_lba :: proc(t: ^testing.T) {
 	g := geometry_make(2048)
@@ -84,6 +101,12 @@ boot_test_volume_vbr :: proc(t: ^testing.T) {
 	vbr := read_test_sector(t, v, PART_START_LBA)
 	testing.expect_value(t, u64(fat32_rd32le(vbr[:], VBR_LBA_OFFSET)), expected)
 	testing.expect(t, vbr[0x5A] != 0)
+	// MSLOAD handoff fields, also present in the backup VBR at rel sector 6
+	testing.expect_value(t, fat32_rd32le(vbr[:], VBR_DATA_LBA_OFFSET),
+		u32(PART_START_LBA) + v.alloc.geo.data_start)
+	testing.expect_value(t, fat32_rd32le(vbr[:], VBR_CLUSTER_OFFSET), io.first_cluster)
+	bak := read_test_sector(t, v, PART_START_LBA + 6)
+	testing.expect_value(t, fat32_rd32le(bak[:], VBR_CLUSTER_OFFSET), io.first_cluster)
 
 	// without IO.SYS the int 18h stub stays
 	base, _ := os.temp_directory(context.allocator)

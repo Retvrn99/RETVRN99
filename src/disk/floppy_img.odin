@@ -14,7 +14,7 @@ Floppy_Img :: struct {
 	dirty: bool,
 }
 
-// copia el .img a memoria; solo geometrias 1.44M
+// copies the .img into memory; 1.44M geometries only
 floppy_img_load :: proc(fi: ^Floppy_Img, raw: []u8, allocator := context.allocator) -> bool {
 	if len(raw) != FLOPPY_144_SIZE { return false }
 	fi.data = make([]u8, FLOPPY_144_SIZE, allocator)

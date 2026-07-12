@@ -7,6 +7,7 @@ Dma_Channel :: struct {
 	page:   u8,
 	mode:   u8,
 	masked: bool,
+	tc:     bool, // device-visible terminal count for the current programming
 }
 
 Dma :: struct {
@@ -25,6 +26,7 @@ dma_out :: proc(d: ^Dma, port: u16, v: u8) {
 		c := &d.ch[port >> 1]
 		if !d.flip_flop { c.count = (c.count & 0xFF00) | u16(v) } else { c.count = (c.count & 0x00FF) | u16(v) << 8 }
 		d.flip_flop = !d.flip_flop
+		c.tc = false // reprogramming re-arms the channel for the next transfer
 	case 0x08: // command register: ignored
 	case 0x0A:
 		d.ch[v & 3].masked = v & 4 != 0
@@ -35,7 +37,10 @@ dma_out :: proc(d: ^Dma, port: u16, v: u8) {
 	case 0x0D: // master clear
 		d.flip_flop = false
 		d.status = 0
-		for &c in d.ch { c.masked = true }
+		for &c in d.ch {
+			c.masked = true
+			c.tc = false
+		}
 	case 0x0E:
 		for &c in d.ch { c.masked = false }
 	case 0x0F:
@@ -74,7 +79,11 @@ dma_write_mem :: proc(d: ^Dma, ch: int, ram: []u8, data: []u8) {
 		addr := int(c.page) << 16 | int(c.addr)
 		if addr < len(ram) { ram[addr] = b }
 		c.addr += 1
-		if c.count == 0 { d.status |= 1 << u8(ch); break }
+		if c.count == 0 {
+			d.status |= 1 << u8(ch)
+			c.tc = true
+			break
+		}
 		c.count -= 1
 	}
 }
@@ -87,7 +96,11 @@ dma_read_mem :: proc(d: ^Dma, ch: int, ram: []u8, n: int, allocator := context.a
 		addr := int(c.page) << 16 | int(c.addr)
 		if addr < len(ram) { out[i] = ram[addr] }
 		c.addr += 1
-		if c.count == 0 { d.status |= 1 << u8(ch); return out[:i + 1] }
+		if c.count == 0 {
+			d.status |= 1 << u8(ch)
+			c.tc = true
+			return out[:i + 1]
+		}
 		c.count -= 1
 	}
 	return out

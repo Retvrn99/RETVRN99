@@ -56,6 +56,8 @@ put32 :: proc(b: []u8, off: int, v: u32) {
 MBR_BIN :: #load("../../assets/vbr/mbr.bin")
 VBR_BIN :: #load("../../assets/vbr/vbr.bin")
 VBR_LBA_OFFSET :: 0x1F0 // qword: absolute LBA of IO.SYS first sector
+VBR_DATA_LBA_OFFSET :: 0x1E0 // dword: absolute LBA of the first data sector
+VBR_CLUSTER_OFFSET :: 0x1E4 // dword: first cluster of IO.SYS
 
 // MBR: one bootable 0x0C partition at PART_START_LBA
 make_mbr :: proc(total_sectors: u32) -> (mbr: [512]u8) {
@@ -78,11 +80,14 @@ make_mbr :: proc(total_sectors: u32) -> (mbr: [512]u8) {
 
 // VBR: jump + FAT32 BPB; boot code loads IO.SYS when its LBA is known,
 // otherwise an int 18h stub remains
-make_vbr :: proc(g: ^Geometry, total: u32, io_sys_lba: u64 = 0) -> (vbr: [512]u8) {
+make_vbr :: proc(g: ^Geometry, total: u32, io_sys_lba: u64 = 0, io_sys_cluster: u32 = 0) -> (vbr: [512]u8) {
 	if io_sys_lba != 0 {
 		copy(vbr[:], VBR_BIN)
 		put32(vbr[:], VBR_LBA_OFFSET, u32(io_sys_lba))
 		put32(vbr[:], VBR_LBA_OFFSET + 4, u32(io_sys_lba >> 32))
+		// MS-DOS 7 MSLOAD handoff inputs (see assets/vbr/vbr.asm)
+		put32(vbr[:], VBR_DATA_LBA_OFFSET, PART_START_LBA + g.data_start)
+		put32(vbr[:], VBR_CLUSTER_OFFSET, io_sys_cluster)
 	} else {
 		vbr[90] = 0xCD // int 18h
 		vbr[91] = 0x18

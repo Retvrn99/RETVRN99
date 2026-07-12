@@ -73,6 +73,7 @@ Vm_Ctx :: struct {
 	guard:  Vm_Guard,
 	bd:     disk.Block_Device,
 	attach: bool,
+	floppy: []u8, // retained copy of the mounted image so Reset keeps it in the drive
 }
 
 main :: proc() {
@@ -80,17 +81,27 @@ main :: proc() {
 
 	console := false
 	attach := true
+	probe_keys := false
 	auto_close := -1
+	run_seconds := RUN_SECONDS
+	floppy_path := ""
 	for a in os.args[1:] {
 		if a == "--console" { console = true }
 		if a == "--no-disk" { attach = false }
+		if a == "--probe-keys" { probe_keys = true }
 		if strings.has_prefix(a, "--auto-close:") {
 			auto_close, _ = strconv.parse_int(a[len("--auto-close:"):])
+		}
+		if strings.has_prefix(a, "--seconds:") {
+			run_seconds, _ = strconv.parse_int(a[len("--seconds:"):])
+		}
+		if strings.has_prefix(a, "--floppy:") {
+			floppy_path = a[len("--floppy:"):]
 		}
 	}
 
 	if console {
-		console_main(attach)
+		console_main(attach, run_seconds, probe_keys, floppy_path)
 		return
 	}
 	gui_main(attach, auto_close)
@@ -320,17 +331,21 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			case .Mount_Floppy:
 				if img, err := os.read_entire_file_from_path(cmd.path, context.allocator); err == nil {
 					if machine.machine_mount_floppy(m, img) {
+						delete(c.floppy)
+						c.floppy = img
 						vm_log(s, fmt.tprintf("floppy: mounted %s", cmd.path))
 					} else {
 						vm_log(s, fmt.tprintf("floppy: %s is not a 1.44MB image", cmd.path))
+						delete(img)
 					}
-					delete(img)
 				} else {
 					vm_log(s, fmt.tprintf("floppy: cannot read %s", cmd.path))
 				}
 				delete(cmd.path)
 			case .Eject_Floppy:
 				machine.machine_eject_floppy(m)
+				delete(c.floppy)
+				c.floppy = nil
 				vm_log(s, "floppy: ejected")
 			case .Toggle_Throttle:
 				m.throttle.enabled = !m.throttle.enabled
@@ -373,6 +388,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 	s.exit_stats = stats
 	sync.unlock(&s.mu)
 	vm_shutdown(c, m)
+	delete(c.floppy)
 	free(m)
 }
 
@@ -386,6 +402,7 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 		return false
 	}
 	if c.attach { machine.machine_attach_disk(m, c.bd) }
+	if c.floppy != nil { _ = machine.machine_mount_floppy(m, c.floppy) }
 	c.guard.vm = &m.vm
 	c.guard.valid = true
 	return true
@@ -475,7 +492,7 @@ console_watchdog :: proc(vm: ^hv.Vm) {
 	}
 }
 
-console_main :: proc(attach: bool) {
+console_main :: proc(attach: bool, run_seconds: int, probe_keys: bool, floppy_path: string) {
 	m := new(machine.Machine)
 	if !machine.machine_init(m, RAM_SIZE) {
 		fmt.eprintln("machine_init failed (WHPX unavailable?)")
@@ -499,6 +516,21 @@ console_main :: proc(attach: bool) {
 		fmt.println("disk: none (--no-disk)")
 	}
 
+	if floppy_path != "" {
+		if img, err := os.read_entire_file_from_path(floppy_path, context.allocator); err == nil {
+			if machine.machine_mount_floppy(m, img) {
+				fmt.printfln("floppy: mounted %s", floppy_path)
+			} else {
+				fmt.eprintfln("floppy: %s is not a 1.44MB image", floppy_path)
+				os.exit(1)
+			}
+			delete(img)
+		} else {
+			fmt.eprintfln("floppy: cannot read %s", floppy_path)
+			os.exit(1)
+		}
+	}
+
 	thread.create_and_start_with_poly_data(&m.vm, console_watchdog)
 	defer console_watchdog_stop = true
 
@@ -510,9 +542,27 @@ console_main :: proc(attach: bool) {
 	line: [dynamic]u8
 	iterations := 0
 
+	// --probe-keys: press Enter, then type "ver" + Enter, to prove the prompt is live
+	enter := []u8{0x1C, 0x9C}
+	script := []u8{0x2F, 0xAF, 0x12, 0x92, 0x13, 0x93, 0x1C, 0x9C}
+	enter_sent := !probe_keys
+	script_sent := !probe_keys
+	enter_at := time.Duration(max(run_seconds / 4, 1)) * time.Second
+	script_at := time.Duration(max(run_seconds - 10, run_seconds / 2)) * time.Second
+
 	for {
 		alive := machine.step(m)
 		iterations += 1
+		if !enter_sent && time.tick_diff(start, time.tick_now()) >= enter_at {
+			enter_sent = true
+			fmt.printfln("[%.0fs] injecting key: <enter>", time.duration_seconds(time.tick_since(start)))
+			for b in enter { machine.i8042_key(&m.kbd, b) }
+		}
+		if !script_sent && time.tick_diff(start, time.tick_now()) >= script_at {
+			script_sent = true
+			fmt.printfln("[%.0fs] injecting keys: ver<enter>", time.duration_seconds(time.tick_since(start)))
+			for b in script { machine.i8042_key(&m.kbd, b) }
+		}
 		drain_dbg(m, &raw, &line)
 		now := time.tick_now()
 		if !alive {
@@ -528,12 +578,13 @@ console_main :: proc(attach: bool) {
 			if !shown || snap.cells != prev.cells {
 				prev = snap
 				shown = true
+				fmt.printfln("[%.0fs]", time.duration_seconds(time.tick_diff(start, now)))
 				print_grid(snap)
 			}
 		}
-		if time.tick_diff(start, now) >= RUN_SECONDS * time.Second {
+		if time.tick_diff(start, now) >= time.Duration(run_seconds) * time.Second {
 			flush_partial(&line)
-			fmt.printfln("time cap (%ds) reached after %d iterations, exiting", RUN_SECONDS, iterations)
+			fmt.printfln("time cap (%ds) reached after %d iterations, exiting", run_seconds, iterations)
 			dump_state(m)
 			print_grid(vga.vga_snapshot(&m.vga, m.vm.ram))
 			break
@@ -584,6 +635,7 @@ dump_state :: proc(m: ^machine.Machine) {
 	fmt.printfln("regs: CS=%04x (base %08x) RIP=%08x RFLAGS=%08x", r.cs_sel, r.cs_base, r.rip, r.rflags)
 	fmt.printfln("      RAX=%08x RBX=%08x RCX=%08x RDX=%08x", r.rax, r.rbx, r.rcx, r.rdx)
 	fmt.printfln("      RSI=%08x RDI=%08x RSP=%08x RBP=%08x", r.rsi, r.rdi, r.rsp, r.rbp)
+	fmt.printfln("      SS=%04x (base %08x) DS=%04x ES=%04x", r.ss_sel, r.ss_base, r.ds_sel, r.es_sel)
 	count := int(min(m.exit_count, u64(machine.EXIT_HISTORY)))
 	fmt.printf("last %d exits:", count)
 	for i in 0 ..< count {
@@ -591,6 +643,58 @@ dump_state :: proc(m: ^machine.Machine) {
 		fmt.printf(" %v", m.exit_hist[idx])
 	}
 	fmt.println()
+	nio := int(min(m.io_count, u64(machine.IO_HISTORY)))
+	fmt.printf("last %d io:", nio)
+	for i in 0 ..< nio {
+		idx := (m.io_count - u64(nio) + u64(i)) % machine.IO_HISTORY
+		t := m.io_hist[idx]
+		fmt.printf(" %s[%04x]=%x", t.write ? "w" : "r", t.port, t.val)
+	}
+	fmt.println()
+	fmt.print("irq injections:")
+	for c, v in m.inj_count {
+		if c > 0 { fmt.printf(" vec%02x=%d", v, c) }
+	}
+	fmt.println()
+	fmt.printfln("i8042: count=%d cmd_byte=%02x head=%d tail=%d",
+		m.kbd.count, m.kbd.cmd_byte, m.kbd.head, m.kbd.tail)
+	fmt.printfln("pic: master irr=%02x imr=%02x isr=%02x base=%02x slave irr=%02x imr=%02x isr=%02x base=%02x",
+		m.pic.master.irr, m.pic.master.imr, m.pic.master.isr, m.pic.master.base,
+		m.pic.slave.irr, m.pic.slave.imr, m.pic.slave.isr, m.pic.slave.base)
+	nide := int(min(m.ide_count, u64(machine.IDE_HISTORY)))
+	fmt.printf("last %d ide io (of %d):", nide, m.ide_count)
+	for i in 0 ..< nide {
+		idx := (m.ide_count - u64(nide) + u64(i)) % machine.IDE_HISTORY
+		t := m.ide_hist[idx]
+		fmt.printf(" %s[%04x]=%x", t.write ? "w" : "r", t.port, t.val)
+	}
+	fmt.println()
+	dump_ram(m, "ivt 00-1F", 0x0000, 0x80)
+	dump_ram(m, "mbr@0600", 0x0600, 0x20)
+	dump_ram(m, "iosys@0700", 0x0700, 0x40)
+	dump_ram(m, "msload@0900", 0x0900, 0x40)
+	dump_ram(m, "vbr@7C00", 0x7C00, 0x40)
+	sp := int(r.ss_base) + int(r.rsp & 0xFFFF)
+	lo := max(0, sp - 0x20)
+	if lo + 0x60 <= len(m.vm.ram) { dump_ram(m, "stack", lo, 0x60) }
+	ncmd := int(min(m.cmd_count, u64(machine.IDE_HISTORY)))
+	fmt.printf("last %d ide cmds (of %d):", ncmd, m.cmd_count)
+	for i in 0 ..< ncmd {
+		idx := (m.cmd_count - u64(ncmd) + u64(i)) % machine.IDE_HISTORY
+		t := m.cmd_hist[idx]
+		fmt.printf(" %02x@%x*%d", t.cmd, t.lba, t.count)
+	}
+	fmt.println()
+}
+
+dump_ram :: proc(m: ^machine.Machine, tag: string, base, n: int) {
+	for off := 0; off < n; off += 16 {
+		fmt.printf("ram %s %05x:", tag, base + off)
+		for i in 0 ..< 16 {
+			fmt.printf(" %02x", m.vm.ram[base + off + i])
+		}
+		fmt.println()
+	}
 }
 
 default_c_drive :: proc() -> string {

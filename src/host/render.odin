@@ -68,7 +68,7 @@ render_text :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	sdl3.RenderPresent(h.ren)
 }
 
-// Como render_text pero sin presentar: la GUI dibuja ImGui encima antes del present.
+// Like render_text but without presenting: the GUI draws ImGui on top first.
 render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	raw: rawptr
 	pitch: c.int

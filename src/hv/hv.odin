@@ -41,6 +41,10 @@ Regs :: struct {
 	rip, rflags:        u64,
 	cs_sel:             u16,
 	cs_base:            u64,
+	ss_sel:             u16,
+	ds_sel:             u16,
+	es_sel:             u16,
+	ss_base:            u64,
 }
 
 available :: proc() -> bool {

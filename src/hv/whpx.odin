@@ -274,7 +274,7 @@ whpx_reg_rax :: proc(vm: ^Vm) -> u64 {
 whpx_get_regs :: proc(vm: ^Vm) -> Regs {
 	names := [?]WHV_REGISTER_NAME{
 		.Rax, .Rbx, .Rcx, .Rdx, .Rsi, .Rdi, .Rsp, .Rbp,
-		.Rip, .Rflags, .Cs,
+		.Rip, .Rflags, .Cs, .Ss, .Ds, .Es,
 	}
 	vals: [len(names)]WHV_REGISTER_VALUE
 	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0]) < 0 {
@@ -285,6 +285,8 @@ whpx_get_regs :: proc(vm: ^Vm) -> Regs {
 		rsi = vals[4].Reg64, rdi = vals[5].Reg64, rsp = vals[6].Reg64, rbp = vals[7].Reg64,
 		rip = vals[8].Reg64, rflags = vals[9].Reg64,
 		cs_sel = vals[10].Segment.Selector, cs_base = vals[10].Segment.Base,
+		ss_sel = vals[11].Segment.Selector, ss_base = vals[11].Segment.Base,
+		ds_sel = vals[12].Segment.Selector, es_sel = vals[13].Segment.Selector,
 	}
 }
 

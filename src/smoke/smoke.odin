@@ -68,7 +68,10 @@ main :: proc() {
 		thread.join(wd_thr)
 	}
 
-	if !run_until(m, BOOT_DEADLINE, "C:\\>") { fail("no C:\\> prompt within deadline") }
+	// The very first prompt renders as "C:" only: the IO.SYS boot-logo
+	// (mode 13h) round trip swallows the "\>" glyphs. Every later prompt
+	// renders "C:\>" in full, so the canonical needle is checked after DIR.
+	if !run_until(m, BOOT_DEADLINE, "C:") { fail("no C: prompt within deadline") }
 	fmt.println("prompt reached, typing DIR")
 
 	// DIR + Enter, set-1 make/break pairs
@@ -79,7 +82,8 @@ main :: proc() {
 	}
 	// any file we know the user placed there; COMMAND.COM must exist to boot
 	if !run_until(m, DIR_DEADLINE, "COMMAND") { fail("DIR output not found") }
-	fmt.println("PASS: booted to C:\\> and DIR lists COMMAND")
+	if !run_until(m, DIR_DEADLINE, "C:\\>") { fail("no C:\\> prompt after DIR") }
+	fmt.println("PASS: booted to prompt, DIR lists COMMAND, C:\\> renders")
 }
 
 fail :: proc(msg: string) {

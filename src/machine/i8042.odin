@@ -15,10 +15,9 @@ I8042 :: struct {
 	fifo:       [32]u8,
 	head, tail: int, // ring: head=read, tail=write
 	count:      int,
-	cmd_byte:   u8,
+	cmd_byte:   u8, // bit0 IRQ1 enable, bit4 keyboard disable (0xAD/0xAE map here)
 	expect:     I8042_Expect,
 	a20:        bool,
-	kbd_off:    bool,
 	ctx:        rawptr,
 	irq1:       proc(ctx: rawptr),
 	reset:      proc(ctx: rawptr),
@@ -54,7 +53,7 @@ i8042_pop :: proc(k: ^I8042) -> u8 {
 
 // host key (scancode set 1)
 i8042_key :: proc(k: ^I8042, scancode: u8) {
-	if k.kbd_off { return }
+	if k.cmd_byte & 0x10 != 0 { return } // keyboard disabled
 	i8042_push(k, scancode)
 }
 
@@ -75,8 +74,8 @@ i8042_out :: proc(k: ^I8042, port: u16, v: u8) {
 		case 0x60: k.expect = .Cmd_Byte
 		case 0xAA: i8042_push(k, 0x55) // self test
 		case 0xAB: i8042_push(k, 0x00) // interface test
-		case 0xAD: k.kbd_off = true
-		case 0xAE: k.kbd_off = false
+		case 0xAD: k.cmd_byte |= 0x10 // disable = CTR bit 4
+		case 0xAE: k.cmd_byte &~= 0x10
 		case 0xD1: k.expect = .Out_Port
 		case 0xFE: if k.reset != nil { k.reset(k.ctx) }
 		}

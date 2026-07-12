@@ -36,6 +36,32 @@ test_i8042_irq_per_byte :: proc(t: ^testing.T) {
 	testing.expect_value(t, irqs, 2) // FIFO drained: no further IRQ
 }
 
+// the disable state is bit 4 of the command byte: 0xAD sets it, 0xAE clears
+// it, and a command-byte write with bit 4 clear re-enables the keyboard
+// (MS-DOS 7 IO.SYS sends 0xAD during init and re-enables only via the CTR)
+@(test)
+test_i8042_disable_via_cmd_byte :: proc(t: ^testing.T) {
+	irqs := 0
+	kc: I8042
+	i8042_init(&kc, &irqs, proc(ctx: rawptr) { (^int)(ctx)^ += 1 })
+	i8042_out(&kc, 0x64, 0xAD) // disable keyboard
+	i8042_key(&kc, 0x1E)
+	testing.expect_value(t, i8042_in(&kc, 0x64) & 1, u8(0)) // dropped
+	i8042_out(&kc, 0x64, 0x20) // read CTR: bit 4 reflects the disable
+	testing.expect_value(t, i8042_in(&kc, 0x60) & 0x10, u8(0x10))
+	i8042_out(&kc, 0x64, 0x60); i8042_out(&kc, 0x60, 0x61) // CTR: IRQ1 on, kbd enabled
+	i8042_key(&kc, 0x1E)
+	testing.expect_value(t, i8042_in(&kc, 0x64) & 1, u8(1))
+	testing.expect_value(t, irqs, 1)
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x1E))
+	i8042_out(&kc, 0x64, 0x60); i8042_out(&kc, 0x60, 0x71) // CTR with bit 4: disabled
+	i8042_key(&kc, 0x9E)
+	testing.expect_value(t, i8042_in(&kc, 0x64) & 1, u8(0))
+	i8042_out(&kc, 0x64, 0xAE) // enable again
+	i8042_key(&kc, 0x9E)
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x9E))
+}
+
 @(test)
 test_i8042_a20 :: proc(t: ^testing.T) {
 	kc: I8042

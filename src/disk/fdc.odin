@@ -2,7 +2,7 @@
 package disk
 
 // Subconjunto del 82077AA que usa SeaBIOS (dev/seabios/src/hw/floppy.c).
-// Puertos 0x3F0-0x3F5 y 0x3F7; la ejecucion de READ/WRITE es sincrona via
+// Ports 0x3F0-0x3F5 and 0x3F7; READ/WRITE execution is synchronous via
 // callbacks de DMA canal 2 que instala machine.
 
 FDC_MSR_RQM :: 0x80
@@ -15,6 +15,7 @@ FDC_DOR_IRQ :: 0x08
 FDC_ST0_SEEK_END :: 0x20
 FDC_ST0_ABNORMAL :: 0x40
 FDC_ST0_INVALID :: 0x80
+FDC_ST1_EOC :: 0x80
 FDC_ST1_NO_DATA :: 0x04
 FDC_ST1_MISSING_AM :: 0x01
 
@@ -45,7 +46,7 @@ Fdc :: struct {
 	int_pending:  bool,
 	int_st0:      u8,
 	reset_sense:  int, // SENSE INTERRUPT pendientes tras reset (sondeo de 4 unidades)
-	// IRQ6 hacia el PIC
+	// IRQ6 toward the PIC
 	irq:          proc(ctx: rawptr),
 	irq_ctx:      rawptr,
 	// DMA canal 2: instalado por machine para no importar ese paquete
@@ -231,7 +232,7 @@ fdc_execute :: proc(f: ^Fdc) {
 	}
 }
 
-// el pulso de paso limpia DSKCHG cuando hay medio presente
+// the step pulse clears DSKCHG when media is present
 @(private = "file")
 fdc_seek_done :: proc(f: ^Fdc, unit_head: u8) {
 	if f.has_media { f.dskchg = false }
@@ -270,7 +271,8 @@ fdc_read_id :: proc(f: ^Fdc) {
 
 @(private = "file")
 fdc_rw :: proc(f: ^Fdc, is_write: bool) {
-	unit_head := f.params[0] & 7
+	unit := f.params[0] & 3
+	mt := f.cmd & 0x80 != 0
 	c := int(f.params[1])
 	h := int(f.params[2])
 	s := int(f.params[3])
@@ -279,17 +281,25 @@ fdc_rw :: proc(f: ^Fdc, is_write: bool) {
 	_, chs_ok := floppy_img_offset(c, h, s)
 	if !f.has_media || !chs_ok {
 		fdc_finish_result(f, []u8{
-			FDC_ST0_ABNORMAL | unit_head, FDC_ST1_NO_DATA, 0,
+			FDC_ST0_ABNORMAL | (f.params[0] & 7), FDC_ST1_NO_DATA, 0,
 			f.params[1], f.params[2], f.params[3], f.params[4],
 		}, true)
 		return
 	}
 
-	// transfiere sector a sector hasta fin de cuenta del DMA o EOT
+	// sector loop until DMA terminal count; the last sector of a track (EOT
+	// parameter or physical end) continues on head 1 with MT, otherwise the
+	// command ends the cylinder (82077AA: EN in ST1, abnormal termination)
 	buf: [FLOPPY_SECTOR]u8
+	st0: u8 = 0
+	st1: u8 = 0
 	for {
 		sec, ok := floppy_img_sector(&f.img, c, h, s)
-		if !ok { break }
+		if !ok {
+			st0 = FDC_ST0_ABNORMAL
+			st1 = FDC_ST1_NO_DATA
+			break
+		}
 		if is_write {
 			buf = {}
 			if f.dma_from_mem != nil { _ = f.dma_from_mem(f.dma_ctx, buf[:]) }
@@ -298,13 +308,30 @@ fdc_rw :: proc(f: ^Fdc, is_write: bool) {
 		} else {
 			if f.dma_to_mem != nil { f.dma_to_mem(f.dma_ctx, sec) }
 		}
-		s += 1
-		if f.dma_tc != nil && f.dma_tc(f.dma_ctx) { break }
-		if s > eot { break }
+		tc := f.dma_tc != nil && f.dma_tc(f.dma_ctx)
+		// advance to the next sector address (also the result-frame C/H/R)
+		end_of_cyl := false
+		if s == eot || s >= FLOPPY_SPT {
+			s = 1
+			if mt && h == 0 {
+				h = 1
+			} else {
+				if mt { h = 0 }
+				c += 1
+				end_of_cyl = true
+			}
+		} else {
+			s += 1
+		}
+		if tc { break }
+		if end_of_cyl {
+			st0 = FDC_ST0_ABNORMAL
+			st1 = FDC_ST1_EOC
+			break
+		}
 	}
 
-	if s > FLOPPY_SPT { s = 1 }
 	fdc_finish_result(f, []u8{
-		unit_head, 0, 0, u8(c), u8(h), u8(s), f.params[4],
+		st0 | u8(h) << 2 | unit, st1, 0, u8(c), u8(h), u8(s), f.params[4],
 	}, true)
 }

@@ -26,6 +26,28 @@ test_dma_ch2_write_mem :: proc(t: ^testing.T) {
 	testing.expect(t, dma_in(&d, 0x08) & 0x04 != 0) // channel 2 TC
 }
 
+// SeaBIOS never reads port 0x08 between floppy transfers: the device-visible
+// TC must re-arm when the channel count is reprogrammed, while the status
+// register bit stays sticky until read (8237 spec).
+@(test)
+test_dma_ch2_tc_rearm :: proc(t: ^testing.T) {
+	d: Dma
+	dma_setup(&d)
+	ram := make([]u8, 1 << 20)
+	defer delete(ram)
+	data: [512]u8
+	dma_write_mem(&d, 2, ram, data[:])
+	testing.expect(t, d.ch[2].tc)
+
+	dma_setup(&d) // next transfer programmed without touching port 0x08
+	testing.expect(t, !d.ch[2].tc)
+	testing.expect(t, dma_in(&d, 0x08) & 0x04 != 0) // sticky until this read
+
+	dma_write_mem(&d, 2, ram, data[:])
+	testing.expect(t, d.ch[2].tc)
+	testing.expect(t, dma_in(&d, 0x08) & 0x04 != 0)
+}
+
 @(test)
 test_dma_ch2_read_mem :: proc(t: ^testing.T) {
 	d: Dma

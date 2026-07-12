@@ -17,6 +17,24 @@ Mmio_Zone :: enum {
 }
 
 EXIT_HISTORY :: 32
+IO_HISTORY :: 64
+IDE_HISTORY :: 128
+
+// forensics: one recorded port access
+Io_Trace :: struct {
+	port:  u16,
+	write: bool,
+	size:  u8,
+	val:   u32,
+}
+
+// forensics: one IDE command with its addressing at issue time
+Ide_Cmd_Trace :: struct {
+	cmd:   u8,
+	drive: u8,
+	count: u8,
+	lba:   u32,
+}
 
 Machine :: struct {
 	bus:        Bus,
@@ -38,6 +56,13 @@ Machine :: struct {
 	mmio_seen:  [Mmio_Zone]bool, // log tolerated zones only once
 	exit_hist:  [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
 	exit_count: u64,
+	io_hist:    [IO_HISTORY]Io_Trace, // ring, io_count % IO_HISTORY
+	io_count:   u64,
+	ide_hist:   [IDE_HISTORY]Io_Trace, // ring of IDE-port accesses only
+	ide_count:  u64,
+	cmd_hist:   [IDE_HISTORY]Ide_Cmd_Trace, // ring of IDE commands
+	cmd_count:  u64,
+	inj_count:  [256]u64, // injected IRQ vectors
 }
 
 machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
@@ -108,6 +133,10 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	machine_whitelist_range(&m.bus, 0x278, 0x27A) // LPT2 probe by SeaBIOS lpt_setup; absent
 	machine_whitelist_range(&m.bus, 0x3E8, 0x3EF) // COM3 probe by SeaBIOS serial_setup; absent
 	machine_whitelist_range(&m.bus, 0x2E8, 0x2EF) // COM4 probe by SeaBIOS serial_setup; absent
+	machine_whitelist_range(&m.bus, 0x2F2, 0x2F7) // IO.SYS boot probe: writes 0xFF here (tertiary FDC range); absent
+	machine_whitelist_range(&m.bus, 0x6F2, 0x6F7) // same IO.SYS probe series, stride 0x400
+	machine_whitelist_range(&m.bus, 0x1E8, 0x1EF) // IDE tertiary: Win98 boot-disk ATAPI driver probe; absent
+	machine_whitelist_range(&m.bus, 0x168, 0x16F) // IDE quaternary, same driver probe series
 
 	m.last_tick = time.tick_now()
 	return true
@@ -138,7 +167,7 @@ machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
 	bus_register(&m.bus, 0x3F6, 0x3F6, h)
 }
 
-// registra el FDC en el bus y le instala IRQ6 y el pegamento de DMA ch2
+// registers the FDC on the bus and installs IRQ6 and the DMA ch2 glue
 machine_init_fdc :: proc(m: ^Machine) {
 	disk.fdc_init(&m.fdc)
 	m.fdc.irq_ctx = m
@@ -148,16 +177,16 @@ machine_init_fdc :: proc(m: ^Machine) {
 	m.fdc.dma_from_mem = machine_fdc_dma_from_mem
 	m.fdc.dma_tc = machine_fdc_dma_tc
 	h := Io_Handler{ctx = m, read = machine_fdc_read, write = machine_fdc_write}
-	bus_register(&m.bus, 0x3F0, 0x3F5, h) // 0x3F6 pertenece al IDE
+	bus_register(&m.bus, 0x3F0, 0x3F5, h) // 0x3F6 belongs to the IDE
 	bus_register(&m.bus, 0x3F7, 0x3F7, h)
 }
 
-// gancho para el menu de la GUI
+// hook for the GUI menu
 machine_mount_floppy :: proc(m: ^Machine, img: []u8) -> bool {
 	return disk.fdc_set_media(&m.fdc, img)
 }
 
-// gancho para el menu de la GUI
+// hook for the GUI menu
 machine_eject_floppy :: proc(m: ^Machine) {
 	disk.fdc_eject_media(&m.fdc)
 }
@@ -172,7 +201,15 @@ step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
 	for _ in 0 ..< pit_advance(&m.pit, ns) { pic_raise(&m.pic, 0) }
 	if pic_has_pending(&m.pic) {
 		if hv.can_inject(&m.vm) {
-			if v, ok := pic_ack(&m.pic); ok { hv.inject_irq(&m.vm, v) }
+			if v, ok := pic_ack(&m.pic); ok {
+				m.inj_count[v] += 1
+				hv.inject_irq(&m.vm, v)
+			}
+			// more IRQs queued behind this one: exit as soon as the guest
+			// can take the next one, or a no-exit guest starves them
+			if pic_has_pending(&m.pic) {
+				hv.request_irq_window(&m.vm, true)
+			}
 		} else {
 			hv.request_irq_window(&m.vm, true)
 		}
@@ -200,12 +237,35 @@ machine_whitelist_range :: proc(b: ^Bus, first, last: u16) {
 @(private = "file")
 machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
-	return bus_io_read(&m.bus, port, size)
+	v := bus_io_read(&m.bus, port, size)
+	t := Io_Trace{port = port, write = false, size = size, val = v}
+	m.io_hist[m.io_count % IO_HISTORY] = t
+	m.io_count += 1
+	if port >= 0x1F0 && port <= 0x1F7 || port == 0x3F6 {
+		m.ide_hist[m.ide_count % IDE_HISTORY] = t
+		m.ide_count += 1
+	}
+	return v
 }
 
 @(private = "file")
 machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
+	t := Io_Trace{port = port, write = true, size = size, val = val}
+	m.io_hist[m.io_count % IO_HISTORY] = t
+	m.io_count += 1
+	if port >= 0x1F0 && port <= 0x1F7 || port == 0x3F6 {
+		m.ide_hist[m.ide_count % IDE_HISTORY] = t
+		m.ide_count += 1
+	}
+	if port == 0x1F7 {
+		lba := u32(m.ide.reg_lba_lo) | u32(m.ide.reg_lba_mid) << 8 |
+			u32(m.ide.reg_lba_hi) << 16 | u32(m.ide.reg_drive & 0x0F) << 24
+		m.cmd_hist[m.cmd_count % IDE_HISTORY] = Ide_Cmd_Trace{
+			cmd = u8(val), drive = m.ide.reg_drive, count = m.ide.reg_seccount, lba = lba,
+		}
+		m.cmd_count += 1
+	}
 	bus_io_write(&m.bus, port, size, val)
 }
 
@@ -265,7 +325,7 @@ machine_irq14 :: proc(ctx: rawptr) {
 	pic_raise(&m.pic, 14)
 }
 
-// --- pegamento FDC <-> DMA canal 2 ---
+// --- FDC / DMA channel 2 glue ---
 
 @(private = "file")
 machine_fdc_dma_to_mem :: proc(ctx: rawptr, data: []u8) {
@@ -281,11 +341,12 @@ machine_fdc_dma_from_mem :: proc(ctx: rawptr, buf: []u8) -> int {
 	return copy(buf, tmp)
 }
 
-// mira el bit TC del canal 2 sin consumirlo como haria la lectura del puerto 8
+// channel 2 TC for the transfer in flight: the status bit is sticky until
+// port 8 is read and SeaBIOS never reads it between transfers
 @(private = "file")
 machine_fdc_dma_tc :: proc(ctx: rawptr) -> bool {
 	m := (^Machine)(ctx)
-	return m.dma.status & 0x04 != 0
+	return m.dma.ch[2].tc
 }
 
 @(private = "file")
@@ -308,6 +369,12 @@ machine_pic_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_pic_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	for i in 0 ..< int(size) { pic_out(&m.pic, port + u16(i), u8(val >> (8 * uint(i)))) }
+	// EOI with more IRQs queued: WHPX clears the window notification when it
+	// delivers an injection, so re-arm it here (mid-run, guest still in the
+	// handler) to get an exit at IRET instead of waiting for the watchdog
+	if m.vm.part != nil && pic_has_pending(&m.pic) {
+		hv.request_irq_window(&m.vm, true)
+	}
 }
 
 @(private = "file")
