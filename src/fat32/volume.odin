@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package fat32
 
+import "base:runtime"
 import "core:log"
 import "core:strings"
 import disk "../disk"
 
 Volume :: struct {
+	allocator:  runtime.Allocator,
 	alloc:      Allocation,
 	root_dir:   string,
 	journal:    Journal,
@@ -17,19 +19,22 @@ Volume :: struct {
 }
 
 volume_open :: proc(path: string, volume_mb: u32) -> ^Volume {
-	root := scan_tree(path)
+	allocator := context.allocator
+	root := scan_tree(path, allocator)
 	if root == nil {
 		return nil
 	}
 	geo := geometry_make(volume_mb)
-	a := allocate(root, geo)
+	a := allocate(root, geo, allocator)
 	if a.next_free > geo.cluster_count + 2 {
+		allocation_destroy(&a, allocator)
 		return nil // host tree does not fit the volume
 	}
-	v := new(Volume)
+	v := new(Volume, allocator)
+	v.allocator = allocator
 	v.alloc = a
 	v.root_dir = root.host_path
-	journal_init(&v.journal)
+	journal_init(&v.journal, allocator)
 	for child in root.children {
 		if !child.is_dir && child.first_cluster != 0 && strings.equal_fold(child.name, "IO.SYS") {
 			v.io_sys_lba = u64(PART_START_LBA) + u64(cluster_to_lba(&geo, child.first_cluster))
@@ -41,6 +46,16 @@ volume_open :: proc(path: string, volume_mb: u32) -> ^Volume {
 		log.errorf("fat32: IO.SYS not found in %s; VBR keeps the int 18h stub and the guest cannot boot from C:", path)
 	}
 	return v
+}
+
+volume_close :: proc(v: ^Volume) {
+	if v == nil {
+		return
+	}
+	allocator := v.allocator
+	journal_destroy(&v.journal, allocator)
+	allocation_destroy(&v.alloc, allocator)
+	free(v, allocator)
 }
 
 // freeze writes and notify the host; reads keep working

@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+CMOS_NVRAM_SIZE :: 128
+
 Cmos :: struct {
-	ram:     [128]u8,
+	ram:     [CMOS_NVRAM_SIZE]u8,
 	index:   u8,
 	h, m, s: u8,
 	pi_acc:  u64, // ns toward the next periodic interrupt
@@ -23,10 +25,11 @@ cmos_advance :: proc(c: ^Cmos, ns: u64) -> int {
 
 cmos_bcd :: proc(v: u8) -> u8 { return (v / 10) << 4 | v % 10 }
 
-// Static config SeaBIOS expects; memory sizes derived from ram_bytes
-cmos_init :: proc(c: ^Cmos, ram_bytes: u64) {
+@(private = "file")
+cmos_apply_machine_config :: proc(c: ^Cmos, ram_bytes: u64) {
 	c.ram[0x0A] = 0x26 // RTC OK
 	c.ram[0x0B] = 0x02 // BCD, 24h
+	c.ram[0x0C] = 0x00
 	c.ram[0x0D] = 0x80 // battery OK
 	c.ram[0x0E] = 0x00 // diagnostics
 	c.ram[0x10] = 0x40 // floppy A: 1.44M
@@ -50,6 +53,25 @@ cmos_init :: proc(c: ^Cmos, ram_bytes: u64) {
 	if above16 > 0xFFFF { above16 = 0xFFFF }
 	c.ram[0x34] = u8(above16)
 	c.ram[0x35] = u8(above16 >> 8)
+}
+
+// Static config SeaBIOS expects; memory sizes derived from ram_bytes
+cmos_init :: proc(c: ^Cmos, ram_bytes: u64) {
+	c^ = {}
+	cmos_apply_machine_config(c, ram_bytes)
+}
+
+cmos_nvram_export :: proc(c: ^Cmos) -> [CMOS_NVRAM_SIZE]u8 {
+	return c.ram
+}
+
+cmos_nvram_import :: proc(c: ^Cmos, data: []u8, ram_bytes: u64) -> bool {
+	if len(data) != CMOS_NVRAM_SIZE { return false }
+	copy(c.ram[:], data)
+	c.index = 0
+	c.pi_acc = 0
+	cmos_apply_machine_config(c, ram_bytes)
+	return true
 }
 
 cmos_set_time :: proc(c: ^Cmos, h, m, s: u8) {

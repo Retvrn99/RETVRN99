@@ -175,10 +175,10 @@ read_test_block_device_glue :: proc(t: ^testing.T) {
 	testing.expect(t, string(two[:SECTOR]) == string(vbr[:]))
 	testing.expect(t, string(two[SECTOR:]) == string(fsi[:]))
 
-	// writes flow into the journal: a reserved sector reads back
-	sec: [SECTOR]u8
-	sec[0] = 0x5A
-	testing.expect(t, bd.write(bd.ctx, part + 2, sec[:]))
-	back := read_test_sector(t, v, part + 2)
+	// mutable FSInfo counters flow into the journal
+	sec := make_fsinfo()
+	sec[488] = 0x5A
+	testing.expect(t, bd.write(bd.ctx, part + 1, sec[:]))
+	back := read_test_sector(t, v, part + 1)
 	testing.expect(t, back == sec)
 }

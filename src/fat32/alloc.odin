@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package fat32
 
+import "base:runtime"
 import "core:strings"
 
 CLUSTER_BYTES :: SECTOR * SECTORS_PER_CLUSTER
@@ -13,17 +14,26 @@ Allocation :: struct {
 }
 
 // Order: cluster 2 = root; then DFS: each dir, then its files.
-allocate :: proc(root: ^Node, geo: Geometry) -> Allocation {
+allocate :: proc(root: ^Node, geo: Geometry, allocator := context.allocator) -> Allocation {
 	a := Allocation {
 		root = root,
 		geo  = geo,
 	}
 	// indexed directly by cluster number; valid data clusters are 2..cluster_count+1
-	a.by_cluster = make([]^Node, int(geo.cluster_count) + 2)
+	a.by_cluster = make([]^Node, int(geo.cluster_count) + 2, allocator)
 	a.next_free = 2
 	assign(&a, root, u64(dir_size_bytes(root)))
 	alloc_dir(&a, root)
 	return a
+}
+
+allocation_destroy :: proc(a: ^Allocation, allocator: runtime.Allocator) {
+	if a == nil {
+		return
+	}
+	delete(a.by_cluster, allocator)
+	node_tree_destroy(a.root, allocator)
+	a^ = {}
 }
 
 @(private = "file")

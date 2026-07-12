@@ -62,6 +62,10 @@ render_snapshot :: proc(pixels: []u32, pitch_px: int, snap: ^vga.Text_Snapshot) 
 	}
 }
 
+guest_view_rect :: proc() -> sdl3.FRect {
+	return {0, f32(MENU_BAR_H), f32(TEXT_W * 2), f32(TEXT_H * 2)}
+}
+
 // Upload the rasterized grid at 2x below the menu bar without presenting:
 // the GUI draws ImGui on top first.
 render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
@@ -77,6 +81,6 @@ render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 
 	sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
 	sdl3.RenderClear(h.ren)
-	dst := sdl3.FRect{0, MENU_H, TEXT_W * 2, TEXT_H * 2}
+	dst := guest_view_rect()
 	sdl3.RenderTexture(h.ren, h.tex, nil, &dst)
 }

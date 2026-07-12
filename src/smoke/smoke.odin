@@ -17,6 +17,7 @@ import "../fat32"
 import "../hosttime"
 import "../hv"
 import "../machine"
+import "../profile"
 import "../vga"
 
 // a guest that stops doing I/O never exits WHvRunVirtualProcessor;
@@ -32,24 +33,40 @@ DIR_DEADLINE :: 15 * time.Second
 VCPU_PULSE_PERIOD :: time.Millisecond
 
 main :: proc() {
+	code := run_smoke()
+	if code != 0 { os.exit(code) }
+}
+
+run_smoke :: proc() -> int {
 	if !hv.available() {
 		fmt.println("SKIP: WHPX not available")
-		return
+		return 0
 	}
-	home := os.get_env("USERPROFILE", context.allocator)
-	if home == "" { home = os.get_env("HOME", context.allocator) }
-	c_drive, _ := filepath.join({home, ".retvrn99", "c_drive"})
-	io_sys, _ := filepath.join({c_drive, "IO.SYS"})
+	paths, perr := profile.paths_default()
+	if perr != nil { return smoke_fail("profile path resolution") }
+	defer profile.paths_destroy(&paths)
+	io_sys, _ := filepath.join({paths.c_drive, "IO.SYS"})
 	if !os.exists(io_sys) {
 		fmt.printfln("SKIP: %s not found (user-provided MS-DOS 7.1 files required)", io_sys)
-		return
+		return 0
 	}
 
+	vol: ^fat32.Volume
 	m := new(machine.Machine)
-	if !machine.machine_init(m, 64 * 1024 * 1024) { fail("machine_init") }
-	if !machine.load_roms(&m.vm) { fail("load_roms") }
-	vol := fat32.volume_open(c_drive, 2048)
-	if vol == nil { fail("volume_open") }
+	if !machine.machine_init(m, 64 * 1024 * 1024) {
+		free(m)
+		return smoke_fail("machine_init")
+	}
+	defer {
+		machine.machine_destroy(m)
+		fat32.volume_close(vol)
+		free(m)
+	}
+	settings, _ := profile.settings_load(paths.settings)
+	machine.machine_set_cpu_mode(m, settings.cpu_mode)
+	if !machine.load_roms(&m.vm) { return smoke_fail("load_roms") }
+	vol = fat32.volume_open(paths.c_drive, 2048)
+	if vol == nil { return smoke_fail("volume_open") }
 	vol.on_fail = proc(ctx: rawptr, msg: string) {
 		fmt.printfln("disk: writes frozen: %s", msg)
 	}
@@ -79,7 +96,7 @@ main :: proc() {
 	// The very first prompt renders as "C:" only: the IO.SYS boot-logo
 	// (mode 13h) round trip swallows the "\>" glyphs. Every later prompt
 	// renders "C:\>" in full, so the canonical needle is checked after DIR.
-	if !run_until(m, BOOT_DEADLINE, "C:") { fail("no C: prompt within deadline") }
+	if !run_until(m, BOOT_DEADLINE, "C:") { return smoke_fail("no C: prompt within deadline") }
 	fmt.println("prompt reached, typing DIR")
 
 	// DIR + Enter, set-1 make/break pairs
@@ -89,14 +106,15 @@ main :: proc() {
 		step_for(m, 100 * time.Millisecond)
 	}
 	// any file we know the user placed there; COMMAND.COM must exist to boot
-	if !run_until(m, DIR_DEADLINE, "COMMAND") { fail("DIR output not found") }
-	if !run_until(m, DIR_DEADLINE, "C:\\>") { fail("no C:\\> prompt after DIR") }
+	if !run_until(m, DIR_DEADLINE, "COMMAND") { return smoke_fail("DIR output not found") }
+	if !run_until(m, DIR_DEADLINE, "C:\\>") { return smoke_fail("no C:\\> prompt after DIR") }
 	fmt.println("PASS: booted to prompt, DIR lists COMMAND, C:\\> renders")
+	return 0
 }
 
-fail :: proc(msg: string) {
+smoke_fail :: proc(msg: string) -> int {
 	fmt.printfln("FAIL: %s", msg)
-	os.exit(1)
+	return 1
 }
 
 grid_text :: proc(snap: ^vga.Text_Snapshot) -> string {

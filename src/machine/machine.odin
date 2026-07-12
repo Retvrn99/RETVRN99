@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
-import "core:fmt"
-import "core:log"
-import "core:time"
 import disk "../disk"
 import hosttime "../hosttime"
 import hv "../hv"
-import config "../vmconfig"
 import video "../vga"
+import config "../vmconfig"
+import "core:fmt"
+import "core:log"
+import "core:time"
 
 // MMIO probe zones SeaBIOS touches with no device behind them
 Mmio_Zone :: enum {
@@ -39,39 +39,41 @@ Ide_Cmd_Trace :: struct {
 }
 
 Machine :: struct {
-	bus:        Bus,
-	pic:        Pic_Pair,
-	pit:        Pit,
-	cmos:       Cmos,
-	kbd:        I8042,
-	pci:        Pci,
-	fwcfg:      Fwcfg,
-	dma:        Dma,
-	vga:        video.Vga,
-	ide:        disk.Ide,
-	fdc:        disk.Fdc,
-	has_disk:   bool,
-	vm:          hv.Vm,
-	governor:    hv.Governor,
-	idle_waiter: hosttime.Waiter,
-	last_tick:   time.Tick,
-	dbg_out:    [dynamic]u8, // SeaBIOS port 0x402 bytes; harness drains
-	mmio_seen:  [Mmio_Zone]bool, // log tolerated zones only once
-	exit_hist:  [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
-	exit_count: u64,
-	io_hist:    [IO_HISTORY]Io_Trace, // ring, io_count % IO_HISTORY
-	io_count:   u64,
-	ide_hist:   [IDE_HISTORY]Io_Trace, // ring of IDE-port accesses only
-	ide_count:  u64,
-	cmd_hist:   [IDE_HISTORY]Ide_Cmd_Trace, // ring of IDE commands
-	cmd_count:  u64,
-	inj_count:  [256]u64, // injected IRQ vectors
+	bus:             Bus,
+	pic:             Pic_Pair,
+	pit:             Pit,
+	cmos:            Cmos,
+	kbd:             I8042,
+	pci:             Pci,
+	fwcfg:           Fwcfg,
+	dma:             Dma,
+	vga:             video.Vga,
+	ide:             disk.Ide,
+	atapi:           disk.Atapi,
+	fdc:             disk.Fdc,
+	has_disk:        bool,
+	reset_requested: bool,
+	vm:              hv.Vm,
+	governor:        hv.Governor,
+	idle_waiter:     hosttime.Waiter,
+	last_tick:       time.Tick,
+	dbg_out:         [dynamic]u8, // SeaBIOS port 0x402 bytes; harness drains
+	mmio_seen:       [Mmio_Zone]bool, // log tolerated zones only once
+	exit_hist:       [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
+	exit_count:      u64,
+	io_hist:         [IO_HISTORY]Io_Trace, // ring, io_count % IO_HISTORY
+	io_count:        u64,
+	ide_hist:        [IDE_HISTORY]Io_Trace, // ring of IDE-port accesses only
+	ide_count:       u64,
+	cmd_hist:        [IDE_HISTORY]Ide_Cmd_Trace, // ring of IDE commands
+	cmd_count:       u64,
+	inj_count:       [256]u64, // injected IRQ vectors
 }
 
 machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_init(&m.bus)
-	if !hv.create(&m.vm, ram_size) { return false }
-	if !hv.governor_init(&m.governor, &m.vm, .Turbo) {
+	if !hv.create(&m.vm, ram_size) {return false}
+	if !hv.governor_init(&m.governor, &m.vm, .GSW_886) {
 		hv.destroy(&m.vm)
 		return false
 	}
@@ -91,37 +93,77 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	// romfiles: the SeaVGABIOS image must arrive through fw_cfg
 	fwcfg_add_file(&m.fwcfg, "vgaroms/vgabios-stdvga.bin", VGABIOS_IMAGE, 0x0021)
 
-	pic_h := Io_Handler{ctx = m, read = machine_pic_read, write = machine_pic_write}
+	pic_h := Io_Handler {
+		ctx   = m,
+		read  = machine_pic_read,
+		write = machine_pic_write,
+	}
 	bus_register(&m.bus, 0x20, 0x21, pic_h)
 	bus_register(&m.bus, 0xA0, 0xA1, pic_h)
 
-	pit_h := Io_Handler{ctx = m, read = machine_pit_read, write = machine_pit_write}
+	pit_h := Io_Handler {
+		ctx   = m,
+		read  = machine_pit_read,
+		write = machine_pit_write,
+	}
 	bus_register(&m.bus, 0x40, 0x43, pit_h)
-	p61_h := Io_Handler{ctx = m, read = machine_port61_read, write = machine_port61_write}
+	p61_h := Io_Handler {
+		ctx   = m,
+		read  = machine_port61_read,
+		write = machine_port61_write,
+	}
 	bus_register(&m.bus, 0x61, 0x61, p61_h)
 
-	cmos_h := Io_Handler{ctx = m, read = machine_cmos_read, write = machine_cmos_write}
+	cmos_h := Io_Handler {
+		ctx   = m,
+		read  = machine_cmos_read,
+		write = machine_cmos_write,
+	}
 	bus_register(&m.bus, 0x70, 0x71, cmos_h)
 
-	kbd_h := Io_Handler{ctx = m, read = machine_kbd_read, write = machine_kbd_write}
+	kbd_h := Io_Handler {
+		ctx   = m,
+		read  = machine_kbd_read,
+		write = machine_kbd_write,
+	}
 	bus_register(&m.bus, 0x60, 0x60, kbd_h)
 	bus_register(&m.bus, 0x64, 0x64, kbd_h)
 	bus_register(&m.bus, 0x92, 0x92, kbd_h)
 
-	dma_h := Io_Handler{ctx = m, read = machine_dma_read, write = machine_dma_write}
+	dma_h := Io_Handler {
+		ctx   = m,
+		read  = machine_dma_read,
+		write = machine_dma_write,
+	}
 	bus_register(&m.bus, 0x00, 0x0F, dma_h)
 	bus_register(&m.bus, 0x81, 0x81, dma_h)
 
-	pci_h := Io_Handler{ctx = m, read = machine_pci_read, write = machine_pci_write}
+	pci_h := Io_Handler {
+		ctx   = m,
+		read  = machine_pci_read,
+		write = machine_pci_write,
+	}
 	bus_register(&m.bus, 0xCF8, 0xCFF, pci_h)
 
-	fw_h := Io_Handler{ctx = m, read = machine_fwcfg_read, write = machine_fwcfg_write}
+	fw_h := Io_Handler {
+		ctx   = m,
+		read  = machine_fwcfg_read,
+		write = machine_fwcfg_write,
+	}
 	bus_register(&m.bus, 0x510, 0x511, fw_h)
 
-	vga_h := Io_Handler{ctx = m, read = machine_vga_read, write = machine_vga_write}
+	vga_h := Io_Handler {
+		ctx   = m,
+		read  = machine_vga_read,
+		write = machine_vga_write,
+	}
 	bus_register(&m.bus, 0x3B0, 0x3DF, vga_h)
 
-	dbg_h := Io_Handler{ctx = m, read = machine_dbg_read, write = machine_dbg_write}
+	dbg_h := Io_Handler {
+		ctx   = m,
+		read  = machine_dbg_read,
+		write = machine_dbg_write,
+	}
 	bus_register(&m.bus, 0x402, 0x402, dbg_h)
 
 	// deliberate whitelist: probed but not modeled yet
@@ -134,9 +176,8 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	machine_whitelist_range(&m.bus, 0x88, 0x8F) // DMA page registers
 	bus_whitelist(&m.bus, 0x4D0, 0x4D1) // ELCR
 	machine_init_fdc(m)
+	machine_init_atapi(m)
 	bus_whitelist(&m.bus, 0x1CE, 0x1CF) // bochs dispi probe by SeaVGABIOS bochsvga_setup
-	machine_whitelist_range(&m.bus, 0x170, 0x177) // IDE secondary channel: SeaBIOS ata_detect; absent in M1
-	bus_whitelist(&m.bus, 0x376) // IDE secondary device control (SRST/altstatus), same probe
 	machine_whitelist_range(&m.bus, 0x378, 0x37A) // LPT1 probe by SeaBIOS lpt_setup; absent
 	machine_whitelist_range(&m.bus, 0x278, 0x27A) // LPT2 probe by SeaBIOS lpt_setup; absent
 	machine_whitelist_range(&m.bus, 0x3E8, 0x3EF) // COM3 probe by SeaBIOS serial_setup; absent
@@ -153,7 +194,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	machine_whitelist_range(&m.bus, 0x300, 0x35F)
 	bus_whitelist(&m.bus, 0xA79) // ISA PnP write-data, ASPI2DOS card isolation (address port 0x279 sits in the LPT2 range above)
 	// ISA PnP read-data candidates: ASPI2DOS walks 0x20B, 0x22B, ... 0x3EB until isolation finds a card (it never will)
-	for p := u16(0x20B); p <= 0x3EB; p += 0x20 { bus_whitelist(&m.bus, p) }
+	for p := u16(0x20B); p <= 0x3EB; p += 0x20 {bus_whitelist(&m.bus, p)}
 	// PCI config mechanism #2 window, scanned by ASPI8DOS/ASPI8U2; floats on real 440BX too (mechanism #1 only)
 	machine_whitelist_range(&m.bus, 0xC000, 0xCFFF)
 
@@ -163,6 +204,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 
 machine_destroy :: proc(m: ^Machine) {
 	disk.fdc_eject_media(&m.fdc)
+	disk.atapi_eject(&m.atapi)
 	hosttime.waiter_destroy(&m.idle_waiter)
 	hv.governor_destroy(&m.governor)
 	hv.destroy(&m.vm)
@@ -183,7 +225,11 @@ machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
 	m.ide.irq_ctx = m
 	m.ide.irq = machine_irq14
 	m.has_disk = true
-	h := Io_Handler{ctx = m, read = machine_ide_read, write = machine_ide_write}
+	h := Io_Handler {
+		ctx   = m,
+		read  = machine_ide_read,
+		write = machine_ide_write,
+	}
 	bus_register(&m.bus, 0x1F0, 0x1F7, h)
 	bus_register(&m.bus, 0x3F6, 0x3F6, h)
 }
@@ -197,7 +243,11 @@ machine_init_fdc :: proc(m: ^Machine) {
 	m.fdc.dma_to_mem = machine_fdc_dma_to_mem
 	m.fdc.dma_from_mem = machine_fdc_dma_from_mem
 	m.fdc.dma_tc = machine_fdc_dma_tc
-	h := Io_Handler{ctx = m, read = machine_fdc_read, write = machine_fdc_write}
+	h := Io_Handler {
+		ctx   = m,
+		read  = machine_fdc_read,
+		write = machine_fdc_write,
+	}
 	bus_register(&m.bus, 0x3F0, 0x3F5, h) // 0x3F6 belongs to the IDE
 	bus_register(&m.bus, 0x3F7, 0x3F7, h)
 }
@@ -216,12 +266,45 @@ machine_set_cpu_mode :: proc(m: ^Machine, mode: config.Cpu_Mode) {
 	hv.governor_set_mode(&m.governor, &m.vm, mode)
 }
 
-step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
+machine_init_atapi :: proc(m: ^Machine) {
+	disk.atapi_init(&m.atapi)
+	m.atapi.irq_ctx = m
+	m.atapi.irq = machine_irq15
+	h := Io_Handler {
+		ctx   = m,
+		read  = machine_atapi_read,
+		write = machine_atapi_write,
+	}
+	bus_register(&m.bus, 0x170, 0x177, h)
+	bus_register(&m.bus, 0x376, 0x376, h)
+}
+
+machine_mount_cdrom :: proc(m: ^Machine, path: string) -> bool {
+	return disk.atapi_mount(&m.atapi, path)
+}
+
+machine_eject_cdrom :: proc(m: ^Machine) {
+	disk.atapi_eject(&m.atapi)
+}
+
+machine_cmos_export :: proc(m: ^Machine) -> [CMOS_NVRAM_SIZE]u8 {
+	return cmos_nvram_export(&m.cmos)
+}
+
+machine_cmos_import :: proc(m: ^Machine, data: []u8) -> bool {
+	return cmos_nvram_import(&m.cmos, data, u64(len(m.vm.ram)))
+}
+
+machine_reset_requested :: proc(m: ^Machine) -> bool {
+	return m != nil && m.reset_requested
+}
+
+step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 	now := time.tick_now()
 	ns := u64(time.tick_diff(m.last_tick, now))
 	m.last_tick = now
-	for _ in 0 ..< pit_advance(&m.pit, ns) { pic_raise(&m.pic, 0) }
-	for _ in 0 ..< cmos_advance(&m.cmos, ns) { pic_raise(&m.pic, 8) }
+	for _ in 0 ..< pit_advance(&m.pit, ns) {pic_raise(&m.pic, 0)}
+	for _ in 0 ..< cmos_advance(&m.cmos, ns) {pic_raise(&m.pic, 8)}
 	if pic_has_pending(&m.pic) {
 		if hv.can_inject(&m.vm) {
 			if v, ok := pic_ack(&m.pic); ok {
@@ -246,7 +329,8 @@ step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
 		return false
 	}
 	#partial switch ex.kind {
-	case .Halt: // wait for the next IRQ without burning CPU
+	case .Halt:
+		// wait for the next IRQ without burning CPU
 		hosttime.waiter_sleep(&m.idle_waiter, 200 * time.Microsecond)
 	case .Failed:
 		bus_freeze(&m.bus, ex.detail)
@@ -257,7 +341,7 @@ step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
 
 @(private = "file")
 machine_whitelist_range :: proc(b: ^Bus, first, last: u16) {
-	for p := int(first); p <= int(last); p += 1 { bus_whitelist(b, u16(p)) }
+	for p := int(first); p <= int(last); p += 1 {bus_whitelist(b, u16(p))}
 }
 
 // --- hv <-> bus glue ---
@@ -266,7 +350,12 @@ machine_whitelist_range :: proc(b: ^Bus, first, last: u16) {
 machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
 	v := bus_io_read(&m.bus, port, size)
-	t := Io_Trace{port = port, write = false, size = size, val = v}
+	t := Io_Trace {
+		port  = port,
+		write = false,
+		size  = size,
+		val   = v,
+	}
 	m.io_hist[m.io_count % IO_HISTORY] = t
 	m.io_count += 1
 	if port >= 0x1F0 && port <= 0x1F7 || port == 0x3F6 {
@@ -279,7 +368,12 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 @(private = "file")
 machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	t := Io_Trace{port = port, write = true, size = size, val = val}
+	t := Io_Trace {
+		port  = port,
+		write = true,
+		size  = size,
+		val   = val,
+	}
 	m.io_hist[m.io_count % IO_HISTORY] = t
 	m.io_count += 1
 	if port >= 0x1F0 && port <= 0x1F7 || port == 0x3F6 {
@@ -287,10 +381,16 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 		m.ide_count += 1
 	}
 	if port == 0x1F7 {
-		lba := u32(m.ide.reg_lba_lo) | u32(m.ide.reg_lba_mid) << 8 |
-			u32(m.ide.reg_lba_hi) << 16 | u32(m.ide.reg_drive & 0x0F) << 24
-		m.cmd_hist[m.cmd_count % IDE_HISTORY] = Ide_Cmd_Trace{
-			cmd = u8(val), drive = m.ide.reg_drive, count = m.ide.reg_seccount, lba = lba,
+		lba :=
+			u32(m.ide.reg_lba_lo) |
+			u32(m.ide.reg_lba_mid) << 8 |
+			u32(m.ide.reg_lba_hi) << 16 |
+			u32(m.ide.reg_drive & 0x0F) << 24
+		m.cmd_hist[m.cmd_count % IDE_HISTORY] = Ide_Cmd_Trace {
+			cmd   = u8(val),
+			drive = m.ide.reg_drive,
+			count = m.ide.reg_seccount,
+			lba   = lba,
 		}
 		m.cmd_count += 1
 	}
@@ -303,19 +403,26 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 	m := (^Machine)(ctx)
 	if !write {
-		for i in 0 ..< len(data) { data[i] = 0xFF }
+		for i in 0 ..< len(data) {data[i] = 0xFF}
 	}
 	zone, tolerated := machine_mmio_zone(gpa)
 	if tolerated {
 		if !m.mmio_seen[zone] {
 			m.mmio_seen[zone] = true
-			log.warnf("tolerated MMIO probe (%v): %s gpa=0x%08x size=%d",
-				zone, write ? "write" : "read", gpa, len(data))
+			log.warnf(
+				"tolerated MMIO probe (%v): %s gpa=0x%08x size=%d",
+				zone,
+				write ? "write" : "read",
+				gpa,
+				len(data),
+			)
 		}
 		return
 	}
-	bus_freeze(&m.bus, fmt.tprintf("unknown MMIO %s gpa=0x%x size=%d",
-		write ? "write" : "read", gpa, len(data)))
+	bus_freeze(
+		&m.bus,
+		fmt.tprintf("unknown MMIO %s gpa=0x%x size=%d", write ? "write" : "read", gpa, len(data)),
+	)
 }
 
 @(private = "file")
@@ -353,6 +460,12 @@ machine_irq14 :: proc(ctx: rawptr) {
 	pic_raise(&m.pic, 14)
 }
 
+@(private = "file")
+machine_irq15 :: proc(ctx: rawptr) {
+	m := (^Machine)(ctx)
+	pic_raise(&m.pic, 15)
+}
+
 // --- FDC / DMA channel 2 glue ---
 
 @(private = "file")
@@ -377,9 +490,10 @@ machine_fdc_dma_tc :: proc(ctx: rawptr) -> bool {
 	return m.dma.ch[2].tc
 }
 
-@(private = "file")
+@(private)
 machine_guest_reset :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
+	m.reset_requested = true
 	bus_freeze(&m.bus, "guest requested reset")
 }
 
@@ -389,14 +503,14 @@ machine_guest_reset :: proc(ctx: rawptr) {
 machine_pic_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
 	v: u32 = 0
-	for i in 0 ..< int(size) { v |= u32(pic_in(&m.pic, port + u16(i))) << (8 * uint(i)) }
+	for i in 0 ..< int(size) {v |= u32(pic_in(&m.pic, port + u16(i))) << (8 * uint(i))}
 	return v
 }
 
 @(private = "file")
 machine_pic_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	for i in 0 ..< int(size) { pic_out(&m.pic, port + u16(i), u8(val >> (8 * uint(i)))) }
+	for i in 0 ..< int(size) {pic_out(&m.pic, port + u16(i), u8(val >> (8 * uint(i))))}
 	// EOI with more IRQs queued: WHPX clears the window notification when it
 	// delivers an injection, so re-arm it here (mid-run, guest still in the
 	// handler) to get an exit at IRET instead of waiting for the vCPU pacer
@@ -409,14 +523,14 @@ machine_pic_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 machine_pit_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
 	v: u32 = 0
-	for i in 0 ..< int(size) { v |= u32(pit_in(&m.pit, port + u16(i))) << (8 * uint(i)) }
+	for i in 0 ..< int(size) {v |= u32(pit_in(&m.pit, port + u16(i))) << (8 * uint(i))}
 	return v
 }
 
 @(private = "file")
 machine_pit_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	for i in 0 ..< int(size) { pit_out(&m.pit, port + u16(i), u8(val >> (8 * uint(i)))) }
+	for i in 0 ..< int(size) {pit_out(&m.pit, port + u16(i), u8(val >> (8 * uint(i))))}
 }
 
 @(private = "file")
@@ -435,14 +549,14 @@ machine_port61_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 machine_cmos_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
 	v: u32 = 0
-	for i in 0 ..< int(size) { v |= u32(cmos_in(&m.cmos, port + u16(i))) << (8 * uint(i)) }
+	for i in 0 ..< int(size) {v |= u32(cmos_in(&m.cmos, port + u16(i))) << (8 * uint(i))}
 	return v
 }
 
 @(private = "file")
 machine_cmos_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	for i in 0 ..< int(size) { cmos_out(&m.cmos, port + u16(i), u8(val >> (8 * uint(i)))) }
+	for i in 0 ..< int(size) {cmos_out(&m.cmos, port + u16(i), u8(val >> (8 * uint(i))))}
 }
 
 @(private = "file")
@@ -461,14 +575,14 @@ machine_kbd_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 machine_dma_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
 	v: u32 = 0
-	for i in 0 ..< int(size) { v |= u32(dma_in(&m.dma, port + u16(i))) << (8 * uint(i)) }
+	for i in 0 ..< int(size) {v |= u32(dma_in(&m.dma, port + u16(i))) << (8 * uint(i))}
 	return v
 }
 
 @(private = "file")
 machine_dma_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	for i in 0 ..< int(size) { dma_out(&m.dma, port + u16(i), u8(val >> (8 * uint(i)))) }
+	for i in 0 ..< int(size) {dma_out(&m.dma, port + u16(i), u8(val >> (8 * uint(i))))}
 }
 
 @(private = "file")
@@ -499,28 +613,28 @@ machine_fwcfg_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 machine_vga_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
 	v: u32 = 0
-	for i in 0 ..< int(size) { v |= u32(video.vga_in(&m.vga, port + u16(i))) << (8 * uint(i)) }
+	for i in 0 ..< int(size) {v |= u32(video.vga_in(&m.vga, port + u16(i))) << (8 * uint(i))}
 	return v
 }
 
 @(private = "file")
 machine_vga_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	for i in 0 ..< int(size) { video.vga_out(&m.vga, port + u16(i), u8(val >> (8 * uint(i)))) }
+	for i in 0 ..< int(size) {video.vga_out(&m.vga, port + u16(i), u8(val >> (8 * uint(i))))}
 }
 
 @(private = "file")
 machine_fdc_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
 	v: u32 = 0
-	for i in 0 ..< int(size) { v |= u32(disk.fdc_in(&m.fdc, port + u16(i))) << (8 * uint(i)) }
+	for i in 0 ..< int(size) {v |= u32(disk.fdc_in(&m.fdc, port + u16(i))) << (8 * uint(i))}
 	return v
 }
 
 @(private = "file")
 machine_fdc_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	for i in 0 ..< int(size) { disk.fdc_out(&m.fdc, port + u16(i), u8(val >> (8 * uint(i)))) }
+	for i in 0 ..< int(size) {disk.fdc_out(&m.fdc, port + u16(i), u8(val >> (8 * uint(i))))}
 }
 
 @(private = "file")
@@ -533,6 +647,18 @@ machine_ide_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_ide_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	disk.ide_io_write(&m.ide, port, size, val)
+}
+
+@(private = "file")
+machine_atapi_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
+	m := (^Machine)(ctx)
+	return disk.atapi_io_read(&m.atapi, port, size)
+}
+
+@(private = "file")
+machine_atapi_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
+	m := (^Machine)(ctx)
+	disk.atapi_io_write(&m.atapi, port, size, val)
 }
 
 // SeaBIOS debug console: reads must return 0xE9 or SeaBIOS disables it

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package fat32
 
+import "base:runtime"
 import "core:fmt"
 import "core:os"
 
@@ -24,11 +25,32 @@ Pending_Delete :: struct {
 	node: ^Node,
 }
 
-journal_init :: proc(j: ^Journal) {
-	j.overlay = {}
-	j.shadow_fat = {}
-	j.orphan_data = {}
-	j.claimed = {}
+journal_init :: proc(j: ^Journal, allocator := context.allocator) {
+	j.overlay = make(map[u32][]u8, allocator)
+	j.shadow_fat = make(map[u32]u32, allocator)
+	j.orphan_data = make(map[u32][]u8, allocator)
+	j.claimed = make(map[u32]Claim, allocator)
+	j.pending_deletes = make([dynamic]Pending_Delete, allocator)
+	j.pending_extends = make([dynamic]^Node, allocator)
+}
+
+journal_destroy :: proc(j: ^Journal, allocator: runtime.Allocator) {
+	if j == nil {
+		return
+	}
+	for _, sector in j.overlay {
+		delete(sector, allocator)
+	}
+	for _, cluster in j.orphan_data {
+		delete(cluster, allocator)
+	}
+	delete(j.overlay)
+	delete(j.shadow_fat)
+	delete(j.orphan_data)
+	delete(j.claimed)
+	delete(j.pending_deletes)
+	delete(j.pending_extends)
+	j^ = {}
 }
 
 // guest view of a FAT entry: shadow first, then synthesis
@@ -74,8 +96,23 @@ volume_write :: proc(v: ^Volume, lba: u64, buf: []u8) -> bool {
 	if v.frozen {
 		return false
 	}
+	if len(buf) % SECTOR != 0 {
+		volume_fail(
+			v,
+			fmt.tprintf("protected system disk rejected an unaligned write at LBA %d", lba),
+		)
+		return false
+	}
 	n := len(buf) / SECTOR
+	decisions := make([]Protected_Write_Decision, n, context.temp_allocator)
 	for i in 0 ..< n {
+		decisions[i] = protected_system_disk_write_policy(v, lba + u64(i), buf[i * SECTOR:][:SECTOR])
+		if decisions[i] == .Reject {
+			return false
+		}
+	}
+	for i in 0 ..< n {
+		if decisions[i] == .Ignore { continue }
 		if !write_sector(v, lba + u64(i), buf[i * SECTOR:][:SECTOR]) {
 			return false
 		}
@@ -101,7 +138,7 @@ write_sector :: proc(v: ^Volume, lba: u64, sec: []u8) -> bool {
 		return false
 	}
 	if rel < geo.fat_start {
-		overlay_put(v, rel, sec) // FSInfo and friends
+		overlay_put(v, rel, sec) // validated FSInfo counters
 		return true
 	}
 	if rel < geo.data_start {
@@ -132,7 +169,7 @@ write_sector :: proc(v: ^Volume, lba: u64, sec: []u8) -> bool {
 overlay_put :: proc(v: ^Volume, rel: u32, sec: []u8) {
 	dst, ok := v.journal.overlay[rel]
 	if !ok {
-		dst = make([]u8, SECTOR)
+		dst = make([]u8, SECTOR, v.allocator)
 		v.journal.overlay[rel] = dst
 	}
 	copy(dst, sec)
@@ -212,7 +249,7 @@ extend_pending_dirs :: proc(v: ^Volume) -> bool {
 orphan_ensure :: proc(v: ^Volume, cluster: u32) -> []u8 {
 	ob, ok := v.journal.orphan_data[cluster]
 	if !ok {
-		ob = make([]u8, CLUSTER_BYTES)
+		ob = make([]u8, CLUSTER_BYTES, v.allocator)
 		v.journal.orphan_data[cluster] = ob
 	}
 	return ob

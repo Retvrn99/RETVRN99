@@ -4,12 +4,11 @@ HLE Virtual Machine built around Windows 98.
 
 License: GPL-3.0-only
 
-## Status — M1
+## Status — Windows 98 installation foundation
 
 Boots stock SeaBIOS under hardware virtualization, synthesizes a FAT32
-C: drive live from a host folder, and is ready to boot MS-DOS 7.1 to an
-interactive `C:\>` prompt in an SDL3 window (you provide the DOS system
-files — see below).
+C: drive live from a host folder, boots MS-DOS 7.1 to an interactive
+`C:\>` prompt, and exposes read-only ISO images through an ATAPI CD-ROM.
 
 ## Requirements
 
@@ -28,7 +27,8 @@ odin build src/smoke -out:smoke.exe   # headless smoke test
 ```
 
 Tests: `odin test src/<pkg> -define:ODIN_TEST_THREADS=1` for each of
-`machine`, `vga`, `hv`, `disk`, `fat32`, `host`.
+`profile`, `machine`, `vga`, `hv`, `disk`, `fat32`, `host`, `win98media`,
+and `win98prep`.
 
 ## Run
 
@@ -40,9 +40,21 @@ Tests: `odin test src/<pkg> -define:ODIN_TEST_THREADS=1` for each of
 2. `.\retvrn99.exe` — GUI with menu (Machine / Media / Debug).
    `--console` runs headless with the SeaBIOS log on stdout;
    `--no-disk` boots without the C: drive.
-   Machine → CPU Speed selects Turbo (default) or the roughly paced
-   GSW-886 mode. Both expose the same Pentium III-class CPU and 1 GHz TSC.
-3. Floppy images (1.44MB IMG) mount via Media → Mount Floppy.
+   Machine → CPU Speed selects the roughly paced GSW-886 mode (default)
+   or Turbo. Both expose the same Pentium III-class CPU and 1 GHz TSC.
+3. Floppy images (1.44MB IMG) mount via Media → Mount Floppy. ISO images
+   mount read-only via Media → Mount CD-ROM.
+4. Machine → Install Windows 98 validates a user-selected Second Edition
+   ISO in any language, stages its WIN98 flat beside `c_drive`, copies it
+   to `C:\GSWSETUP`, mounts the disc, reboots, and launches the localized
+   Setup executable with the media's MSBATCH template. Windows Setup can
+   still request user-owned licensing details; GSW guest drivers are a
+   post-install step.
+
+Runtime state lives beside `c_drive`: `settings.json` stores host-visible
+preferences and `cmos.bin` stores battery-backed guest CMOS state. The
+folder-backed system disk rejects FDISK, FORMAT, and other writes that
+would replace its synthesized partition or FAT32 layout.
 
 `smoke.exe` boots to `C:\>`, types `DIR`, and checks the output
 (skips politely when WHPX or the DOS files are missing).
