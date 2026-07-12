@@ -32,6 +32,7 @@ Machine :: struct {
 	fdc:        disk.Fdc,
 	has_disk:   bool,
 	vm:         hv.Vm,
+	throttle:   hv.Throttle,
 	last_tick:  time.Tick,
 	dbg_out:    [dynamic]u8, // SeaBIOS port 0x402 bytes; harness drains
 	mmio_seen:  [Mmio_Zone]bool, // log tolerated zones only once
@@ -165,6 +166,9 @@ step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
 	now := time.tick_now()
 	ns := u64(time.tick_diff(m.last_tick, now))
 	m.last_tick = now
+	if d := hv.throttle_deficit(&m.throttle, ns, 10_000_000); d > 0 {
+		time.sleep(time.Duration(d))
+	}
 	for _ in 0 ..< pit_advance(&m.pit, ns) { pic_raise(&m.pic, 0) }
 	if pic_has_pending(&m.pic) {
 		if hv.can_inject(&m.vm) {
