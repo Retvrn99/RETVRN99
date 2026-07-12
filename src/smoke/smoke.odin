@@ -14,6 +14,7 @@ import "core:sync"
 import "core:thread"
 import "core:time"
 import "../fat32"
+import "../hosttime"
 import "../hv"
 import "../machine"
 import "../vga"
@@ -28,6 +29,7 @@ Watchdog :: struct {
 
 BOOT_DEADLINE :: 60 * time.Second
 DIR_DEADLINE :: 15 * time.Second
+VCPU_PULSE_PERIOD :: time.Millisecond
 
 main :: proc() {
 	if !hv.available() {
@@ -55,13 +57,16 @@ main :: proc() {
 
 	wd := Watchdog{vm = &m.vm}
 	wd_thr := thread.create_and_start_with_poly_data(&wd, proc(w: ^Watchdog) {
+		waiter: hosttime.Waiter
+		hosttime.waiter_init(&waiter)
+		defer hosttime.waiter_destroy(&waiter)
 		for {
 			sync.lock(&w.mu)
 			stop := w.stop
 			sync.unlock(&w.mu)
 			if stop { return }
 			hv.cancel(w.vm)
-			time.sleep(50 * time.Millisecond)
+			hosttime.waiter_sleep(&waiter, VCPU_PULSE_PERIOD)
 		}
 	})
 	defer {

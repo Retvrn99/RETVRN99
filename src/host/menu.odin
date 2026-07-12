@@ -2,6 +2,7 @@
 package host
 
 import imgui "../../vendor_local/imgui"
+import config "../vmconfig"
 
 Menu_Action :: enum {
 	None,
@@ -9,13 +10,13 @@ Menu_Action :: enum {
 	Power_Off,
 	Mount_Floppy,
 	Eject_Floppy,
-	Toggle_Throttle,
+	Set_Cpu_Mode,
 }
 
 Menu_State :: struct {
-	show_debug:  bool, // vCPU / exit-stats panel
-	show_log:    bool, // device-log panel
-	throttle_on: bool,
+	show_debug: bool, // vCPU / exit-stats panel
+	show_log:   bool, // device-log panel
+	cpu_mode:   config.Cpu_Mode,
 }
 
 Menu_Info :: struct {
@@ -31,7 +32,17 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 	if imgui.BeginMainMenuBar() {
 		if imgui.BeginMenu("Machine") {
 			if imgui.MenuItem("Reset") { action = .Reset }
-			if imgui.MenuItemBoolPtr("Throttle 50%", nil, &st.throttle_on) { action = .Toggle_Throttle }
+			if imgui.BeginMenu("CPU Speed") {
+				if imgui.MenuItem("GSW-886", nil, st.cpu_mode == .GSW_886) {
+					st.cpu_mode = .GSW_886
+					action = .Set_Cpu_Mode
+				}
+				if imgui.MenuItem("Turbo", nil, st.cpu_mode == .Turbo) {
+					st.cpu_mode = .Turbo
+					action = .Set_Cpu_Mode
+				}
+				imgui.EndMenu()
+			}
 			imgui.Separator()
 			if imgui.MenuItem("Power Off") { action = .Power_Off }
 			imgui.EndMenu()

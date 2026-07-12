@@ -23,13 +23,15 @@ import "../vendor_local/imgui/imgui_impl_sdlrenderer3"
 import "disk"
 import "fat32"
 import "host"
+import "hosttime"
 import "hv"
 import "machine"
 import "vga"
+import "vmconfig"
 
 RAM_SIZE :: 64 * 1024 * 1024
 VOLUME_MB :: 2048
-WATCHDOG_PERIOD :: 50 * time.Millisecond
+VCPU_PULSE_PERIOD :: time.Millisecond
 SNAP_PERIOD :: 8 * time.Millisecond
 MAX_LOG_LINES :: 2000
 
@@ -39,7 +41,7 @@ Command_Kind :: enum {
 	Power_Off,
 	Mount_Floppy,
 	Eject_Floppy,
-	Toggle_Throttle,
+	Set_Cpu_Mode,
 }
 
 Command :: struct {
@@ -47,7 +49,7 @@ Command :: struct {
 	key:   [2]u8, // set-1 bytes (E0-prefixed when extended)
 	key_n: int,
 	path:  string, // Mount_Floppy; owned by the VM thread once queued
-	on:    bool, // Toggle_Throttle: absolute state from the menu checkbox
+	cpu_mode: vmconfig.Cpu_Mode, // Set_Cpu_Mode: absolute selection
 }
 
 Shared :: struct {
@@ -61,7 +63,7 @@ Shared :: struct {
 	regs_text:  string,
 }
 
-// shields the ^hv.Vm from the watchdog during destroy/reinit
+// shields the ^hv.Vm from the vCPU pacer during destroy/reinit
 Vm_Guard :: struct {
 	mu:    sync.Mutex,
 	vm:    ^hv.Vm,
@@ -75,6 +77,7 @@ Vm_Ctx :: struct {
 	bd:     disk.Block_Device,
 	attach: bool,
 	floppy: []u8, // retained copy of the mounted image so Reset keeps it in the drive
+	cpu_mode: vmconfig.Cpu_Mode,
 }
 
 main :: proc() {
@@ -114,6 +117,7 @@ gui_main :: proc(attach: bool, auto_close: int) {
 	shared.running = true
 	ctx.shared = shared
 	ctx.attach = attach
+	ctx.cpu_mode = .Turbo
 	if attach {
 		vol := fat32.volume_open(default_c_drive(), VOLUME_MB)
 		if vol == nil {
@@ -146,9 +150,9 @@ gui_main :: proc(attach: bool, auto_close: int) {
 	imgui_impl_sdlrenderer3.Init(h.ren)
 
 	vm_thr := thread.create_and_start_with_poly_data(ctx, vm_thread_proc)
-	wd_thr := thread.create_and_start_with_poly_data(&ctx.guard, watchdog_proc)
+	pacer_thr := thread.create_and_start_with_poly_data(&ctx.guard, vcpu_pacer_proc)
 
-	st: host.Menu_State
+	st := host.Menu_State{cpu_mode = ctx.cpu_mode}
 	pending: Pending_Mount
 	start := time.tick_now()
 
@@ -214,7 +218,6 @@ gui_main :: proc(attach: bool, auto_close: int) {
 		}
 		switch host.menu_draw(&st, info) {
 		case .Reset:
-			st.throttle_on = false // vm_boot clears the machine-side throttle
 			push_cmd(shared, Command{kind = .Reset})
 		case .Power_Off:
 			push_cmd(shared, Command{kind = .Power_Off})
@@ -222,8 +225,8 @@ gui_main :: proc(attach: bool, auto_close: int) {
 			sdl3.ShowOpenFileDialog(mount_dialog_cb, &pending, h.win, nil, 0, nil, false)
 		case .Eject_Floppy:
 			push_cmd(shared, Command{kind = .Eject_Floppy})
-		case .Toggle_Throttle:
-			push_cmd(shared, Command{kind = .Toggle_Throttle, on = st.throttle_on})
+		case .Set_Cpu_Mode:
+			push_cmd(shared, Command{kind = .Set_Cpu_Mode, cpu_mode = st.cpu_mode})
 		case .None:
 		}
 		imgui.Render()
@@ -242,7 +245,7 @@ gui_main :: proc(attach: bool, auto_close: int) {
 	sync.lock(&ctx.guard.mu)
 	ctx.guard.stop = true
 	sync.unlock(&ctx.guard.mu)
-	thread.join(wd_thr)
+	thread.join(pacer_thr)
 
 	imgui_impl_sdlrenderer3.Shutdown()
 	imgui_impl_sdl3.Shutdown()
@@ -293,6 +296,8 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 
 	if !vm_boot(c, m) {
 		publish_freeze(s, "machine init failed (WHPX unavailable?)", "")
+	} else {
+		vm_log(s, cpu_mode_log(c.cpu_mode))
 	}
 
 	raw: [dynamic]u8
@@ -326,7 +331,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				if vm_boot(c, m) {
 					frozen = false
 					publish_freeze(s, "", "")
-					vm_log(s, "machine: reset")
+					vm_log(s, fmt.tprintf("machine: reset (%s)", vmconfig.cpu_mode_name(c.cpu_mode)))
 				} else {
 					frozen = true
 					publish_freeze(s, "reset failed: machine init error", "")
@@ -355,10 +360,10 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				delete(c.floppy)
 				c.floppy = nil
 				vm_log(s, "floppy: ejected")
-			case .Toggle_Throttle:
-				m.throttle.enabled = cmd.on // absolute: menu state is authoritative
-				m.throttle.budget_pct = 50
-				vm_log(s, m.throttle.enabled ? "throttle: on (50%)" : "throttle: off")
+			case .Set_Cpu_Mode:
+				c.cpu_mode = cmd.cpu_mode
+				machine.machine_set_cpu_mode(m, c.cpu_mode)
+				vm_log(s, cpu_mode_log(c.cpu_mode))
 			}
 		}
 		delete(cmds)
@@ -405,6 +410,7 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 	defer sync.unlock(&c.guard.mu)
 	m^ = {}
 	if !machine.machine_init(m, RAM_SIZE) { return false }
+	machine.machine_set_cpu_mode(m, c.cpu_mode)
 	if !machine.load_roms(&m.vm) {
 		machine.machine_destroy(m)
 		return false
@@ -455,6 +461,16 @@ vm_log :: proc(s: ^Shared, msg: string) {
 	sync.unlock(&s.mu)
 }
 
+cpu_mode_log :: proc(mode: vmconfig.Cpu_Mode) -> string {
+	switch mode {
+	case .GSW_886:
+		return "cpu: GSW-886 (1 GHz TSC, approximate throughput)"
+	case .Turbo:
+		return "cpu: Turbo (1 GHz TSC, unrestricted throughput)"
+	}
+	return "cpu: unknown mode"
+}
+
 // splits drained 0x402 bytes into "seabios: " lines; s optionally mirrors
 // them into the GUI device log (nil on the console path)
 vm_drain_dbg :: proc(s: ^Shared, m: ^machine.Machine, raw: ^[dynamic]u8, line: ^[dynamic]u8) {
@@ -473,9 +489,12 @@ vm_drain_dbg :: proc(s: ^Shared, m: ^machine.Machine, raw: ^[dynamic]u8, line: ^
 	}
 }
 
-watchdog_proc :: proc(g: ^Vm_Guard) {
+vcpu_pacer_proc :: proc(g: ^Vm_Guard) {
+	waiter: hosttime.Waiter
+	hosttime.waiter_init(&waiter)
+	defer hosttime.waiter_destroy(&waiter)
 	for {
-		time.sleep(WATCHDOG_PERIOD)
+		hosttime.waiter_sleep(&waiter, VCPU_PULSE_PERIOD)
 		sync.lock(&g.mu)
 		if g.stop {
 			sync.unlock(&g.mu)
@@ -538,12 +557,12 @@ console_main :: proc(attach: bool, run_seconds: int, floppy_path: string) {
 	guard: Vm_Guard
 	guard.vm = &m.vm
 	guard.valid = true
-	wd_thr := thread.create_and_start_with_poly_data(&guard, watchdog_proc)
+	pacer_thr := thread.create_and_start_with_poly_data(&guard, vcpu_pacer_proc)
 	defer {
 		sync.lock(&guard.mu)
 		guard.stop = true
 		sync.unlock(&guard.mu)
-		thread.join(wd_thr)
+		thread.join(pacer_thr)
 	}
 
 	start := time.tick_now()

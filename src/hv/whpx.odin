@@ -40,8 +40,12 @@ whpx_create :: proc(vm: ^Vm, ram_size: int) -> bool {
 		whpx_destroy(vm)
 		return false
 	}
-	ext_exits: u64 = 0 // X64CpuidExit=0, no extended exits
+	ext_exits: u64 = 1 // CPUID exits keep the GSW-886 profile independent of the host
 	if WHvSetPartitionProperty(part, .ExtendedVmExits, &ext_exits, size_of(ext_exits)) < 0 {
+		whpx_destroy(vm)
+		return false
+	}
+	if !whpx_apply_cpu_profile(part) {
 		whpx_destroy(vm)
 		return false
 	}
@@ -213,10 +217,14 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			return Exit{kind = .Halt}
 		case .X64InterruptWindow:
 			return Exit{kind = .Interrupt_Window}
+		case .X64Cpuid:
+			if !whpx_handle_cpuid(vm, &exit_ctx.VpContext, &exit_ctx.u.CpuidAccess) {
+				return Exit{kind = .Failed, detail = "failed to apply CPUID result"}
+			}
 		case .Canceled:
 			return Exit{kind = .Canceled}
 		case .None, .UnrecoverableException, .InvalidVpRegisterValue, .UnsupportedFeature,
-		     .X64ApicEoi, .X64MsrAccess, .X64Cpuid, .Exception:
+		     .X64ApicEoi, .X64MsrAccess, .Exception:
 			return Exit{kind = .Failed, detail = fmt.tprintf("unhandled exit: %v", exit_ctx.ExitReason)}
 		case:
 			return Exit{kind = .Failed, detail = fmt.tprintf("unknown exit: %d", u32(exit_ctx.ExitReason))}

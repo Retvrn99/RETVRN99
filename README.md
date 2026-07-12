@@ -40,6 +40,8 @@ Tests: `odin test src/<pkg> -define:ODIN_TEST_THREADS=1` for each of
 2. `.\retvrn99.exe` — GUI with menu (Machine / Media / Debug).
    `--console` runs headless with the SeaBIOS log on stdout;
    `--no-disk` boots without the C: drive.
+   Machine → CPU Speed selects Turbo (default) or the roughly paced
+   GSW-886 mode. Both expose the same Pentium III-class CPU and 1 GHz TSC.
 3. Floppy images (1.44MB IMG) mount via Media → Mount Floppy.
 
 `smoke.exe` boots to `C:\>`, types `DIR`, and checks the output

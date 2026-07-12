@@ -5,7 +5,9 @@ import "core:fmt"
 import "core:log"
 import "core:time"
 import disk "../disk"
+import hosttime "../hosttime"
 import hv "../hv"
+import config "../vmconfig"
 import video "../vga"
 
 // MMIO probe zones SeaBIOS touches with no device behind them
@@ -49,9 +51,10 @@ Machine :: struct {
 	ide:        disk.Ide,
 	fdc:        disk.Fdc,
 	has_disk:   bool,
-	vm:         hv.Vm,
-	throttle:   hv.Throttle,
-	last_tick:  time.Tick,
+	vm:          hv.Vm,
+	governor:    hv.Governor,
+	idle_waiter: hosttime.Waiter,
+	last_tick:   time.Tick,
 	dbg_out:    [dynamic]u8, // SeaBIOS port 0x402 bytes; harness drains
 	mmio_seen:  [Mmio_Zone]bool, // log tolerated zones only once
 	exit_hist:  [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
@@ -68,6 +71,11 @@ Machine :: struct {
 machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_init(&m.bus)
 	if !hv.create(&m.vm, ram_size) { return false }
+	if !hv.governor_init(&m.governor, &m.vm, .Turbo) {
+		hv.destroy(&m.vm)
+		return false
+	}
+	hosttime.waiter_init(&m.idle_waiter)
 	m.vm.io_ctx = m
 	m.vm.io_read = machine_io_read
 	m.vm.io_write = machine_io_write
@@ -155,6 +163,8 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 
 machine_destroy :: proc(m: ^Machine) {
 	disk.fdc_eject_media(&m.fdc)
+	hosttime.waiter_destroy(&m.idle_waiter)
+	hv.governor_destroy(&m.governor)
 	hv.destroy(&m.vm)
 	fwcfg_destroy(&m.fwcfg)
 	bus_destroy(&m.bus)
@@ -202,13 +212,14 @@ machine_eject_floppy :: proc(m: ^Machine) {
 	disk.fdc_eject_media(&m.fdc)
 }
 
+machine_set_cpu_mode :: proc(m: ^Machine, mode: config.Cpu_Mode) {
+	hv.governor_set_mode(&m.governor, &m.vm, mode)
+}
+
 step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
 	now := time.tick_now()
 	ns := u64(time.tick_diff(m.last_tick, now))
 	m.last_tick = now
-	if d := hv.throttle_deficit(&m.throttle, ns, 10_000_000); d > 0 {
-		time.sleep(time.Duration(d))
-	}
 	for _ in 0 ..< pit_advance(&m.pit, ns) { pic_raise(&m.pic, 0) }
 	for _ in 0 ..< cmos_advance(&m.cmos, ns) { pic_raise(&m.pic, 8) }
 	if pic_has_pending(&m.pic) {
@@ -227,11 +238,16 @@ step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
 		}
 	}
 	ex := hv.run(&m.vm)
+	governor_ok := ex.kind != .Canceled || hv.governor_on_cancel(&m.governor, &m.vm)
 	m.exit_hist[m.exit_count % EXIT_HISTORY] = ex.kind
 	m.exit_count += 1
+	if !governor_ok {
+		bus_freeze(&m.bus, "GSW-886 runtime counters unavailable")
+		return false
+	}
 	#partial switch ex.kind {
 	case .Halt: // wait for the next IRQ without burning CPU
-		time.sleep(200 * time.Microsecond)
+		hosttime.waiter_sleep(&m.idle_waiter, 200 * time.Microsecond)
 	case .Failed:
 		bus_freeze(&m.bus, ex.detail)
 		return false
@@ -383,7 +399,7 @@ machine_pic_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	for i in 0 ..< int(size) { pic_out(&m.pic, port + u16(i), u8(val >> (8 * uint(i)))) }
 	// EOI with more IRQs queued: WHPX clears the window notification when it
 	// delivers an injection, so re-arm it here (mid-run, guest still in the
-	// handler) to get an exit at IRET instead of waiting for the watchdog
+	// handler) to get an exit at IRET instead of waiting for the vCPU pacer
 	if m.vm.part != nil && pic_has_pending(&m.pic) {
 		hv.request_irq_window(&m.vm, true)
 	}

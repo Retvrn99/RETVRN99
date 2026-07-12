@@ -12,17 +12,30 @@ WHV_PARTITION_HANDLE :: rawptr
 WHV_EMULATOR_HANDLE :: rawptr
 
 WHV_CAPABILITY_CODE :: enum u32 {
-	HypervisorPresent = 0x00000000,
+	HypervisorPresent       = 0x00000000,
+	ProcessorClockFrequency = 0x00001004,
 }
 
 WHV_PARTITION_PROPERTY_CODE :: enum u32 {
-	ExtendedVmExits = 0x00000001,
-	ProcessorCount  = 0x00001FFF,
+	ExtendedVmExits         = 0x00000001,
+	ProcessorClockFrequency = 0x00001007,
+	ProcessorCount          = 0x00001FFF,
 }
 
 WHV_MAP_GPA_RANGE_FLAG_READ: u32 : 0x1
 WHV_MAP_GPA_RANGE_FLAG_WRITE: u32 : 0x2
 WHV_MAP_GPA_RANGE_FLAG_EXECUTE: u32 : 0x4
+
+WHV_PROCESSOR_COUNTER_SET :: enum u32 {
+	Runtime = 0,
+}
+
+WHV_PROCESSOR_RUNTIME_COUNTERS :: struct {
+	TotalRuntime100ns:      u64,
+	HypervisorRuntime100ns: u64,
+}
+
+#assert(size_of(WHV_PROCESSOR_RUNTIME_COUNTERS) == 16)
 
 WHV_REGISTER_NAME :: enum u32 {
 	Rax                         = 0x00000000,
@@ -150,6 +163,19 @@ WHV_X64_IO_PORT_ACCESS_CONTEXT :: struct {
 
 #assert(size_of(WHV_X64_IO_PORT_ACCESS_CONTEXT) == 96)
 
+WHV_X64_CPUID_ACCESS_CONTEXT :: struct {
+	Rax:              u64,
+	Rcx:              u64,
+	Rdx:              u64,
+	Rbx:              u64,
+	DefaultResultRax: u64,
+	DefaultResultRcx: u64,
+	DefaultResultRdx: u64,
+	DefaultResultRbx: u64,
+}
+
+#assert(size_of(WHV_X64_CPUID_ACCESS_CONTEXT) == 64)
+
 // padding covers the union members we do not use (SDK: 224 total)
 WHV_RUN_VP_EXIT_CONTEXT :: struct {
 	ExitReason: WHV_RUN_VP_EXIT_REASON,
@@ -158,6 +184,7 @@ WHV_RUN_VP_EXIT_CONTEXT :: struct {
 	u:          struct #raw_union {
 		MemoryAccess: WHV_MEMORY_ACCESS_CONTEXT,
 		IoPortAccess: WHV_X64_IO_PORT_ACCESS_CONTEXT,
+		CpuidAccess:  WHV_X64_CPUID_ACCESS_CONTEXT,
 		_pad:         [176]u8,
 	},
 }
@@ -202,6 +229,7 @@ foreign whp {
 	WHvGetCapability :: proc(code: WHV_CAPABILITY_CODE, buf: rawptr, buf_size: u32, written: ^u32) -> HRESULT ---
 	WHvCreatePartition :: proc(part: ^WHV_PARTITION_HANDLE) -> HRESULT ---
 	WHvSetPartitionProperty :: proc(part: WHV_PARTITION_HANDLE, code: WHV_PARTITION_PROPERTY_CODE, buf: rawptr, buf_size: u32) -> HRESULT ---
+	WHvGetPartitionProperty :: proc(part: WHV_PARTITION_HANDLE, code: WHV_PARTITION_PROPERTY_CODE, buf: rawptr, buf_size: u32, written: ^u32) -> HRESULT ---
 	WHvSetupPartition :: proc(part: WHV_PARTITION_HANDLE) -> HRESULT ---
 	WHvMapGpaRange :: proc(part: WHV_PARTITION_HANDLE, source: rawptr, gpa: u64, size: u64, flags: u32) -> HRESULT ---
 	WHvCreateVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, flags: u32) -> HRESULT ---
@@ -209,6 +237,7 @@ foreign whp {
 	WHvCancelRunVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, flags: u32) -> HRESULT ---
 	WHvGetVirtualProcessorRegisters :: proc(part: WHV_PARTITION_HANDLE, index: u32, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT ---
 	WHvSetVirtualProcessorRegisters :: proc(part: WHV_PARTITION_HANDLE, index: u32, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT ---
+	WHvGetVirtualProcessorCounters :: proc(part: WHV_PARTITION_HANDLE, index: u32, counter_set: WHV_PROCESSOR_COUNTER_SET, buf: rawptr, buf_size: u32, written: ^u32) -> HRESULT ---
 	WHvDeletePartition :: proc(part: WHV_PARTITION_HANDLE) -> HRESULT ---
 }
 

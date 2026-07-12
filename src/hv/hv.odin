@@ -51,6 +51,14 @@ available :: proc() -> bool {
 	return whpx_available()
 }
 
+host_clock_hz :: proc() -> u64 {
+	return whpx_host_clock_hz()
+}
+
+guest_runtime_ns :: proc(vm: ^Vm) -> (u64, bool) {
+	return whpx_guest_runtime_ns(vm)
+}
+
 create :: proc(vm: ^Vm, ram_size: int) -> bool {
 	return whpx_create(vm, ram_size)
 }
