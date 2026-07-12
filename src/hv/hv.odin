@@ -17,14 +17,30 @@ Exit :: struct {
 	detail: string, // Failed only
 }
 
+Rom_Mapping :: struct {
+	gpa:  u64,
+	host: rawptr,
+	size: int,
+}
+
 Vm :: struct {
 	part:     rawptr, // WHV_PARTITION_HANDLE
 	ram:      []u8,   // 64MB, mapped at GPA 0
 	emu:      rawptr, // WHV_EMULATOR_HANDLE
+	roms:     [dynamic]Rom_Mapping, // host copies backing map_rom regions
 	io_ctx:   rawptr,
 	io_read:  proc(ctx: rawptr, port: u16, size: u8) -> u32,
 	io_write: proc(ctx: rawptr, port: u16, size: u8, val: u32),
 	mmio:     proc(ctx: rawptr, gpa: u64, write: bool, data: []u8),
+}
+
+// snapshot of the registers a freeze dump needs
+Regs :: struct {
+	rax, rbx, rcx, rdx: u64,
+	rsi, rdi, rsp, rbp: u64,
+	rip, rflags:        u64,
+	cs_sel:             u16,
+	cs_base:            u64,
 }
 
 available :: proc() -> bool {
@@ -70,4 +86,13 @@ set_realmode_entry :: proc(vm: ^Vm, cs_base: u32, ip: u16) {
 
 reg_rax :: proc(vm: ^Vm) -> u64 {
 	return whpx_reg_rax(vm)
+}
+
+// maps a Read|Execute copy of data at gpa (reset-vector alias, option ROMs)
+map_rom :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
+	return whpx_map_rom(vm, gpa, data)
+}
+
+get_regs :: proc(vm: ^Vm) -> Regs {
+	return whpx_get_regs(vm)
 }

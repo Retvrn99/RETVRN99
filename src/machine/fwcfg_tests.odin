@@ -74,6 +74,35 @@ test_fwcfg_e820_via_file_dir :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fwcfg_add_file :: proc(t: ^testing.T) {
+	f: Fwcfg
+	fwcfg_init(&f, 64 * 1024 * 1024)
+	defer fwcfg_destroy(&f)
+	blob := []u8{0x55, 0xAA, 0x03}
+	fwcfg_add_file(&f, "vgaroms/test.bin", blob, 0x0021)
+
+	fwcfg_out(&f, FWCFG_PORT_SEL, 2, FWCFG_FILE_DIR)
+	hdr: [4]u8
+	fwcfg_test_read(&f, hdr[:])
+	testing.expect_value(t, fwcfg_get_be32(hdr[:]), u32(2))
+
+	entries: [128]u8
+	fwcfg_test_read(&f, entries[:])
+	second := entries[64:]
+	testing.expect_value(t, fwcfg_get_be32(second[0:4]), u32(3))
+	testing.expect_value(t, fwcfg_get_be16(second[4:6]), u16(0x0021))
+	name := second[8:]
+	n := 0
+	for n < len(name) && name[n] != 0 { n += 1 }
+	testing.expect_value(t, string(name[:n]), "vgaroms/test.bin")
+
+	fwcfg_out(&f, FWCFG_PORT_SEL, 2, 0x0021)
+	got: [3]u8
+	fwcfg_test_read(&f, got[:])
+	testing.expect_value(t, got, [3]u8{0x55, 0xAA, 0x03})
+}
+
+@(test)
 test_fwcfg_unknown_selector :: proc(t: ^testing.T) {
 	f: Fwcfg
 	fwcfg_init(&f, 64 * 1024 * 1024)

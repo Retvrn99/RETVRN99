@@ -1,28 +1,41 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import "core:fmt"
 import "core:log"
 import "core:time"
 import disk "../disk"
 import hv "../hv"
 import video "../vga"
 
+// MMIO probe zones SeaBIOS touches with no device behind them
+Mmio_Zone :: enum {
+	Ioapic, // 0xFEC00000: IOAPIC probe
+	Lapic, // 0xFEE00000: smp_scan LAPIC pokes
+	Mmconfig, // 0xE0000000: PCIe mmconfig probe
+	Pci_Window, // 0x80000000+: BAR / option-ROM signature reads (map_pcirom)
+}
+
+EXIT_HISTORY :: 32
+
 Machine :: struct {
-	bus:       Bus,
-	pic:       Pic_Pair,
-	pit:       Pit,
-	cmos:      Cmos,
-	kbd:       I8042,
-	pci:       Pci,
-	fwcfg:     Fwcfg,
-	dma:       Dma,
-	vga:       video.Vga,
-	ide:       disk.Ide,
-	has_disk:  bool,
-	vm:        hv.Vm,
-	last_tick: time.Tick,
-	dbg_buf:   [256]u8, // SeaBIOS port 0x402 line buffer
-	dbg_len:   int,
+	bus:        Bus,
+	pic:        Pic_Pair,
+	pit:        Pit,
+	cmos:       Cmos,
+	kbd:        I8042,
+	pci:        Pci,
+	fwcfg:      Fwcfg,
+	dma:        Dma,
+	vga:        video.Vga,
+	ide:        disk.Ide,
+	has_disk:   bool,
+	vm:         hv.Vm,
+	last_tick:  time.Tick,
+	dbg_out:    [dynamic]u8, // SeaBIOS port 0x402 bytes; harness drains
+	mmio_seen:  [Mmio_Zone]bool, // log tolerated zones only once
+	exit_hist:  [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
+	exit_count: u64,
 }
 
 machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
@@ -31,6 +44,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	m.vm.io_ctx = m
 	m.vm.io_read = machine_io_read
 	m.vm.io_write = machine_io_write
+	m.vm.mmio = machine_mmio
 
 	cmos_init(&m.cmos, u64(ram_size))
 	hh, mm, ss := time.clock_from_time(time.now())
@@ -38,6 +52,9 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	i8042_init(&m.kbd, m, machine_irq1, machine_guest_reset)
 	pci_init(&m.pci)
 	fwcfg_init(&m.fwcfg, u64(ram_size))
+	// SeaBIOS vgarom_setup memsets 0xC0000 and then deploys "vgaroms/"
+	// romfiles: the SeaVGABIOS image must arrive through fw_cfg
+	fwcfg_add_file(&m.fwcfg, "vgaroms/vgabios-stdvga.bin", VGABIOS_IMAGE, 0x0021)
 
 	pic_h := Io_Handler{ctx = m, read = machine_pic_read, write = machine_pic_write}
 	bus_register(&m.bus, 0x20, 0x21, pic_h)
@@ -83,6 +100,13 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_whitelist(&m.bus, 0x4D0, 0x4D1) // ELCR
 	machine_whitelist_range(&m.bus, 0x3F0, 0x3F5) // FDC until Task 24
 	bus_whitelist(&m.bus, 0x3F7)
+	bus_whitelist(&m.bus, 0x1CE, 0x1CF) // bochs dispi probe by SeaVGABIOS bochsvga_setup
+	machine_whitelist_range(&m.bus, 0x170, 0x177) // IDE secondary channel: SeaBIOS ata_detect; absent in M1
+	bus_whitelist(&m.bus, 0x376) // IDE secondary device control (SRST/altstatus), same probe
+	machine_whitelist_range(&m.bus, 0x378, 0x37A) // LPT1 probe by SeaBIOS lpt_setup; absent
+	machine_whitelist_range(&m.bus, 0x278, 0x27A) // LPT2 probe by SeaBIOS lpt_setup; absent
+	machine_whitelist_range(&m.bus, 0x3E8, 0x3EF) // COM3 probe by SeaBIOS serial_setup; absent
+	machine_whitelist_range(&m.bus, 0x2E8, 0x2EF) // COM4 probe by SeaBIOS serial_setup; absent
 
 	m.last_tick = time.tick_now()
 	return true
@@ -92,6 +116,13 @@ machine_destroy :: proc(m: ^Machine) {
 	hv.destroy(&m.vm)
 	fwcfg_destroy(&m.fwcfg)
 	bus_destroy(&m.bus)
+	delete(m.dbg_out)
+}
+
+// moves the collected SeaBIOS debug bytes into sink and clears the buffer
+machine_drain_dbg :: proc(m: ^Machine, sink: ^[dynamic]u8) {
+	append(sink, ..m.dbg_out[:])
+	clear(&m.dbg_out)
 }
 
 // stores the device and takes over the IDE ports whitelisted at init
@@ -118,6 +149,8 @@ step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
 		}
 	}
 	ex := hv.run(&m.vm)
+	m.exit_hist[m.exit_count % EXIT_HISTORY] = ex.kind
+	m.exit_count += 1
 	#partial switch ex.kind {
 	case .Halt: // wait for the next IRQ without burning CPU
 		time.sleep(200 * time.Microsecond)
@@ -145,6 +178,42 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	bus_io_write(&m.bus, port, size, val)
+}
+
+// no MMIO devices exist yet: known probe zones read FF / swallow writes
+// (logged once); anything else freezes loudly
+@(private = "file")
+machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
+	m := (^Machine)(ctx)
+	if !write {
+		for i in 0 ..< len(data) { data[i] = 0xFF }
+	}
+	zone, tolerated := machine_mmio_zone(gpa)
+	if tolerated {
+		if !m.mmio_seen[zone] {
+			m.mmio_seen[zone] = true
+			log.warnf("tolerated MMIO probe (%v): %s gpa=0x%08x size=%d",
+				zone, write ? "write" : "read", gpa, len(data))
+		}
+		return
+	}
+	bus_freeze(&m.bus, fmt.tprintf("unknown MMIO %s gpa=0x%x size=%d",
+		write ? "write" : "read", gpa, len(data)))
+}
+
+@(private = "file")
+machine_mmio_zone :: proc(gpa: u64) -> (Mmio_Zone, bool) {
+	switch {
+	case gpa >= 0xFEC0_0000 && gpa < 0xFEC0_1000:
+		return .Ioapic, true
+	case gpa >= 0xFEE0_0000 && gpa < 0xFEE0_1000:
+		return .Lapic, true
+	case gpa >= 0xE000_0000 && gpa < 0xF000_0000:
+		return .Mmconfig, true
+	case gpa >= 0x8000_0000 && gpa < 0xFEC0_0000:
+		return .Pci_Window, true
+	}
+	return .Ioapic, false
 }
 
 // --- IRQ lines ---
@@ -308,14 +377,5 @@ machine_dbg_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 @(private = "file")
 machine_dbg_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	c := u8(val)
-	if c == '\n' || m.dbg_len == len(m.dbg_buf) {
-		log.infof("seabios: %s", string(m.dbg_buf[:m.dbg_len]))
-		m.dbg_len = 0
-		if c == '\n' { return }
-	}
-	if c != '\r' {
-		m.dbg_buf[m.dbg_len] = c
-		m.dbg_len += 1
-	}
+	append(&m.dbg_out, u8(val))
 }

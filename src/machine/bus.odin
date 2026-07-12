@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import "core:fmt"
 import "core:log"
 
 Io_Handler :: struct {
@@ -28,6 +29,7 @@ bus_whitelist :: proc(b: ^Bus, ports: ..u16) {
 }
 
 bus_freeze :: proc(b: ^Bus, msg: string) {
+	if b.frozen { return } // keep the first cause: later exits pile up behind it
 	b.frozen = true
 	b.freeze_msg = msg
 	log.errorf("VM frozen: %s", msg)
@@ -36,12 +38,12 @@ bus_freeze :: proc(b: ^Bus, msg: string) {
 bus_io_read :: proc(b: ^Bus, port: u16, size: u8) -> u32 {
 	if h, ok := b.io[port]; ok { return h.read(h.ctx, port, size) }
 	if b.whitelist[port] { return 0xFFFFFFFF >> (32 - 8*u32(size)) }
-	bus_freeze(b, "unknown port read")
+	bus_freeze(b, fmt.tprintf("unknown port read 0x%04x size %d", port, size))
 	return 0xFF
 }
 
 bus_io_write :: proc(b: ^Bus, port: u16, size: u8, val: u32) {
 	if h, ok := b.io[port]; ok { h.write(h.ctx, port, size, val); return }
 	if b.whitelist[port] { return }
-	bus_freeze(b, "unknown port write")
+	bus_freeze(b, fmt.tprintf("unknown port write 0x%04x size %d val 0x%x", port, size, val))
 }

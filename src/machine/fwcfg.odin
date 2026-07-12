@@ -74,6 +74,28 @@ fwcfg_init :: proc(f: ^Fwcfg, ram_bytes: u64) {
 	f.items[FWCFG_FILE_DIR] = dir[:]
 }
 
+// registers an extra named file: stores a copy of blob under sel and
+// appends a directory entry (count u32 BE + 64-byte entries)
+fwcfg_add_file :: proc(f: ^Fwcfg, name: string, blob: []u8, sel: u16) {
+	stored := make([]u8, len(blob))
+	copy(stored, blob)
+	f.items[sel] = stored
+
+	old := f.items[FWCFG_FILE_DIR]
+	count := u32(old[0]) << 24 | u32(old[1]) << 16 | u32(old[2]) << 8 | u32(old[3])
+	dir: [dynamic]u8
+	fwcfg_put_be32(&dir, count + 1)
+	append(&dir, ..old[4:])
+	fwcfg_put_be32(&dir, u32(len(blob)))
+	fwcfg_put_be16(&dir, sel)
+	fwcfg_put_be16(&dir, 0)
+	entry_name: [56]u8
+	copy(entry_name[:], name)
+	append(&dir, ..entry_name[:])
+	delete(old)
+	f.items[FWCFG_FILE_DIR] = dir[:]
+}
+
 fwcfg_destroy :: proc(f: ^Fwcfg) {
 	for _, blob in f.items { delete(blob) }
 	delete(f.items)

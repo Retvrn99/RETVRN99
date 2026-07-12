@@ -87,6 +87,28 @@ whpx_destroy :: proc(vm: ^Vm) {
 		win32.VirtualFree(raw_data(vm.ram), 0, win32.MEM_RELEASE)
 		vm.ram = nil
 	}
+	for rom in vm.roms {
+		win32.VirtualFree(rom.host, 0, win32.MEM_RELEASE)
+	}
+	delete(vm.roms)
+	vm.roms = nil
+}
+
+// page-aligned host copy mapped Read|Execute (no Write): guest ROM
+whpx_map_rom :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
+	size := uint(len(data) + 0xFFF) & ~uint(0xFFF)
+	mem := win32.VirtualAlloc(nil, size, win32.MEM_COMMIT | win32.MEM_RESERVE, win32.PAGE_READWRITE)
+	if mem == nil {
+		return false
+	}
+	copy(([^]u8)(mem)[:len(data)], data)
+	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
+	if WHvMapGpaRange(vm.part, mem, gpa, u64(size), flags) < 0 {
+		win32.VirtualFree(mem, 0, win32.MEM_RELEASE)
+		return false
+	}
+	append(&vm.roms, Rom_Mapping{gpa = gpa, host = mem, size = int(size)})
+	return true
 }
 
 // power-on state: real mode, CS F000:FFF0
@@ -233,6 +255,23 @@ whpx_reg_rax :: proc(vm: ^Vm) -> u64 {
 	return val.Reg64
 }
 
+whpx_get_regs :: proc(vm: ^Vm) -> Regs {
+	names := [?]WHV_REGISTER_NAME{
+		.Rax, .Rbx, .Rcx, .Rdx, .Rsi, .Rdi, .Rsp, .Rbp,
+		.Rip, .Rflags, .Cs,
+	}
+	vals: [len(names)]WHV_REGISTER_VALUE
+	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0]) < 0 {
+		return {}
+	}
+	return Regs{
+		rax = vals[0].Reg64, rbx = vals[1].Reg64, rcx = vals[2].Reg64, rdx = vals[3].Reg64,
+		rsi = vals[4].Reg64, rdi = vals[5].Reg64, rsp = vals[6].Reg64, rbp = vals[7].Reg64,
+		rip = vals[8].Reg64, rflags = vals[9].Reg64,
+		cs_sel = vals[10].Segment.Selector, cs_base = vals[10].Segment.Base,
+	}
+}
+
 // --- emulator callbacks (WinHvEmulation) ---
 
 whpx_emu_io :: proc "system" (ctx: rawptr, io: ^WHV_EMULATOR_IO_ACCESS_INFO) -> HRESULT {
@@ -248,6 +287,10 @@ whpx_emu_io :: proc "system" (ctx: rawptr, io: ^WHV_EMULATOR_IO_ACCESS_INFO) -> 
 	return 0
 }
 
+// The emulator resolves EVERY memory operand of an emulated instruction
+// through this callback — including plain guest RAM (e.g. the buffer of a
+// rep insb). Serve RAM and ROM directly; only true device MMIO reaches
+// vm.mmio.
 whpx_emu_mmio :: proc "system" (ctx: rawptr, mem: ^WHV_EMULATOR_MEMORY_ACCESS_INFO) -> HRESULT {
 	context = runtime.default_context()
 	vm := (^Vm)(ctx)
@@ -255,8 +298,25 @@ whpx_emu_mmio :: proc "system" (ctx: rawptr, mem: ^WHV_EMULATOR_MEMORY_ACCESS_IN
 	if size > len(mem.Data) {
 		size = len(mem.Data)
 	}
+	gpa := mem.GpaAddress
+	if gpa + u64(size) <= u64(len(vm.ram)) {
+		if mem.Direction == 1 {
+			copy(vm.ram[gpa:], mem.Data[:size])
+		} else {
+			copy(mem.Data[:size], vm.ram[gpa:gpa + u64(size)])
+		}
+		return 0
+	}
+	if mem.Direction == 0 {
+		for rom in vm.roms {
+			if gpa >= rom.gpa && gpa + u64(size) <= rom.gpa + u64(rom.size) {
+				copy(mem.Data[:size], ([^]u8)(rom.host)[gpa - rom.gpa:][:size])
+				return 0
+			}
+		}
+	}
 	if vm.mmio != nil {
-		vm.mmio(vm.io_ctx, mem.GpaAddress, mem.Direction == 1, mem.Data[:size])
+		vm.mmio(vm.io_ctx, gpa, mem.Direction == 1, mem.Data[:size])
 	} else if mem.Direction == 0 {
 		for i in 0 ..< size {
 			mem.Data[i] = 0xFF
