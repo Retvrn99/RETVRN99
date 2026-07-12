@@ -175,7 +175,10 @@ read_test_block_device_glue :: proc(t: ^testing.T) {
 	testing.expect(t, string(two[:SECTOR]) == string(vbr[:]))
 	testing.expect(t, string(two[SECTOR:]) == string(fsi[:]))
 
-	// writes are rejected until the Task 19 journal lands
+	// writes flow into the journal: a reserved sector reads back
 	sec: [SECTOR]u8
-	testing.expect(t, !bd.write(bd.ctx, part, sec[:]))
+	sec[0] = 0x5A
+	testing.expect(t, bd.write(bd.ctx, part + 2, sec[:]))
+	back := read_test_sector(t, v, part + 2)
+	testing.expect(t, back == sec)
 }

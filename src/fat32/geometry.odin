@@ -52,8 +52,14 @@ put32 :: proc(b: []u8, off: int, v: u32) {
 	b[off + 3] = u8(v >> 24)
 }
 
+// clean-room boot code assembled from assets/vbr/*.asm
+MBR_BIN :: #load("../../assets/vbr/mbr.bin")
+VBR_BIN :: #load("../../assets/vbr/vbr.bin")
+VBR_LBA_OFFSET :: 0x1F0 // qword: absolute LBA of IO.SYS first sector
+
 // MBR: one bootable 0x0C partition at PART_START_LBA
 make_mbr :: proc(total_sectors: u32) -> (mbr: [512]u8) {
+	copy(mbr[:446], MBR_BIN)
 	e := mbr[446:]
 	e[0] = 0x80 // bootable
 	e[1] = 0xFE // dummy CHS (LBA only)
@@ -70,8 +76,17 @@ make_mbr :: proc(total_sectors: u32) -> (mbr: [512]u8) {
 	return
 }
 
-// VBR: jump + FAT32 BPB; boot code arrives in Task 18 (int 18h stub)
-make_vbr :: proc(g: ^Geometry, total: u32) -> (vbr: [512]u8) {
+// VBR: jump + FAT32 BPB; boot code loads IO.SYS when its LBA is known,
+// otherwise an int 18h stub remains
+make_vbr :: proc(g: ^Geometry, total: u32, io_sys_lba: u64 = 0) -> (vbr: [512]u8) {
+	if io_sys_lba != 0 {
+		copy(vbr[:], VBR_BIN)
+		put32(vbr[:], VBR_LBA_OFFSET, u32(io_sys_lba))
+		put32(vbr[:], VBR_LBA_OFFSET + 4, u32(io_sys_lba >> 32))
+	} else {
+		vbr[90] = 0xCD // int 18h
+		vbr[91] = 0x18
+	}
 	vbr[0] = 0xEB
 	vbr[1] = 0x58
 	vbr[2] = 0x90
@@ -94,8 +109,6 @@ make_vbr :: proc(g: ^Geometry, total: u32) -> (vbr: [512]u8) {
 	put32(vbr[:], 67, 0x19980625) // serial
 	copy(vbr[71:82], "MATE98     ")
 	copy(vbr[82:90], "FAT32   ")
-	vbr[90] = 0xCD // int 18h
-	vbr[91] = 0x18
 	vbr[510] = 0x55
 	vbr[511] = 0xAA
 	return

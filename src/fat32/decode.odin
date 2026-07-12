@@ -1,0 +1,412 @@
+// SPDX-License-Identifier: GPL-3.0-only
+package fat32
+
+import "core:fmt"
+import "core:os"
+import "core:path/filepath"
+import "core:strings"
+import "core:unicode/utf16"
+
+// one parsed 32-byte short entry, plus its LFN name when present
+Dir_Entry :: struct {
+	short:   [11]u8,
+	attr:    u8,
+	cluster: u32,
+	size:    u32,
+	lfn:     string,
+}
+
+// diff old vs new content of one directory sector and mirror the
+// changes onto the host filesystem
+decode_dir_write :: proc(v: ^Volume, dir: ^Node, old_sec, new_sec: []u8) -> bool {
+	ta := context.temp_allocator
+	olds := parse_dir_sector(old_sec, ta)
+	news := parse_dir_sector(new_sec, ta)
+
+	round_deletes := make([dynamic]^Node, ta)
+	for &o in olds {
+		if find_entry(news[:], o.short) != nil {
+			continue
+		}
+		node := child_by_short(dir, o.short)
+		if node == nil {
+			volume_fail(v, fmt.tprintf("removed entry %s has no host node", short_to_name(o.short, ta)))
+			return false
+		}
+		append(&round_deletes, node)
+	}
+	for &n in news {
+		o := find_entry(olds[:], n.short)
+		if o == nil {
+			if !apply_create(v, dir, &n, &round_deletes) {
+				return false
+			}
+		} else {
+			if !apply_change(v, dir, o, &n) {
+				return false
+			}
+		}
+	}
+	// grace round of earlier deletes is over
+	if !volume_flush(v) {
+		return false
+	}
+	for node in round_deletes {
+		append(&v.journal.pending_deletes, Pending_Delete{node})
+	}
+	return true
+}
+
+// flush deferred deletes (rename window closed)
+volume_flush :: proc(v: ^Volume) -> bool {
+	for len(v.journal.pending_deletes) > 0 {
+		pd := v.journal.pending_deletes[0]
+		ordered_remove(&v.journal.pending_deletes, 0)
+		if !apply_delete(v, pd.node) {
+			return false
+		}
+	}
+	return true
+}
+
+@(private = "file")
+DECODE_LFN_OFFS :: [13]int{1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30}
+
+@(private = "file")
+parse_dir_sector :: proc(sec: []u8, allocator := context.allocator) -> [dynamic]Dir_Entry {
+	entries := make([dynamic]Dir_Entry, allocator)
+	lfn_units: [20 * 13]u16
+	lfn_max := 0
+	lfn_csum := u8(0)
+	for off := 0; off + 32 <= len(sec); off += 32 {
+		e := sec[off:][:32]
+		if e[0] == 0 {
+			break
+		}
+		if e[0] == 0xE5 {
+			lfn_max = 0
+			continue
+		}
+		if e[11] & 0x3F == ATTR_LFN {
+			seq := int(e[0] & 0x1F)
+			if seq >= 1 && seq <= 20 {
+				if e[0] & 0x40 != 0 {
+					lfn_max = seq
+					lfn_csum = e[13]
+				}
+				offs := DECODE_LFN_OFFS
+				for o, i in offs {
+					lfn_units[(seq - 1) * 13 + i] = u16(e[o]) | u16(e[o + 1]) << 8
+				}
+			}
+			continue
+		}
+		if e[11] & 0x08 != 0 || e[0] == '.' {
+			lfn_max = 0
+			continue // volume label / dot entries
+		}
+		de: Dir_Entry
+		copy(de.short[:], e[:11])
+		de.attr = e[11]
+		de.cluster = u32(de_rd16(e, 20)) << 16 | u32(de_rd16(e, 26))
+		de.size = de_rd32(e, 28)
+		if lfn_max > 0 && lfn_checksum(de.short) == lfn_csum {
+			units := lfn_units[:lfn_max * 13]
+			n := 0
+			for n < len(units) && units[n] != 0 && units[n] != 0xFFFF {
+				n += 1
+			}
+			buf := make([]u8, n * 4, allocator)
+			m := utf16.decode_to_utf8(buf, units[:n])
+			de.lfn = string(buf[:m])
+		}
+		lfn_max = 0
+		append(&entries, de)
+	}
+	return entries
+}
+
+@(private = "file")
+find_entry :: proc(entries: []Dir_Entry, short: [11]u8) -> ^Dir_Entry {
+	for &e in entries {
+		if e.short == short {
+			return &e
+		}
+	}
+	return nil
+}
+
+@(private = "file")
+child_by_short :: proc(dir: ^Node, short: [11]u8) -> ^Node {
+	for child in dir.children {
+		if child.short == short {
+			return child
+		}
+	}
+	return nil
+}
+
+@(private = "file")
+short_to_name :: proc(short: [11]u8, allocator := context.allocator) -> string {
+	s := short
+	base := strings.trim_right(string(s[0:8]), " ")
+	ext := strings.trim_right(string(s[8:11]), " ")
+	if ext == "" {
+		return strings.clone(base, allocator)
+	}
+	return strings.concatenate({base, ".", ext}, allocator)
+}
+
+// a create whose first cluster matches a deferred delete is a rename
+@(private = "file")
+take_deleted_by_cluster :: proc(v: ^Volume, round: ^[dynamic]^Node, cluster: u32) -> ^Node {
+	if cluster == 0 {
+		return nil
+	}
+	for pd, i in v.journal.pending_deletes {
+		if pd.node.first_cluster == cluster {
+			node := pd.node
+			ordered_remove(&v.journal.pending_deletes, i)
+			return node
+		}
+	}
+	for n, i in round^ {
+		if n.first_cluster == cluster {
+			ordered_remove(round, i)
+			return n
+		}
+	}
+	return nil
+}
+
+@(private = "file")
+claim_chain :: proc(v: ^Volume, node: ^Node, first: u32) -> bool {
+	if first == 0 {
+		return true
+	}
+	chain := volume_chain(v, first, context.temp_allocator)
+	if len(chain) == 0 {
+		volume_fail(v, fmt.tprintf("bad FAT chain at cluster %d for %s", first, node.name))
+		return false
+	}
+	geo := &v.alloc.geo
+	for c, idx in chain {
+		v.journal.claimed[c] = Claim{node, u32(idx)}
+		// dot entries written before the dir entry sit in orphan_data;
+		// promote them to the overlay now that the cluster is a dir
+		if node.is_dir {
+			if ob, ok := v.journal.orphan_data[c]; ok {
+				rel0 := geo.data_start + (c - 2) * SECTORS_PER_CLUSTER
+				for s in u32(0) ..< SECTORS_PER_CLUSTER {
+					overlay_put(v, rel0 + s, ob[int(s) * SECTOR:][:SECTOR])
+				}
+				delete_key(&v.journal.orphan_data, c)
+			}
+		}
+	}
+	node.cluster_len = u32(len(chain))
+	return true
+}
+
+@(private = "file")
+detach_child :: proc(node: ^Node) {
+	if node.parent == nil {
+		return
+	}
+	for child, i in node.parent.children {
+		if child == node {
+			ordered_remove(&node.parent.children, i)
+			return
+		}
+	}
+}
+
+@(private = "file")
+rebase_paths :: proc(node: ^Node) {
+	for child in node.children {
+		p, _ := filepath.join({node.host_path, child.name})
+		child.host_path = p
+		if child.is_dir {
+			rebase_paths(child)
+		}
+	}
+}
+
+@(private = "file")
+decode_new_node :: proc(dir: ^Node, name, path: string, e: ^Dir_Entry, is_dir: bool) -> ^Node {
+	node := new(Node)
+	node.name = strings.clone(name)
+	node.host_path = strings.clone(path)
+	node.is_dir = is_dir
+	node.size = is_dir ? 0 : u64(e.size)
+	node.first_cluster = e.cluster
+	node.parent = dir
+	node.short = e.short
+	append(&dir.children, node)
+	return node
+}
+
+@(private = "file")
+apply_create :: proc(v: ^Volume, dir: ^Node, e: ^Dir_Entry, round_deletes: ^[dynamic]^Node) -> bool {
+	ta := context.temp_allocator
+	name := e.lfn != "" ? e.lfn : short_to_name(e.short, ta)
+	path, _ := filepath.join({dir.host_path, name})
+	if node := take_deleted_by_cluster(v, round_deletes, e.cluster); node != nil {
+		if rerr := os.rename(node.host_path, path); rerr != nil {
+			volume_fail(v, fmt.tprintf("rename %s -> %s failed", node.host_path, path))
+			return false
+		}
+		detach_child(node)
+		node.parent = dir
+		append(&dir.children, node)
+		node.name = strings.clone(name)
+		node.host_path = strings.clone(path)
+		node.short = e.short
+		if node.is_dir {
+			rebase_paths(node)
+			return true
+		}
+		if u64(e.size) != node.size {
+			return apply_resize(v, node, e.size)
+		}
+		return true
+	}
+	if e.attr & ATTR_DIR != 0 {
+		if merr := os.make_directory(path); merr != nil {
+			volume_fail(v, fmt.tprintf("mkdir %s failed", path))
+			return false
+		}
+		node := decode_new_node(dir, name, path, e, true)
+		return claim_chain(v, node, e.cluster)
+	}
+	// new file: content comes from guest-written orphan clusters
+	data := make([]u8, int(e.size), ta)
+	node := decode_new_node(dir, name, path, e, false)
+	if e.cluster != 0 {
+		if !claim_chain(v, node, e.cluster) {
+			return false
+		}
+		chain := volume_chain(v, e.cluster, ta)
+		for c, idx in chain {
+			ob, ok := v.journal.orphan_data[c]
+			if !ok {
+				continue
+			}
+			base := idx * CLUSTER_BYTES
+			if base < int(e.size) {
+				copy(data[base:], ob[:min(CLUSTER_BYTES, int(e.size) - base)])
+			}
+		}
+	}
+	if werr := os.write_entire_file(path, data); werr != nil {
+		volume_fail(v, fmt.tprintf("cannot create %s", path))
+		return false
+	}
+	return true
+}
+
+@(private = "file")
+apply_change :: proc(v: ^Volume, dir: ^Node, o, n: ^Dir_Entry) -> bool {
+	if (o.attr ~ n.attr) & ATTR_DIR != 0 {
+		volume_fail(v, fmt.tprintf("entry %s changed kind", short_to_name(n.short, context.temp_allocator)))
+		return false
+	}
+	node := child_by_short(dir, n.short)
+	if node == nil {
+		volume_fail(v, fmt.tprintf("changed entry %s has no host node", short_to_name(n.short, context.temp_allocator)))
+		return false
+	}
+	if o.cluster != n.cluster {
+		if o.cluster != 0 {
+			volume_fail(v, fmt.tprintf("first cluster of %s moved %d -> %d (defrag unsupported)", node.name, o.cluster, n.cluster))
+			return false
+		}
+		node.first_cluster = n.cluster
+		if !claim_chain(v, node, n.cluster) {
+			return false
+		}
+	}
+	if !node.is_dir && u64(n.size) != node.size {
+		return apply_resize(v, node, n.size)
+	}
+	return true
+}
+
+// truncate/extend the host file; grown range is filled from orphan
+// clusters the guest already wrote (zeros elsewhere)
+@(private = "file")
+apply_resize :: proc(v: ^Volume, node: ^Node, new_size: u32) -> bool {
+	old := i64(node.size)
+	ns := i64(new_size)
+	if ns == old {
+		return true
+	}
+	f, oerr := os.open(node.host_path, {.Write})
+	if oerr != nil {
+		volume_fail(v, fmt.tprintf("cannot open %s for resize", node.host_path))
+		return false
+	}
+	terr := os.truncate(f, ns)
+	os.close(f)
+	if terr != nil {
+		volume_fail(v, fmt.tprintf("resize of %s failed", node.host_path))
+		return false
+	}
+	node.size = u64(new_size)
+	if ns < old || node.first_cluster == 0 {
+		return true
+	}
+	chain := volume_chain(v, node.first_cluster, context.temp_allocator)
+	for c, idx in chain {
+		v.journal.claimed[c] = Claim{node, u32(idx)}
+		base := i64(idx) * CLUSTER_BYTES
+		lo := max(base, old)
+		hi := min(base + CLUSTER_BYTES, ns)
+		if lo >= hi {
+			continue
+		}
+		ob, ok := v.journal.orphan_data[c]
+		if !ok {
+			continue // truncate already zero-filled the gap
+		}
+		if !host_write_at(v, node, ob[lo - base:hi - base], lo) {
+			return false
+		}
+	}
+	return true
+}
+
+// dirs must already be empty on the host or the delete fails loudly
+@(private = "file")
+apply_delete :: proc(v: ^Volume, node: ^Node) -> bool {
+	if rerr := os.remove(node.host_path); rerr != nil {
+		volume_fail(v, fmt.tprintf("cannot remove %s (directory not empty?)", node.host_path))
+		return false
+	}
+	detach_child(node)
+	for c in node.first_cluster ..< node.first_cluster + node.cluster_len {
+		if int(c) < len(v.alloc.by_cluster) && v.alloc.by_cluster[c] == node {
+			v.alloc.by_cluster[c] = nil
+		}
+	}
+	stale := make([dynamic]u32, context.temp_allocator)
+	for c, claim in v.journal.claimed {
+		if claim.node == node {
+			append(&stale, c)
+		}
+	}
+	for c in stale {
+		delete_key(&v.journal.claimed, c)
+	}
+	return true
+}
+
+@(private = "file")
+de_rd16 :: proc(b: []u8, off: int) -> u16 {
+	return u16(b[off]) | u16(b[off + 1]) << 8
+}
+
+@(private = "file")
+de_rd32 :: proc(b: []u8, off: int) -> u32 {
+	return u32(b[off]) | u32(b[off + 1]) << 8 | u32(b[off + 2]) << 16 | u32(b[off + 3]) << 24
+}

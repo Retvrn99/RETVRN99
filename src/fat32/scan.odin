@@ -18,6 +18,7 @@ Node :: struct {
 	cluster_len:   u32, // contiguous cluster count
 	parent:        ^Node,
 	mtime:         time.Time,
+	short:         [11]u8, // 8.3 name, filled once the dir is guest-managed
 }
 
 scan_tree :: proc(root_path: string) -> ^Node {

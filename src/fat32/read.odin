@@ -33,9 +33,14 @@ read_sector :: proc(v: ^Volume, lba: u64, out: []u8) -> bool {
 		return true
 	}
 	rel := u32(rel64)
+	// guest-written sectors win over synthesis
+	if sec, ok := v.journal.overlay[rel]; ok {
+		copy(out, sec)
+		return true
+	}
 	switch rel {
 	case 0, 6:
-		vbr := make_vbr(geo, geo.total_sectors)
+		vbr := make_vbr(geo, geo.total_sectors, v.io_sys_lba)
 		copy(out, vbr[:])
 		return true
 	case 1, 7:
@@ -47,30 +52,55 @@ read_sector :: proc(v: ^Volume, lba: u64, out: []u8) -> bool {
 		return true // rest of the reserved area
 	}
 	if rel < geo.data_start {
-		fat_sector(&v.alloc, (rel - geo.fat_start) % geo.sectors_per_fat, out)
+		volume_fat_sector(v, (rel - geo.fat_start) % geo.sectors_per_fat, out)
 		return true
 	}
 	// data area: map the sector to its owning node
 	di := rel - geo.data_start
 	cluster := di / SECTORS_PER_CLUSTER + 2
 	soff := di % SECTORS_PER_CLUSTER
-	node := cluster < u32(len(v.alloc.by_cluster)) ? v.alloc.by_cluster[cluster] : nil
-	if node == nil {
-		return true // free cluster; journal overlay arrives in Task 19
+	node: ^Node
+	index: u32
+	if claim, ok := v.journal.claimed[cluster]; ok {
+		node, index = claim.node, claim.index
+	} else if cluster < u32(len(v.alloc.by_cluster)) && v.alloc.by_cluster[cluster] != nil {
+		node = v.alloc.by_cluster[cluster]
+		index = cluster - node.first_cluster
 	}
-	if node.is_dir {
-		tmp: [CLUSTER_BYTES]u8
-		dir_cluster_data(&v.alloc, node, cluster - node.first_cluster, tmp[:])
-		copy(out, tmp[int(soff) * SECTOR:][:SECTOR])
+	if node == nil {
+		if ob, ok := v.journal.orphan_data[cluster]; ok {
+			copy(out, ob[int(soff) * SECTOR:][:SECTOR])
+		}
 		return true
 	}
-	return read_file_sector(v, node, cluster, soff, out)
+	if node.is_dir {
+		// guest-managed dir sectors live in the overlay (already checked)
+		if _, claimed := v.journal.claimed[cluster]; !claimed {
+			tmp: [CLUSTER_BYTES]u8
+			dir_cluster_data(&v.alloc, node, index, tmp[:])
+			copy(out, tmp[int(soff) * SECTOR:][:SECTOR])
+		}
+		return true
+	}
+	if !read_file_sector(v, node, index, soff, out) {
+		return false
+	}
+	// bytes past EOF the guest already wrote but the dir entry has not confirmed
+	if ob, ok := v.journal.orphan_data[cluster]; ok {
+		off := u64(index) * CLUSTER_BYTES + u64(soff) * SECTOR
+		for i in 0 ..< SECTOR {
+			if off + u64(i) >= node.size {
+				out[i] = ob[int(soff) * SECTOR + i]
+			}
+		}
+	}
+	return true
 }
 
 // short reads (EOF inside the cluster) stay zero padded
 @(private = "file")
-read_file_sector :: proc(v: ^Volume, node: ^Node, cluster: u32, soff: u32, out: []u8) -> bool {
-	offset := i64(cluster - node.first_cluster) * CLUSTER_BYTES + i64(soff) * SECTOR
+read_file_sector :: proc(v: ^Volume, node: ^Node, cluster_index: u32, soff: u32, out: []u8) -> bool {
+	offset := i64(cluster_index) * CLUSTER_BYTES + i64(soff) * SECTOR
 	if offset >= i64(node.size) {
 		return true
 	}
@@ -91,11 +121,4 @@ read_file_sector :: proc(v: ^Volume, node: ^Node, cluster: u32, soff: u32, out: 
 		}
 	}
 	return true
-}
-
-@(private = "file")
-volume_fail :: proc(v: ^Volume, msg: string) {
-	if v.on_fail != nil {
-		v.on_fail(v.fail_ctx, msg)
-	}
 }
