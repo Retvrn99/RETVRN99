@@ -2,8 +2,8 @@
 package main
 
 // GUI by default: SDL3 window + ImGui menu, with the machine on its own
-// thread. --console keeps the Phase D harness (SeaBIOS POST on stdout) for
-// the smoke test. --auto-close:N closes the GUI after N seconds.
+// thread. --console runs a headless harness (SeaBIOS POST on stdout) for
+// boot debugging. --auto-close:N closes the GUI after N seconds.
 
 import "base:runtime"
 import "core:c"
@@ -47,6 +47,7 @@ Command :: struct {
 	key:   [2]u8, // set-1 bytes (E0-prefixed when extended)
 	key_n: int,
 	path:  string, // Mount_Floppy; owned by the VM thread once queued
+	on:    bool, // Toggle_Throttle: absolute state from the menu checkbox
 }
 
 Shared :: struct {
@@ -81,14 +82,12 @@ main :: proc() {
 
 	console := false
 	attach := true
-	probe_keys := false
 	auto_close := -1
 	run_seconds := RUN_SECONDS
 	floppy_path := ""
 	for a in os.args[1:] {
 		if a == "--console" { console = true }
 		if a == "--no-disk" { attach = false }
-		if a == "--probe-keys" { probe_keys = true }
 		if strings.has_prefix(a, "--auto-close:") {
 			auto_close, _ = strconv.parse_int(a[len("--auto-close:"):])
 		}
@@ -101,7 +100,7 @@ main :: proc() {
 	}
 
 	if console {
-		console_main(attach, run_seconds, probe_keys, floppy_path)
+		console_main(attach, run_seconds, floppy_path)
 		return
 	}
 	gui_main(attach, auto_close)
@@ -120,6 +119,11 @@ gui_main :: proc(attach: bool, auto_close: int) {
 		if vol == nil {
 			fmt.eprintfln("volume_open failed: %s", default_c_drive())
 			os.exit(1)
+		}
+		// surface write freezes in the device log; the volume stays read-only
+		vol.fail_ctx = shared
+		vol.on_fail = proc(ctx: rawptr, msg: string) {
+			vm_log((^Shared)(ctx), fmt.tprintf("disk: writes frozen: %s", msg))
 		}
 		ctx.bd = fat32.volume_block_device(vol)
 		fmt.printfln("disk: %s as %dMB FAT32 volume", default_c_drive(), VOLUME_MB)
@@ -161,7 +165,9 @@ gui_main :: proc(attach: bool, auto_close: int) {
 			case .QUIT:
 				set_running(shared, false)
 			case .KEY_DOWN, .KEY_UP:
-				if io.WantCaptureKeyboard { continue }
+				// releases always reach the guest: swallowing a break code
+				// while ImGui captures the keyboard leaves a stuck key
+				if ev.key.down && io.WantCaptureKeyboard { continue }
 				if s, ok := host.scancode_to_set1(ev.key.scancode); ok {
 					buf, n := host.set1_bytes(s, ev.key.down)
 					push_cmd(shared, Command{kind = .Key, key = buf, key_n = n})
@@ -208,6 +214,7 @@ gui_main :: proc(attach: bool, auto_close: int) {
 		}
 		switch host.menu_draw(&st, info) {
 		case .Reset:
+			st.throttle_on = false // vm_boot clears the machine-side throttle
 			push_cmd(shared, Command{kind = .Reset})
 		case .Power_Off:
 			push_cmd(shared, Command{kind = .Power_Off})
@@ -216,12 +223,13 @@ gui_main :: proc(attach: bool, auto_close: int) {
 		case .Eject_Floppy:
 			push_cmd(shared, Command{kind = .Eject_Floppy})
 		case .Toggle_Throttle:
-			push_cmd(shared, Command{kind = .Toggle_Throttle})
+			push_cmd(shared, Command{kind = .Toggle_Throttle, on = st.throttle_on})
 		case .None:
 		}
 		imgui.Render()
 		imgui_impl_sdlrenderer3.RenderDrawData(imgui.GetDrawData(), h.ren)
 		sdl3.RenderPresent(h.ren)
+		if !h.vsync { time.sleep(8 * time.Millisecond) } // no vsync: pace manually
 
 		free_all(context.temp_allocator)
 
@@ -348,7 +356,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				c.floppy = nil
 				vm_log(s, "floppy: ejected")
 			case .Toggle_Throttle:
-				m.throttle.enabled = !m.throttle.enabled
+				m.throttle.enabled = cmd.on // absolute: menu state is authoritative
 				m.throttle.budget_pct = 50
 				vm_log(s, m.throttle.enabled ? "throttle: on (50%)" : "throttle: off")
 			}
@@ -428,6 +436,7 @@ format_regs :: proc(r: hv.Regs, m: ^machine.Machine) -> string {
 	fmt.sbprintfln(&b, "CS=%04x (base %08x) RIP=%08x RFLAGS=%08x", r.cs_sel, r.cs_base, r.rip, r.rflags)
 	fmt.sbprintfln(&b, "RAX=%08x RBX=%08x RCX=%08x RDX=%08x", r.rax, r.rbx, r.rcx, r.rdx)
 	fmt.sbprintfln(&b, "RSI=%08x RDI=%08x RSP=%08x RBP=%08x", r.rsi, r.rdi, r.rsp, r.rbp)
+	fmt.sbprintfln(&b, "SS=%04x (base %08x) DS=%04x ES=%04x", r.ss_sel, r.ss_base, r.ds_sel, r.es_sel)
 	count := int(min(m.exit_count, u64(machine.EXIT_HISTORY)))
 	fmt.sbprintf(&b, "last %d exits:", count)
 	for i in 0 ..< count {
@@ -446,6 +455,8 @@ vm_log :: proc(s: ^Shared, msg: string) {
 	sync.unlock(&s.mu)
 }
 
+// splits drained 0x402 bytes into "seabios: " lines; s optionally mirrors
+// them into the GUI device log (nil on the console path)
 vm_drain_dbg :: proc(s: ^Shared, m: ^machine.Machine, raw: ^[dynamic]u8, line: ^[dynamic]u8) {
 	clear(raw)
 	machine.machine_drain_dbg(m, raw)
@@ -453,7 +464,7 @@ vm_drain_dbg :: proc(s: ^Shared, m: ^machine.Machine, raw: ^[dynamic]u8, line: ^
 		switch ch {
 		case '\n':
 			fmt.printfln("seabios: %s", string(line[:]))
-			vm_log(s, fmt.tprintf("seabios: %s", string(line[:])))
+			if s != nil { vm_log(s, fmt.tprintf("seabios: %s", string(line[:]))) }
 			clear(line)
 		case '\r':
 		case:
@@ -475,24 +486,12 @@ watchdog_proc :: proc(g: ^Vm_Guard) {
 	}
 }
 
-// --- console harness (Phase D, --console) ---
+// --- console harness (--console) ---
 
 RUN_SECONDS :: 60
 VGA_PERIOD :: 500 * time.Millisecond
-CONSOLE_WATCHDOG_PERIOD :: 100 * time.Millisecond
 
-// A guest that stops doing I/O never leaves WHvRunVirtualProcessor;
-// periodic cancels keep the clock and the time cap alive.
-console_watchdog_stop: bool
-
-console_watchdog :: proc(vm: ^hv.Vm) {
-	for !console_watchdog_stop {
-		time.sleep(CONSOLE_WATCHDOG_PERIOD)
-		hv.cancel(vm)
-	}
-}
-
-console_main :: proc(attach: bool, run_seconds: int, probe_keys: bool, floppy_path: string) {
+console_main :: proc(attach: bool, run_seconds: int, floppy_path: string) {
 	m := new(machine.Machine)
 	if !machine.machine_init(m, RAM_SIZE) {
 		fmt.eprintln("machine_init failed (WHPX unavailable?)")
@@ -509,6 +508,9 @@ console_main :: proc(attach: bool, run_seconds: int, probe_keys: bool, floppy_pa
 		if vol == nil {
 			fmt.eprintfln("volume_open failed: %s", path)
 			os.exit(1)
+		}
+		vol.on_fail = proc(ctx: rawptr, msg: string) {
+			fmt.printfln("disk: writes frozen: %s", msg)
 		}
 		machine.machine_attach_disk(m, fat32.volume_block_device(vol))
 		fmt.printfln("disk: %s as %dMB FAT32 volume", path, VOLUME_MB)
@@ -531,8 +533,18 @@ console_main :: proc(attach: bool, run_seconds: int, probe_keys: bool, floppy_pa
 		}
 	}
 
-	thread.create_and_start_with_poly_data(&m.vm, console_watchdog)
-	defer console_watchdog_stop = true
+	// a guest that stops doing I/O never leaves WHvRunVirtualProcessor;
+	// periodic cancels keep the clock and the time cap alive
+	guard: Vm_Guard
+	guard.vm = &m.vm
+	guard.valid = true
+	wd_thr := thread.create_and_start_with_poly_data(&guard, watchdog_proc)
+	defer {
+		sync.lock(&guard.mu)
+		guard.stop = true
+		sync.unlock(&guard.mu)
+		thread.join(wd_thr)
+	}
 
 	start := time.tick_now()
 	last_vga := start
@@ -542,28 +554,10 @@ console_main :: proc(attach: bool, run_seconds: int, probe_keys: bool, floppy_pa
 	line: [dynamic]u8
 	iterations := 0
 
-	// --probe-keys: press Enter, then type "ver" + Enter, to prove the prompt is live
-	enter := []u8{0x1C, 0x9C}
-	script := []u8{0x2F, 0xAF, 0x12, 0x92, 0x13, 0x93, 0x1C, 0x9C}
-	enter_sent := !probe_keys
-	script_sent := !probe_keys
-	enter_at := time.Duration(max(run_seconds / 4, 1)) * time.Second
-	script_at := time.Duration(max(run_seconds - 10, run_seconds / 2)) * time.Second
-
 	for {
 		alive := machine.step(m)
 		iterations += 1
-		if !enter_sent && time.tick_diff(start, time.tick_now()) >= enter_at {
-			enter_sent = true
-			fmt.printfln("[%.0fs] injecting key: <enter>", time.duration_seconds(time.tick_since(start)))
-			for b in enter { machine.i8042_key(&m.kbd, b) }
-		}
-		if !script_sent && time.tick_diff(start, time.tick_now()) >= script_at {
-			script_sent = true
-			fmt.printfln("[%.0fs] injecting keys: ver<enter>", time.duration_seconds(time.tick_since(start)))
-			for b in script { machine.i8042_key(&m.kbd, b) }
-		}
-		drain_dbg(m, &raw, &line)
+		vm_drain_dbg(nil, m, &raw, &line)
 		now := time.tick_now()
 		if !alive {
 			flush_partial(&line)
@@ -592,22 +586,6 @@ console_main :: proc(attach: bool, run_seconds: int, probe_keys: bool, floppy_pa
 	}
 }
 
-// splits drained 0x402 bytes into "seabios: " lines
-drain_dbg :: proc(m: ^machine.Machine, raw: ^[dynamic]u8, line: ^[dynamic]u8) {
-	clear(raw)
-	machine.machine_drain_dbg(m, raw)
-	for c in raw {
-		switch c {
-		case '\n':
-			fmt.printfln("seabios: %s", string(line[:]))
-			clear(line)
-		case '\r':
-		case:
-			append(line, c)
-		}
-	}
-}
-
 flush_partial :: proc(line: ^[dynamic]u8) {
 	if len(line) > 0 {
 		fmt.printfln("seabios: %s", string(line[:]))
@@ -632,17 +610,7 @@ print_grid :: proc(snap: vga.Text_Snapshot) {
 
 dump_state :: proc(m: ^machine.Machine) {
 	r := hv.get_regs(&m.vm)
-	fmt.printfln("regs: CS=%04x (base %08x) RIP=%08x RFLAGS=%08x", r.cs_sel, r.cs_base, r.rip, r.rflags)
-	fmt.printfln("      RAX=%08x RBX=%08x RCX=%08x RDX=%08x", r.rax, r.rbx, r.rcx, r.rdx)
-	fmt.printfln("      RSI=%08x RDI=%08x RSP=%08x RBP=%08x", r.rsi, r.rdi, r.rsp, r.rbp)
-	fmt.printfln("      SS=%04x (base %08x) DS=%04x ES=%04x", r.ss_sel, r.ss_base, r.ds_sel, r.es_sel)
-	count := int(min(m.exit_count, u64(machine.EXIT_HISTORY)))
-	fmt.printf("last %d exits:", count)
-	for i in 0 ..< count {
-		idx := (m.exit_count - u64(count) + u64(i)) % machine.EXIT_HISTORY
-		fmt.printf(" %v", m.exit_hist[idx])
-	}
-	fmt.println()
+	fmt.println(format_regs(r, m))
 	nio := int(min(m.io_count, u64(machine.IO_HISTORY)))
 	fmt.printf("last %d io:", nio)
 	for i in 0 ..< nio {

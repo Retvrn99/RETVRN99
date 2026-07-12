@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package disk
 
-// Subconjunto del 82077AA que usa SeaBIOS (dev/seabios/src/hw/floppy.c).
+// Subset of the 82077AA used by SeaBIOS (upstream src/hw/floppy.c,
+// https://github.com/coreboot/seabios).
 // Ports 0x3F0-0x3F5 and 0x3F7; READ/WRITE execution is synchronous via
-// callbacks de DMA canal 2 que instala machine.
+// DMA channel 2 callbacks installed by machine.
 
 FDC_MSR_RQM :: 0x80
 FDC_MSR_DIO :: 0x40
@@ -45,11 +46,11 @@ Fdc :: struct {
 	pcn:          u8,
 	int_pending:  bool,
 	int_st0:      u8,
-	reset_sense:  int, // SENSE INTERRUPT pendientes tras reset (sondeo de 4 unidades)
+	reset_sense:  int, // SENSE INTERRUPTs pending after reset (4-drive poll)
 	// IRQ6 toward the PIC
 	irq:          proc(ctx: rawptr),
 	irq_ctx:      rawptr,
-	// DMA canal 2: instalado por machine para no importar ese paquete
+	// DMA channel 2: installed by machine to avoid importing that package
 	dma_to_mem:   proc(ctx: rawptr, data: []u8),
 	dma_from_mem: proc(ctx: rawptr, buf: []u8) -> int,
 	dma_tc:       proc(ctx: rawptr) -> bool,
@@ -99,11 +100,11 @@ fdc_out :: proc(f: ^Fdc, port: u16, v: u8) {
 		} else if old & FDC_DOR_RESET == 0 {
 			fdc_reset(f)
 		}
-	case 0x3F4: // DSR: bit7 = reset por software, se autolimpia
+	case 0x3F4: // DSR: bit7 = software reset, self-clearing
 		if v & 0x80 != 0 && f.dor & FDC_DOR_RESET != 0 { fdc_reset(f) }
 	case 0x3F5:
 		fdc_fifo_write(f, v)
-	case 0x3F7: // CCR: tasa de datos
+	case 0x3F7: // CCR: data rate
 		f.ccr = v
 	}
 }
@@ -116,10 +117,10 @@ fdc_in :: proc(f: ^Fdc, port: u16) -> u8 {
 		return fdc_msr(f)
 	case 0x3F5:
 		return fdc_fifo_read(f)
-	case 0x3F7: // DIR: bit7 = cambio de medio
+	case 0x3F7: // DIR: bit7 = media change
 		return f.dskchg ? 0x80 : 0x00
 	}
-	return 0xFF // SRA/SRB/TDR sin modelar
+	return 0xFF // SRA/SRB/TDR not modeled
 }
 
 @(private = "file")
@@ -138,16 +139,16 @@ fdc_msr :: proc(f: ^Fdc) -> u8 {
 	return FDC_MSR_RQM
 }
 
-// numero de parametros; -1 = comando invalido
+// parameter count; -1 = invalid command
 @(private = "file")
 fdc_param_count :: proc(cmd: u8) -> int {
-	if cmd == 0x10 { return 0 } // VERSION no admite mascara de bits
+	if cmd == 0x10 { return 0 } // VERSION takes no bit mask
 	switch cmd & 0x1F {
 	case 0x03: return 2 // SPECIFY
 	case 0x07: return 1 // RECALIBRATE
 	case 0x08: return 0 // SENSE INTERRUPT
 	case 0x0F: return 2 // SEEK
-	case 0x06: return 8 // READ (MT/MFM/SK enmascarados)
+	case 0x06: return 8 // READ (MT/MFM/SK masked off)
 	case 0x05: return 8 // WRITE
 	case 0x0A: return 1 // READ ID
 	}
@@ -175,7 +176,7 @@ fdc_fifo_write :: proc(f: ^Fdc, v: u8) {
 		f.params[f.params_got] = v
 		f.params_got += 1
 		if f.params_got >= f.params_need { fdc_execute(f) }
-	case .Exec, .Result: // escritura fuera de fase: se ignora
+	case .Exec, .Result: // out-of-phase write: ignored
 	}
 }
 
@@ -211,7 +212,7 @@ fdc_execute :: proc(f: ^Fdc) {
 	switch {
 	case f.cmd == 0x10: // VERSION
 		fdc_finish_result(f, []u8{FDC_VERSION_82077}, false)
-	case f.cmd & 0x1F == 0x03: // SPECIFY: tiempos ignorados
+	case f.cmd & 0x1F == 0x03: // SPECIFY: timings ignored
 		f.phase = .Idle
 	case f.cmd & 0x1F == 0x07: // RECALIBRATE
 		f.pcn = 0

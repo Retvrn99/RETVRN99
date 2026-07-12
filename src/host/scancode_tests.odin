@@ -34,7 +34,7 @@ host_test_set1_extended_arrows :: proc(t: ^testing.T) {
 
 @(test)
 host_test_set1_ctrl_pair :: proc(t: ^testing.T) {
-	// LCtrl y RCtrl comparten código; solo RCtrl lleva E0
+	// LCtrl and RCtrl share a code; only RCtrl carries E0
 	l, _ := scancode_to_set1(.LCTRL)
 	r, _ := scancode_to_set1(.RCTRL)
 	testing.expect_value(t, l.code, u8(0x1D))
@@ -45,13 +45,13 @@ host_test_set1_ctrl_pair :: proc(t: ^testing.T) {
 
 @(test)
 host_test_set1_keypad_vs_nav :: proc(t: ^testing.T) {
-	// Supr del bloque de navegación es E0 53; KP_PERIOD es 53 sin prefijo
+	// Delete in the navigation block is E0 53; KP_PERIOD is 53 without prefix
 	del, _ := scancode_to_set1(.DELETE)
 	kp, _ := scancode_to_set1(.KP_PERIOD)
 	testing.expect(t, del.ext)
 	testing.expect(t, !kp.ext)
 	testing.expect_value(t, del.code, kp.code)
-	// Intro del teclado numérico: E0 1C
+	// Keypad Enter: E0 1C
 	kpe, _ := scancode_to_set1(.KP_ENTER)
 	testing.expect(t, kpe.ext)
 	testing.expect_value(t, kpe.code, u8(0x1C))

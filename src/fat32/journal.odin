@@ -11,7 +11,8 @@ Journal :: struct {
 	orphan_data:     map[u32][]u8, // cluster -> 4096B
 	// guest-allocated clusters adopted by decode (may be non-contiguous)
 	claimed:         map[u32]Claim,
-	pending_deletes: [dynamic]Pending_Delete, // deferred one decode round
+	pending_deletes: [dynamic]Pending_Delete, // deferred until the chain is freed
+	pending_extends: [dynamic]^Node, // dirs whose FAT chain changed mid-update
 }
 
 Claim :: struct {
@@ -104,8 +105,7 @@ write_sector :: proc(v: ^Volume, lba: u64, sec: []u8) -> bool {
 		return true
 	}
 	if rel < geo.data_start {
-		write_fat_sector(v, rel, sec)
-		return true
+		return write_fat_sector(v, rel, sec)
 	}
 	di := rel - geo.data_start
 	cluster := di / SECTORS_PER_CLUSTER + 2
@@ -140,7 +140,7 @@ overlay_put :: proc(v: ^Volume, rel: u32, sec: []u8) {
 
 // record every entry whose guest value differs from the synthesized one
 @(private = "file")
-write_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) {
+write_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) -> bool {
 	geo := &v.alloc.geo
 	overlay_put(v, rel, sec)
 	base := ((rel - geo.fat_start) % geo.sectors_per_fat) * 128
@@ -149,8 +149,63 @@ write_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) {
 		raw := u32(sec[i * 4]) | u32(sec[i * 4 + 1]) << 8 | u32(sec[i * 4 + 2]) << 16 | u32(sec[i * 4 + 3]) << 24
 		if raw & 0x0FFFFFFF != volume_fat_entry(v, cluster) & 0x0FFFFFFF {
 			v.journal.shadow_fat[cluster] = raw
+			fat_note_dir_change(v, cluster)
 		}
 	}
+	if !extend_pending_dirs(v) {
+		return false
+	}
+	// a freed chain is the commit point of a guest delete
+	return volume_flush(v)
+}
+
+// a FAT entry inside a directory's chain changed: the dir may have grown
+@(private = "file")
+fat_note_dir_change :: proc(v: ^Volume, cluster: u32) {
+	node: ^Node
+	if claim, ok := v.journal.claimed[cluster]; ok {
+		node = claim.node
+	} else if cluster < u32(len(v.alloc.by_cluster)) {
+		node = v.alloc.by_cluster[cluster]
+	}
+	if node == nil || !node.is_dir {
+		return
+	}
+	for d in v.journal.pending_extends {
+		if d == node {
+			return
+		}
+	}
+	append(&v.journal.pending_extends, node)
+}
+
+// claim clusters newly linked into a directory's chain so entry writes
+// there decode instead of landing silently in orphan_data
+@(private = "file")
+extend_pending_dirs :: proc(v: ^Volume) -> bool {
+	i := 0
+	for i < len(v.journal.pending_extends) {
+		node := v.journal.pending_extends[i]
+		if volume_fat_entry(v, node.first_cluster) & 0x0FFFFFFF == 0 {
+			ordered_remove(&v.journal.pending_extends, i) // chain freed: a delete, not growth
+			continue
+		}
+		chain := volume_chain(v, node.first_cluster, context.temp_allocator)
+		if len(chain) == 0 {
+			i += 1 // chain mid-update: retry after the next FAT write
+			continue
+		}
+		if u32(len(chain)) > node.cluster_len {
+			if _, claimed := v.journal.claimed[node.first_cluster]; !claimed {
+				snapshot_dir(v, node) // synthesized content must be diffable first
+			}
+			if !claim_chain(v, node, node.first_cluster) {
+				return false
+			}
+		}
+		ordered_remove(&v.journal.pending_extends, i)
+	}
+	return true
 }
 
 @(private = "file")
@@ -216,14 +271,23 @@ snapshot_dir :: proc(v: ^Volume, dir: ^Node) {
 	}
 }
 
-@(private = "file")
+@(private)
 write_dir_sector :: proc(v: ^Volume, dir: ^Node, rel: u32, sec: []u8) -> bool {
+	// earlier sectors of the same cluster feed the LFN carry state, so a
+	// name whose entries straddle a sector boundary still decodes
+	soff := int((rel - v.alloc.geo.data_start) % SECTORS_PER_CLUSTER)
+	prefix := make([]u8, soff * SECTOR, context.temp_allocator)
+	for s in 0 ..< soff {
+		if psec, ok := v.journal.overlay[rel - u32(soff - s)]; ok {
+			copy(prefix[s * SECTOR:][:SECTOR], psec)
+		}
+	}
 	old: [SECTOR]u8
 	if prev, ok := v.journal.overlay[rel]; ok {
 		copy(old[:], prev)
 	}
 	overlay_put(v, rel, sec)
-	return decode_dir_write(v, dir, old[:], sec)
+	return decode_dir_write(v, dir, prefix, old[:], sec)
 }
 
 host_write_at :: proc(v: ^Volume, node: ^Node, data: []u8, offset: i64) -> bool {

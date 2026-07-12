@@ -57,7 +57,8 @@ assign :: proc(a: ^Allocation, node: ^Node, nbytes: u64) {
 	a.next_free += n
 }
 
-// Directory byte size rounded up to a whole cluster; consumed by Task 16 synthesis too:
+// Directory byte size rounded up to a whole cluster; consumed by the
+// directory synthesis (synth_dir) too:
 // 32 x (2 dot entries if non-root + per child: 1 short entry + LFN entries).
 dir_size_bytes :: proc(node: ^Node) -> u32 {
 	entries := u32(0)

@@ -88,7 +88,7 @@ scancode_to_set1 :: proc(sc: sdl3.Scancode) -> (s: Set1, ok: bool) {
 	case .LGUI: return {0x5B, true}, true
 	case .RGUI: return {0x5C, true}, true
 	case .APPLICATION: return {0x5D, true}, true
-	// teclado numérico
+	// numeric keypad
 	case .KP_DIVIDE: return {0x35, true}, true
 	case .KP_MULTIPLY: return {0x37, false}, true
 	case .KP_MINUS: return {0x4A, false}, true
@@ -105,7 +105,7 @@ scancode_to_set1 :: proc(sc: sdl3.Scancode) -> (s: Set1, ok: bool) {
 	case .KP_9: return {0x49, false}, true
 	case .KP_0: return {0x52, false}, true
 	case .KP_PERIOD: return {0x53, false}, true
-	// navegación (extendidas)
+	// navigation (extended)
 	case .INSERT: return {0x52, true}, true
 	case .HOME: return {0x47, true}, true
 	case .PAGEUP: return {0x49, true}, true
@@ -117,10 +117,10 @@ scancode_to_set1 :: proc(sc: sdl3.Scancode) -> (s: Set1, ok: bool) {
 	case .DOWN: return {0x50, true}, true
 	case .UP: return {0x48, true}, true
 	}
-	return {}, false // PrintScreen/Pause y demás: sin mapear en M1
+	return {}, false // PrintScreen/Pause and the rest: unmapped in M1
 }
 
-// bytes a encolar en el i8042: make o break (bit 7), prefijo E0 si extendida
+// bytes to queue into the i8042: make or break (bit 7), E0 prefix if extended
 set1_bytes :: proc(s: Set1, down: bool) -> (buf: [2]u8, n: int) {
 	c := s.code
 	if !down { c |= 0x80 }

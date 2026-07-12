@@ -62,13 +62,8 @@ render_snapshot :: proc(pixels: []u32, pitch_px: int, snap: ^vga.Text_Snapshot) 
 	}
 }
 
-// Thin SDL wrapper: upload the rasterized grid and present at 2x below the menu bar.
-render_text :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
-	render_grid(h, snap)
-	sdl3.RenderPresent(h.ren)
-}
-
-// Like render_text but without presenting: the GUI draws ImGui on top first.
+// Upload the rasterized grid at 2x below the menu bar without presenting:
+// the GUI draws ImGui on top first.
 render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	raw: rawptr
 	pitch: c.int

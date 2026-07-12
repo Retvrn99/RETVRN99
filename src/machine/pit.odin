@@ -55,7 +55,7 @@ pit_in :: proc(p: ^Pit, port: u16) -> u8 {
 	c := &p.ch[port - 0x40]
 	v := c.latched ? c.latch : u16(c.count)
 	if c.rw_mode == 1 { c.latched = false; return u8(v) } // LSB-only: never alternates
-	if c.rw_mode == 2 { return u8(v >> 8) }
+	if c.rw_mode == 2 { c.latched = false; return u8(v >> 8) } // MSB-only: one read completes
 	if !c.rw_phase { c.rw_phase = true; return u8(v) }
 	c.rw_phase = false; c.latched = false
 	return u8(v >> 8)

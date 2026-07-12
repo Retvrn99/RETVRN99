@@ -7,6 +7,7 @@ I8042_Expect :: enum u8 {
 	None,
 	Cmd_Byte, // after command 0x60
 	Out_Port, // after command 0xD1
+	Aux_Byte, // after command 0xD4: no aux device, byte discarded
 	Led_Byte, // after 0xED to the device
 	Rate_Byte, // after 0xF3 to the device
 }
@@ -18,6 +19,8 @@ I8042 :: struct {
 	cmd_byte:   u8, // bit0 IRQ1 enable, bit4 keyboard disable (0xAD/0xAE map here)
 	expect:     I8042_Expect,
 	a20:        bool,
+	pend:       [16]u8, // keyboard-side buffer while CTR bit 4 inhibits the port
+	pend_n:     int,
 	ctx:        rawptr,
 	irq1:       proc(ctx: rawptr),
 	reset:      proc(ctx: rawptr),
@@ -53,8 +56,18 @@ i8042_pop :: proc(k: ^I8042) -> u8 {
 
 // host key (scancode set 1)
 i8042_key :: proc(k: ^I8042, scancode: u8) {
-	if k.cmd_byte & 0x10 != 0 { return } // keyboard disabled
+	if k.cmd_byte & 0x10 != 0 { // disabled: hold for retransmission on enable
+		if k.pend_n < len(k.pend) { k.pend[k.pend_n] = scancode; k.pend_n += 1 }
+		return
+	}
 	i8042_push(k, scancode)
+}
+
+// deliver scancodes held while the keyboard port was disabled
+@(private = "file")
+i8042_flush_pending :: proc(k: ^I8042) {
+	for i in 0 ..< k.pend_n { i8042_push(k, k.pend[i]) }
+	k.pend_n = 0
 }
 
 i8042_in :: proc(k: ^I8042, port: u16) -> u8 {
@@ -72,11 +85,15 @@ i8042_out :: proc(k: ^I8042, port: u16, v: u8) {
 		switch v {
 		case 0x20: i8042_push(k, k.cmd_byte)
 		case 0x60: k.expect = .Cmd_Byte
+		case 0xA7, 0xA8: // aux port disable/enable: no aux device in M1
+		case 0xA9: i8042_push(k, 0xFF) // aux interface test: absent
 		case 0xAA: i8042_push(k, 0x55) // self test
 		case 0xAB: i8042_push(k, 0x00) // interface test
 		case 0xAD: k.cmd_byte |= 0x10 // disable = CTR bit 4
-		case 0xAE: k.cmd_byte &~= 0x10
+		case 0xAE: k.cmd_byte &~= 0x10; i8042_flush_pending(k)
+		case 0xD0: i8042_push(k, k.a20 ? 0x03 : 0x01) // output port: bit1 A20, bit0 no-reset
 		case 0xD1: k.expect = .Out_Port
+		case 0xD4: k.expect = .Aux_Byte
 		case 0xFE: if k.reset != nil { k.reset(k.ctx) }
 		}
 	case 0x60: // data: continuation or device command
@@ -84,8 +101,11 @@ i8042_out :: proc(k: ^I8042, port: u16, v: u8) {
 		case .Cmd_Byte:
 			k.cmd_byte = v
 			k.expect = .None
+			if k.cmd_byte & 0x10 == 0 { i8042_flush_pending(k) }
 		case .Out_Port:
 			k.a20 = v & 2 != 0
+			k.expect = .None
+		case .Aux_Byte: // no aux device: parameter swallowed
 			k.expect = .None
 		case .Led_Byte, .Rate_Byte:
 			i8042_push(k, 0xFA)

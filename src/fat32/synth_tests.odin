@@ -162,3 +162,20 @@ synth_test_root_dir_fixture :: proc(t: ^testing.T) {
 	dir_cluster_data(&a, root, 1, buf[:])
 	testing.expect_value(t, buf[0], u8(0))
 }
+
+// a generated ~N tail must not collide with a literal 8.3 name that sorts
+// later in the child list (Windows itself writes ~1 names to disk)
+@(test)
+synth_test_tail_avoids_literal_83 :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	lower := new(Node)
+	lower.name = "readme.txt" // lowercase: needs an LFN, sorts first
+	literal := new(Node)
+	literal.name = "README~1.TXT" // valid 8.3: passes through untouched
+	dir := new(Node)
+	append(&dir.children, lower, literal)
+	names := dir_short_names(dir)
+	testing.expect(t, string(names[1][:]) == "README~1TXT")
+	testing.expect(t, string(names[0][:]) == "README~2TXT")
+	testing.expect(t, names[0] != names[1])
+}

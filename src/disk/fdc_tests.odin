@@ -43,11 +43,11 @@ fdc_test_setup :: proc(f: ^Fdc, d: ^Fdc_Test_Dma, irq_count: ^int) {
 fdc_test_image :: proc() -> []u8 {
 	img := make([]u8, FLOPPY_144_SIZE)
 	for i in 0 ..< 512 { img[i] = u8(i * 7) }
-	img[9 * 512] = 0xA9 // C0/H1/S1 para lecturas fuera del primer sector
+	img[9 * 512] = 0xA9 // C0/H1/S1 for reads beyond the first sector
 	return img
 }
 
-// reset por DOR y drenaje de los 4 SENSE INTERRUPT de sondeo
+// reset via DOR and drain of the 4 polling SENSE INTERRUPTs
 fdc_test_enable :: proc(f: ^Fdc) {
 	fdc_out(f, 0x3F2, 0x08)
 	fdc_out(f, 0x3F2, 0x0C)
@@ -65,7 +65,7 @@ fdc_test_msr_and_version :: proc(t: ^testing.T) {
 	irqs := 0
 	fdc_test_setup(&f, &d, &irqs)
 
-	// en reset: RQM apagado
+	// in reset: RQM off
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x00))
 
 	fdc_test_enable(&f)
@@ -74,7 +74,7 @@ fdc_test_msr_and_version :: proc(t: ^testing.T) {
 	fdc_out(&f, 0x3F5, 0x10) // VERSION
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0xD0)) // Result: RQM|DIO|BUSY
 	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x90))
-	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x80)) // de vuelta a Idle
+	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x80)) // back to Idle
 }
 
 @(test)
@@ -84,11 +84,11 @@ fdc_test_reset_sense_sequence :: proc(t: ^testing.T) {
 	irqs := 0
 	fdc_test_setup(&f, &d, &irqs)
 
-	fdc_out(&f, 0x3F2, 0x08) // entra en reset, IRQ habilitado
-	fdc_out(&f, 0x3F2, 0x0C) // sale de reset
+	fdc_out(&f, 0x3F2, 0x08) // enter reset, IRQ enabled
+	fdc_out(&f, 0x3F2, 0x0C) // leave reset
 	testing.expect_value(t, irqs, 1)
 
-	// 4 SENSE INTERRUPT de sondeo: ST0 = 0xC0..0xC3, PCN = 0
+	// 4 polling SENSE INTERRUPTs: ST0 = 0xC0..0xC3, PCN = 0
 	for unit in 0 ..< 4 {
 		fdc_out(&f, 0x3F5, 0x08)
 		testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0xD0))
@@ -96,7 +96,7 @@ fdc_test_reset_sense_sequence :: proc(t: ^testing.T) {
 		testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x00))
 	}
 
-	// quinto SENSE sin interrupcion pendiente: comando invalido
+	// fifth SENSE with no interrupt pending: invalid command
 	fdc_out(&f, 0x3F5, 0x08)
 	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x80))
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x80))
@@ -113,9 +113,9 @@ fdc_test_recalibrate_sense :: proc(t: ^testing.T) {
 
 	fdc_out(&f, 0x3F5, 0x07) // RECALIBRATE
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x90)) // Param: RQM|BUSY
-	fdc_out(&f, 0x3F5, 0x00) // unidad 0
+	fdc_out(&f, 0x3F5, 0x00) // drive 0
 	testing.expect_value(t, irqs, 1)
-	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x80)) // sin fase de resultado
+	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x80)) // no result phase
 
 	fdc_out(&f, 0x3F5, 0x08) // SENSE INTERRUPT
 	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x20)) // ST0: seek end
@@ -132,7 +132,7 @@ fdc_test_seek_sense :: proc(t: ^testing.T) {
 	irqs = 0
 
 	fdc_out(&f, 0x3F5, 0x0F) // SEEK
-	fdc_out(&f, 0x3F5, 0x00) // unidad 0, cabeza 0
+	fdc_out(&f, 0x3F5, 0x00) // drive 0, head 0
 	fdc_out(&f, 0x3F5, 0x21) // NCN = 33
 	testing.expect_value(t, irqs, 1)
 
@@ -170,7 +170,7 @@ fdc_test_read_first_sector :: proc(t: ^testing.T) {
 
 	res: [7]u8
 	for i in 0 ..< 7 { res[i] = fdc_in(&f, 0x3F5) }
-	testing.expect_value(t, res[0] & 0xC0, u8(0x00)) // terminacion normal
+	testing.expect_value(t, res[0] & 0xC0, u8(0x00)) // normal termination
 	testing.expect_value(t, res[1], u8(0x00))
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x80))
 
@@ -179,7 +179,7 @@ fdc_test_read_first_sector :: proc(t: ^testing.T) {
 		if guest[i] != img[i] { ok = false; break }
 	}
 	testing.expect(t, ok)
-	testing.expect_value(t, d.pos, 512) // solo un sector: paro por fin de cuenta
+	testing.expect_value(t, d.pos, 512) // one sector only: stopped by terminal count
 }
 
 @(test)
@@ -231,7 +231,7 @@ fdc_test_read_id :: proc(t: ^testing.T) {
 	fdc_test_enable(&f)
 	irqs = 0
 
-	fdc_out(&f, 0x3F5, 0x4A) // READ ID, cabeza 0
+	fdc_out(&f, 0x3F5, 0x4A) // READ ID, head 0
 	fdc_out(&f, 0x3F5, 0x00)
 	testing.expect_value(t, irqs, 1)
 
@@ -243,7 +243,7 @@ fdc_test_read_id :: proc(t: ^testing.T) {
 	testing.expect_value(t, res[5], u8(0x01)) // R
 	testing.expect_value(t, res[6], u8(0x02)) // N
 
-	// sin medio: terminacion anormal
+	// no media: abnormal termination
 	fdc_eject_media(&f)
 	fdc_out(&f, 0x3F5, 0x4A)
 	fdc_out(&f, 0x3F5, 0x00)
@@ -259,12 +259,12 @@ fdc_test_media_change_bit :: proc(t: ^testing.T) {
 	fdc_test_setup(&f, &d, &irqs)
 	fdc_test_enable(&f)
 
-	testing.expect_value(t, fdc_in(&f, 0x3F7), u8(0x00)) // arranque sin medio
+	testing.expect_value(t, fdc_in(&f, 0x3F7), u8(0x00)) // startup with no media
 
 	img := fdc_test_image()
 	defer delete(img)
 	testing.expect(t, fdc_set_media(&f, img))
-	testing.expect_value(t, fdc_in(&f, 0x3F7), u8(0x80)) // montar marca DSKCHG
+	testing.expect_value(t, fdc_in(&f, 0x3F7), u8(0x80)) // mounting sets DSKCHG
 
 	// the RECALIBRATE step pulse with media present clears it
 	fdc_out(&f, 0x3F5, 0x07)
@@ -272,7 +272,7 @@ fdc_test_media_change_bit :: proc(t: ^testing.T) {
 	testing.expect_value(t, fdc_in(&f, 0x3F7), u8(0x00))
 
 	fdc_eject_media(&f)
-	testing.expect_value(t, fdc_in(&f, 0x3F7), u8(0x80)) // expulsar lo vuelve a marcar
+	testing.expect_value(t, fdc_in(&f, 0x3F7), u8(0x80)) // ejecting sets it again
 }
 
 @(test)
@@ -283,7 +283,7 @@ fdc_test_invalid_command :: proc(t: ^testing.T) {
 	fdc_test_setup(&f, &d, &irqs)
 	fdc_test_enable(&f)
 
-	fdc_out(&f, 0x3F5, 0x18) // sin implementar
+	fdc_out(&f, 0x3F5, 0x18) // unimplemented
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0xD0))
 	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x80))
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x80))

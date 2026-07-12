@@ -3,14 +3,15 @@ package host
 
 import sdl3 "vendor:sdl3"
 
-MENU_H :: 24 // placeholder until the ImGui menu bar (Task 22)
+MENU_H :: 24 // height reserved for the ImGui menu bar
 WIN_W :: TEXT_W * 2 // 1440
 WIN_H :: TEXT_H * 2 + MENU_H // 800 + menu
 
 Host :: struct {
-	win: ^sdl3.Window,
-	ren: ^sdl3.Renderer,
-	tex: ^sdl3.Texture,
+	win:   ^sdl3.Window,
+	ren:   ^sdl3.Renderer,
+	tex:   ^sdl3.Texture,
+	vsync: bool, // presents are paced by the display; else the UI loop sleeps
 }
 
 host_init :: proc(h: ^Host) -> bool {
@@ -27,6 +28,7 @@ host_init :: proc(h: ^Host) -> bool {
 	if h.ren == nil {
 		return false
 	}
+	h.vsync = sdl3.SetRenderVSync(h.ren, 1) // never busy-spin the UI loop
 	h.tex = sdl3.CreateTexture(h.ren, .ARGB8888, .STREAMING, TEXT_W, TEXT_H)
 	if h.tex == nil {
 		return false

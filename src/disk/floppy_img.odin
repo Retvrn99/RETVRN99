@@ -23,10 +23,10 @@ floppy_img_load :: proc(fi: ^Floppy_Img, raw: []u8, allocator := context.allocat
 	return true
 }
 
-// escrituras solo en memoria: persistir al expulsar queda para despues de M1
+// writes stay in memory only: persisting on eject is deferred until after M1
 floppy_img_eject :: proc(fi: ^Floppy_Img) {
 	if fi.dirty {
-		log.warn("disquete expulsado con escrituras sin persistir; se descartan")
+		log.warn("floppy ejected with unpersisted writes; discarding them")
 	}
 	delete(fi.data)
 	fi^ = {}

@@ -48,6 +48,9 @@ main :: proc() {
 	if !machine.load_roms(&m.vm) { fail("load_roms") }
 	vol := fat32.volume_open(c_drive, 2048)
 	if vol == nil { fail("volume_open") }
+	vol.on_fail = proc(ctx: rawptr, msg: string) {
+		fmt.printfln("disk: writes frozen: %s", msg)
+	}
 	machine.machine_attach_disk(m, fat32.volume_block_device(vol))
 
 	wd := Watchdog{vm = &m.vm}

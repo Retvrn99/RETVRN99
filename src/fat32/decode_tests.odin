@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package fat32
 
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:testing"
@@ -79,13 +80,20 @@ decode_test_delete_file :: proc(t: ^testing.T) {
 	p, _ := filepath.join({dir, "IO.SYS"})
 	testing.expect(t, os.exists(p))
 
+	io := v.alloc.root.children[2] // IO.SYS, clusters 6-7
 	root_lba := journal_test_data_lba(v, 2)
 	sec := read_test_sector(t, v, root_lba)
 	testing.expect(t, string(sec[64:75]) == "IO      SYS")
 	sec[64] = 0xE5
 	testing.expect(t, volume_write(v, root_lba, sec[:]))
-	testing.expect(t, os.exists(p)) // deferred one round for rename detection
+	// chain still allocated: the E5 may be the first half of a move
+	testing.expect(t, os.exists(p))
 	testing.expect(t, volume_flush(v))
+	testing.expect(t, os.exists(p))
+	// freeing the chain commits the delete
+	fc := io.first_cluster
+	decode_test_fat_set(t, v, fc + 1, 0)
+	decode_test_fat_set(t, v, fc, 0)
 	testing.expect(t, !os.exists(p))
 	testing.expect(t, !v.frozen)
 	testing.expect_value(t, len(v.alloc.root.children), 2)
@@ -230,4 +238,279 @@ decode_test_mkdir :: proc(t: ^testing.T) {
 	inner, ierr := os.read_entire_file(ip, context.allocator)
 	testing.expect(t, ierr == nil)
 	testing.expect(t, string(inner) == "NESTED")
+}
+
+// build one LFN entry (ASCII names only)
+decode_test_put_lfn :: proc(sec: []u8, off: int, seq: u8, last: bool, csum: u8, name: string) {
+	e := sec[off:][:32]
+	for i in 0 ..< 32 {
+		e[i] = 0
+	}
+	e[0] = seq | (last ? 0x40 : 0)
+	e[11] = ATTR_LFN
+	e[13] = csum
+	offs := [13]int{1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30}
+	base := int(seq - 1) * 13
+	for o, i in offs {
+		u: u16 = 0xFFFF
+		if base + i < len(name) {
+			u = u16(name[base + i])
+		} else if base + i == len(name) {
+			u = 0
+		}
+		e[o] = u8(u)
+		e[o + 1] = u8(u >> 8)
+	}
+}
+
+// COPY /Y-style overwrite: free the chain, zero cluster+size in the dir
+// entry (must NOT freeze), then recreate content in a fresh chain
+@(test)
+decode_test_truncate_overwrite :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+	command := v.alloc.root.children[0] // COMMAND.COM, 2000 bytes
+	fc := command.first_cluster
+
+	decode_test_fat_set(t, v, fc, 0)
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	testing.expect(t, string(sec[0:11]) == "COMMAND COM")
+	sec[20] = 0; sec[21] = 0; sec[26] = 0; sec[27] = 0 // first cluster = 0
+	sec[28] = 0; sec[29] = 0; sec[30] = 0; sec[31] = 0 // size = 0
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+	testing.expect(t, !v.frozen)
+	host, herr := os.read_entire_file(command.host_path, context.allocator)
+	testing.expect(t, herr == nil)
+	testing.expect_value(t, len(host), 0)
+	testing.expect_value(t, command.first_cluster, u32(0))
+
+	// re-populate: new chain, data, then the entry confirms cluster+size
+	nc := v.alloc.next_free
+	decode_test_fat_set(t, v, nc, 0x0FFFFFFF)
+	data: [SECTOR]u8
+	copy(data[:], "OVERWRITTEN")
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, nc), data[:]))
+	sec[20] = u8(nc >> 16); sec[21] = u8(nc >> 24)
+	sec[26] = u8(nc); sec[27] = u8(nc >> 8)
+	sec[28] = 11
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+	testing.expect(t, !v.frozen)
+	host2, herr2 := os.read_entire_file(command.host_path, context.allocator)
+	testing.expect(t, herr2 == nil)
+	testing.expect(t, string(host2) == "OVERWRITTEN")
+}
+
+// cross-directory move: E5 in one round, an unrelated dir write in
+// between, create with the same first cluster later; the host file must
+// be renamed, never deleted
+@(test)
+decode_test_move_across_dirs :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+	command := v.alloc.root.children[0]
+	dos := v.alloc.root.children[1]
+	original, _ := os.read_entire_file(command.host_path, context.allocator)
+
+	// round 1: source entry E5
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	testing.expect(t, string(sec[0:11]) == "COMMAND COM")
+	sec[0] = 0xE5
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+	old_p, _ := filepath.join({dir, "COMMAND.COM"})
+	testing.expect(t, os.exists(old_p))
+
+	// round 2: an intervening write that decodes no create
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+	testing.expect(t, os.exists(old_p)) // chain still allocated: no delete
+
+	// round 3: the entry reappears in DOS with the same first cluster
+	dos_lba := journal_test_data_lba(v, dos.first_cluster)
+	dsec := read_test_sector(t, v, dos_lba)
+	decode_test_put_entry(dsec[:], 96, "COMMAND COM", ATTR_FILE, command.first_cluster, u32(command.size))
+	testing.expect(t, volume_write(v, dos_lba, dsec[:]))
+
+	testing.expect(t, !v.frozen)
+	testing.expect(t, !os.exists(old_p))
+	new_p, _ := filepath.join({dir, "DOS", "COMMAND.COM"})
+	moved, herr := os.read_entire_file(new_p, context.allocator)
+	testing.expect(t, herr == nil)
+	testing.expect(t, string(moved) == string(original))
+}
+
+// DOS grows a directory by linking a fresh cluster into its FAT chain;
+// entries written there must decode (FAT link first, then dir data)
+@(test)
+decode_test_dir_grow_fat_first :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+	nc := v.alloc.next_free
+	fc := nc + 1
+	decode_test_fat_set(t, v, nc, 0x0FFFFFFF) // new tail cluster: EOC
+	decode_test_fat_set(t, v, 2, nc) // root now chains 2 -> nc
+	// file chain and content, then its entry inside the grown cluster
+	decode_test_fat_set(t, v, fc, 0x0FFFFFFF)
+	data: [SECTOR]u8
+	copy(data[:], "GROWN")
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, fc), data[:]))
+	gsec: [SECTOR]u8
+	decode_test_put_entry(gsec[:], 0, "GROWN   TXT", ATTR_FILE, fc, 5)
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, nc), gsec[:]))
+
+	testing.expect(t, !v.frozen)
+	p, _ := filepath.join({dir, "GROWN.TXT"})
+	host, herr := os.read_entire_file(p, context.allocator)
+	testing.expect(t, herr == nil)
+	testing.expect(t, string(host) == "GROWN")
+}
+
+// same growth, but the guest writes the entries before linking the FAT:
+// the orphaned cluster must be adopted and decoded at link time
+@(test)
+decode_test_dir_grow_data_first :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+	nc := v.alloc.next_free
+	fc := nc + 1
+	decode_test_fat_set(t, v, fc, 0x0FFFFFFF)
+	data: [SECTOR]u8
+	copy(data[:], "GROWN")
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, fc), data[:]))
+	// dir entries land while the cluster is still an orphan
+	gsec: [SECTOR]u8
+	decode_test_put_entry(gsec[:], 0, "GROWN   TXT", ATTR_FILE, fc, 5)
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, nc), gsec[:]))
+	p, _ := filepath.join({dir, "GROWN.TXT"})
+	testing.expect(t, !os.exists(p)) // not reachable from any dir yet
+	// FAT link: adopt the cluster and decode its entries
+	decode_test_fat_set(t, v, nc, 0x0FFFFFFF)
+	decode_test_fat_set(t, v, 2, nc)
+
+	testing.expect(t, !v.frozen)
+	host, herr := os.read_entire_file(p, context.allocator)
+	testing.expect(t, herr == nil)
+	testing.expect(t, string(host) == "GROWN")
+}
+
+// LFN create fully inside one sector: the host file gets the long name
+@(test)
+decode_test_lfn_create :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+	fc := v.alloc.next_free
+	decode_test_fat_set(t, v, fc, 0x0FFFFFFF)
+	data: [SECTOR]u8
+	copy(data[:], "LONGNAME")
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, fc), data[:]))
+
+	name := "LongFileName.txt"
+	short: [11]u8
+	copy(short[:], "LONGFI~1TXT")
+	csum := lfn_checksum(short)
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	decode_test_put_lfn(sec[:], 96, 2, true, csum, name)
+	decode_test_put_lfn(sec[:], 128, 1, false, csum, name)
+	decode_test_put_entry(sec[:], 160, "LONGFI~1TXT", ATTR_FILE, fc, 8)
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+
+	testing.expect(t, !v.frozen)
+	p, _ := filepath.join({dir, "LongFileName.txt"})
+	host, herr := os.read_entire_file(p, context.allocator)
+	testing.expect(t, herr == nil)
+	testing.expect(t, string(host) == "LONGNAME")
+}
+
+// LFN entries at the end of one sector, short entry at the start of the
+// next: the long name must survive the boundary
+@(test)
+decode_test_lfn_straddle :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+	fc := v.alloc.next_free
+	decode_test_fat_set(t, v, fc, 0x0FFFFFFF)
+	data: [SECTOR]u8
+	copy(data[:], "STRADDLE")
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, fc), data[:]))
+
+	name := "LongFileName.txt"
+	short: [11]u8
+	copy(short[:], "LONGFI~1TXT")
+	csum := lfn_checksum(short)
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	// fill sector 0 up to the LFN pair so no terminator precedes it
+	fill := 0
+	for off := 96; off < SECTOR - 64; off += 32 {
+		decode_test_put_entry(sec[:], off, fmt.tprintf("FILL%04d   ", fill), ATTR_FILE, 0, 0)
+		fill += 1
+	}
+	decode_test_put_lfn(sec[:], SECTOR - 64, 2, true, csum, name)
+	decode_test_put_lfn(sec[:], SECTOR - 32, 1, false, csum, name)
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+	// short entry begins the next sector
+	sec2 := read_test_sector(t, v, root_lba + 1)
+	decode_test_put_entry(sec2[:], 0, "LONGFI~1TXT", ATTR_FILE, fc, 8)
+	testing.expect(t, volume_write(v, root_lba + 1, sec2[:]))
+
+	testing.expect(t, !v.frozen)
+	p, _ := filepath.join({dir, "LongFileName.txt"})
+	host, herr := os.read_entire_file(p, context.allocator)
+	testing.expect(t, herr == nil)
+	testing.expect(t, string(host) == "STRADDLE")
+}
+
+// content of a fully confirmed create must not stay pinned in orphan_data
+@(test)
+decode_test_orphan_released :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+	fc := v.alloc.next_free
+	decode_test_fat_set(t, v, fc, 0x0FFFFFFF)
+	data: [CLUSTER_BYTES]u8
+	for i in 0 ..< CLUSTER_BYTES {
+		data[i] = u8(i)
+	}
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, fc), data[:]))
+	testing.expect(t, fc in v.journal.orphan_data)
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(sec[:], 96, "BIG     BIN", ATTR_FILE, fc, CLUSTER_BYTES)
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+
+	testing.expect(t, !(fc in v.journal.orphan_data)) // flushed to the host
+	p, _ := filepath.join({dir, "BIG.BIN"})
+	host, herr := os.read_entire_file(p, context.allocator)
+	testing.expect(t, herr == nil)
+	testing.expect_value(t, len(host), CLUSTER_BYTES)
+	testing.expect_value(t, host[4095], u8(0xFF))
 }

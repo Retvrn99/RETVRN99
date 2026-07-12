@@ -22,15 +22,20 @@ lfn_checksum :: proc(short: [11]u8) -> u8 {
 	return sum
 }
 
-// 8.3 name per child, in child order. Valid 8.3 names pass through;
-// the rest get a deterministic ~N tail (bumped on collision with earlier names).
+// 8.3 name per child, in child order. Valid 8.3 names pass through first;
+// the rest get a deterministic ~N tail bumped past every pass-through name
+// and every earlier generated tail (a literal README~1.TXT later in the
+// list must not collide with a generated README~1TXT).
 dir_short_names :: proc(dir: ^Node, allocator := context.allocator) -> [][11]u8 {
 	names := make([][11]u8, len(dir.children), allocator)
 	for child, i in dir.children {
 		if lfn_entry_count(child.name) == 0 {
 			names[i] = pack_83(child.name)
-		} else {
-			names[i] = tail_name(child.name, names[:i])
+		}
+	}
+	for child, i in dir.children {
+		if lfn_entry_count(child.name) != 0 {
+			names[i] = tail_name(child.name, names[:]) // own slot is still zeroed
 		}
 	}
 	return names
