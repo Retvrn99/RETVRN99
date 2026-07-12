@@ -39,6 +39,7 @@ Command_Kind :: enum {
 	Power_Off,
 	Mount_Floppy,
 	Eject_Floppy,
+	Toggle_Throttle,
 }
 
 Command :: struct {
@@ -203,6 +204,8 @@ gui_main :: proc(attach: bool, auto_close: int) {
 			sdl3.ShowOpenFileDialog(mount_dialog_cb, &pending, h.win, nil, 0, nil, false)
 		case .Eject_Floppy:
 			push_cmd(shared, Command{kind = .Eject_Floppy})
+		case .Toggle_Throttle:
+			push_cmd(shared, Command{kind = .Toggle_Throttle})
 		case .None:
 		}
 		imgui.Render()
@@ -329,6 +332,10 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			case .Eject_Floppy:
 				machine.machine_eject_floppy(m)
 				vm_log(s, "floppy: ejected")
+			case .Toggle_Throttle:
+				m.throttle.enabled = !m.throttle.enabled
+				m.throttle.budget_pct = 50
+				vm_log(s, m.throttle.enabled ? "throttle: on (50%)" : "throttle: off")
 			}
 		}
 		delete(cmds)

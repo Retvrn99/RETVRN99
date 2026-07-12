@@ -9,27 +9,29 @@ Menu_Action :: enum {
 	Power_Off,
 	Mount_Floppy,
 	Eject_Floppy,
+	Toggle_Throttle,
 }
 
 Menu_State :: struct {
-	show_debug: bool, // panel vCPU / estadísticas de salidas
-	show_log:   bool, // panel de log de dispositivos
+	show_debug:  bool, // vCPU / exit-stats panel
+	show_log:    bool, // device-log panel
+	throttle_on: bool,
 }
 
 Menu_Info :: struct {
-	frozen_msg: string, // vacío = VM viva
+	frozen_msg: string, // empty = VM alive
 	regs_text:  string,
 	exit_lines: []string,
 	log_lines:  []string,
 }
 
-// Dibuja barra de menú, paneles de depuración y el aviso de congelación.
+// Draws the menu bar, debug panels and the freeze notice.
 menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 	action := Menu_Action.None
 	if imgui.BeginMainMenuBar() {
 		if imgui.BeginMenu("Machine") {
 			if imgui.MenuItem("Reset") { action = .Reset }
-			imgui.MenuItem("Throttle", nil, false, false) // pendiente Task 25
+			if imgui.MenuItemBoolPtr("Throttle 50%", nil, &st.throttle_on) { action = .Toggle_Throttle }
 			imgui.Separator()
 			if imgui.MenuItem("Power Off") { action = .Power_Off }
 			imgui.EndMenu()
@@ -65,7 +67,7 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 		if imgui.Begin("Device log", &st.show_log) {
 			for l in info.log_lines { menu_text(l) }
 			if imgui.GetScrollY() >= imgui.GetScrollMaxY() - 1 {
-				imgui.SetScrollHereY(1) // autoscroll pegado al final
+				imgui.SetScrollHereY(1) // autoscroll pinned to the end
 			}
 		}
 		imgui.End()
@@ -83,7 +85,7 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 	return action
 }
 
-// TextUnformatted sin exigir cadenas terminadas en cero
+// TextUnformatted without requiring zero-terminated strings
 menu_text :: proc(s: string) {
 	if len(s) == 0 {
 		imgui.TextUnformatted("")
