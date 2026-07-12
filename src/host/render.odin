@@ -64,6 +64,12 @@ render_snapshot :: proc(pixels: []u32, pitch_px: int, snap: ^vga.Text_Snapshot) 
 
 // Thin SDL wrapper: upload the rasterized grid and present at 2x below the menu bar.
 render_text :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
+	render_grid(h, snap)
+	sdl3.RenderPresent(h.ren)
+}
+
+// Como render_text pero sin presentar: la GUI dibuja ImGui encima antes del present.
+render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	raw: rawptr
 	pitch: c.int
 	if !sdl3.LockTexture(h.tex, nil, &raw, &pitch) {
@@ -78,5 +84,4 @@ render_text :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	sdl3.RenderClear(h.ren)
 	dst := sdl3.FRect{0, MENU_H, TEXT_W * 2, TEXT_H * 2}
 	sdl3.RenderTexture(h.ren, h.tex, nil, &dst)
-	sdl3.RenderPresent(h.ren)
 }
