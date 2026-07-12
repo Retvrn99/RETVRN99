@@ -1,29 +1,48 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import disk "../disk"
+import hv "../hv"
+import "core:fmt"
 import "core:log"
+import "core:os"
+import "core:path/filepath"
 import "core:sync"
 import "core:testing"
 import "core:thread"
 import "core:time"
-import disk "../disk"
-import hv "../hv"
+
+machine_test_iso :: proc(t: ^testing.T) -> string {
+	base, err := os.temp_directory(context.temp_allocator)
+	testing.expect(t, err == nil)
+	path, _ := filepath.join(
+		{base, fmt.tprintf("retvrn99_machine_cd_%d.iso", time.now()._nsec)},
+		context.temp_allocator,
+	)
+	data := make([]u8, 20 * disk.CDROM_SECTOR_SIZE, context.temp_allocator)
+	pvd := data[16 * disk.CDROM_SECTOR_SIZE:][:disk.CDROM_SECTOR_SIZE]
+	pvd[0] = 1
+	copy(pvd[1:6], "CD001")
+	pvd[6] = 1
+	testing.expect(t, os.write_entire_file(path, data) == nil)
+	return path
+}
 
 machine_test_bd :: proc(backing: ^[]u8) -> disk.Block_Device {
-	return disk.Block_Device{
+	return disk.Block_Device {
 		ctx = backing,
 		sector_count = u64(len(backing^) / 512),
 		read = proc(ctx: rawptr, lba: u64, buf: []u8) -> bool {
 			b := (^[]u8)(ctx)^
 			off := int(lba) * 512
-			if off + len(buf) > len(b) { return false }
+			if off + len(buf) > len(b) {return false}
 			copy(buf, b[off:off + len(buf)])
 			return true
 		},
 		write = proc(ctx: rawptr, lba: u64, buf: []u8) -> bool {
 			b := (^[]u8)(ctx)^
 			off := int(lba) * 512
-			if off + len(buf) > len(b) { return false }
+			if off + len(buf) > len(b) {return false}
 			copy(b[off:off + len(buf)], buf)
 			return true
 		},
@@ -40,14 +59,14 @@ test_machine_port_echo :: proc(t: ^testing.T) {
 	m: Machine
 	ok := machine_init(&m, 64 * 1024 * 1024)
 	defer machine_destroy(&m)
-	if !testing.expect(t, ok) { return }
+	if !testing.expect(t, ok) {return}
 	testing.expect(t, m.governor.mode == .GSW_886)
 
 	seen: u32 = 0
-	h := Io_Handler{
+	h := Io_Handler {
 		ctx = &seen,
-		read = proc(ctx: rawptr, port: u16, size: u8) -> u32 { return (^u32)(ctx)^ },
-		write = proc(ctx: rawptr, port: u16, size: u8, v: u32) { (^u32)(ctx)^ = v },
+		read = proc(ctx: rawptr, port: u16, size: u8) -> u32 {return (^u32)(ctx)^},
+		write = proc(ctx: rawptr, port: u16, size: u8, v: u32) {(^u32)(ctx)^ = v},
 	}
 	bus_register(&m.bus, 0x99, 0x99, h)
 
@@ -71,7 +90,7 @@ test_machine_irq_delivery :: proc(t: ^testing.T) {
 	m: Machine
 	ok := machine_init(&m, 64 * 1024 * 1024)
 	defer machine_destroy(&m)
-	if !testing.expect(t, ok) { return }
+	if !testing.expect(t, ok) {return}
 	pic_setup(&m.pic) // master base 0x08, everything unmasked
 
 	// IVT vector 8 -> 0000:0500
@@ -85,7 +104,7 @@ test_machine_irq_delivery :: proc(t: ^testing.T) {
 	pic_raise(&m.pic, 0)
 	delivered := false
 	for _ in 0 ..< 100 {
-		if !step(&m) { break }
+		if !step(&m) {break}
 		if m.vm.ram[0x510] != 0 && u16(hv.reg_rax(&m.vm)) == 0xBEEF {
 			delivered = true
 			break
@@ -116,7 +135,7 @@ test_machine_irq_no_starvation :: proc(t: ^testing.T) {
 	m: Machine
 	ok := machine_init(&m, 64 * 1024 * 1024)
 	defer machine_destroy(&m)
-	if !testing.expect(t, ok) { return }
+	if !testing.expect(t, ok) {return}
 	pic_setup(&m.pic)
 
 	// IVT: vector 8 -> 0000:0500, vector 9 -> 0000:0520
@@ -129,15 +148,17 @@ test_machine_irq_no_starvation :: proc(t: ^testing.T) {
 	copy(m.vm.ram[0x7C00:], []u8{0x31, 0xC0, 0x8E, 0xD8, 0xBC, 0x00, 0x70, 0xFB, 0xEB, 0xFE})
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
 
-	cctx := Cancel_Ctx{vm = &m.vm}
+	cctx := Cancel_Ctx {
+		vm = &m.vm,
+	}
 	th := thread.create_and_start_with_poly_data(&cctx, proc(c: ^Cancel_Ctx) {
 		for {
 			time.sleep(100 * time.Millisecond)
 			sync.lock(&c.mu)
 			s := c.stop
-			if !s { hv.cancel(c.vm) }
+			if !s {hv.cancel(c.vm)}
 			sync.unlock(&c.mu)
-			if s { return }
+			if s {return}
 		}
 	})
 	defer {
@@ -151,7 +172,7 @@ test_machine_irq_no_starvation :: proc(t: ^testing.T) {
 	start := time.tick_now()
 	delivered := false
 	for time.duration_seconds(time.tick_since(start)) < 5 {
-		if !step(&m) { break }
+		if !step(&m) {break}
 		if m.vm.ram[0x510] != 0 {
 			delivered = true
 			break
@@ -170,11 +191,11 @@ test_machine_fdc_dma_read :: proc(t: ^testing.T) {
 	pic_setup(&m.pic)
 	machine_init_fdc(&m)
 	m.vm.ram = make([]u8, 1024 * 1024)
-	defer { delete(m.vm.ram); m.vm.ram = nil }
+	defer {delete(m.vm.ram); m.vm.ram = nil}
 
 	img := make([]u8, disk.FLOPPY_144_SIZE)
 	defer delete(img)
-	for i in 0 ..< 512 { img[i] = u8(i * 3 + 1) }
+	for i in 0 ..< 512 {img[i] = u8(i * 3 + 1)}
 	testing.expect(t, machine_mount_floppy(&m, img))
 	defer machine_eject_floppy(&m)
 
@@ -192,7 +213,7 @@ test_machine_fdc_dma_read :: proc(t: ^testing.T) {
 		pcn = u8(bus_io_read(&m.bus, 0x3F5, 1))
 		return
 	}
-	for _ in 0 ..< 4 { _, _ = sense(&m) }
+	for _ in 0 ..< 4 {_, _ = sense(&m)}
 
 	// RECALIBRATE then SENSE INTERRUPT: seek end at cylinder 0
 	bus_io_write(&m.bus, 0x3F5, 1, 0x07)
@@ -219,12 +240,12 @@ test_machine_fdc_dma_read :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, bus_io_read(&m.bus, 0x3F4, 1), u32(0xD0))
 	res: [7]u8
-	for i in 0 ..< 7 { res[i] = u8(bus_io_read(&m.bus, 0x3F5, 1)) }
+	for i in 0 ..< 7 {res[i] = u8(bus_io_read(&m.bus, 0x3F5, 1))}
 	testing.expect_value(t, res[0] & 0xC0, u8(0x00))
 
 	ok := true
 	for i in 0 ..< 512 {
-		if m.vm.ram[0x1000 + i] != img[i] { ok = false; break }
+		if m.vm.ram[0x1000 + i] != img[i] {ok = false; break}
 	}
 	testing.expect(t, ok)
 	testing.expect_value(t, m.vm.ram[0x1000 + 512], u8(0)) // TC stopped the transfer
@@ -243,11 +264,11 @@ test_machine_fdc_dma_back_to_back :: proc(t: ^testing.T) {
 	pic_setup(&m.pic)
 	machine_init_fdc(&m)
 	m.vm.ram = make([]u8, 1024 * 1024)
-	defer { delete(m.vm.ram); m.vm.ram = nil }
+	defer {delete(m.vm.ram); m.vm.ram = nil}
 
 	img := make([]u8, disk.FLOPPY_144_SIZE)
 	defer delete(img)
-	for i in 0 ..< len(img) { img[i] = u8(i * 13 >> 3) }
+	for i in 0 ..< len(img) {img[i] = u8(i * 13 >> 3)}
 	testing.expect(t, machine_mount_floppy(&m, img))
 	defer machine_eject_floppy(&m)
 
@@ -272,9 +293,9 @@ test_machine_fdc_dma_back_to_back :: proc(t: ^testing.T) {
 		dma_out(&m.dma, 0x81, u8(addr >> 16))
 		dma_out(&m.dma, 0x0A, 0x02)
 		bus_io_write(&m.bus, 0x3F5, 1, 0xE6)
-		for p in params { bus_io_write(&m.bus, 0x3F5, 1, u32(p)) }
+		for p in params {bus_io_write(&m.bus, 0x3F5, 1, u32(p))}
 		res: [7]u8
-		for i in 0 ..< 7 { res[i] = u8(bus_io_read(&m.bus, 0x3F5, 1)) }
+		for i in 0 ..< 7 {res[i] = u8(bus_io_read(&m.bus, 0x3F5, 1))}
 		return res
 	}
 
@@ -287,7 +308,7 @@ test_machine_fdc_dma_back_to_back :: proc(t: ^testing.T) {
 	off, _ := disk.floppy_img_offset(50, 1, 1)
 	ok := true
 	for i in 0 ..< 18 * 512 {
-		if m.vm.ram[0x2000 + i] != img[off + i] { ok = false; break }
+		if m.vm.ram[0x2000 + i] != img[off + i] {ok = false; break}
 	}
 	testing.expect(t, ok)
 	testing.expect(t, !m.bus.frozen)
@@ -313,4 +334,46 @@ test_machine_attach_disk :: proc(t: ^testing.T) {
 	testing.expect_value(t, w0, u32(0x0040))
 	testing.expect(t, m.pic.slave.irr & 0x40 != 0) // IRQ14 through machine glue
 	testing.expect(t, !m.bus.frozen)
+}
+
+@(test)
+test_machine_mount_cdrom_secondary_ide :: proc(t: ^testing.T) {
+	m: Machine
+	bus_init(&m.bus)
+	defer bus_destroy(&m.bus)
+	pic_setup(&m.pic)
+	machine_init_atapi(&m)
+
+	path := machine_test_iso(t)
+	defer os.remove(path)
+	testing.expect(t, machine_mount_cdrom(&m, path))
+	defer machine_eject_cdrom(&m)
+
+	bus_io_write(&m.bus, 0x176, 1, 0xA0)
+	bus_io_write(&m.bus, 0x177, 1, 0xA1)
+	status := bus_io_read(&m.bus, 0x177, 1)
+	testing.expect_value(t, status & disk.ATAPI_STATUS_DRQ, u32(disk.ATAPI_STATUS_DRQ))
+	testing.expect_value(t, bus_io_read(&m.bus, 0x170, 2), u32(0x85C0))
+	testing.expect(t, m.pic.slave.irr & 0x80 != 0)
+	testing.expect(t, !m.bus.frozen)
+
+	machine_eject_cdrom(&m)
+	testing.expect(t, !disk.cdrom_image_present(&m.atapi.image))
+}
+
+@(test)
+test_machine_guest_reset_is_distinct_from_freeze :: proc(t: ^testing.T) {
+	prior_logger := context.logger
+	quiet_logger := log.create_console_logger(.Fatal, {.Level})
+	context.logger = quiet_logger
+	defer {
+		context.logger = prior_logger
+		log.destroy_console_logger(quiet_logger)
+	}
+	m: Machine
+	i8042_init(&m.kbd, &m, nil, machine_guest_reset)
+	testing.expect(t, !machine_reset_requested(&m))
+	i8042_out(&m.kbd, 0x64, 0xFE)
+	testing.expect(t, machine_reset_requested(&m))
+	testing.expect(t, m.bus.frozen)
 }

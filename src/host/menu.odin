@@ -10,13 +10,18 @@ Menu_Action :: enum {
 	Power_Off,
 	Mount_Floppy,
 	Eject_Floppy,
+	Mount_Cdrom,
+	Eject_Cdrom,
+	Install_Windows_98,
 	Set_Cpu_Mode,
 }
 
 Menu_State :: struct {
-	show_debug: bool, // vCPU / exit-stats panel
-	show_log:   bool, // device-log panel
-	cpu_mode:   config.Cpu_Mode,
+	show_debug:           bool, // vCPU / exit-stats panel
+	show_log:             bool, // device-log panel
+	cpu_mode:             config.Cpu_Mode,
+	cdrom_mounted:        bool,
+	installing_windows_98: bool,
 }
 
 Menu_Info :: struct {
@@ -24,6 +29,16 @@ Menu_Info :: struct {
 	regs_text:  string,
 	exit_lines: []string,
 	log_lines:  []string,
+}
+
+menu_action_enabled :: proc(st: ^Menu_State, action: Menu_Action) -> bool {
+	#partial switch action {
+	case .Mount_Cdrom, .Install_Windows_98:
+		return !st.installing_windows_98
+	case .Eject_Cdrom:
+		return st.cdrom_mounted && !st.installing_windows_98
+	}
+	return true
 }
 
 // Draws the menu bar, debug panels and the freeze notice.
@@ -44,12 +59,38 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 				imgui.EndMenu()
 			}
 			imgui.Separator()
+			if imgui.MenuItem(
+				"Install Windows 98...",
+				nil,
+				false,
+				menu_action_enabled(st, .Install_Windows_98),
+			) {
+				action = .Install_Windows_98
+			}
+			imgui.Separator()
 			if imgui.MenuItem("Power Off") { action = .Power_Off }
 			imgui.EndMenu()
 		}
 		if imgui.BeginMenu("Media") {
 			if imgui.MenuItem("Mount Floppy...") { action = .Mount_Floppy }
 			if imgui.MenuItem("Eject Floppy") { action = .Eject_Floppy }
+			imgui.Separator()
+			if imgui.MenuItem(
+				"Mount CD-ROM...",
+				nil,
+				false,
+				menu_action_enabled(st, .Mount_Cdrom),
+			) {
+				action = .Mount_Cdrom
+			}
+			if imgui.MenuItem(
+				"Eject CD-ROM",
+				nil,
+				false,
+				menu_action_enabled(st, .Eject_Cdrom),
+			) {
+				action = .Eject_Cdrom
+			}
 			imgui.EndMenu()
 		}
 		if imgui.BeginMenu("Debug") {
