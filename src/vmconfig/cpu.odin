@@ -2,8 +2,8 @@
 package vmconfig
 
 Cpu_Mode :: enum {
-	Turbo,
 	GSW_886,
+	Turbo,
 }
 
 cpu_mode_name :: proc(mode: Cpu_Mode) -> string {

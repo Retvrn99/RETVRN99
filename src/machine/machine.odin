@@ -71,7 +71,7 @@ Machine :: struct {
 machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_init(&m.bus)
 	if !hv.create(&m.vm, ram_size) { return false }
-	if !hv.governor_init(&m.governor, &m.vm, .Turbo) {
+	if !hv.governor_init(&m.governor, &m.vm, .GSW_886) {
 		hv.destroy(&m.vm)
 		return false
 	}
@@ -214,6 +214,14 @@ machine_eject_floppy :: proc(m: ^Machine) {
 
 machine_set_cpu_mode :: proc(m: ^Machine, mode: config.Cpu_Mode) {
 	hv.governor_set_mode(&m.governor, &m.vm, mode)
+}
+
+machine_cmos_export :: proc(m: ^Machine) -> [CMOS_NVRAM_SIZE]u8 {
+	return cmos_nvram_export(&m.cmos)
+}
+
+machine_cmos_import :: proc(m: ^Machine, data: []u8) -> bool {
+	return cmos_nvram_import(&m.cmos, data, u64(len(m.vm.ram)))
 }
 
 step :: proc(m: ^Machine) -> bool { // false = frozen/powered off

@@ -61,7 +61,7 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 	}
 
 	if st.show_debug {
-		imgui.SetNextWindowPos({20, 40}, .FirstUseEver)
+		imgui.SetNextWindowPos({20, MENU_BAR_H + 16}, .FirstUseEver)
 		if imgui.Begin("vCPU", &st.show_debug, {.AlwaysAutoResize}) {
 			for l in info.exit_lines { menu_text(l) }
 			if len(info.regs_text) > 0 {
@@ -73,7 +73,7 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 	}
 
 	if st.show_log {
-		imgui.SetNextWindowPos({400, 40}, .FirstUseEver)
+		imgui.SetNextWindowPos({400, MENU_BAR_H + 16}, .FirstUseEver)
 		imgui.SetNextWindowSize({640, 320}, .FirstUseEver)
 		if imgui.Begin("Device log", &st.show_log) {
 			for l in info.log_lines { menu_text(l) }

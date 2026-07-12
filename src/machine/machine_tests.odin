@@ -41,6 +41,7 @@ test_machine_port_echo :: proc(t: ^testing.T) {
 	ok := machine_init(&m, 64 * 1024 * 1024)
 	defer machine_destroy(&m)
 	if !testing.expect(t, ok) { return }
+	testing.expect(t, m.governor.mode == .GSW_886)
 
 	seen: u32 = 0
 	h := Io_Handler{

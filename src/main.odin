@@ -10,7 +10,6 @@ import "core:c"
 import "core:fmt"
 import "core:log"
 import "core:os"
-import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
@@ -26,6 +25,7 @@ import "host"
 import "hosttime"
 import "hv"
 import "machine"
+import "profile"
 import "vga"
 import "vmconfig"
 
@@ -74,13 +74,22 @@ Vm_Guard :: struct {
 Vm_Ctx :: struct {
 	shared: ^Shared,
 	guard:  Vm_Guard,
+	volume: ^fat32.Volume,
 	bd:     disk.Block_Device,
 	attach: bool,
 	floppy: []u8, // retained copy of the mounted image so Reset keeps it in the drive
 	cpu_mode: vmconfig.Cpu_Mode,
+	paths: profile.Paths,
+	cmos: profile.Cmos_Data,
+	has_cmos: bool,
 }
 
 main :: proc() {
+	code := run_main()
+	if code != 0 { os.exit(code) }
+}
+
+run_main :: proc() -> int {
 	context.logger = log.create_console_logger(.Info, {.Level})
 
 	console := false
@@ -102,35 +111,71 @@ main :: proc() {
 		}
 	}
 
-	if console {
-		console_main(attach, run_seconds, floppy_path)
-		return
+	paths, perr := profile.paths_default()
+	if perr != nil {
+		fmt.eprintfln("profile path resolution failed: %v", perr)
+		return 1
 	}
-	gui_main(attach, auto_close)
+	defer profile.paths_destroy(&paths)
+	settings, settings_diag := profile.settings_load(paths.settings)
+	if settings_diag == .Missing {
+		if save_diag := profile.settings_save(paths.settings, settings); save_diag != .None {
+			fmt.eprintfln("settings save failed: %v", save_diag)
+		}
+	} else if settings_diag != .None {
+		fmt.eprintfln("settings load warning: %v; using defaults", settings_diag)
+	}
+	cmos, cmos_diag := profile.cmos_load(paths.cmos)
+	has_cmos := cmos_diag == .None
+	if cmos_diag != .None && cmos_diag != .Missing {
+		fmt.eprintfln("CMOS load warning: %v; using machine defaults", cmos_diag)
+	}
+
+	if console {
+		return console_main(attach, run_seconds, floppy_path, &paths, settings, cmos, has_cmos)
+	}
+	return gui_main(attach, auto_close, &paths, settings, cmos, has_cmos)
 }
 
 // --- GUI ---
 
-gui_main :: proc(attach: bool, auto_close: int) {
+gui_main :: proc(
+	attach: bool,
+	auto_close: int,
+	paths: ^profile.Paths,
+	settings: profile.Settings,
+	cmos: profile.Cmos_Data,
+	has_cmos: bool,
+) -> int {
+	active_settings := settings
 	ctx := new(Vm_Ctx)
 	shared := new(Shared)
+	defer {
+		fat32.volume_close(ctx.volume)
+		free(shared)
+		free(ctx)
+	}
 	shared.running = true
 	ctx.shared = shared
 	ctx.attach = attach
-	ctx.cpu_mode = .Turbo
+	ctx.cpu_mode = active_settings.cpu_mode
+	ctx.paths = paths^
+	ctx.cmos = cmos
+	ctx.has_cmos = has_cmos
 	if attach {
-		vol := fat32.volume_open(default_c_drive(), VOLUME_MB)
+		vol := fat32.volume_open(paths.c_drive, VOLUME_MB)
 		if vol == nil {
-			fmt.eprintfln("volume_open failed: %s", default_c_drive())
-			os.exit(1)
+			fmt.eprintfln("volume_open failed: %s", paths.c_drive)
+			return 1
 		}
 		// surface write freezes in the device log; the volume stays read-only
 		vol.fail_ctx = shared
 		vol.on_fail = proc(ctx: rawptr, msg: string) {
 			vm_log((^Shared)(ctx), fmt.tprintf("disk: writes frozen: %s", msg))
 		}
+		ctx.volume = vol
 		ctx.bd = fat32.volume_block_device(vol)
-		fmt.printfln("disk: %s as %dMB FAT32 volume", default_c_drive(), VOLUME_MB)
+		fmt.printfln("disk: %s as %dMB FAT32 volume", paths.c_drive, VOLUME_MB)
 	} else {
 		fmt.println("disk: none (--no-disk)")
 	}
@@ -138,14 +183,14 @@ gui_main :: proc(attach: bool, auto_close: int) {
 	h: host.Host
 	if !host.host_init(&h) {
 		fmt.eprintfln("host_init failed: %s", sdl3.GetError())
-		os.exit(1)
+		return 1
 	}
 
 	imgui.CHECKVERSION()
 	imgui.CreateContext()
 	io := imgui.GetIO()
 	io.IniFilename = nil // no imgui.ini
-	imgui.StyleColorsDark()
+	host.theme_apply()
 	imgui_impl_sdl3.InitForSDLRenderer(h.win, h.ren)
 	imgui_impl_sdlrenderer3.Init(h.ren)
 
@@ -227,6 +272,10 @@ gui_main :: proc(attach: bool, auto_close: int) {
 			push_cmd(shared, Command{kind = .Eject_Floppy})
 		case .Set_Cpu_Mode:
 			push_cmd(shared, Command{kind = .Set_Cpu_Mode, cpu_mode = st.cpu_mode})
+			active_settings.cpu_mode = st.cpu_mode
+			if diag := profile.settings_save(paths.settings, active_settings); diag != .None {
+				vm_log(shared, fmt.tprintf("settings: save failed (%v)", diag))
+			}
 		case .None:
 		}
 		imgui.Render()
@@ -257,6 +306,7 @@ gui_main :: proc(attach: bool, auto_close: int) {
 		fmt.printf(" %v=%d", kind, shared.exit_stats[kind])
 	}
 	fmt.println()
+	return 0
 }
 
 Pending_Mount :: struct {
@@ -410,6 +460,7 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 	defer sync.unlock(&c.guard.mu)
 	m^ = {}
 	if !machine.machine_init(m, RAM_SIZE) { return false }
+	if c.has_cmos { _ = machine.machine_cmos_import(m, c.cmos[:]) }
 	machine.machine_set_cpu_mode(m, c.cpu_mode)
 	if !machine.load_roms(&m.vm) {
 		machine.machine_destroy(m)
@@ -427,6 +478,12 @@ vm_shutdown :: proc(c: ^Vm_Ctx, m: ^machine.Machine) {
 	defer sync.unlock(&c.guard.mu)
 	if !c.guard.valid { return }
 	c.guard.valid = false
+	saved_cmos := machine.machine_cmos_export(m)
+	copy(c.cmos[:], saved_cmos[:])
+	c.has_cmos = true
+	if diag := profile.cmos_save(c.paths.cmos, c.cmos); diag != .None {
+		vm_log(c.shared, fmt.tprintf("CMOS: save failed (%v)", diag))
+	}
 	machine.machine_destroy(m)
 }
 
@@ -510,29 +567,53 @@ vcpu_pacer_proc :: proc(g: ^Vm_Guard) {
 RUN_SECONDS :: 60
 VGA_PERIOD :: 500 * time.Millisecond
 
-console_main :: proc(attach: bool, run_seconds: int, floppy_path: string) {
+console_main :: proc(
+	attach: bool,
+	run_seconds: int,
+	floppy_path: string,
+	paths: ^profile.Paths,
+	settings: profile.Settings,
+	cmos: profile.Cmos_Data,
+	has_cmos: bool,
+) -> int {
+	loaded_cmos := cmos
+	vol: ^fat32.Volume
 	m := new(machine.Machine)
 	if !machine.machine_init(m, RAM_SIZE) {
 		fmt.eprintln("machine_init failed (WHPX unavailable?)")
-		os.exit(1)
+		free(m)
+		return 1
 	}
+	defer {
+		saved_cmos := machine.machine_cmos_export(m)
+		stored: profile.Cmos_Data
+		copy(stored[:], saved_cmos[:])
+		if diag := profile.cmos_save(paths.cmos, stored); diag != .None {
+			fmt.eprintfln("CMOS save failed: %v", diag)
+		}
+		machine.machine_destroy(m)
+		fat32.volume_close(vol)
+		free(m)
+	}
+	if has_cmos { _ = machine.machine_cmos_import(m, loaded_cmos[:]) }
 	if !machine.load_roms(&m.vm) {
 		fmt.eprintln("load_roms failed")
-		os.exit(1)
+		return 1
 	}
+	machine.machine_set_cpu_mode(m, settings.cpu_mode)
+	fmt.println(cpu_mode_log(settings.cpu_mode))
 
 	if attach {
-		path := default_c_drive()
-		vol := fat32.volume_open(path, VOLUME_MB)
+		vol = fat32.volume_open(paths.c_drive, VOLUME_MB)
 		if vol == nil {
-			fmt.eprintfln("volume_open failed: %s", path)
-			os.exit(1)
+			fmt.eprintfln("volume_open failed: %s", paths.c_drive)
+			return 1
 		}
 		vol.on_fail = proc(ctx: rawptr, msg: string) {
 			fmt.printfln("disk: writes frozen: %s", msg)
 		}
 		machine.machine_attach_disk(m, fat32.volume_block_device(vol))
-		fmt.printfln("disk: %s as %dMB FAT32 volume", path, VOLUME_MB)
+		fmt.printfln("disk: %s as %dMB FAT32 volume", paths.c_drive, VOLUME_MB)
 	} else {
 		fmt.println("disk: none (--no-disk)")
 	}
@@ -543,12 +624,12 @@ console_main :: proc(attach: bool, run_seconds: int, floppy_path: string) {
 				fmt.printfln("floppy: mounted %s", floppy_path)
 			} else {
 				fmt.eprintfln("floppy: %s is not a 1.44MB image", floppy_path)
-				os.exit(1)
+				return 1
 			}
 			delete(img)
 		} else {
 			fmt.eprintfln("floppy: cannot read %s", floppy_path)
-			os.exit(1)
+			return 1
 		}
 	}
 
@@ -583,7 +664,7 @@ console_main :: proc(attach: bool, run_seconds: int, floppy_path: string) {
 			fmt.printfln("VM frozen after %d iterations: %s", iterations, m.bus.freeze_msg)
 			dump_state(m)
 			print_grid(vga.vga_snapshot(&m.vga, m.vm.ram))
-			os.exit(2)
+			return 2
 		}
 		if time.tick_diff(last_vga, now) >= VGA_PERIOD {
 			last_vga = now
@@ -603,6 +684,7 @@ console_main :: proc(attach: bool, run_seconds: int, floppy_path: string) {
 			break
 		}
 	}
+	return 0
 }
 
 flush_partial :: proc(line: ^[dynamic]u8) {
@@ -682,11 +764,4 @@ dump_ram :: proc(m: ^machine.Machine, tag: string, base, n: int) {
 		}
 		fmt.println()
 	}
-}
-
-default_c_drive :: proc() -> string {
-	home := os.get_env("USERPROFILE", context.allocator)
-	if home == "" { home = os.get_env("HOME", context.allocator) }
-	path, _ := filepath.join({home, ".retvrn99", "c_drive"})
-	return path
 }

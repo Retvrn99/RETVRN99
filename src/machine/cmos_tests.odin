@@ -56,3 +56,31 @@ test_cmos_memory_sizes :: proc(t: ^testing.T) {
 	cmos_out(&c2, 0x70, 0x35)
 	testing.expect_value(t, cmos_in(&c2, 0x71), u8(0x00))
 }
+
+@(test)
+test_cmos_nvram_roundtrip :: proc(t: ^testing.T) {
+	c: Cmos
+	cmos_init(&c, 64 * 1024 * 1024)
+	cmos_out(&c, 0x70, 0x3D)
+	cmos_out(&c, 0x71, 0x23)
+	cmos_out(&c, 0x70, 0x0B)
+	cmos_out(&c, 0x71, 0x42)
+	saved := cmos_nvram_export(&c)
+
+	restored: Cmos
+	cmos_init(&restored, 16 * 1024 * 1024)
+	testing.expect(t, cmos_nvram_import(&restored, saved[:], 16 * 1024 * 1024))
+	cmos_out(&restored, 0x70, 0x3D)
+	testing.expect_value(t, cmos_in(&restored, 0x71), u8(0x23))
+	cmos_out(&restored, 0x70, 0x0B)
+	testing.expect_value(t, cmos_in(&restored, 0x71), u8(0x02))
+	cmos_out(&restored, 0x70, 0x35)
+	testing.expect_value(t, cmos_in(&restored, 0x71), u8(0x00))
+}
+
+@(test)
+test_cmos_nvram_rejects_wrong_size :: proc(t: ^testing.T) {
+	c: Cmos
+	cmos_init(&c, 64 * 1024 * 1024)
+	testing.expect(t, !cmos_nvram_import(&c, []u8{1, 2, 3}, 64 * 1024 * 1024))
+}

@@ -230,10 +230,11 @@ claim_chain :: proc(v: ^Volume, node: ^Node, first: u32) -> bool {
 				rel0 := geo.data_start + (c - 2) * SECTORS_PER_CLUSTER
 				for s in u32(0) ..< SECTORS_PER_CLUSTER {
 					if !write_dir_sector(v, node, rel0 + s, ob[int(s) * SECTOR:][:SECTOR]) {
+						delete(ob, v.allocator)
 						return false
 					}
 				}
-				delete(ob)
+				delete(ob, v.allocator)
 			}
 		}
 	}
@@ -254,26 +255,28 @@ detach_child :: proc(node: ^Node) {
 }
 
 @(private = "file")
-rebase_paths :: proc(node: ^Node) {
+rebase_paths :: proc(v: ^Volume, node: ^Node) {
 	for child in node.children {
-		p, _ := filepath.join({node.host_path, child.name})
+		p, _ := filepath.join({node.host_path, child.name}, v.allocator)
+		delete(child.host_path, v.allocator)
 		child.host_path = p
 		if child.is_dir {
-			rebase_paths(child)
+			rebase_paths(v, child)
 		}
 	}
 }
 
 @(private = "file")
-decode_new_node :: proc(dir: ^Node, name, path: string, e: ^Dir_Entry, is_dir: bool) -> ^Node {
-	node := new(Node)
-	node.name = strings.clone(name)
-	node.host_path = strings.clone(path)
+decode_new_node :: proc(v: ^Volume, dir: ^Node, name, path: string, e: ^Dir_Entry, is_dir: bool) -> ^Node {
+	node := new(Node, v.allocator)
+	node.name = strings.clone(name, v.allocator)
+	node.host_path = strings.clone(path, v.allocator)
 	node.is_dir = is_dir
 	node.size = is_dir ? 0 : u64(e.size)
 	node.first_cluster = e.cluster
 	node.parent = dir
 	node.short = e.short
+	node.children = make([dynamic]^Node, v.allocator)
 	append(&dir.children, node)
 	return node
 }
@@ -282,7 +285,7 @@ decode_new_node :: proc(dir: ^Node, name, path: string, e: ^Dir_Entry, is_dir: b
 apply_create :: proc(v: ^Volume, dir: ^Node, e: ^Dir_Entry, round_deletes: ^[dynamic]^Node) -> bool {
 	ta := context.temp_allocator
 	name := e.lfn != "" ? e.lfn : short_to_name(e.short, ta)
-	path, _ := filepath.join({dir.host_path, name})
+	path, _ := filepath.join({dir.host_path, name}, ta)
 	if node := take_deleted_by_cluster(v, round_deletes, e.cluster); node != nil {
 		if rerr := os.rename(node.host_path, path); rerr != nil {
 			volume_fail(v, fmt.tprintf("rename %s -> %s failed", node.host_path, path))
@@ -291,11 +294,13 @@ apply_create :: proc(v: ^Volume, dir: ^Node, e: ^Dir_Entry, round_deletes: ^[dyn
 		detach_child(node)
 		node.parent = dir
 		append(&dir.children, node)
-		node.name = strings.clone(name)
-		node.host_path = strings.clone(path)
+		delete(node.name, v.allocator)
+		delete(node.host_path, v.allocator)
+		node.name = strings.clone(name, v.allocator)
+		node.host_path = strings.clone(path, v.allocator)
 		node.short = e.short
 		if node.is_dir {
-			rebase_paths(node)
+			rebase_paths(v, node)
 			return true
 		}
 		if u64(e.size) != node.size {
@@ -308,12 +313,12 @@ apply_create :: proc(v: ^Volume, dir: ^Node, e: ^Dir_Entry, round_deletes: ^[dyn
 			volume_fail(v, fmt.tprintf("mkdir %s failed", path))
 			return false
 		}
-		node := decode_new_node(dir, name, path, e, true)
+		node := decode_new_node(v, dir, name, path, e, true)
 		return claim_chain(v, node, e.cluster)
 	}
 	// new file: content comes from guest-written orphan clusters
 	data := make([]u8, int(e.size), ta)
-	node := decode_new_node(dir, name, path, e, false)
+	node := decode_new_node(v, dir, name, path, e, false)
 	if e.cluster != 0 {
 		if !claim_chain(v, node, e.cluster) {
 			return false
@@ -331,7 +336,7 @@ apply_create :: proc(v: ^Volume, dir: ^Node, e: ^Dir_Entry, round_deletes: ^[dyn
 			// buffer fully covered by the host file now: release it
 			if base + CLUSTER_BYTES <= int(e.size) {
 				delete_key(&v.journal.orphan_data, c)
-				delete(ob)
+				delete(ob, v.allocator)
 			}
 		}
 	}
@@ -421,7 +426,7 @@ apply_resize :: proc(v: ^Volume, node: ^Node, new_size: u32) -> bool {
 		// buffer fully covered by the host file now: release it
 		if base + CLUSTER_BYTES <= ns {
 			delete_key(&v.journal.orphan_data, c)
-			delete(ob)
+			delete(ob, v.allocator)
 		}
 	}
 	return true
@@ -455,6 +460,7 @@ apply_delete :: proc(v: ^Volume, node: ^Node) -> bool {
 	}
 	detach_child(node)
 	release_node_clusters(v, node)
+	node_tree_destroy(node, v.allocator)
 	return true
 }
 

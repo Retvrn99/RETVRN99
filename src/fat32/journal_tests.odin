@@ -183,8 +183,11 @@ journal_test_reserved_overlay :: proc(t: ^testing.T) {
 	if v == nil {
 		return
 	}
-	sec: [SECTOR]u8
-	copy(sec[:], "RRaA") // FSInfo update
+	sec := make_fsinfo()
+	sec[488] = 0x34
+	sec[489] = 0x12
+	sec[492] = 0x78
+	sec[493] = 0x56
 	lba := u64(PART_START_LBA) + 1
 	testing.expect(t, volume_write(v, lba, sec[:]))
 	back := read_test_sector(t, v, lba)

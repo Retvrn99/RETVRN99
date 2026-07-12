@@ -3,9 +3,8 @@ package host
 
 import sdl3 "vendor:sdl3"
 
-MENU_H :: 24 // height reserved for the ImGui menu bar
 WIN_W :: TEXT_W * 2 // 1440
-WIN_H :: TEXT_H * 2 + MENU_H // 800 + menu
+WIN_H :: TEXT_H * 2 + MENU_BAR_H
 
 Host :: struct {
 	win:   ^sdl3.Window,
