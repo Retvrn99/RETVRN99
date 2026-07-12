@@ -137,6 +137,17 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	machine_whitelist_range(&m.bus, 0x6F2, 0x6F7) // same IO.SYS probe series, stride 0x400
 	machine_whitelist_range(&m.bus, 0x1E8, 0x1EF) // IDE tertiary: Win98 boot-disk ATAPI driver probe; absent
 	machine_whitelist_range(&m.bus, 0x168, 0x16F) // IDE quaternary, same driver probe series
+	bus_whitelist(&m.bus, 0x36E, 0x36F) // IDE quaternary device control, same probe (tertiary's 0x3EE is inside the COM3 range above)
+	// Adaptec/BusLogic ISA windows probed by the EBD SCSI drivers (BTDOSM/ASPI2DOS/ASPI4DOS); absent.
+	// Registered handlers always beat the whitelist, so future devices in these ranges are unaffected.
+	machine_whitelist_range(&m.bus, 0x100, 0x15F)
+	machine_whitelist_range(&m.bus, 0x200, 0x25F)
+	machine_whitelist_range(&m.bus, 0x300, 0x35F)
+	bus_whitelist(&m.bus, 0xA79) // ISA PnP write-data, ASPI2DOS card isolation (address port 0x279 sits in the LPT2 range above)
+	// ISA PnP read-data candidates: ASPI2DOS walks 0x20B, 0x22B, ... 0x3EB until isolation finds a card (it never will)
+	for p := u16(0x20B); p <= 0x3EB; p += 0x20 { bus_whitelist(&m.bus, p) }
+	// PCI config mechanism #2 window, scanned by ASPI8DOS/ASPI8U2; floats on real 440BX too (mechanism #1 only)
+	machine_whitelist_range(&m.bus, 0xC000, 0xCFFF)
 
 	m.last_tick = time.tick_now()
 	return true
@@ -199,6 +210,7 @@ step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
 		time.sleep(time.Duration(d))
 	}
 	for _ in 0 ..< pit_advance(&m.pit, ns) { pic_raise(&m.pic, 0) }
+	for _ in 0 ..< cmos_advance(&m.cmos, ns) { pic_raise(&m.pic, 8) }
 	if pic_has_pending(&m.pic) {
 		if hv.can_inject(&m.vm) {
 			if v, ok := pic_ack(&m.pic); ok {

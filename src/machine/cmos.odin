@@ -5,6 +5,20 @@ Cmos :: struct {
 	ram:     [128]u8,
 	index:   u8,
 	h, m, s: u8,
+	pi_acc:  u64, // ns toward the next periodic interrupt
+}
+
+// Periodic-interrupt edges (IRQ8) elapsed over ns; SeaBIOS INT 15h AH=86
+// waits halt forever without them. Latches PF|IRQF in reg C per edge.
+cmos_advance :: proc(c: ^Cmos, ns: u64) -> int {
+	rate := c.ram[0x0A] & 0x0F
+	if c.ram[0x0B] & 0x40 == 0 || rate == 0 { c.pi_acc = 0; return 0 }
+	period := (u64(1_000_000_000) << (rate - 1)) / 32768
+	c.pi_acc += ns
+	n := int(c.pi_acc / period)
+	c.pi_acc %= period
+	if n > 0 { c.ram[0x0C] |= 0xC0 } // PF | IRQF
+	return n
 }
 
 cmos_bcd :: proc(v: u8) -> u8 { return (v / 10) << 4 | v % 10 }
@@ -55,7 +69,7 @@ cmos_in :: proc(c: ^Cmos, port: u16) -> u8 {
 	case 0x00: return cmos_bcd(c.s)
 	case 0x02: return cmos_bcd(c.m)
 	case 0x04: return cmos_bcd(c.h)
-	case 0x0C: return 0x00 // no interrupt pending
+	case 0x0C: v := c.ram[0x0C]; c.ram[0x0C] = 0; return v // flags clear on read
 	}
 	return c.ram[c.index]
 }

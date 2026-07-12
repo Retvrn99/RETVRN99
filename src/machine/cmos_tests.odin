@@ -17,6 +17,24 @@ test_cmos :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_cmos_periodic :: proc(t: ^testing.T) {
+	c: Cmos
+	cmos_init(&c, 64 * 1024 * 1024)
+	testing.expect_value(t, cmos_advance(&c, 10_000_000), 0) // PIE off
+
+	cmos_out(&c, 0x70, 0x0B)
+	cmos_out(&c, 0x71, 0x42) // PIE on; default rate 6 = 1024 Hz
+	testing.expect_value(t, cmos_advance(&c, 1_953_125), 2) // two 976562ns periods
+	cmos_out(&c, 0x70, 0x0C)
+	testing.expect_value(t, cmos_in(&c, 0x71), u8(0xC0)) // PF|IRQF latched
+	testing.expect_value(t, cmos_in(&c, 0x71), u8(0x00)) // cleared by read
+
+	cmos_out(&c, 0x70, 0x0B)
+	cmos_out(&c, 0x71, 0x02) // PIE off drops the accumulator
+	testing.expect_value(t, cmos_advance(&c, 10_000_000), 0)
+}
+
+@(test)
 test_cmos_memory_sizes :: proc(t: ^testing.T) {
 	c: Cmos
 	cmos_init(&c, 64 * 1024 * 1024)
