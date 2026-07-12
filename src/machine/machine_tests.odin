@@ -92,6 +92,76 @@ test_machine_irq_delivery :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_machine_fdc_dma_read :: proc(t: ^testing.T) {
+	// no WHPX needed: drives the FDC through the bus and the real 8237
+	m: Machine
+	bus_init(&m.bus)
+	defer bus_destroy(&m.bus)
+	pic_setup(&m.pic)
+	machine_init_fdc(&m)
+	m.vm.ram = make([]u8, 1024 * 1024)
+	defer { delete(m.vm.ram); m.vm.ram = nil }
+
+	img := make([]u8, disk.FLOPPY_144_SIZE)
+	defer delete(img)
+	for i in 0 ..< 512 { img[i] = u8(i * 3 + 1) }
+	testing.expect(t, machine_mount_floppy(&m, img))
+	defer machine_eject_floppy(&m)
+
+	// DIR shows the media change from the mount
+	testing.expect_value(t, bus_io_read(&m.bus, 0x3F7, 1), u32(0x80))
+
+	// reset via DOR raises IRQ6 through machine glue
+	bus_io_write(&m.bus, 0x3F2, 1, 0x08)
+	bus_io_write(&m.bus, 0x3F2, 1, 0x1C)
+	testing.expect(t, m.pic.master.irr & 0x40 != 0)
+
+	sense :: proc(m: ^Machine) -> (st0, pcn: u8) {
+		bus_io_write(&m.bus, 0x3F5, 1, 0x08)
+		st0 = u8(bus_io_read(&m.bus, 0x3F5, 1))
+		pcn = u8(bus_io_read(&m.bus, 0x3F5, 1))
+		return
+	}
+	for _ in 0 ..< 4 { _, _ = sense(&m) }
+
+	// RECALIBRATE then SENSE INTERRUPT: seek end at cylinder 0
+	bus_io_write(&m.bus, 0x3F5, 1, 0x07)
+	bus_io_write(&m.bus, 0x3F5, 1, 0x00)
+	st0, pcn := sense(&m)
+	testing.expect_value(t, st0, u8(0x20))
+	testing.expect_value(t, pcn, u8(0x00))
+	testing.expect_value(t, bus_io_read(&m.bus, 0x3F7, 1), u32(0x00)) // DSKCHG cleared
+
+	// program DMA ch2: single mode, write to memory, 512 bytes at 0x1000
+	dma_out(&m.dma, 0x0A, 0x06) // mask ch2
+	dma_out(&m.dma, 0x0C, 0x00) // clear flip-flop
+	dma_out(&m.dma, 0x0B, 0x46) // mode: single, write, ch2
+	dma_out(&m.dma, 0x04, 0x00)
+	dma_out(&m.dma, 0x04, 0x10) // addr 0x1000
+	dma_out(&m.dma, 0x05, 0xFF)
+	dma_out(&m.dma, 0x05, 0x01) // count 511 = 512 bytes
+	dma_out(&m.dma, 0x81, 0x00) // page 0
+	dma_out(&m.dma, 0x0A, 0x02) // unmask ch2
+
+	// READ C0/H0/S1
+	for b in ([]u8{0xE6, 0x00, 0, 0, 1, 2, 18, 0x1B, 0xFF}) {
+		bus_io_write(&m.bus, 0x3F5, 1, u32(b))
+	}
+	testing.expect_value(t, bus_io_read(&m.bus, 0x3F4, 1), u32(0xD0))
+	res: [7]u8
+	for i in 0 ..< 7 { res[i] = u8(bus_io_read(&m.bus, 0x3F5, 1)) }
+	testing.expect_value(t, res[0] & 0xC0, u8(0x00))
+
+	ok := true
+	for i in 0 ..< 512 {
+		if m.vm.ram[0x1000 + i] != img[i] { ok = false; break }
+	}
+	testing.expect(t, ok)
+	testing.expect_value(t, m.vm.ram[0x1000 + 512], u8(0)) // TC stopped the transfer
+	testing.expect(t, !m.bus.frozen)
+}
+
+@(test)
 test_machine_attach_disk :: proc(t: ^testing.T) {
 	// no WHPX needed: drives the IDE through the bus directly
 	m: Machine

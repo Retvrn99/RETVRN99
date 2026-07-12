@@ -29,6 +29,7 @@ Machine :: struct {
 	dma:        Dma,
 	vga:        video.Vga,
 	ide:        disk.Ide,
+	fdc:        disk.Fdc,
 	has_disk:   bool,
 	vm:         hv.Vm,
 	last_tick:  time.Tick,
@@ -98,8 +99,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	machine_whitelist_range(&m.bus, 0xC0, 0xDF) // master DMA + cascade
 	machine_whitelist_range(&m.bus, 0x88, 0x8F) // DMA page registers
 	bus_whitelist(&m.bus, 0x4D0, 0x4D1) // ELCR
-	machine_whitelist_range(&m.bus, 0x3F0, 0x3F5) // FDC until Task 24
-	bus_whitelist(&m.bus, 0x3F7)
+	machine_init_fdc(m)
 	bus_whitelist(&m.bus, 0x1CE, 0x1CF) // bochs dispi probe by SeaVGABIOS bochsvga_setup
 	machine_whitelist_range(&m.bus, 0x170, 0x177) // IDE secondary channel: SeaBIOS ata_detect; absent in M1
 	bus_whitelist(&m.bus, 0x376) // IDE secondary device control (SRST/altstatus), same probe
@@ -113,6 +113,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 }
 
 machine_destroy :: proc(m: ^Machine) {
+	disk.fdc_eject_media(&m.fdc)
 	hv.destroy(&m.vm)
 	fwcfg_destroy(&m.fwcfg)
 	bus_destroy(&m.bus)
@@ -134,6 +135,30 @@ machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
 	h := Io_Handler{ctx = m, read = machine_ide_read, write = machine_ide_write}
 	bus_register(&m.bus, 0x1F0, 0x1F7, h)
 	bus_register(&m.bus, 0x3F6, 0x3F6, h)
+}
+
+// registra el FDC en el bus y le instala IRQ6 y el pegamento de DMA ch2
+machine_init_fdc :: proc(m: ^Machine) {
+	disk.fdc_init(&m.fdc)
+	m.fdc.irq_ctx = m
+	m.fdc.irq = machine_irq6
+	m.fdc.dma_ctx = m
+	m.fdc.dma_to_mem = machine_fdc_dma_to_mem
+	m.fdc.dma_from_mem = machine_fdc_dma_from_mem
+	m.fdc.dma_tc = machine_fdc_dma_tc
+	h := Io_Handler{ctx = m, read = machine_fdc_read, write = machine_fdc_write}
+	bus_register(&m.bus, 0x3F0, 0x3F5, h) // 0x3F6 pertenece al IDE
+	bus_register(&m.bus, 0x3F7, 0x3F7, h)
+}
+
+// gancho para el menu de la GUI
+machine_mount_floppy :: proc(m: ^Machine, img: []u8) -> bool {
+	return disk.fdc_set_media(&m.fdc, img)
+}
+
+// gancho para el menu de la GUI
+machine_eject_floppy :: proc(m: ^Machine) {
+	disk.fdc_eject_media(&m.fdc)
 }
 
 step :: proc(m: ^Machine) -> bool { // false = frozen/powered off
@@ -225,9 +250,38 @@ machine_irq1 :: proc(ctx: rawptr) {
 }
 
 @(private = "file")
+machine_irq6 :: proc(ctx: rawptr) {
+	m := (^Machine)(ctx)
+	pic_raise(&m.pic, 6)
+}
+
+@(private = "file")
 machine_irq14 :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
 	pic_raise(&m.pic, 14)
+}
+
+// --- pegamento FDC <-> DMA canal 2 ---
+
+@(private = "file")
+machine_fdc_dma_to_mem :: proc(ctx: rawptr, data: []u8) {
+	m := (^Machine)(ctx)
+	dma_write_mem(&m.dma, 2, m.vm.ram, data)
+}
+
+@(private = "file")
+machine_fdc_dma_from_mem :: proc(ctx: rawptr, buf: []u8) -> int {
+	m := (^Machine)(ctx)
+	tmp := dma_read_mem(&m.dma, 2, m.vm.ram, len(buf))
+	defer delete(tmp)
+	return copy(buf, tmp)
+}
+
+// mira el bit TC del canal 2 sin consumirlo como haria la lectura del puerto 8
+@(private = "file")
+machine_fdc_dma_tc :: proc(ctx: rawptr) -> bool {
+	m := (^Machine)(ctx)
+	return m.dma.status & 0x04 != 0
 }
 
 @(private = "file")
@@ -354,6 +408,20 @@ machine_vga_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_vga_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	for i in 0 ..< int(size) { video.vga_out(&m.vga, port + u16(i), u8(val >> (8 * uint(i)))) }
+}
+
+@(private = "file")
+machine_fdc_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
+	m := (^Machine)(ctx)
+	v: u32 = 0
+	for i in 0 ..< int(size) { v |= u32(disk.fdc_in(&m.fdc, port + u16(i))) << (8 * uint(i)) }
+	return v
+}
+
+@(private = "file")
+machine_fdc_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
+	m := (^Machine)(ctx)
+	for i in 0 ..< int(size) { disk.fdc_out(&m.fdc, port + u16(i), u8(val >> (8 * uint(i)))) }
 }
 
 @(private = "file")
