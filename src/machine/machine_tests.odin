@@ -36,8 +36,9 @@ test_machine_port_echo :: proc(t: ^testing.T) {
 	}
 	testing.set_fail_timeout(t, 10 * time.Second)
 	m: Machine
-	testing.expect(t, machine_init(&m, 64 * 1024 * 1024))
+	ok := machine_init(&m, 64 * 1024 * 1024)
 	defer machine_destroy(&m)
+	if !testing.expect(t, ok) { return }
 
 	seen: u32 = 0
 	h := Io_Handler{
@@ -65,8 +66,9 @@ test_machine_irq_delivery :: proc(t: ^testing.T) {
 	}
 	testing.set_fail_timeout(t, 10 * time.Second)
 	m: Machine
-	testing.expect(t, machine_init(&m, 64 * 1024 * 1024))
+	ok := machine_init(&m, 64 * 1024 * 1024)
 	defer machine_destroy(&m)
+	if !testing.expect(t, ok) { return }
 	pic_setup(&m.pic) // master base 0x08, everything unmasked
 
 	// IVT vector 8 -> 0000:0500

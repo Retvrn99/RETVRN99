@@ -12,8 +12,9 @@ test_whpx_realmode_blob :: proc(t: ^testing.T) {
 		return
 	}
 	vm: Vm
-	testing.expect(t, create(&vm, 64 * 1024 * 1024))
+	ok := create(&vm, 64 * 1024 * 1024)
 	defer destroy(&vm)
+	if !testing.expect(t, ok) { return }
 	// mov ax, 0x1234; hlt   (at 0x0000:0x7C00)
 	copy(vm.ram[0x7C00:], []u8{0xB8, 0x34, 0x12, 0xF4})
 	set_realmode_entry(&vm, 0, 0x7C00)
@@ -41,8 +42,9 @@ test_whpx_io_exit_budget :: proc(t: ^testing.T) {
 	}
 	testing.set_fail_timeout(t, 10 * time.Second)
 	vm: Vm
-	testing.expect(t, create(&vm, 64 * 1024 * 1024))
+	ok := create(&vm, 64 * 1024 * 1024)
 	defer destroy(&vm)
+	if !testing.expect(t, ok) { return }
 	// mov dx, 0x80; l: in al, dx; jmp l   (guest polls a port forever)
 	copy(vm.ram[0x7C00:], []u8{0xBA, 0x80, 0x00, 0xEC, 0xEB, 0xFD})
 	set_realmode_entry(&vm, 0, 0x7C00)
@@ -57,8 +59,9 @@ test_whpx_can_inject_interrupt_shadow :: proc(t: ^testing.T) {
 		return
 	}
 	vm: Vm
-	testing.expect(t, create(&vm, 64 * 1024 * 1024))
+	ok := create(&vm, 64 * 1024 * 1024)
 	defer destroy(&vm)
+	if !testing.expect(t, ok) { return }
 
 	// RFLAGS.IF set, nothing pending -> injectable
 	name := WHV_REGISTER_NAME.Rflags

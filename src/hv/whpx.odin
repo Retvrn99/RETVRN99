@@ -3,7 +3,17 @@ package hv
 
 import "base:runtime"
 import "core:fmt"
+import "core:sync"
 import win32 "core:sys/windows"
+
+// Windows allows only one WHPX partition with GPA mappings per process:
+// a second WHvMapGpaRange fails with 0xC0370008
+// (ERROR_VID_PARTITION_ALREADY_EXISTS) while another mapped partition
+// exists, even single-threaded. Serialize whole VM lifetimes: whpx_create
+// blocks until the previous VM is destroyed. Not reentrant — one thread
+// must not create a second VM while holding one.
+@(private = "file")
+whpx_vm_gate: sync.Mutex
 
 whpx_available :: proc() -> bool {
 	present: win32.BOOL
@@ -17,8 +27,10 @@ whpx_create :: proc(vm: ^Vm, ram_size: int) -> bool {
 		return false
 	}
 
+	sync.lock(&whpx_vm_gate)
 	part: WHV_PARTITION_HANDLE
 	if WHvCreatePartition(&part) < 0 {
+		sync.unlock(&whpx_vm_gate)
 		return false
 	}
 	vm.part = part
@@ -75,6 +87,7 @@ whpx_create :: proc(vm: ^Vm, ram_size: int) -> bool {
 }
 
 whpx_destroy :: proc(vm: ^Vm) {
+	held_gate := vm.part != nil // only a create that got a partition holds the gate
 	if vm.emu != nil {
 		WHvEmulatorDestroyEmulator(vm.emu)
 		vm.emu = nil
@@ -92,6 +105,9 @@ whpx_destroy :: proc(vm: ^Vm) {
 	}
 	delete(vm.roms)
 	vm.roms = nil
+	if held_gate {
+		sync.unlock(&whpx_vm_gate)
+	}
 }
 
 // page-aligned host copy mapped Read|Execute (no Write): guest ROM
