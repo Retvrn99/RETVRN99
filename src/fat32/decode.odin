@@ -266,7 +266,36 @@ claim_chain :: proc(v: ^Volume, node: ^Node, first: u32) -> bool {
 		volume_fail(v, fmt.tprintf("bad FAT chain at cluster %d for %s", first, node.name))
 		return false
 	}
+	for c in chain {
+		if claim, ok := v.journal.claimed[c]; ok && claim.node != node {
+			volume_fail(
+				v,
+				fmt.tprintf("FAT chain cluster %d for %s is already claimed", c, node.name),
+			)
+			return false
+		}
+		if c < u32(len(v.alloc.by_cluster)) {
+			owner := v.alloc.by_cluster[c]
+			if owner != nil && owner != node {
+				volume_fail(
+					v,
+					fmt.tprintf(
+						"FAT chain cluster %d for %s belongs to %s",
+						c,
+						node.name,
+						owner.name,
+					),
+				)
+				return false
+			}
+		}
+	}
+	if node == v.alloc.root && !root_chain_detach_safe(v, node, chain[:]) {
+		return false
+	}
 	geo := &v.alloc.geo
+	release_node_clusters(v, node)
+	node.first_cluster = first
 	node.cluster_len = u32(len(chain))
 	for c, idx in chain {
 		delete_key(&v.journal.stale_clusters, c)
@@ -282,6 +311,40 @@ claim_chain :: proc(v: ^Volume, node: ^Node, first: u32) -> bool {
 					}
 				}
 				delete(ob, v.allocator)
+			}
+		}
+	}
+	return true
+}
+
+@(private = "file")
+root_chain_detach_safe :: proc(v: ^Volume, root: ^Node, chain: []u32) -> bool {
+	new_chain := make(map[u32]bool, context.temp_allocator)
+	old_chain := make(map[u32]bool, context.temp_allocator)
+	for cluster in chain {new_chain[cluster] = true}
+	for owner, cluster in v.alloc.by_cluster {
+		if owner == root {old_chain[u32(cluster)] = true}
+	}
+	for cluster, claim in v.journal.claimed {
+		if claim.node == root {old_chain[cluster] = true}
+	}
+	for cluster in old_chain {
+		if new_chain[cluster] {continue}
+		block: [CLUSTER_BYTES]u8
+		lba := u64(PART_START_LBA) + u64(cluster_to_lba(&v.alloc.geo, cluster))
+		if !volume_read(v, lba, block[:]) {
+			return false
+		}
+		for offset := 0; offset < len(block); offset += 32 {
+			if block[offset] != 0 && block[offset] != 0xE5 {
+				volume_fail(
+					v,
+					fmt.tprintf(
+						"protected system disk rejected nonempty root chain truncation at cluster %d",
+						cluster,
+					),
+				)
+				return false
 			}
 		}
 	}

@@ -193,7 +193,32 @@ protected_directory_layout_replacement :: proc(v: ^Volume, rel: u32, sec: []u8) 
 		dir_cluster_data(&v.alloc, node, index, tmp[:])
 		copy(old[:], tmp[int(soff) * SECTOR:][:SECTOR])
 	}
+	if protected_directory_slot_deletions_only(old[:], sec) {
+		return false
+	}
 	return protected_directory_sector_has_entries(old[:])
+}
+
+@(private = "file")
+protected_directory_slot_deletions_only :: proc(old, new: []u8) -> bool {
+	if len(old) != SECTOR || len(new) != SECTOR {return false}
+	for off := 0; off < SECTOR; off += 32 {
+		same := true
+		for i in 0 ..< 32 {
+			if old[off + i] != new[off + i] {
+				same = false
+				break
+			}
+		}
+		if same {continue}
+		if old[off] == 0 || old[off] == 0xE5 || new[off] != 0xE5 {
+			return false
+		}
+		for i in 1 ..< 32 {
+			if old[off + i] != new[off + i] {return false}
+		}
+	}
+	return true
 }
 
 @(private = "file")

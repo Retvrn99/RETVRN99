@@ -39,6 +39,42 @@ protection_test_put32 :: proc(b: []u8, off: int, value: u32) {
 	b[off + 3] = u8(value >> 24)
 }
 
+protection_test_stage_fat_set :: proc(t: ^testing.T, v: ^Volume, cluster, value: u32) -> bool {
+	lba := journal_test_fat_lba(v, cluster)
+	sector := read_test_sector(t, v, lba)
+	protection_test_put32(sector[:], int(cluster % 128) * 4, value)
+	return volume_stage_write(v, lba, sector[:])
+}
+
+protection_test_stage_fat_pair :: proc(
+	t: ^testing.T,
+	v: ^Volume,
+	first_cluster, first_value, second_cluster, second_value: u32,
+) -> bool {
+	first_entry_lba := journal_test_fat_lba(v, first_cluster)
+	second_entry_lba := journal_test_fat_lba(v, second_cluster)
+	start_lba := min(first_entry_lba, second_entry_lba)
+	end_lba := max(first_entry_lba, second_entry_lba)
+	sectors := make([]u8, int(end_lba - start_lba + 1) * SECTOR, context.temp_allocator)
+	testing.expect(t, volume_read(v, start_lba, sectors))
+	first_offset := int(first_entry_lba - start_lba) * SECTOR + int(first_cluster % 128) * 4
+	second_offset := int(second_entry_lba - start_lba) * SECTOR + int(second_cluster % 128) * 4
+	protection_test_put32(sectors, first_offset, first_value)
+	protection_test_put32(sectors, second_offset, second_value)
+	return volume_stage_write(v, start_lba, sectors)
+}
+
+protection_test_add_long_root_files :: proc(t: ^testing.T, dir: string, count: int) {
+	padding := "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
+	for i in 0 ..< count {
+		name := fmt.tprintf("TAIL%02d-%s.TXT", i, padding)
+		path, path_error := filepath.join({dir, name}, context.temp_allocator)
+		testing.expect(t, path_error == nil)
+		data := [5]u8{'T', 'A', 'I', 'L', u8(i)}
+		testing.expect(t, os.write_entire_file(path, data[:]) == nil)
+	}
+}
+
 @(test)
 protection_test_fdisk_mbr_write :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
@@ -203,6 +239,44 @@ protection_test_format_later_root_sector_is_rejected_after_fat_free :: proc(t: ^
 }
 
 @(test)
+protection_test_staged_last_root_entry_delete_is_allowed :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	protection_test_add_root_files(t, dir, 14)
+
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {return}
+	closed := false
+	defer if !closed {volume_discard(v)}
+	root := v.alloc.root
+	testing.expect_value(t, len(root.children), 17)
+	if len(root.children) != 17 {return}
+	target := root.children[16]
+	target_path := strings.clone(target.host_path, context.temp_allocator)
+	root_lba := journal_test_data_lba(v, root.first_cluster)
+	sector_lba := root_lba + 1
+	sector := read_test_sector(t, v, sector_lba)
+	testing.expect(t, sector[0] != 0 && sector[0] != 0xE5)
+	testing.expect_value(t, sector[32], u8(0))
+
+	for cluster in target.first_cluster ..< target.first_cluster + target.cluster_len {
+		testing.expect(t, protection_test_stage_fat_set(t, v, cluster, 0))
+	}
+	sector[0] = 0xE5
+	testing.expect(t, volume_stage_write(v, sector_lba, sector[:]))
+	testing.expect(t, !v.frozen)
+	testing.expect(t, volume_reconcile(v))
+	testing.expect(t, !os.exists(target_path))
+	if !volume_close(v) {
+		testing.expect(t, false)
+		return
+	}
+	closed = true
+}
+
+@(test)
 protection_test_format_later_root_cluster_is_rejected :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := fat32_test_fixture(t)
@@ -226,6 +300,302 @@ protection_test_format_later_root_cluster_is_rejected :: proc(t: ^testing.T) {
 	testing.expect(t, v.frozen && failure.useful)
 	last := v.alloc.root.children[len(v.alloc.root.children) - 1]
 	testing.expect(t, os.exists(last.host_path))
+}
+
+@(test)
+protection_test_staged_root_growth_stays_protected_after_fat_free :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {return}
+	discarded := false
+	defer if !discarded {volume_discard(v)}
+
+	root := v.alloc.root
+	testing.expect_value(t, root.cluster_len, u32(1))
+	if root.cluster_len != 1 {return}
+	command := root.children[0]
+	command_path := strings.clone(command.host_path, context.temp_allocator)
+	want, read_error := os.read_entire_file(command_path, context.temp_allocator)
+	testing.expect(t, read_error == nil)
+	new_root_cluster := v.alloc.next_free
+
+	// The first half of a cross-write FAT update is incomplete, not corrupt.
+	testing.expect(t, protection_test_stage_fat_set(t, v, root.first_cluster, new_root_cluster))
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, len(v.journal.pending_extends), 1)
+	_, claimed_early := v.journal.claimed[new_root_cluster]
+	testing.expect(t, !claimed_early)
+
+	testing.expect(t, protection_test_stage_fat_set(t, v, new_root_cluster, 0x0FFFFFFF))
+	testing.expect(t, !v.frozen)
+	claim, claimed := v.journal.claimed[new_root_cluster]
+	testing.expect(t, claimed)
+	if claimed {
+		testing.expect(t, claim.node == root)
+		testing.expect_value(t, claim.index, u32(1))
+	}
+	testing.expect_value(t, root.cluster_len, u32(2))
+	testing.expect_value(t, len(v.journal.pending_extends), 0)
+
+	file_cluster := new_root_cluster + 1
+	testing.expect(t, protection_test_stage_fat_set(t, v, file_cluster, 0x0FFFFFFF))
+	file_data: [SECTOR]u8
+	copy(file_data[:], "GROWN")
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, file_cluster), file_data[:]))
+	occupied: [SECTOR]u8
+	decode_test_put_entry(occupied[:], 0, "GROWN   TXT", ATTR_FILE, file_cluster, 5)
+	new_root_lba := journal_test_data_lba(v, new_root_cluster)
+	testing.expect(t, volume_stage_write(v, new_root_lba, occupied[:]))
+	testing.expect(t, !v.frozen)
+	testing.expect(t, volume_reconcile(v))
+	materialized_path, path_error := filepath.join({dir, "GROWN.TXT"}, context.temp_allocator)
+	testing.expect(t, path_error == nil)
+	materialized, materialized_error := os.read_entire_file(
+		materialized_path,
+		context.temp_allocator,
+	)
+	testing.expect(t, materialized_error == nil)
+	testing.expect_value(t, string(materialized), "GROWN")
+
+	// FORMAT commonly frees the FAT first, then installs a zeroed root with a label.
+	testing.expect(t, protection_test_stage_fat_set(t, v, new_root_cluster, 0))
+	testing.expect(t, !v.frozen)
+	retained_claim, retained := v.journal.claimed[new_root_cluster]
+	testing.expect(t, retained)
+	if retained {testing.expect(t, retained_claim.node == root)}
+
+	failure: Protection_Test_Failure
+	protection_test_arm(v, &failure)
+	formatted: [SECTOR]u8
+	copy(formatted[:11], "NO NAME    ")
+	formatted[11] = 0x08
+	testing.expect(t, !volume_stage_write(v, new_root_lba, formatted[:]))
+	testing.expect(t, v.frozen && failure.fired && failure.useful)
+	protection_test_host_unchanged(t, command, want)
+	materialized, materialized_error = os.read_entire_file(
+		materialized_path,
+		context.temp_allocator,
+	)
+	testing.expect(t, materialized_error == nil)
+	testing.expect_value(t, string(materialized), "GROWN")
+
+	testing.expect(t, !volume_close(v))
+	volume_discard(v)
+	discarded = true
+	v2 := volume_open(dir, 2048)
+	testing.expect(t, v2 != nil)
+	if v2 == nil {return}
+	reopened, reopen_error := os.read_entire_file(command_path, context.temp_allocator)
+	testing.expect(t, reopen_error == nil)
+	testing.expect(t, string(reopened) == string(want))
+	reopened_grown, grown_error := os.read_entire_file(materialized_path, context.temp_allocator)
+	testing.expect(t, grown_error == nil)
+	testing.expect_value(t, string(reopened_grown), "GROWN")
+	testing.expect(t, volume_close(v2))
+}
+
+@(test)
+protection_test_staged_root_growth_rejects_owned_cluster :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {return}
+	defer volume_discard(v)
+	root := v.alloc.root
+	occupied := root.children[1]
+	want, read_error := os.read_entire_file(root.children[0].host_path, context.temp_allocator)
+	testing.expect(t, read_error == nil)
+	fired := false
+	journal_test_arm_on_fail(v, &fired)
+
+	testing.expect(
+		t,
+		!protection_test_stage_fat_set(t, v, root.first_cluster, occupied.first_cluster),
+	)
+	testing.expect(t, v.frozen && fired)
+	protection_test_host_unchanged(t, root.children[0], want)
+}
+
+@(test)
+protection_test_staged_root_tail_can_be_reused_after_complete_shrink :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {return}
+	closed := false
+	defer if !closed {volume_discard(v)}
+
+	root := v.alloc.root
+	tail := v.alloc.next_free
+	testing.expect(t, protection_test_stage_fat_set(t, v, tail, 0x0FFFFFFF))
+	testing.expect(t, protection_test_stage_fat_set(t, v, root.first_cluster, tail))
+	grown_claim, grown := v.journal.claimed[tail]
+	testing.expect(t, grown)
+	if grown {testing.expect(t, grown_claim.node == root)}
+	testing.expect_value(t, root.cluster_len, u32(2))
+
+	// Ending the root at its first cluster is a complete shrink, so the old tail is reusable.
+	testing.expect(t, protection_test_stage_fat_set(t, v, root.first_cluster, 0x0FFFFFFF))
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, root.cluster_len, u32(1))
+	_, still_claimed := v.journal.claimed[tail]
+	testing.expect(t, !still_claimed)
+	testing.expect(t, v.alloc.by_cluster[tail] == nil)
+
+	data: [SECTOR]u8
+	copy(data[:], "REUSE")
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, tail), data[:]))
+	root_lba := journal_test_data_lba(v, root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(root_sector[:], 96, "REUSED  TXT", ATTR_FILE, tail, 5)
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	testing.expect(t, volume_reconcile(v))
+
+	owner, owned := v.journal.claimed[tail]
+	testing.expect(t, owned)
+	if owned {
+		testing.expect(t, owner.node != root)
+		testing.expect(t, !owner.node.is_dir)
+	}
+	guest: [SECTOR]u8
+	testing.expect(t, volume_read(v, journal_test_data_lba(v, tail), guest[:]))
+	testing.expect_value(t, string(guest[:5]), "REUSE")
+	reused_path, path_error := filepath.join({dir, "REUSED.TXT"}, context.temp_allocator)
+	testing.expect(t, path_error == nil)
+	host, host_error := os.read_entire_file(reused_path, context.temp_allocator)
+	testing.expect(t, host_error == nil)
+	testing.expect_value(t, string(host), "REUSE")
+
+	if !volume_close(v) {
+		testing.expect(t, false)
+		return
+	}
+	closed = true
+	v2 := volume_open(dir, 2048)
+	testing.expect(t, v2 != nil)
+	if v2 == nil {return}
+	reopened, reopen_error := os.read_entire_file(reused_path, context.temp_allocator)
+	testing.expect(t, reopen_error == nil)
+	testing.expect_value(t, string(reopened), "REUSE")
+	testing.expect(t, volume_close(v2))
+}
+
+@(test)
+protection_test_staged_synthesized_root_truncation_preserves_tail_file :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	protection_test_add_long_root_files(t, dir, 14)
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {return}
+	discarded := false
+	defer if !discarded {volume_discard(v)}
+
+	root := v.alloc.root
+	testing.expect(t, root.cluster_len > 1)
+	if root.cluster_len <= 1 {return}
+	entry_index: u32
+	target: ^Node
+	for child in root.children {
+		if entry_index >= CLUSTER_BYTES / 32 {
+			target = child
+			break
+		}
+		entry_index += 1 + lfn_entry_count(child.name)
+	}
+	testing.expect(t, target != nil)
+	if target == nil {return}
+	target_path := strings.clone(target.host_path, context.temp_allocator)
+	want, read_error := os.read_entire_file(target_path, context.temp_allocator)
+	testing.expect(t, read_error == nil)
+	failure: Protection_Test_Failure
+	protection_test_arm(v, &failure)
+
+	testing.expect(
+		t,
+		!protection_test_stage_fat_pair(
+			t,
+			v,
+			root.first_cluster,
+			0x0FFFFFFF,
+			target.first_cluster,
+			0,
+		),
+	)
+	testing.expect(t, v.frozen && failure.fired && failure.useful)
+	protection_test_host_unchanged(t, target, want)
+	testing.expect(t, !volume_close(v))
+	volume_discard(v)
+	discarded = true
+
+	v2 := volume_open(dir, 2048)
+	testing.expect(t, v2 != nil)
+	if v2 == nil {return}
+	reopened, reopen_error := os.read_entire_file(target_path, context.temp_allocator)
+	testing.expect(t, reopen_error == nil)
+	testing.expect(t, string(reopened) == string(want))
+	testing.expect(t, volume_close(v2))
+}
+
+@(test)
+protection_test_staged_grown_root_truncation_preserves_tail_file :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {return}
+	discarded := false
+	defer if !discarded {volume_discard(v)}
+
+	root := v.alloc.root
+	tail := v.alloc.next_free
+	file_cluster := tail + 1
+	testing.expect(t, protection_test_stage_fat_set(t, v, tail, 0x0FFFFFFF))
+	testing.expect(t, protection_test_stage_fat_set(t, v, root.first_cluster, tail))
+	testing.expect(t, protection_test_stage_fat_set(t, v, file_cluster, 0x0FFFFFFF))
+	data: [SECTOR]u8
+	copy(data[:], "GROWN")
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, file_cluster), data[:]))
+	tail_sector: [SECTOR]u8
+	decode_test_put_entry(tail_sector[:], 0, "GROWN   TXT", ATTR_FILE, file_cluster, 5)
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, tail), tail_sector[:]))
+	testing.expect(t, volume_reconcile(v))
+	grown_path, path_error := filepath.join({dir, "GROWN.TXT"}, context.temp_allocator)
+	testing.expect(t, path_error == nil)
+	host, host_error := os.read_entire_file(grown_path, context.temp_allocator)
+	testing.expect(t, host_error == nil)
+	testing.expect_value(t, string(host), "GROWN")
+	failure: Protection_Test_Failure
+	protection_test_arm(v, &failure)
+
+	testing.expect(
+		t,
+		!protection_test_stage_fat_pair(t, v, root.first_cluster, 0x0FFFFFFF, file_cluster, 0),
+	)
+	testing.expect(t, v.frozen && failure.fired && failure.useful)
+	host, host_error = os.read_entire_file(grown_path, context.temp_allocator)
+	testing.expect(t, host_error == nil)
+	testing.expect_value(t, string(host), "GROWN")
+	testing.expect(t, !volume_close(v))
+	volume_discard(v)
+	discarded = true
+
+	v2 := volume_open(dir, 2048)
+	testing.expect(t, v2 != nil)
+	if v2 == nil {return}
+	reopened, reopen_error := os.read_entire_file(grown_path, context.temp_allocator)
+	testing.expect(t, reopen_error == nil)
+	testing.expect_value(t, string(reopened), "GROWN")
+	testing.expect(t, volume_close(v2))
 }
 
 @(test)

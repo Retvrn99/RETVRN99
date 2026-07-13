@@ -197,29 +197,36 @@ stage_sector :: proc(v: ^Volume, lba: u64, sec: []u8) -> bool {
 		return false
 	}
 	rel := u32(rel64)
-	overlay_put(v, rel, sec)
 	if rel >= geo.fat_start && rel < geo.data_start {
-		stage_fat_sector(v, rel, sec)
+		if !stage_fat_sector(v, rel, sec) {
+			return false
+		}
 	}
+	overlay_put(v, rel, sec)
 	return true
 }
 
 @(private = "file")
-stage_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) {
+stage_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) -> bool {
 	geo := &v.alloc.geo
 	if rel >= geo.fat_start + geo.sectors_per_fat {
-		return
+		return true
 	}
 	base := (rel - geo.fat_start) * 128
 	for i in u32(0) ..< 128 {
 		cluster := base + i
+		old := volume_fat_entry(v, cluster) & 0x0FFFFFFF
 		raw :=
 			u32(sec[i * 4]) |
 			u32(sec[i * 4 + 1]) << 8 |
 			u32(sec[i * 4 + 2]) << 16 |
 			u32(sec[i * 4 + 3]) << 24
 		v.journal.shadow_fat[cluster] = raw
+		if raw & 0x0FFFFFFF != old {
+			fat_note_dir_change(v, cluster)
+		}
 	}
+	return extend_pending_dirs(v)
 }
 
 @(private = "file")
@@ -360,7 +367,7 @@ extend_pending_dirs :: proc(v: ^Volume) -> bool {
 			)
 			return false
 		}
-		if u32(len(chain)) > node.cluster_len {
+		if chain_adoption_needed(v, node, chain[:]) {
 			if _, claimed := v.journal.claimed[node.first_cluster]; !claimed {
 				snapshot_dir(v, node) // synthesized content must be diffable first
 			}
@@ -371,6 +378,34 @@ extend_pending_dirs :: proc(v: ^Volume) -> bool {
 		ordered_remove(&v.journal.pending_extends, i)
 	}
 	return true
+}
+
+@(private = "file")
+chain_adoption_needed :: proc(v: ^Volume, node: ^Node, chain: []u32) -> bool {
+	if u32(len(chain)) != node.cluster_len {
+		return true
+	}
+	for cluster, index in chain {
+		if claim, ok := v.journal.claimed[cluster]; ok {
+			if claim.node != node || claim.index != u32(index) {
+				return true
+			}
+			continue
+		}
+		if cluster >= u32(len(v.alloc.by_cluster)) ||
+		   v.alloc.by_cluster[cluster] != node ||
+		   cluster < node.first_cluster ||
+		   cluster - node.first_cluster != u32(index) {
+			return true
+		}
+	}
+	for cluster, claim in v.journal.claimed {
+		if claim.node == node &&
+		   (claim.index >= u32(len(chain)) || chain[claim.index] != cluster) {
+			return true
+		}
+	}
+	return false
 }
 
 @(private = "file")
