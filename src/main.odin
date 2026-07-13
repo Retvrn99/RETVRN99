@@ -129,6 +129,14 @@ run_main :: proc() -> int {
 		return 1
 	}
 	defer profile.paths_destroy(&paths)
+	switch dos_diagnostic := profile.dos_seed_prepare(paths.c_drive); dos_diagnostic {
+	case .Updated:
+		fmt.println("DOS seed: disabled the IO.SYS boot logo in placeholder MSDOS.SYS")
+	case .Missing, .Preserved:
+	case .Path_Failed, .Read_Failed, .Create_Directory_Failed, .Temporary_Path_Failed,
+	     .Write_Failed, .Replace_Failed:
+		fmt.eprintfln("DOS seed warning: MSDOS.SYS preparation failed (%v)", dos_diagnostic)
+	}
 	settings, settings_diag := profile.settings_load(paths.settings)
 	if settings_diag == .Missing {
 		if save_diag := profile.settings_save(paths.settings, settings); save_diag != .None {

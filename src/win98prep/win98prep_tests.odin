@@ -36,6 +36,15 @@ test_fallback_batch_is_language_neutral :: proc(t: ^testing.T) {
 	testing.expect(t, contains(batch, `InstallDir="C:\WINDOWS"`))
 }
 
+@(test)
+test_launcher_restores_gui_boot_only_for_managed_dos_seed :: proc(t: ^testing.T) {
+	managed := launcher_text("INSTALAR.EXE", true)
+	testing.expect(t, contains(managed, "ECHO BootGUI=1>>C:\\MSDOS.SYS"))
+	testing.expect(t, contains(managed, "INSTALAR.EXE MSBATCH.INF"))
+	custom := launcher_text("SETUP.EXE", false)
+	testing.expect(t, !contains(custom, "BootGUI=1"))
+}
+
 @(private)
 install_test_directory :: proc(t: ^testing.T) -> string {
 	base, base_error := os.temp_directory(context.allocator)

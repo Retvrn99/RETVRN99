@@ -45,6 +45,12 @@ run_smoke :: proc() -> int {
 	paths, perr := profile.paths_default()
 	if perr != nil { return smoke_fail("profile path resolution") }
 	defer profile.paths_destroy(&paths)
+	switch profile.dos_seed_prepare(paths.c_drive) {
+	case .Missing, .Preserved, .Updated:
+	case .Path_Failed, .Read_Failed, .Create_Directory_Failed, .Temporary_Path_Failed,
+	     .Write_Failed, .Replace_Failed:
+		return smoke_fail("DOS seed MSDOS.SYS preparation")
+	}
 	io_sys, _ := filepath.join({paths.c_drive, "IO.SYS"})
 	if !os.exists(io_sys) {
 		fmt.printfln("SKIP: %s not found (user-provided MS-DOS 7.1 files required)", io_sys)
@@ -93,10 +99,7 @@ run_smoke :: proc() -> int {
 		thread.join(wd_thr)
 	}
 
-	// The very first prompt renders as "C:" only: the IO.SYS boot-logo
-	// (mode 13h) round trip swallows the "\>" glyphs. Every later prompt
-	// renders "C:\>" in full, so the canonical needle is checked after DIR.
-	if !run_until(m, BOOT_DEADLINE, "C:") { return smoke_fail("no C: prompt within deadline") }
+	if !run_until(m, BOOT_DEADLINE, "C:\\>") { return smoke_fail("no C:\\> prompt within deadline") }
 	fmt.println("prompt reached, typing DIR")
 
 	// DIR + Enter, set-1 make/break pairs

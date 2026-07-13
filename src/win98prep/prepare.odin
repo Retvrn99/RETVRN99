@@ -2,6 +2,7 @@
 package win98prep
 
 import media "../win98media"
+import profile "../profile"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
@@ -123,9 +124,9 @@ prepare :: proc(iso_path, install_root, c_drive: string) -> Report {
 	defer delete(launcher, context.temp_allocator)
 	defer delete(launcher_old, context.temp_allocator)
 	_ = os.remove_all(launcher_new)
-	command := fmt.tprintf(
-		"@ECHO OFF\r\nC:\r\nCD \\GSWSETUP\r\n%s MSBATCH.INF /IS /IQ /IM /IV\r\n",
+	command := launcher_text(
 		report.media_info.setup_executable,
+		profile.dos_seed_is_managed(c_drive),
 	)
 	if os.write_entire_file(launcher_new, command) != nil {
 		report.diagnostic = .Launcher_Failed
@@ -138,6 +139,19 @@ prepare :: proc(iso_path, install_root, c_drive: string) -> Report {
 
 	report.diagnostic = .None
 	return report
+}
+
+@(private)
+launcher_text :: proc(setup_executable: string, enable_boot_gui: bool) -> string {
+	boot_options := ""
+	if enable_boot_gui {
+		boot_options = "ECHO [Options]>C:\\MSDOS.SYS\r\nECHO Logo=0>>C:\\MSDOS.SYS\r\nECHO BootGUI=1>>C:\\MSDOS.SYS\r\n"
+	}
+	return fmt.tprintf(
+		"@ECHO OFF\r\n%sC:\r\nCD \\GSWSETUP\r\n%s MSBATCH.INF /IS /IQ /IM /IV\r\n",
+		boot_options,
+		setup_executable,
+	)
 }
 
 @(private)

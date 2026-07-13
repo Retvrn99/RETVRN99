@@ -56,5 +56,11 @@ preferences and `cmos.bin` stores battery-backed guest CMOS state. The
 folder-backed system disk rejects FDISK, FORMAT, and other writes that
 would replace its synthesized partition or FAT32 layout.
 
+For the known DOS-only seed, RETVRN99 replaces only the four-byte
+placeholder `MSDOS.SYS` with `Logo=0` and `BootGUI=0`. This avoids the
+Windows boot-logo handoff and produces the initial `C:\>` prompt correctly;
+an existing configured `MSDOS.SYS` is never rewritten. The Windows 98
+launcher re-enables GUI boot before starting Setup.
+
 `smoke.exe` boots to `C:\>`, types `DIR`, and checks the output
 (skips politely when WHPX or the DOS files are missing).
