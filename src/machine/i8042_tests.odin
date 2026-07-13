@@ -3,11 +3,16 @@ package machine
 
 import "core:testing"
 
+I8042_Test_Irqs :: struct {
+	irq1:  int,
+	irq12: int,
+}
+
 @(test)
 test_i8042 :: proc(t: ^testing.T) {
 	irqs := 0
 	kc: I8042
-	i8042_init(&kc, &irqs, proc(ctx: rawptr) { (^int)(ctx)^ += 1 })
+	i8042_init(&kc, &irqs, proc(ctx: rawptr) {(^int)(ctx)^ += 1})
 	i8042_out(&kc, 0x64, 0xAA)
 	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x55))
 	i8042_out(&kc, 0x64, 0x60); i8042_out(&kc, 0x60, 0x01) // enable IRQ1
@@ -25,7 +30,7 @@ test_i8042 :: proc(t: ^testing.T) {
 test_i8042_irq_per_byte :: proc(t: ^testing.T) {
 	irqs := 0
 	kc: I8042
-	i8042_init(&kc, &irqs, proc(ctx: rawptr) { (^int)(ctx)^ += 1 })
+	i8042_init(&kc, &irqs, proc(ctx: rawptr) {(^int)(ctx)^ += 1})
 	i8042_out(&kc, 0x64, 0x60); i8042_out(&kc, 0x60, 0x01) // enable IRQ1
 	i8042_key(&kc, 0x1E)
 	i8042_key(&kc, 0x9E)
@@ -45,7 +50,7 @@ test_i8042_irq_per_byte :: proc(t: ^testing.T) {
 test_i8042_disable_via_cmd_byte :: proc(t: ^testing.T) {
 	irqs := 0
 	kc: I8042
-	i8042_init(&kc, &irqs, proc(ctx: rawptr) { (^int)(ctx)^ += 1 })
+	i8042_init(&kc, &irqs, proc(ctx: rawptr) {(^int)(ctx)^ += 1})
 	i8042_out(&kc, 0x64, 0xAD) // disable keyboard
 	i8042_key(&kc, 0x1E)
 	testing.expect_value(t, i8042_in(&kc, 0x64) & 1, u8(0)) // held, not readable
@@ -62,22 +67,32 @@ test_i8042_disable_via_cmd_byte :: proc(t: ^testing.T) {
 	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x9E))
 }
 
-// no aux (PS/2 mouse) device in M1: 0xD4 swallows its parameter instead of
-// misparsing it as a keyboard command, probes fail cleanly, and 0xD0
-// returns the synthesized output port
 @(test)
-test_i8042_aux_absent :: proc(t: ^testing.T) {
-	irqs := 0
+test_i8042_aux_controller :: proc(t: ^testing.T) {
+	irqs: I8042_Test_Irqs
 	kc: I8042
-	i8042_init(&kc, &irqs, proc(ctx: rawptr) { (^int)(ctx)^ += 1 })
-	i8042_out(&kc, 0x64, 0x60); i8042_out(&kc, 0x60, 0x01) // enable IRQ1
-	i8042_out(&kc, 0x64, 0xD4) // write to aux
-	i8042_out(&kc, 0x60, 0xF4) // parameter: must not become a keyboard ACK
-	testing.expect_value(t, i8042_in(&kc, 0x64) & 1, u8(0))
-	testing.expect_value(t, irqs, 0)
+	i8042_init(
+		&kc,
+		&irqs,
+		proc(ctx: rawptr) {(^I8042_Test_Irqs)(ctx).irq1 += 1},
+		proc(ctx: rawptr) {(^I8042_Test_Irqs)(ctx).irq12 += 1},
+	)
+	i8042_out(&kc, 0x64, 0x60); i8042_out(&kc, 0x60, 0x03)
 	i8042_out(&kc, 0x64, 0xA9) // aux interface test
-	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0xFF)) // absent
-	i8042_out(&kc, 0x64, 0xA7) // aux disable/enable: accepted no-ops
+	testing.expect_value(t, i8042_in(&kc, 0x64), u8(0x01))
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x00))
+	testing.expect_value(t, irqs.irq1, 1)
+
+	i8042_out(&kc, 0x64, 0xD4)
+	i8042_out(&kc, 0x60, 0xF2)
+	testing.expect_value(t, i8042_in(&kc, 0x64), u8(0x21))
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0xFA))
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x00))
+	testing.expect_value(t, irqs.irq12, 2)
+
+	i8042_out(&kc, 0x64, 0xA7)
+	i8042_out(&kc, 0x64, 0x20)
+	testing.expect_value(t, i8042_in(&kc, 0x60) & 0x20, u8(0x20))
 	i8042_out(&kc, 0x64, 0xA8)
 	i8042_out(&kc, 0x92, 0x02) // A20 on
 	i8042_out(&kc, 0x64, 0xD0) // read output port
@@ -85,13 +100,48 @@ test_i8042_aux_absent :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_i8042_output_source_arbitration :: proc(t: ^testing.T) {
+	irqs: I8042_Test_Irqs
+	kc: I8042
+	i8042_init(
+		&kc,
+		&irqs,
+		proc(ctx: rawptr) {(^I8042_Test_Irqs)(ctx).irq1 += 1},
+		proc(ctx: rawptr) {(^I8042_Test_Irqs)(ctx).irq12 += 1},
+	)
+	i8042_out(&kc, 0x64, 0x60); i8042_out(&kc, 0x60, 0x03)
+	i8042_out(&kc, 0x64, 0xD2); i8042_out(&kc, 0x60, 0x44)
+	i8042_out(&kc, 0x64, 0xD3); i8042_out(&kc, 0x60, 0x55)
+	testing.expect_value(t, i8042_in(&kc, 0x64), u8(0x01))
+	testing.expect_value(t, irqs.irq1, 1)
+	testing.expect_value(t, irqs.irq12, 0)
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x44))
+	testing.expect_value(t, i8042_in(&kc, 0x64), u8(0x21))
+	testing.expect_value(t, irqs.irq12, 1)
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x55))
+}
+
+@(test)
 test_i8042_a20 :: proc(t: ^testing.T) {
 	kc: I8042
 	i8042_init(&kc, nil, nil)
+	testing.expect_value(t, i8042_in(&kc, 0x92) & 2, u8(2))
+	i8042_out(&kc, 0x92, 0x00)
 	testing.expect_value(t, i8042_in(&kc, 0x92) & 2, u8(0))
 	i8042_out(&kc, 0x92, 0x02)
-	testing.expect_value(t, i8042_in(&kc, 0x92) & 2, u8(2)) // A20 bit persists
+	testing.expect_value(t, i8042_in(&kc, 0x92) & 2, u8(2))
 	i8042_out(&kc, 0x64, 0xD1)
 	i8042_out(&kc, 0x60, 0x00) // output port: A20 off
 	testing.expect_value(t, i8042_in(&kc, 0x92) & 2, u8(0))
+}
+
+@(test)
+test_i8042_output_port_reset_is_active_low :: proc(t: ^testing.T) {
+	resets := 0
+	kc: I8042
+	i8042_init(&kc, &resets, nil, nil, proc(ctx: rawptr) {(^int)(ctx)^ += 1})
+	i8042_out(&kc, 0x64, 0xD1); i8042_out(&kc, 0x60, 0x03)
+	testing.expect_value(t, resets, 0)
+	i8042_out(&kc, 0x64, 0xD1); i8042_out(&kc, 0x60, 0x02)
+	testing.expect_value(t, resets, 1)
 }

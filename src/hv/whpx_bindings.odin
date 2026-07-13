@@ -254,6 +254,7 @@ foreign whp {
 	WHvUnmapGpaRange :: proc(part: WHV_PARTITION_HANDLE, gpa: u64, size: u64) -> HRESULT ---
 	WHvTranslateGva :: proc(part: WHV_PARTITION_HANDLE, index: u32, gva: u64, flags: u32, result: ^WHV_TRANSLATE_GVA_RESULT, gpa: ^u64) -> HRESULT ---
 	WHvCreateVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, flags: u32) -> HRESULT ---
+	WHvDeleteVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32) -> HRESULT ---
 	WHvRunVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, exit_ctx: rawptr, exit_ctx_size: u32) -> HRESULT ---
 	WHvCancelRunVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, flags: u32) -> HRESULT ---
 	WHvGetVirtualProcessorRegisters :: proc(part: WHV_PARTITION_HANDLE, index: u32, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT ---

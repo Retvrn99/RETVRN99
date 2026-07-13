@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package fat32
 
+import disk "../disk"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:testing"
-import disk "../disk"
 
 // independent single-sector read through the public API only
-read_test_sector :: proc(t: ^testing.T, v: ^Volume, lba: u64, loc := #caller_location) -> [SECTOR]u8 {
+read_test_sector :: proc(
+	t: ^testing.T,
+	v: ^Volume,
+	lba: u64,
+	loc := #caller_location,
+) -> [SECTOR]u8 {
 	buf: [SECTOR]u8
 	testing.expect(t, volume_read(v, lba, buf[:]), loc = loc)
 	return buf
@@ -181,4 +187,72 @@ read_test_block_device_glue :: proc(t: ^testing.T) {
 	testing.expect(t, bd.write(bd.ctx, part + 1, sec[:]))
 	back := read_test_sector(t, v, part + 1)
 	testing.expect(t, back == sec)
+}
+
+@(test)
+read_test_backing_type_failure_freezes_volume :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+	node := v.alloc.root.children[0]
+	backup, original := read_test_preserve_backing(t, node.host_path)
+	defer read_test_restore_backing(t, node.host_path, backup, original)
+	testing.expect(t, os.make_directory(node.host_path) == nil)
+	fired := false
+	journal_test_arm_on_fail(v, &fired)
+	sector: [SECTOR]u8
+
+	testing.expect(t, !volume_read(v, journal_test_data_lba(v, node.first_cluster), sector[:]))
+	testing.expect(t, fired)
+	testing.expect(t, v.frozen)
+}
+
+@(test)
+read_test_unexpected_short_backing_freezes_volume :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+	node := v.alloc.root.children[0]
+	backup, original := read_test_preserve_backing(t, node.host_path)
+	defer read_test_restore_backing(t, node.host_path, backup, original)
+	testing.expect(t, os.write_entire_file(node.host_path, "X") == nil)
+	fired := false
+	journal_test_arm_on_fail(v, &fired)
+	sector: [SECTOR]u8
+
+	testing.expect(t, !volume_read(v, journal_test_data_lba(v, node.first_cluster), sector[:]))
+	testing.expect(t, fired)
+	testing.expect(t, v.frozen)
+}
+
+@(private)
+read_test_preserve_backing :: proc(
+	t: ^testing.T,
+	path: string,
+) -> (
+	backup: string,
+	original: []u8,
+) {
+	contents, read_error := os.read_entire_file(path, context.temp_allocator)
+	testing.expect(t, read_error == nil)
+	original = contents
+	backup = strings.concatenate({path, ".retvrn99-read-backup"}, context.temp_allocator)
+	testing.expect(t, os.rename(path, backup) == nil)
+	return
+}
+
+@(private)
+read_test_restore_backing :: proc(t: ^testing.T, path, backup: string, original: []u8) {
+	preserved, read_error := os.read_entire_file(backup, context.temp_allocator)
+	testing.expect(t, read_error == nil)
+	testing.expect(t, string(preserved) == string(original))
+	testing.expect(t, os.remove_all(path) == nil)
+	testing.expect(t, os.rename(backup, path) == nil)
+	restored, restore_error := os.read_entire_file(path, context.temp_allocator)
+	testing.expect(t, restore_error == nil)
+	testing.expect(t, string(restored) == string(original))
 }

@@ -39,45 +39,53 @@ Ide_Cmd_Trace :: struct {
 }
 
 Machine :: struct {
-	bus:             Bus,
-	pic:             Pic_Pair,
-	pit:             Pit,
-	cmos:            Cmos,
-	kbd:             I8042,
-	pci:             Pci,
-	fwcfg:           Fwcfg,
-	dma:             Dma,
-	vga:             video.Vga,
-	ide:             disk.Ide,
-	atapi:           disk.Atapi,
-	fdc:             disk.Fdc,
-	has_disk:        bool,
-	reset_requested: bool,
-	reset_control:   u8,
-	vm:              hv.Vm,
-	governor:        hv.Governor,
-	idle_waiter:     hosttime.Waiter,
-	last_tick:       time.Tick,
-	video_ns:        u64,
-	video_run_start: time.Tick,
-	video_running:   bool,
-	dbg_out:         [dynamic]u8, // firmware debug ports 0x402 and 0x500
-	mmio_seen:       [Mmio_Zone]bool, // log tolerated zones only once
-	exit_hist:       [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
-	exit_count:      u64,
-	io_hist:         [IO_HISTORY]Io_Trace, // ring, io_count % IO_HISTORY
-	io_count:        u64,
-	ide_hist:        [IDE_HISTORY]Io_Trace, // ring of IDE-port accesses only
-	ide_count:       u64,
-	cmd_hist:        [IDE_HISTORY]Ide_Cmd_Trace, // ring of IDE commands
-	cmd_count:       u64,
-	inj_count:       [256]u64, // injected IRQ vectors
+	bus:               Bus,
+	pic:               Pic_Pair,
+	pit:               Pit,
+	cmos:              Cmos,
+	kbd:               I8042,
+	pci:               Pci,
+	fwcfg:             Fwcfg,
+	dma:               Dma,
+	vga:               video.Vga,
+	ide:               disk.Ide,
+	atapi:             disk.Atapi,
+	fdc:               disk.Fdc,
+	has_disk:          bool,
+	reset_requested:   bool,
+	cpu_reset_pending: bool,
+	cpu_reset_reason:  string,
+	cpu_reset_cmos_0f: u8,
+	cpu_reset_count:   u64,
+	reset_control:     u8,
+	vm:                hv.Vm,
+	governor:          hv.Governor,
+	idle_waiter:       hosttime.Waiter,
+	last_tick:         time.Tick,
+	video_ns:          u64,
+	video_run_start:   time.Tick,
+	video_running:     bool,
+	dbg_out:           [dynamic]u8, // firmware debug ports 0x402 and 0x500
+	mmio_seen:         [Mmio_Zone]bool, // log tolerated zones only once
+	exit_hist:         [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
+	exit_count:        u64,
+	io_hist:           [IO_HISTORY]Io_Trace, // ring, io_count % IO_HISTORY
+	io_count:          u64,
+	ide_hist:          [IDE_HISTORY]Io_Trace, // ring of IDE-port accesses only
+	ide_count:         u64,
+	cmd_hist:          [IDE_HISTORY]Ide_Cmd_Trace, // ring of IDE commands
+	cmd_count:         u64,
+	inj_count:         [256]u64, // injected IRQ vectors
 }
 
 machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_init(&m.bus)
 	if !hv.create(&m.vm, ram_size) {return false}
-	if !hv.reserve_mmio(&m.vm, video.LEGACY_APERTURE_BASE, video.LEGACY_APERTURE_END - video.LEGACY_APERTURE_BASE) {
+	if !hv.reserve_mmio(
+		&m.vm,
+		video.LEGACY_APERTURE_BASE,
+		video.LEGACY_APERTURE_END - video.LEGACY_APERTURE_BASE,
+	) {
 		hv.destroy(&m.vm)
 		return false
 	}
@@ -100,7 +108,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	cmos_init(&m.cmos, u64(ram_size))
 	hh, mm, ss := time.clock_from_time(time.now())
 	cmos_set_time(&m.cmos, u8(hh), u8(mm), u8(ss))
-	i8042_init(&m.kbd, m, machine_irq1, machine_guest_reset)
+	i8042_init(&m.kbd, m, machine_irq1, machine_irq12, machine_guest_reset, machine_a20_control)
 	pci_init(&m.pci)
 	fwcfg_init(&m.fwcfg, u64(ram_size))
 	// SeaBIOS vgarom_setup memsets 0xC0000 and then deploys "vgaroms/"
@@ -323,6 +331,33 @@ machine_reset_requested :: proc(m: ^Machine) -> bool {
 	return m != nil && m.reset_requested
 }
 
+machine_cpu_reset_pending :: proc(m: ^Machine) -> bool {
+	return m != nil && m.cpu_reset_pending
+}
+
+machine_cpu_reset_reason :: proc(m: ^Machine) -> string {
+	return m != nil ? m.cpu_reset_reason : ""
+}
+
+machine_cpu_reset :: proc(m: ^Machine) -> bool {
+	if m == nil || !m.cpu_reset_pending {return false}
+	reason := m.cpu_reset_reason
+	if !hv.reset_cpu(&m.vm) {
+		bus_freeze(&m.bus, fmt.tprintf("CPU reset failed after %s", reason))
+		return false
+	}
+	m.cpu_reset_pending = false
+	m.cpu_reset_reason = ""
+	m.cpu_reset_count += 1
+	hv.governor_rebase(&m.governor, &m.vm)
+	m.last_tick = time.tick_now()
+	return true
+}
+
+machine_mouse :: proc(m: ^Machine, dx, dy: i32, buttons: u8) {
+	i8042_mouse(&m.kbd, dx, dy, buttons)
+}
+
 step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 	now := time.tick_now()
 	ns := u64(time.tick_diff(m.last_tick, now))
@@ -358,10 +393,19 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 		bus_freeze(&m.bus, "GSW-886 runtime counters unavailable")
 		return false
 	}
+	return machine_handle_exit(m, ex)
+}
+
+@(private)
+machine_handle_exit :: proc(m: ^Machine, ex: hv.Exit) -> bool {
 	#partial switch ex.kind {
 	case .Halt:
-		// wait for the next IRQ without burning CPU
 		hosttime.waiter_sleep(&m.idle_waiter, 200 * time.Microsecond)
+	case .Reset:
+		m.cpu_reset_pending = true
+		m.cpu_reset_reason = ex.detail
+		m.cpu_reset_cmos_0f = m.cmos.ram[0x0F]
+		return false
 	case .Failed:
 		bus_freeze(&m.bus, ex.detail)
 		return false
@@ -377,7 +421,7 @@ machine_whitelist_range :: proc(b: ^Bus, first, last: u16) {
 // --- hv <-> bus glue ---
 
 @(private = "file")
-machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
+machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 	m := (^Machine)(ctx)
 	v := bus_io_read(&m.bus, port, size)
 	t := Io_Trace {
@@ -392,11 +436,11 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 		m.ide_hist[m.ide_count % IDE_HISTORY] = t
 		m.ide_count += 1
 	}
-	return v
+	return v, !m.bus.frozen
 }
 
 @(private = "file")
-machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
+machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 	m := (^Machine)(ctx)
 	t := Io_Trace {
 		port  = port,
@@ -425,6 +469,7 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 		m.cmd_count += 1
 	}
 	bus_io_write(&m.bus, port, size, val)
+	return !m.bus.frozen
 }
 
 // VGA owns the legacy aperture; known probe zones read FF / swallow writes.
@@ -490,6 +535,12 @@ machine_irq1 :: proc(ctx: rawptr) {
 	pic_raise(&m.pic, 1)
 }
 
+@(private)
+machine_irq12 :: proc(ctx: rawptr) {
+	m := (^Machine)(ctx)
+	pic_raise(&m.pic, 12)
+}
+
 @(private = "file")
 machine_irq6 :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
@@ -536,7 +587,15 @@ machine_fdc_dma_tc :: proc(ctx: rawptr) -> bool {
 machine_guest_reset :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
 	m.reset_requested = true
-	bus_freeze(&m.bus, "guest requested reset")
+	bus_freeze(&m.bus, "guest requested hardware reset")
+}
+
+@(private = "file")
+machine_a20_control :: proc(ctx: rawptr, enabled: bool) -> bool {
+	m := (^Machine)(ctx)
+	if hv.set_a20(&m.vm, enabled) {return true}
+	bus_freeze(&m.bus, "A20 mapping failed")
+	return false
 }
 
 // --- per-device adapters; multi-byte access splits into successive ports ---

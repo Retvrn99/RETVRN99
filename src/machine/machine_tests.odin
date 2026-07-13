@@ -372,11 +372,168 @@ test_machine_guest_reset_is_distinct_from_freeze :: proc(t: ^testing.T) {
 		log.destroy_console_logger(quiet_logger)
 	}
 	m: Machine
-	i8042_init(&m.kbd, &m, nil, machine_guest_reset)
+	i8042_init(&m.kbd, &m, nil, nil, machine_guest_reset)
 	testing.expect(t, !machine_reset_requested(&m))
 	i8042_out(&m.kbd, 0x64, 0xFE)
 	testing.expect(t, machine_reset_requested(&m))
 	testing.expect(t, m.bus.frozen)
+}
+
+@(test)
+test_machine_a20_controller_updates_hypervisor_mapping :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available")
+		return
+	}
+	m: Machine
+	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(&m)
+
+	m.vm.ram[0x500] = 0x11
+	m.vm.ram[0x100500] = 0x22
+	copy(m.vm.ram[0x7C00:], []u8{0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xA0, 0x10, 0x05, 0xF4})
+
+	testing.expect(t, m.kbd.a20 && m.vm.a20_enabled)
+	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
+	testing.expect(t, step(&m))
+	testing.expect_value(t, u8(hv.reg_rax(&m.vm)), u8(0x22))
+
+	bus_io_write(&m.bus, 0x92, 1, 0x00)
+	testing.expect(t, !m.kbd.a20 && m.vm.a20_enabled && !m.vm.a20_requested)
+	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
+	testing.expect(t, step(&m))
+	testing.expect(t, !m.vm.a20_enabled && !m.vm.a20_requested)
+	testing.expect_value(t, u8(hv.reg_rax(&m.vm)), u8(0x11))
+
+	bus_io_write(&m.bus, 0x64, 1, 0xD1)
+	bus_io_write(&m.bus, 0x60, 1, 0x03)
+	testing.expect(t, m.kbd.a20 && !m.vm.a20_enabled && m.vm.a20_requested)
+	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
+	testing.expect(t, step(&m))
+	testing.expect(t, m.vm.a20_enabled && m.vm.a20_requested)
+	testing.expect_value(t, u8(hv.reg_rax(&m.vm)), u8(0x22))
+}
+
+Machine_A20_Probe :: struct {
+	values: [3]u8,
+	count:  int,
+}
+
+Machine_A20_Stress_Probe :: struct {
+	count: int,
+	valid: bool,
+}
+
+@(test)
+test_machine_guest_a20_toggle_invalidates_active_mapping :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available")
+		return
+	}
+	m: Machine
+	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(&m)
+
+	probe: Machine_A20_Probe
+	bus_register(&m.bus, 0x99, 0x99, Io_Handler {
+		ctx = &probe,
+		read = proc(ctx: rawptr, port: u16, size: u8) -> u32 {return 0xFF},
+		write = proc(ctx: rawptr, port: u16, size: u8, value: u32) {
+			p := (^Machine_A20_Probe)(ctx)
+			if p.count < len(p.values) {
+				p.values[p.count] = u8(value)
+				p.count += 1
+			}
+		},
+	})
+	m.vm.ram[0x500] = 0x11
+	m.vm.ram[0x100500] = 0x22
+	// Read HMA, disable A20, read its wrap alias, re-enable, then read HMA again.
+	copy(
+		m.vm.ram[0x7C00:],
+		[]u8{
+			0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xA0, 0x10, 0x05, 0xE6, 0x99,
+			0x30, 0xC0, 0xE6, 0x92, 0xA0, 0x10, 0x05, 0xE6, 0x99,
+			0xB0, 0x02, 0xE6, 0x92, 0xA0, 0x10, 0x05, 0xE6, 0x99, 0xF4,
+		},
+	)
+	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
+	testing.expect(t, step(&m))
+	testing.expect_value(t, probe.count, 3)
+	testing.expect_value(t, probe.values, [3]u8{0x22, 0x11, 0x22})
+}
+
+@(test)
+test_machine_guest_a20_toggle_stress_preserves_memory :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available")
+		return
+	}
+	m: Machine
+	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(&m)
+
+	probe := Machine_A20_Stress_Probe{valid = true}
+	bus_register(&m.bus, 0x99, 0x99, Io_Handler {
+		ctx = &probe,
+		read = proc(ctx: rawptr, port: u16, size: u8) -> u32 {return 0xFF},
+		write = proc(ctx: rawptr, port: u16, size: u8, value: u32) {
+			p := (^Machine_A20_Stress_Probe)(ctx)
+			want := p.count & 1 == 0 ? u8(0x22) : u8(0x11)
+			p.valid = p.valid && u8(value) == want
+			p.count += 1
+		},
+	})
+	m.vm.ram[0x20] = 0xA5
+	m.vm.ram[0x500] = 0x11
+	m.vm.ram[0x800] = 0x5A
+	m.vm.ram[0x100500] = 0x22
+	copy(
+		m.vm.ram[0x7C00:],
+		[]u8{
+			0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xB9, 0x00, 0x01,
+			0xA0, 0x10, 0x05, 0xE6, 0x99, 0x30, 0xC0, 0xE6, 0x92,
+			0xA0, 0x10, 0x05, 0xE6, 0x99, 0xB0, 0x02, 0xE6, 0x92,
+			0xE2, 0xEC, 0xF4,
+		},
+	)
+	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
+	for _ in 0 ..< 100 {
+		if !step(&m) || probe.count == 512 {break}
+	}
+	testing.expect_value(t, probe.count, 512)
+	testing.expect(t, probe.valid)
+	testing.expect(t, m.kbd.a20 && m.vm.a20_enabled)
+	testing.expect_value(t, m.vm.ram[0x20], u8(0xA5))
+	testing.expect_value(t, m.vm.ram[0x800], u8(0x5A))
+}
+
+@(test)
+test_machine_hypervisor_reset_exit_requests_warm_cpu_reset :: proc(t: ^testing.T) {
+	prior_logger := context.logger
+	quiet_logger := log.create_console_logger(.Fatal, {.Level})
+	context.logger = quiet_logger
+	defer {
+		context.logger = prior_logger
+		log.destroy_console_logger(quiet_logger)
+	}
+	m: Machine
+	testing.expect(t, !machine_handle_exit(&m, hv.Exit{kind = .Reset, detail = "triple fault"}))
+	testing.expect(t, !machine_reset_requested(&m))
+	testing.expect(t, machine_cpu_reset_pending(&m))
+	testing.expect_value(t, machine_cpu_reset_reason(&m), "triple fault")
+	testing.expect(t, !m.bus.frozen)
+}
+
+@(test)
+test_machine_ps2_mouse_routes_irq12 :: proc(t: ^testing.T) {
+	m: Machine
+	pic_setup(&m.pic)
+	i8042_init(&m.kbd, &m, nil, machine_irq12)
+	i8042_out(&m.kbd, 0x64, 0x60); i8042_out(&m.kbd, 0x60, 0x02)
+	i8042_out(&m.kbd, 0x64, 0xD4); i8042_out(&m.kbd, 0x60, 0xF2)
+	testing.expect(t, m.pic.slave.irr & 0x10 != 0)
+	testing.expect(t, m.pic.master.irr & 0x04 != 0)
 }
 
 @(test)

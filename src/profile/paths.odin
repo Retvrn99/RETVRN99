@@ -7,11 +7,12 @@ import "core:path/filepath"
 PROFILE_DIRECTORY :: ".retvrn99"
 
 Paths :: struct {
-	root:     string,
-	c_drive:  string,
-	settings: string,
-	cmos:     string,
-	install:  string,
+	root:          string,
+	c_drive:       string,
+	settings:      string,
+	cmos:          string,
+	install:       string,
+	install_state: string,
 }
 
 paths_from_root :: proc(root: string, allocator := context.allocator) -> (Paths, os.Error) {
@@ -20,7 +21,9 @@ paths_from_root :: proc(root: string, allocator := context.allocator) -> (Paths,
 		return {}, os.Error(cerr)
 	}
 
-	paths := Paths{root = clean_root}
+	paths := Paths {
+		root = clean_root,
+	}
 	path: string
 	path, cerr = filepath.join({paths.root, "c_drive"}, allocator)
 	if cerr != nil {
@@ -46,6 +49,12 @@ paths_from_root :: proc(root: string, allocator := context.allocator) -> (Paths,
 		return {}, os.Error(cerr)
 	}
 	paths.install = path
+	path, cerr = filepath.join({paths.root, "install-state.json"}, allocator)
+	if cerr != nil {
+		paths_destroy(&paths, allocator)
+		return {}, os.Error(cerr)
+	}
+	paths.install_state = path
 	return paths, nil
 }
 
@@ -76,5 +85,6 @@ paths_destroy :: proc(paths: ^Paths, allocator := context.allocator) {
 	delete(paths.settings, allocator)
 	delete(paths.cmos, allocator)
 	delete(paths.install, allocator)
+	delete(paths.install_state, allocator)
 	paths^ = {}
 }

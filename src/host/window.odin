@@ -7,15 +7,17 @@ WIN_W :: TEXT_W * 2 // 1440
 WIN_H :: TEXT_H * 2 + MENU_BAR_H
 
 Host :: struct {
-	win:           ^sdl3.Window,
-	ren:           ^sdl3.Renderer,
-	tex:           ^sdl3.Texture,
-	tex_width:     int,
-	tex_height:    int,
-	aspect_width:  int,
-	aspect_height: int,
-	has_frame:     bool,
-	vsync:         bool, // presents are paced by the display; else the UI loop sleeps
+	win:            ^sdl3.Window,
+	ren:            ^sdl3.Renderer,
+	tex:            ^sdl3.Texture,
+	tex_width:      int,
+	tex_height:     int,
+	aspect_width:   int,
+	aspect_height:  int,
+	has_frame:      bool,
+	vsync:          bool, // presents are paced by the display; else the UI loop sleeps
+	mouse_captured: bool,
+	mouse_buttons:  u8,
 }
 
 host_init :: proc(h: ^Host) -> bool {
@@ -46,6 +48,7 @@ host_init :: proc(h: ^Host) -> bool {
 }
 
 host_destroy :: proc(h: ^Host) {
+	if h.mouse_captured {_ = sdl3.SetWindowRelativeMouseMode(h.win, false)}
 	if h.tex != nil {sdl3.DestroyTexture(h.tex)}
 	if h.ren != nil {sdl3.DestroyRenderer(h.ren)}
 	if h.win != nil {sdl3.DestroyWindow(h.win)}

@@ -15,6 +15,9 @@ import win32 "core:sys/windows"
 @(private = "file")
 whpx_vm_gate: sync.Mutex
 
+WHPX_HMA_BASE :: u64(0x00100000)
+WHPX_HMA_SIZE :: u64(0x00010000)
+
 whpx_available :: proc() -> bool {
 	present: win32.BOOL
 	written: u32
@@ -54,24 +57,35 @@ whpx_create :: proc(vm: ^Vm, ram_size: int) -> bool {
 		return false
 	}
 
-	ram := win32.VirtualAlloc(nil, uint(ram_size), win32.MEM_COMMIT | win32.MEM_RESERVE, win32.PAGE_READWRITE)
+	ram := win32.VirtualAlloc(
+		nil,
+		uint(ram_size),
+		win32.MEM_COMMIT | win32.MEM_RESERVE,
+		win32.PAGE_READWRITE,
+	)
 	if ram == nil {
 		whpx_destroy(vm)
 		return false
 	}
 	vm.ram = ([^]u8)(ram)[:ram_size]
 
-	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
+	flags :=
+		WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
 	if WHvMapGpaRange(part, ram, 0, u64(ram_size), flags) < 0 {
 		whpx_destroy(vm)
 		return false
 	}
+	vm.a20_enabled = true
+	vm.a20_requested = true
 
 	if WHvCreateVirtualProcessor(part, 0, 0) < 0 {
 		whpx_destroy(vm)
 		return false
 	}
-	whpx_reset_vcpu(vm)
+	if !whpx_reset_vcpu(vm) {
+		whpx_destroy(vm)
+		return false
+	}
 
 	cb := WHV_EMULATOR_CALLBACKS {
 		Size             = size_of(WHV_EMULATOR_CALLBACKS),
@@ -183,7 +197,12 @@ whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 			return nil, false
 		}
 	}
-	mem := win32.VirtualAlloc(nil, uint(size), win32.MEM_COMMIT | win32.MEM_RESERVE, win32.PAGE_READWRITE)
+	mem := win32.VirtualAlloc(
+		nil,
+		uint(size),
+		win32.MEM_COMMIT | win32.MEM_RESERVE,
+		win32.PAGE_READWRITE,
+	)
 	if mem == nil {
 		return nil, false
 	}
@@ -196,10 +215,46 @@ whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 	return ([^]u8)(mem)[:size], true
 }
 
+whpx_set_a20 :: proc(vm: ^Vm, enabled: bool) -> bool {
+	if vm.part == nil || len(vm.ram) < int(WHPX_HMA_BASE + WHPX_HMA_SIZE) {
+		return false
+	}
+	if vm.a20_requested != enabled {vm.a20_request_count += 1}
+	vm.a20_requested = enabled
+	return true
+}
+
+@(private = "file")
+whpx_apply_a20_request :: proc(vm: ^Vm) -> (ok: bool, rollback_ok: bool) {
+	if vm.a20_enabled == vm.a20_requested {return true, true}
+
+	flags :=
+		WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
+	old_source := vm.a20_enabled ? raw_data(vm.ram[WHPX_HMA_BASE:]) : raw_data(vm.ram)
+	new_source := vm.a20_requested ? raw_data(vm.ram[WHPX_HMA_BASE:]) : raw_data(vm.ram)
+	if WHvUnmapGpaRange(vm.part, WHPX_HMA_BASE, WHPX_HMA_SIZE) < 0 {
+		vm.a20_requested = vm.a20_enabled
+		return false, true
+	}
+	if WHvMapGpaRange(vm.part, new_source, WHPX_HMA_BASE, WHPX_HMA_SIZE, flags) < 0 {
+		rollback_ok = WHvMapGpaRange(vm.part, old_source, WHPX_HMA_BASE, WHPX_HMA_SIZE, flags) >= 0
+		vm.a20_requested = vm.a20_enabled
+		return false, rollback_ok
+	}
+	vm.a20_enabled = vm.a20_requested
+	vm.a20_apply_count += 1
+	return true, true
+}
+
 // page-aligned host copy mapped Read|Execute (no Write): guest ROM
 whpx_map_rom :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
 	size := uint(len(data) + 0xFFF) & ~uint(0xFFF)
-	mem := win32.VirtualAlloc(nil, size, win32.MEM_COMMIT | win32.MEM_RESERVE, win32.PAGE_READWRITE)
+	mem := win32.VirtualAlloc(
+		nil,
+		size,
+		win32.MEM_COMMIT | win32.MEM_RESERVE,
+		win32.PAGE_READWRITE,
+	)
 	if mem == nil {
 		return false
 	}
@@ -214,7 +269,7 @@ whpx_map_rom :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
 }
 
 // power-on state: real mode, CS F000:FFF0
-whpx_reset_vcpu :: proc(vm: ^Vm) {
+whpx_reset_vcpu :: proc(vm: ^Vm) -> bool {
 	code_seg := WHV_X64_SEGMENT_REGISTER {
 		Base       = 0xFFFF0000,
 		Limit      = 0xFFFF,
@@ -227,10 +282,23 @@ whpx_reset_vcpu :: proc(vm: ^Vm) {
 		Selector   = 0,
 		Attributes = 0x0093,
 	}
-	names := [?]WHV_REGISTER_NAME{
-		.Cs, .Ds, .Es, .Ss, .Fs, .Gs,
-		.Rip, .Rflags,
-		.Rax, .Rbx, .Rcx, .Rdx, .Rsp, .Rbp, .Rsi, .Rdi,
+	names := [?]WHV_REGISTER_NAME {
+		.Cs,
+		.Ds,
+		.Es,
+		.Ss,
+		.Fs,
+		.Gs,
+		.Rip,
+		.Rflags,
+		.Rax,
+		.Rbx,
+		.Rcx,
+		.Rdx,
+		.Rsp,
+		.Rbp,
+		.Rsi,
+		.Rdi,
 	}
 	vals: [len(names)]WHV_REGISTER_VALUE
 	vals[0].Segment = code_seg
@@ -239,7 +307,14 @@ whpx_reset_vcpu :: proc(vm: ^Vm) {
 	}
 	vals[6].Reg64 = 0xFFF0
 	vals[7].Reg64 = 0x2
-	WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0])
+	return WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0]) >= 0
+}
+
+whpx_reset_cpu :: proc(vm: ^Vm) -> bool {
+	if vm == nil || vm.part == nil {return false}
+	if WHvDeleteVirtualProcessor(vm.part, 0) < 0 {return false}
+	if WHvCreateVirtualProcessor(vm.part, 0, 0) < 0 {return false}
+	return whpx_reset_vcpu(vm)
 }
 
 whpx_set_realmode_entry :: proc(vm: ^Vm, cs_base: u32, ip: u16) {
@@ -264,33 +339,46 @@ WHPX_EXIT_BUDGET :: 32
 
 whpx_run :: proc(vm: ^Vm) -> Exit {
 	exit_ctx: WHV_RUN_VP_EXIT_CONTEXT
-	for handled := 0; ; handled += 1 {
+	for handled := 0;; handled += 1 {
+		if ok, rollback_ok := whpx_apply_a20_request(vm); !ok {
+			detail := "A20 HMA remap failed"
+			if !rollback_ok {detail = "A20 HMA remap and rollback failed"}
+			return Exit{kind = .Failed, detail = detail}
+		}
 		if handled >= WHPX_EXIT_BUDGET {
 			return Exit{kind = .Io}
 		}
 		hr := WHvRunVirtualProcessor(vm.part, 0, &exit_ctx, size_of(exit_ctx))
 		if hr < 0 {
-			return Exit{kind = .Failed, detail = fmt.tprintf("WHvRunVirtualProcessor hr=0x%08x", u32(hr))}
+			return Exit {
+				kind = .Failed,
+				detail = fmt.tprintf("WHvRunVirtualProcessor hr=0x%08x", u32(hr)),
+			}
 		}
 		switch exit_ctx.ExitReason {
 		case .X64IoPortAccess:
-			status: WHV_EMULATOR_STATUS
-			hr = WHvEmulatorTryIoEmulation(vm.emu, vm, &exit_ctx.VpContext, &exit_ctx.u.IoPortAccess, &status)
-			if hr < 0 || status.AsUINT32 & 1 == 0 {
-				return Exit{
-					kind = .Failed,
-					detail = fmt.tprintf("IO emulation port 0x%04x hr=0x%08x status=0x%08x",
-						exit_ctx.u.IoPortAccess.PortNumber, u32(hr), status.AsUINT32),
-				}
+			if ok, detail := whpx_emulate_io(vm, &exit_ctx.VpContext, &exit_ctx.u.IoPortAccess);
+			   !ok {
+				return Exit{kind = .Failed, detail = detail}
 			}
 		case .MemoryAccess:
 			status: WHV_EMULATOR_STATUS
-			hr = WHvEmulatorTryMmioEmulation(vm.emu, vm, &exit_ctx.VpContext, &exit_ctx.u.MemoryAccess, &status)
+			hr = WHvEmulatorTryMmioEmulation(
+				vm.emu,
+				vm,
+				&exit_ctx.VpContext,
+				&exit_ctx.u.MemoryAccess,
+				&status,
+			)
 			if hr < 0 || status.AsUINT32 & 1 == 0 {
-				return Exit{
+				return Exit {
 					kind = .Failed,
-					detail = fmt.tprintf("MMIO emulation gpa=0x%x hr=0x%08x status=0x%08x",
-						exit_ctx.u.MemoryAccess.Gpa, u32(hr), status.AsUINT32),
+					detail = fmt.tprintf(
+						"MMIO emulation gpa=0x%x hr=0x%08x status=0x%08x",
+						exit_ctx.u.MemoryAccess.Gpa,
+						u32(hr),
+						status.AsUINT32,
+					),
 				}
 			}
 		case .X64Halt:
@@ -305,11 +393,23 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			}
 		case .Canceled:
 			return Exit{kind = .Canceled}
-		case .None, .UnrecoverableException, .InvalidVpRegisterValue, .UnsupportedFeature,
-		     .X64ApicEoi, .X64MsrAccess, .Exception:
-			return Exit{kind = .Failed, detail = fmt.tprintf("unhandled exit: %v", exit_ctx.ExitReason)}
+		case .UnrecoverableException:
+			return Exit{kind = .Reset, detail = "unrecoverable exception (triple fault)"}
+		case .None,
+		     .InvalidVpRegisterValue,
+		     .UnsupportedFeature,
+		     .X64ApicEoi,
+		     .X64MsrAccess,
+		     .Exception:
+			return Exit {
+				kind = .Failed,
+				detail = fmt.tprintf("unhandled exit: %v", exit_ctx.ExitReason),
+			}
 		case:
-			return Exit{kind = .Failed, detail = fmt.tprintf("unknown exit: %d", u32(exit_ctx.ExitReason))}
+			return Exit {
+				kind = .Failed,
+				detail = fmt.tprintf("unknown exit: %d", u32(exit_ctx.ExitReason)),
+			}
 		}
 	}
 }
@@ -322,7 +422,7 @@ whpx_cancel :: proc(vm: ^Vm) {
 whpx_advance_rip :: proc(vm: ^Vm, vp_ctx: ^WHV_VP_EXIT_CONTEXT) {
 	name := WHV_REGISTER_NAME.Rip
 	val: WHV_REGISTER_VALUE
-	val.Reg64 = vp_ctx.Rip + u64(vp_ctx.InstructionLengthCr8 & 0xF)
+	val.Reg64 = whpx_next_rip(vp_ctx)
 	WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &val)
 }
 
@@ -362,21 +462,43 @@ whpx_reg_rax :: proc(vm: ^Vm) -> u64 {
 }
 
 whpx_get_regs :: proc(vm: ^Vm) -> Regs {
-	names := [?]WHV_REGISTER_NAME{
-		.Rax, .Rbx, .Rcx, .Rdx, .Rsi, .Rdi, .Rsp, .Rbp,
-		.Rip, .Rflags, .Cs, .Ss, .Ds, .Es,
+	names := [?]WHV_REGISTER_NAME {
+		.Rax,
+		.Rbx,
+		.Rcx,
+		.Rdx,
+		.Rsi,
+		.Rdi,
+		.Rsp,
+		.Rbp,
+		.Rip,
+		.Rflags,
+		.Cs,
+		.Ss,
+		.Ds,
+		.Es,
 	}
 	vals: [len(names)]WHV_REGISTER_VALUE
 	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0]) < 0 {
 		return {}
 	}
-	return Regs{
-		rax = vals[0].Reg64, rbx = vals[1].Reg64, rcx = vals[2].Reg64, rdx = vals[3].Reg64,
-		rsi = vals[4].Reg64, rdi = vals[5].Reg64, rsp = vals[6].Reg64, rbp = vals[7].Reg64,
-		rip = vals[8].Reg64, rflags = vals[9].Reg64,
-		cs_sel = vals[10].Segment.Selector, cs_base = vals[10].Segment.Base,
-		ss_sel = vals[11].Segment.Selector, ss_base = vals[11].Segment.Base,
-		ds_sel = vals[12].Segment.Selector, es_sel = vals[13].Segment.Selector,
+	return Regs {
+		rax = vals[0].Reg64,
+		rbx = vals[1].Reg64,
+		rcx = vals[2].Reg64,
+		rdx = vals[3].Reg64,
+		rsi = vals[4].Reg64,
+		rdi = vals[5].Reg64,
+		rsp = vals[6].Reg64,
+		rbp = vals[7].Reg64,
+		rip = vals[8].Reg64,
+		rflags = vals[9].Reg64,
+		cs_sel = vals[10].Segment.Selector,
+		cs_base = vals[10].Segment.Base,
+		ss_sel = vals[11].Segment.Selector,
+		ss_base = vals[11].Segment.Base,
+		ds_sel = vals[12].Segment.Selector,
+		es_sel = vals[13].Segment.Selector,
 	}
 }
 
@@ -386,10 +508,16 @@ whpx_emu_io :: proc "system" (ctx: rawptr, io: ^WHV_EMULATOR_IO_ACCESS_INFO) -> 
 	context = runtime.default_context()
 	vm := (^Vm)(ctx)
 	if io.Direction == 0 {
-		io.Data = vm.io_read != nil ? vm.io_read(vm.io_ctx, io.Port, u8(io.AccessSize)) : 0xFFFFFFFF
+		if vm.io_read == nil {
+			io.Data = 0xFFFFFFFF
+			return 0
+		}
+		value, ok := vm.io_read(vm.io_ctx, io.Port, u8(io.AccessSize))
+		io.Data = value
+		if !ok {return HRESULT(-2147467259)}
 	} else {
-		if vm.io_write != nil {
-			vm.io_write(vm.io_ctx, io.Port, u8(io.AccessSize), io.Data)
+		if vm.io_write != nil && !vm.io_write(vm.io_ctx, io.Port, u8(io.AccessSize), io.Data) {
+			return HRESULT(-2147467259)
 		}
 	}
 	return 0
@@ -401,73 +529,36 @@ whpx_emu_io :: proc "system" (ctx: rawptr, io: ^WHV_EMULATOR_IO_ACCESS_INFO) -> 
 // vm.mmio.
 whpx_emu_mmio :: proc "system" (ctx: rawptr, mem: ^WHV_EMULATOR_MEMORY_ACCESS_INFO) -> HRESULT {
 	context = runtime.default_context()
-	vm := (^Vm)(ctx)
-	size := int(mem.AccessSize)
-	if size > len(mem.Data) {
-		size = len(mem.Data)
-	}
-	gpa := mem.GpaAddress
-	for reservation in vm.mmio_reservations {
-		if whpx_ranges_overlap(gpa, u64(size), reservation.gpa, reservation.size) {
-			if vm.mmio != nil {
-				vm.mmio(vm.io_ctx, gpa, mem.Direction == 1, mem.Data[:size])
-			} else if mem.Direction == 0 {
-				for i in 0 ..< size {
-					mem.Data[i] = 0xFF
-				}
-			}
-			return 0
-		}
-	}
-	if gpa + u64(size) <= u64(len(vm.ram)) {
-		if mem.Direction == 1 {
-			copy(vm.ram[gpa:], mem.Data[:size])
-		} else {
-			copy(mem.Data[:size], vm.ram[gpa:gpa + u64(size)])
-		}
-		return 0
-	}
-	for mapping in vm.device_mappings {
-		if gpa >= mapping.gpa && gpa + u64(size) <= mapping.gpa + u64(mapping.size) {
-			bytes := ([^]u8)(mapping.host)[:mapping.size]
-			offset := int(gpa - mapping.gpa)
-			if mem.Direction == 1 {
-				copy(bytes[offset:], mem.Data[:size])
-			} else {
-				copy(mem.Data[:size], bytes[offset:offset + size])
-			}
-			return 0
-		}
-	}
-	if mem.Direction == 0 {
-		for rom in vm.roms {
-			if gpa >= rom.gpa && gpa + u64(size) <= rom.gpa + u64(rom.size) {
-				copy(mem.Data[:size], ([^]u8)(rom.host)[gpa - rom.gpa:][:size])
-				return 0
-			}
-		}
-	}
-	if vm.mmio != nil {
-		vm.mmio(vm.io_ctx, gpa, mem.Direction == 1, mem.Data[:size])
-	} else if mem.Direction == 0 {
-		for i in 0 ..< size {
-			mem.Data[i] = 0xFF
-		}
-	}
-	return 0
+	return whpx_emulate_memory_access((^Vm)(ctx), mem)
 }
 
-whpx_emu_get_regs :: proc "system" (ctx: rawptr, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT {
+whpx_emu_get_regs :: proc "system" (
+	ctx: rawptr,
+	names: [^]WHV_REGISTER_NAME,
+	count: u32,
+	values: [^]WHV_REGISTER_VALUE,
+) -> HRESULT {
 	vm := (^Vm)(ctx)
 	return WHvGetVirtualProcessorRegisters(vm.part, 0, names, count, values)
 }
 
-whpx_emu_set_regs :: proc "system" (ctx: rawptr, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT {
+whpx_emu_set_regs :: proc "system" (
+	ctx: rawptr,
+	names: [^]WHV_REGISTER_NAME,
+	count: u32,
+	values: [^]WHV_REGISTER_VALUE,
+) -> HRESULT {
 	vm := (^Vm)(ctx)
 	return WHvSetVirtualProcessorRegisters(vm.part, 0, names, count, values)
 }
 
-whpx_emu_translate :: proc "system" (ctx: rawptr, gva: u64, flags: u32, result: ^WHV_TRANSLATE_GVA_RESULT_CODE, gpa: ^u64) -> HRESULT {
+whpx_emu_translate :: proc "system" (
+	ctx: rawptr,
+	gva: u64,
+	flags: u32,
+	result: ^WHV_TRANSLATE_GVA_RESULT_CODE,
+	gpa: ^u64,
+) -> HRESULT {
 	context = runtime.default_context()
 	vm := (^Vm)(ctx)
 	translation: WHV_TRANSLATE_GVA_RESULT

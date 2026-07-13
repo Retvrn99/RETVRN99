@@ -6,6 +6,12 @@ package main
 // Exits 0 on success, 1 on failure, 0 with a SKIP note when WHPX or the
 // user-provided DOS files are absent.
 
+import "../fat32"
+import "../hosttime"
+import "../hv"
+import "../machine"
+import "../profile"
+import "../vga"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
@@ -13,12 +19,6 @@ import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
-import "../fat32"
-import "../hosttime"
-import "../hv"
-import "../machine"
-import "../profile"
-import "../vga"
 
 // a guest that stops doing I/O never exits WHvRunVirtualProcessor;
 // periodic cancels keep step() returning (same as the GUI watchdog)
@@ -34,21 +34,25 @@ VCPU_PULSE_PERIOD :: time.Millisecond
 
 main :: proc() {
 	code := run_smoke()
-	if code != 0 { os.exit(code) }
+	if code != 0 {os.exit(code)}
 }
 
-run_smoke :: proc() -> int {
+run_smoke :: proc() -> (result: int) {
 	if !hv.available() {
 		fmt.println("SKIP: WHPX not available")
 		return 0
 	}
 	paths, perr := profile.paths_default()
-	if perr != nil { return smoke_fail("profile path resolution") }
+	if perr != nil {return smoke_fail("profile path resolution")}
 	defer profile.paths_destroy(&paths)
 	switch profile.dos_seed_prepare(paths.c_drive) {
 	case .Missing, .Preserved, .Updated:
-	case .Path_Failed, .Read_Failed, .Create_Directory_Failed, .Temporary_Path_Failed,
-	     .Write_Failed, .Replace_Failed:
+	case .Path_Failed,
+	     .Read_Failed,
+	     .Create_Directory_Failed,
+	     .Temporary_Path_Failed,
+	     .Write_Failed,
+	     .Replace_Failed:
 		return smoke_fail("DOS seed MSDOS.SYS preparation")
 	}
 	io_sys, _ := filepath.join({paths.c_drive, "IO.SYS"})
@@ -65,20 +69,25 @@ run_smoke :: proc() -> int {
 	}
 	defer {
 		machine.machine_destroy(m)
-		fat32.volume_close(vol)
+		if vol != nil && !fat32.volume_close(vol) {
+			fmt.eprintln("disk: close failed; staged C: writes remain retained")
+			if result == 0 {result = 1}
+		}
 		free(m)
 	}
 	settings, _ := profile.settings_load(paths.settings)
 	machine.machine_set_cpu_mode(m, settings.cpu_mode)
-	if !machine.load_roms(&m.vm) { return smoke_fail("load_roms") }
+	if !machine.load_roms(&m.vm) {return smoke_fail("load_roms")}
 	vol = fat32.volume_open(paths.c_drive, 2048)
-	if vol == nil { return smoke_fail("volume_open") }
+	if vol == nil {return smoke_fail("volume_open")}
 	vol.on_fail = proc(ctx: rawptr, msg: string) {
 		fmt.printfln("disk: writes frozen: %s", msg)
 	}
 	machine.machine_attach_disk(m, fat32.volume_block_device(vol))
 
-	wd := Watchdog{vm = &m.vm}
+	wd := Watchdog {
+		vm = &m.vm,
+	}
 	wd_thr := thread.create_and_start_with_poly_data(&wd, proc(w: ^Watchdog) {
 		waiter: hosttime.Waiter
 		hosttime.waiter_init(&waiter)
@@ -87,7 +96,7 @@ run_smoke :: proc() -> int {
 			sync.lock(&w.mu)
 			stop := w.stop
 			sync.unlock(&w.mu)
-			if stop { return }
+			if stop {return}
 			hv.cancel(w.vm)
 			hosttime.waiter_sleep(&waiter, VCPU_PULSE_PERIOD)
 		}
@@ -99,7 +108,7 @@ run_smoke :: proc() -> int {
 		thread.join(wd_thr)
 	}
 
-	if !run_until(m, BOOT_DEADLINE, "C:\\>") { return smoke_fail("no C:\\> prompt within deadline") }
+	if !run_until(m, BOOT_DEADLINE, "C:\\>") {return smoke_fail("no C:\\> prompt within deadline")}
 	fmt.println("prompt reached, typing DIR")
 
 	// DIR + Enter, set-1 make/break pairs
@@ -109,8 +118,8 @@ run_smoke :: proc() -> int {
 		step_for(m, 100 * time.Millisecond)
 	}
 	// any file we know the user placed there; COMMAND.COM must exist to boot
-	if !run_until(m, DIR_DEADLINE, "COMMAND") { return smoke_fail("DIR output not found") }
-	if !run_until(m, DIR_DEADLINE, "C:\\>") { return smoke_fail("no C:\\> prompt after DIR") }
+	if !run_until(m, DIR_DEADLINE, "COMMAND") {return smoke_fail("DIR output not found")}
+	if !run_until(m, DIR_DEADLINE, "C:\\>") {return smoke_fail("no C:\\> prompt after DIR")}
 	fmt.println("PASS: booted to prompt, DIR lists COMMAND, C:\\> renders")
 	return 0
 }
@@ -134,7 +143,7 @@ run_until :: proc(m: ^machine.Machine, deadline: time.Duration, needle: string) 
 	for time.tick_since(start) < deadline {
 		step_for(m, 250 * time.Millisecond)
 		snap := machine.machine_text_snapshot(m)
-		if strings.contains(grid_text(&snap), needle) { return true }
+		if strings.contains(grid_text(&snap), needle) {return true}
 		free_all(context.temp_allocator)
 		if m.bus.frozen {
 			fmt.printfln("frozen: %s", m.bus.freeze_msg)
@@ -147,6 +156,6 @@ run_until :: proc(m: ^machine.Machine, deadline: time.Duration, needle: string) 
 step_for :: proc(m: ^machine.Machine, d: time.Duration) {
 	start := time.tick_now()
 	for time.tick_since(start) < d {
-		if !machine.step(m) { return }
+		if !machine.step(m) {return}
 	}
 }

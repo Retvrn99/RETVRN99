@@ -9,12 +9,13 @@ Exit_Kind :: enum {
 	Halt,
 	Interrupt_Window,
 	Canceled,
+	Reset,
 	Failed,
 }
 
 Exit :: struct {
 	kind:   Exit_Kind,
-	detail: string, // Failed only
+	detail: string, // failure or reset provenance
 }
 
 Rom_Mapping :: struct {
@@ -36,14 +37,18 @@ Device_Mapping :: struct {
 
 Vm :: struct {
 	part:              rawptr, // WHV_PARTITION_HANDLE
-	ram:               []u8,   // 64MB, mapped at GPA 0
+	ram:               []u8, // 64MB, mapped at GPA 0
 	emu:               rawptr, // WHV_EMULATOR_HANDLE
 	roms:              [dynamic]Rom_Mapping, // host copies backing map_rom regions
 	mmio_reservations: [dynamic]Mmio_Reservation,
 	device_mappings:   [dynamic]Device_Mapping,
+	a20_enabled:       bool,
+	a20_requested:     bool,
+	a20_request_count: u64,
+	a20_apply_count:   u64,
 	io_ctx:            rawptr,
-	io_read:           proc(ctx: rawptr, port: u16, size: u8) -> u32,
-	io_write:          proc(ctx: rawptr, port: u16, size: u8, val: u32),
+	io_read:           proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool),
+	io_write:          proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool,
 	mmio:              proc(ctx: rawptr, gpa: u64, write: bool, data: []u8),
 }
 
@@ -82,6 +87,11 @@ destroy :: proc(vm: ^Vm) {
 
 run :: proc(vm: ^Vm) -> Exit {
 	return whpx_run(vm)
+}
+
+// Resets CPU architectural state while preserving guest memory and devices.
+reset_cpu :: proc(vm: ^Vm) -> bool {
+	return whpx_reset_cpu(vm)
 }
 
 // sets PendingInterruption
@@ -126,6 +136,11 @@ reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
 // Allocates stable page-aligned storage and maps it Read|Write at gpa.
 map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 	return whpx_map_device_memory(vm, gpa, size)
+}
+
+// Requests an HMA mapping change at the next safe vCPU run boundary.
+set_a20 :: proc(vm: ^Vm, enabled: bool) -> bool {
+	return whpx_set_a20(vm, enabled)
 }
 
 get_regs :: proc(vm: ^Vm) -> Regs {

@@ -130,6 +130,11 @@ ide_abort :: proc(ide: ^Ide) {
 }
 
 @(private = "file")
+ide_flush :: proc(ide: ^Ide) -> bool {
+	return ide.bd.flush == nil || ide.bd.flush(ide.bd.ctx)
+}
+
+@(private = "file")
 ide_load_sector :: proc(ide: ^Ide) -> bool {
 	if ide.lba >= ide.bd.sector_count || !ide.bd.read(ide.bd.ctx, ide.lba, ide.buf[:]) {
 		ide_abort(ide)
@@ -166,7 +171,15 @@ ide_command :: proc(ide: ^Ide, cmd: u8) {
 		ide.buf_pos = 0
 		ide.state = .Data_Out
 		ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ
-	case 0xEF, 0x40, 0xE7: // SET FEATURES / READ VERIFY / FLUSH
+	case 0xEF, 0x40: // SET FEATURES / READ VERIFY
+		ide.state = .Idle
+		ide.reg_status = IDE_STATUS_DRDY
+		ide_raise_irq(ide)
+	case 0xE7: // FLUSH CACHE
+		if !ide_flush(ide) {
+			ide_abort(ide)
+			return
+		}
 		ide.state = .Idle
 		ide.reg_status = IDE_STATUS_DRDY
 		ide_raise_irq(ide)
@@ -215,13 +228,18 @@ ide_data_write :: proc(ide: ^Ide, size: u8, val: u32) {
 		}
 		ide.pending -= 1
 		ide.reg_seccount = u8(ide.pending)
-		ide_raise_irq(ide)
 		if ide.pending > 0 {
 			ide.lba += 1
 			ide.buf_pos = 0
+			ide_raise_irq(ide)
 		} else {
+			if !ide_flush(ide) {
+				ide_abort(ide)
+				return
+			}
 			ide.state = .Idle
 			ide.reg_status = IDE_STATUS_DRDY
+			ide_raise_irq(ide)
 		}
 	}
 }
