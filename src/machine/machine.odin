@@ -61,10 +61,12 @@ Machine :: struct {
 	vm:                hv.Vm,
 	governor:          hv.Governor,
 	idle_waiter:       hosttime.Waiter,
-	last_tick:         time.Tick,
-	video_ns:          u64,
-	video_run_start:   time.Tick,
-	video_running:     bool,
+	timeline:          Master_Timeline,
+	time_source:       Master_Source_Phase,
+	nanosecond_phase:  Rate_Phase,
+	active_tick:       time.Tick,
+	active_ns:         u64,
+	clock_running:     bool,
 	dbg_out:           [dynamic]u8, // firmware debug ports 0x402 and 0x500
 	mmio_seen:         [Mmio_Zone]bool, // log tolerated zones only once
 	exit_hist:         [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
@@ -225,11 +227,12 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_whitelist(&m.bus, 0xA79) // ISA PnP write-data, ASPI2DOS card isolation (address port 0x279 sits in the LPT2 range above)
 	// ISA PnP read-data candidates: ASPI2DOS walks 0x20B, 0x22B, ... 0x3EB until isolation finds a card (it never will)
 	for p := u16(0x20B); p <= 0x3EB; p += 0x20 {bus_whitelist(&m.bus, p)}
-	m.last_tick = time.tick_now()
+	machine_clock_set_running(m, true)
 	return true
 }
 
 machine_destroy :: proc(m: ^Machine) {
+	machine_clock_set_running(m, false)
 	disk.fdc_eject_media(&m.fdc)
 	disk.atapi_eject(&m.atapi)
 	hosttime.waiter_destroy(&m.idle_waiter)
@@ -350,7 +353,7 @@ machine_cpu_reset :: proc(m: ^Machine) -> bool {
 	m.cpu_reset_reason = ""
 	m.cpu_reset_count += 1
 	hv.governor_rebase(&m.governor, &m.vm)
-	m.last_tick = time.tick_now()
+	m.active_tick = time.tick_now()
 	return true
 }
 
@@ -358,12 +361,35 @@ machine_mouse :: proc(m: ^Machine, dx, dy: i32, buttons: u8) {
 	i8042_mouse(&m.kbd, dx, dy, buttons)
 }
 
-step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
+machine_clock_set_running :: proc(m: ^Machine, running: bool) {
+	if m == nil {return}
+	m.clock_running = running
+	m.active_tick = time.tick_now()
+}
+
+machine_advance_time_ns :: proc(m: ^Machine, nanoseconds: u64) {
+	if m == nil || nanoseconds == 0 {return}
+	master_ticks := master_source_advance_nanoseconds(&m.time_source, nanoseconds)
+	elapsed_ticks := master_timeline_advance(&m.timeline, master_ticks)
+	elapsed_ns := master_ticks_to_nanoseconds(&m.nanosecond_phase, elapsed_ticks)
+	if elapsed_ns == 0 {return}
+	m.active_ns += elapsed_ns
+	i8042_advance(&m.kbd, elapsed_ns)
+	for _ in 0 ..< pit_advance(&m.pit, elapsed_ns) {pic_raise(&m.pic, 0)}
+	for _ in 0 ..< cmos_advance(&m.cmos, elapsed_ns) {pic_raise(&m.pic, 8)}
+	video.vga_sync_to(&m.vga, m.active_ns)
+}
+
+machine_sync_time :: proc(m: ^Machine) {
+	if m == nil || !m.clock_running {return}
 	now := time.tick_now()
-	ns := u64(time.tick_diff(m.last_tick, now))
-	m.last_tick = now
-	for _ in 0 ..< pit_advance(&m.pit, ns) {pic_raise(&m.pic, 0)}
-	for _ in 0 ..< cmos_advance(&m.cmos, ns) {pic_raise(&m.pic, 8)}
+	elapsed := max(time.Duration(0), time.tick_diff(m.active_tick, now))
+	m.active_tick = now
+	machine_advance_time_ns(m, u64(elapsed))
+}
+
+step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
+	machine_sync_time(m)
 	if pic_has_pending(&m.pic) {
 		if hv.can_inject(&m.vm) {
 			if v, ok := pic_ack(&m.pic); ok {
@@ -379,13 +405,8 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 			hv.request_irq_window(&m.vm, true)
 		}
 	}
-	m.video_run_start = time.tick_now()
-	m.video_running = true
 	ex := hv.run(&m.vm)
-	run_end := time.tick_now()
-	m.video_ns += u64(max(time.Duration(0), time.tick_diff(m.video_run_start, run_end)))
-	m.video_running = false
-	video.vga_sync_to(&m.vga, m.video_ns)
+	machine_sync_time(m)
 	governor_ok := ex.kind != .Canceled || hv.governor_on_cancel(&m.governor, &m.vm)
 	m.exit_hist[m.exit_count % EXIT_HISTORY] = ex.kind
 	m.exit_count += 1
@@ -423,6 +444,7 @@ machine_whitelist_range :: proc(b: ^Bus, first, last: u16) {
 @(private = "file")
 machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
 	v := bus_io_read(&m.bus, port, size)
 	t := Io_Trace {
 		port  = port,
@@ -442,6 +464,7 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 @(private = "file")
 machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
 	t := Io_Trace {
 		port  = port,
 		write = true,
@@ -476,7 +499,7 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 @(private = "file")
 machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 	m := (^Machine)(ctx)
-	machine_vga_sync(m)
+	machine_sync_time(m)
 	if gpa >= video.LEGACY_APERTURE_BASE && gpa + u64(len(data)) <= video.LEGACY_APERTURE_END {
 		for byte, i in data {
 			if write {
@@ -738,12 +761,7 @@ machine_vga_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 
 @(private = "file")
 machine_vga_sync :: proc(m: ^Machine) {
-	target := m.video_ns
-	if m.video_running {
-		now := time.tick_now()
-		target += u64(max(time.Duration(0), time.tick_diff(m.video_run_start, now)))
-	}
-	video.vga_sync_to(&m.vga, target)
+	machine_sync_time(m)
 }
 
 machine_display_frame :: proc(m: ^Machine) -> ^video.Display_Frame {

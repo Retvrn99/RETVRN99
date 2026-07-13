@@ -87,6 +87,8 @@ test_i8042_aux_controller :: proc(t: ^testing.T) {
 	i8042_out(&kc, 0x60, 0xF2)
 	testing.expect_value(t, i8042_in(&kc, 0x64), u8(0x21))
 	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0xFA))
+	testing.expect_value(t, i8042_in(&kc, 0x64), u8(0x00))
+	i8042_advance(&kc, I8042_AUX_BYTE_NS)
 	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x00))
 	testing.expect_value(t, irqs.irq12, 2)
 
@@ -97,6 +99,32 @@ test_i8042_aux_controller :: proc(t: ^testing.T) {
 	i8042_out(&kc, 0x92, 0x02) // A20 on
 	i8042_out(&kc, 0x64, 0xD0) // read output port
 	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x03)) // bit1 A20, bit0 no-reset
+}
+
+@(test)
+test_i8042_aux_bytes_wait_between_irq12_edges :: proc(t: ^testing.T) {
+	irqs: I8042_Test_Irqs
+	kc: I8042
+	i8042_init(
+		&kc,
+		&irqs,
+		nil,
+		proc(ctx: rawptr) {(^I8042_Test_Irqs)(ctx).irq12 += 1},
+	)
+	i8042_out(&kc, 0x64, 0x60); i8042_out(&kc, 0x60, 0x02)
+	i8042_out(&kc, 0x64, 0xD4); i8042_out(&kc, 0x60, 0xF2)
+	testing.expect_value(t, irqs.irq12, 1)
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0xFA))
+	testing.expect_value(t, i8042_in(&kc, 0x64), u8(0x00))
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x00))
+	testing.expect_value(t, irqs.irq12, 1)
+	i8042_advance(&kc, I8042_AUX_BYTE_NS - 1)
+	testing.expect_value(t, i8042_in(&kc, 0x64), u8(0x00))
+	testing.expect_value(t, irqs.irq12, 1)
+	i8042_advance(&kc, 1)
+	testing.expect_value(t, i8042_in(&kc, 0x64), u8(0x21))
+	testing.expect_value(t, irqs.irq12, 2)
+	testing.expect_value(t, i8042_in(&kc, 0x60), u8(0x00))
 }
 
 @(test)

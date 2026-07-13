@@ -3,6 +3,8 @@ package machine
 
 // i8042 keyboard/mouse controller + A20 gate (port 0x92)
 
+I8042_AUX_BYTE_NS :: u64(1_000_000)
+
 I8042_Expect :: enum u8 {
 	None,
 	Cmd_Byte,
@@ -23,6 +25,7 @@ I8042 :: struct {
 	fifo:       [64]I8042_Output,
 	head, tail: int,
 	count:      int,
+	aux_wait_ns: u64,
 	cmd_byte:   u8, // IRQ1/IRQ12 enables in bits 0/1; port disables in bits 4/5
 	expect:     I8042_Expect,
 	a20:        bool,
@@ -66,6 +69,7 @@ i8042_raise_head :: proc(k: ^I8042) {
 	if k.count == 0 {return}
 	entry := k.fifo[k.head]
 	if entry.aux {
+		if k.aux_wait_ns > 0 {return}
 		if k.cmd_byte & 0x02 != 0 && k.irq12 != nil {k.irq12(k.ctx)}
 	} else {
 		if k.cmd_byte & 0x01 != 0 && k.irq1 != nil {k.irq1(k.ctx)}
@@ -103,12 +107,28 @@ i8042_flush_mouse :: proc(k: ^I8042) {
 @(private = "file")
 i8042_pop :: proc(k: ^I8042) -> u8 {
 	if k.count == 0 {return 0}
-	value := k.fifo[k.head].value
+	entry := k.fifo[k.head]
+	if entry.aux && k.aux_wait_ns > 0 {return 0}
+	value := entry.value
 	k.head = (k.head + 1) % len(k.fifo)
 	k.count -= 1
+	if entry.aux {k.aux_wait_ns = I8042_AUX_BYTE_NS}
 	i8042_flush_mouse(k)
-	if k.count > 0 {i8042_raise_head(k)}
+	if k.count > 0 {
+		if !k.fifo[k.head].aux {k.aux_wait_ns = 0}
+		i8042_raise_head(k)
+	}
 	return value
+}
+
+i8042_advance :: proc(k: ^I8042, ns: u64) {
+	if k.aux_wait_ns == 0 {return}
+	if ns < k.aux_wait_ns {
+		k.aux_wait_ns -= ns
+		return
+	}
+	k.aux_wait_ns = 0
+	i8042_raise_head(k)
 }
 
 // host key (scancode set 1)
@@ -137,7 +157,7 @@ i8042_in :: proc(k: ^I8042, port: u16) -> u8 {
 	case 0x60:
 		return i8042_pop(k)
 	case 0x64:
-		if k.count == 0 {return 0}
+		if k.count == 0 || k.fifo[k.head].aux && k.aux_wait_ns > 0 {return 0}
 		return k.fifo[k.head].aux ? 0x21 : 0x01
 	case 0x92:
 		return k.a20 ? 0x02 : 0x00

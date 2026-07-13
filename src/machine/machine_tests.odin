@@ -555,25 +555,25 @@ test_machine_reset_control_requests_guest_reset :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_machine_video_clock_only_advances_while_running :: proc(t: ^testing.T) {
+test_machine_master_clock_controls_all_device_time :: proc(t: ^testing.T) {
 	backing := make([]u8, video.VRAM_SIZE)
 	defer delete(backing)
 	m: Machine
 	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
 	defer video.vga_destroy(&m.vga)
-	m.video_ns = 1_000
-	_ = machine_text_snapshot(&m)
+	machine_advance_time_ns(&m, 1_000)
 	testing.expect_value(t, m.vga.timing.elapsed_ns, u64(1_000))
+	testing.expect_value(t, master_timeline_now(m.timeline), u64(6_600))
+
 	time.sleep(time.Millisecond)
 	_ = machine_display_frame(&m)
 	testing.expect_value(t, m.vga.timing.elapsed_ns, u64(1_000))
 
-	m.video_running = true
-	m.video_run_start = time.tick_now()
+	machine_clock_set_running(&m, true)
 	time.sleep(time.Millisecond)
 	_ = machine_text_snapshot(&m)
 	testing.expect(t, m.vga.timing.elapsed_ns > 1_000)
-	m.video_running = false
+	machine_clock_set_running(&m, false)
 	frozen_time := m.vga.timing.elapsed_ns
 	time.sleep(time.Millisecond)
 	_ = machine_text_snapshot(&m)
