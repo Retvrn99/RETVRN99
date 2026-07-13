@@ -9,6 +9,17 @@ ATAPI_STATUS_BSY  :: 0x80
 ATAPI_ERROR_ABRT :: 0x04
 
 ATAPI_PACKET_BYTES :: 12
+ATAPI_TRACE_HISTORY :: 64
+
+Atapi_Packet_Trace :: struct {
+	packet:          [ATAPI_PACKET_BYTES]u8,
+	phase_limit:     int,
+	dispatch_status: u8,
+	dispatch_error:  u8,
+	dispatch_key:    u8,
+	dispatch_asc:    u8,
+	dispatch_ascq:   u8,
+}
 
 Atapi_State :: enum {
 	Idle,
@@ -34,6 +45,8 @@ Atapi :: struct {
 	phase_limit: int,
 	packet: [ATAPI_PACKET_BYTES]u8,
 	packet_pos: int,
+	trace_hist: [ATAPI_TRACE_HISTORY]Atapi_Packet_Trace,
+	trace_count: u64,
 	read_lba: u32,
 	read_blocks: u32,
 	media_changed: bool,
@@ -58,11 +71,24 @@ atapi_init :: proc(a: ^Atapi) {
 }
 
 atapi_mount :: proc(a: ^Atapi, path: string) -> bool {
-	if a == nil || !cdrom_image_mount(&a.image, path) {
+	changed := a != nil && (a.media_changed || cdrom_image_present(&a.image))
+	return atapi_set_media(a, path, changed)
+}
+
+atapi_attach :: proc(a: ^Atapi, path: string) -> bool {
+	return atapi_set_media(a, path, false)
+}
+
+@(private = "file")
+atapi_set_media :: proc(a: ^Atapi, path: string, changed: bool) -> bool {
+	if a == nil {
+		return false
+	}
+	if !cdrom_image_mount(&a.image, path) {
 		return false
 	}
 	atapi_cancel_transfer(a)
-	a.media_changed = true
+	a.media_changed = changed
 	a.sense_key, a.sense_asc, a.sense_ascq = 0, 0, 0
 	a.reg_status = ATAPI_STATUS_DRDY
 	return true
@@ -180,6 +206,13 @@ atapi_command :: proc(a: ^Atapi, cmd: u8) {
 	a.reg_error = 0
 	switch cmd {
 	case 0xA0:
+		if a.reg_features & 0x03 != 0 {
+			atapi_cancel_transfer(a)
+			a.reg_error = ATAPI_ERROR_ABRT
+			a.reg_status = ATAPI_STATUS_DRDY | ATAPI_STATUS_ERR
+			atapi_raise_irq(a)
+			return
+		}
 		a.packet = {}
 		a.packet_pos = 0
 		a.phase_limit = int(u16(a.reg_lba_mid) | u16(a.reg_lba_hi) << 8)
@@ -315,12 +348,18 @@ atapi_check_condition :: proc(a: ^Atapi, key, asc, ascq: u8) {
 }
 
 @(private = "file")
-atapi_media_ready :: proc(a: ^Atapi) -> bool {
+atapi_media_attention :: proc(a: ^Atapi) -> bool {
 	if a.media_changed {
 		a.media_changed = false
 		atapi_check_condition(a, 0x06, 0x28, 0)
-		return false
+		return true
 	}
+	return false
+}
+
+@(private = "file")
+atapi_media_ready :: proc(a: ^Atapi) -> bool {
+	if atapi_media_attention(a) {return false}
 	if !cdrom_image_present(&a.image) {
 		atapi_check_condition(a, 0x02, 0x3A, 0)
 		return false
@@ -330,6 +369,19 @@ atapi_media_ready :: proc(a: ^Atapi) -> bool {
 
 @(private = "file")
 atapi_packet_command :: proc(a: ^Atapi) {
+	trace := &a.trace_hist[a.trace_count % ATAPI_TRACE_HISTORY]
+	trace^ = Atapi_Packet_Trace {
+		packet      = a.packet,
+		phase_limit = a.phase_limit,
+	}
+	a.trace_count += 1
+	defer {
+		trace.dispatch_status = a.reg_status
+		trace.dispatch_error = a.reg_error
+		trace.dispatch_key = a.sense_key
+		trace.dispatch_asc = a.sense_asc
+		trace.dispatch_ascq = a.sense_ascq
+	}
 	switch a.packet[0] {
 	case 0x00:
 		if atapi_media_ready(a) {
@@ -340,7 +392,7 @@ atapi_packet_command :: proc(a: ^Atapi) {
 	case 0x12:
 		atapi_inquiry(a)
 	case 0x1A:
-		if atapi_media_ready(a) {
+		if !atapi_media_attention(a) {
 			atapi_mode_sense_6(a)
 		}
 	case 0x1B, 0x1E:
@@ -362,12 +414,16 @@ atapi_packet_command :: proc(a: ^Atapi) {
 				atapi_complete(a)
 			}
 		}
+	case 0x42:
+		if atapi_media_ready(a) {
+			atapi_read_subchannel(a)
+		}
 	case 0x43:
 		if atapi_media_ready(a) {
 			atapi_read_toc(a)
 		}
 	case 0x5A:
-		if atapi_media_ready(a) {
+		if !atapi_media_attention(a) {
 			atapi_mode_sense_10(a)
 		}
 	case 0xA8:
@@ -440,7 +496,27 @@ atapi_read_blocks :: proc(a: ^Atapi, lba, count: u32) {
 
 @(private = "file")
 atapi_read_toc :: proc(a: ^Atapi) {
-	if a.packet[2] & 0x0F != 0 {
+	format := a.packet[2] & 0x0F
+	legacy_format := a.packet[9] >> 6
+	if format == 0 && legacy_format != 0 {
+		format = legacy_format
+	}
+	allocation := int(atapi_be16(a.packet[7:9]))
+	if format == 1 {
+		a.buf = {}
+		atapi_put_be16(a.buf[:], 0, 10)
+		a.buf[2], a.buf[3] = 1, 1
+		a.buf[5], a.buf[6] = 0x14, 1
+		if a.packet[1] & 0x02 != 0 {
+			atapi_put_msf(a.buf[:], 8, 0)
+		} else {
+			atapi_put_be32(a.buf[:], 8, 0)
+		}
+		a.data_kind = .Reply
+		atapi_start_data(a, min(allocation, 12))
+		return
+	}
+	if format != 0 {
 		atapi_check_condition(a, 0x05, 0x24, 0)
 		return
 	}
@@ -448,7 +524,7 @@ atapi_read_toc :: proc(a: ^Atapi) {
 	atapi_put_be16(a.buf[:], 0, 18)
 	a.buf[2], a.buf[3] = 1, 1
 	a.buf[5], a.buf[6] = 0x14, 1
-	a.buf[13], a.buf[14] = 0x14, 0xAA
+	a.buf[13], a.buf[14] = 0x16, 0xAA
 	if a.packet[1] & 0x02 != 0 {
 		atapi_put_msf(a.buf[:], 8, 0)
 		atapi_put_msf(a.buf[:], 16, a.image.block_count)
@@ -456,9 +532,21 @@ atapi_read_toc :: proc(a: ^Atapi) {
 		atapi_put_be32(a.buf[:], 8, 0)
 		atapi_put_be32(a.buf[:], 16, a.image.block_count)
 	}
-	allocation := int(atapi_be16(a.packet[7:9]))
 	a.data_kind = .Reply
 	atapi_start_data(a, min(allocation, 20))
+}
+
+@(private = "file")
+atapi_read_subchannel :: proc(a: ^Atapi) {
+	if a.packet[2] & 0x40 != 0 {
+		atapi_check_condition(a, 0x05, 0x24, 0)
+		return
+	}
+	a.buf = {}
+	a.buf[1] = 0x15
+	allocation := int(atapi_be16(a.packet[7:9]))
+	a.data_kind = .Reply
+	atapi_start_data(a, min(allocation, 4))
 }
 
 @(private = "file")
@@ -472,18 +560,35 @@ atapi_mode_sense_6 :: proc(a: ^Atapi) {
 
 @(private = "file")
 atapi_mode_sense_10 :: proc(a: ^Atapi) {
+	page_control := a.packet[2] >> 6
+	page := a.packet[2] & 0x3F
+	if page_control != 0 || page != 0x2A {
+		a.buf = {}
+		atapi_put_be16(a.buf[:], 0, 6)
+		allocation := int(atapi_be16(a.packet[7:9]))
+		a.data_kind = .Reply
+		atapi_start_data(a, min(allocation, 8))
+		return
+	}
 	a.buf = {}
-	atapi_put_be16(a.buf[:], 0, 6)
+	atapi_put_be16(a.buf[:], 0, 26)
+	a.buf[2] = 0x01 if cdrom_image_present(&a.image) else 0x70
+	a.buf[8] = 0x2A
+	a.buf[9] = 18
+	a.buf[14] = 0x20
+	atapi_put_be16(a.buf[:], 16, 9173)
+	atapi_put_be16(a.buf[:], 20, 2)
+	atapi_put_be16(a.buf[:], 22, 9173)
 	allocation := int(atapi_be16(a.packet[7:9]))
 	a.data_kind = .Reply
-	atapi_start_data(a, min(allocation, 8))
+	atapi_start_data(a, min(allocation, 28))
 }
 
 @(private = "file")
 atapi_fill_identify :: proc(a: ^Atapi) {
 	a.buf = {}
 	atapi_put_word(&a.buf, 0, 0x85C0)
-	atapi_put_word(&a.buf, 49, 0x0B00)
+	atapi_put_word(&a.buf, 49, 0x0A00)
 	atapi_put_word(&a.buf, 53, 0x0003)
 	atapi_put_word(&a.buf, 64, 0x0003)
 	atapi_put_word(&a.buf, 80, 0x0010)

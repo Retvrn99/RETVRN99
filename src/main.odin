@@ -653,7 +653,7 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 	if c.attach {machine.machine_attach_disk(m, c.bd)}
 	if c.floppy != nil {_ = machine.machine_mount_floppy(m, c.floppy)}
 	if c.cdrom_path != "" {
-		if machine.machine_mount_cdrom(m, c.cdrom_path) {
+		if machine.machine_attach_cdrom(m, c.cdrom_path) {
 			publish_cdrom_state(c.shared, true)
 		} else {
 			publish_cdrom_state(c.shared, false)
@@ -810,7 +810,7 @@ console_main :: proc(
 	machine.machine_set_cpu_mode(m, settings.cpu_mode)
 	fmt.println(cpu_mode_log(settings.cpu_mode))
 	if cdrom_path != "" {
-		if !machine.machine_mount_cdrom(m, cdrom_path) {
+		if !machine.machine_attach_cdrom(m, cdrom_path) {
 			fmt.eprintfln("CD-ROM: unsupported or unreadable image %s", cdrom_path)
 			return 1
 		}
@@ -967,6 +967,23 @@ dump_state :: proc(m: ^machine.Machine) {
 		m.kbd.head,
 		m.kbd.tail,
 	)
+	natapi := int(min(m.atapi.trace_count, u64(disk.ATAPI_TRACE_HISTORY)))
+	fmt.printfln("last %d ATAPI packets (of %d):", natapi, m.atapi.trace_count)
+	for i in 0 ..< natapi {
+		idx := (m.atapi.trace_count - u64(natapi) + u64(i)) % disk.ATAPI_TRACE_HISTORY
+		trace := m.atapi.trace_hist[idx]
+		fmt.printf("  %02x", trace.packet[0])
+		for byte in trace.packet[1:] {fmt.printf(" %02x", byte)}
+		fmt.printfln(
+			" limit=%d dispatch=%02x/%02x sense=%02x/%02x/%02x",
+			trace.phase_limit,
+			trace.dispatch_status,
+			trace.dispatch_error,
+			trace.dispatch_key,
+			trace.dispatch_asc,
+			trace.dispatch_ascq,
+		)
+	}
 	fmt.printfln(
 		"pic: master irr=%02x imr=%02x isr=%02x base=%02x slave irr=%02x imr=%02x isr=%02x base=%02x",
 		m.pic.master.irr,

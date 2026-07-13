@@ -288,6 +288,10 @@ machine_mount_cdrom :: proc(m: ^Machine, path: string) -> bool {
 	return disk.atapi_mount(&m.atapi, path)
 }
 
+machine_attach_cdrom :: proc(m: ^Machine, path: string) -> bool {
+	return disk.atapi_attach(&m.atapi, path)
+}
+
 machine_eject_cdrom :: proc(m: ^Machine) {
 	disk.atapi_eject(&m.atapi)
 }
