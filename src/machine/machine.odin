@@ -53,6 +53,7 @@ Machine :: struct {
 	fdc:             disk.Fdc,
 	has_disk:        bool,
 	reset_requested: bool,
+	reset_control:   u8,
 	vm:              hv.Vm,
 	governor:        hv.Governor,
 	idle_waiter:     hosttime.Waiter,
@@ -144,6 +145,13 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 		write = machine_pci_write,
 	}
 	bus_register(&m.bus, 0xCF8, 0xCFF, pci_h)
+	bus_register(&m.bus, 0xC000, 0xCFFF, pci_h)
+	reset_h := Io_Handler {
+		ctx   = m,
+		read  = machine_reset_control_read,
+		write = machine_reset_control_write,
+	}
+	bus_register(&m.bus, 0xCF9, 0xCF9, reset_h)
 
 	fw_h := Io_Handler {
 		ctx   = m,
@@ -195,9 +203,6 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_whitelist(&m.bus, 0xA79) // ISA PnP write-data, ASPI2DOS card isolation (address port 0x279 sits in the LPT2 range above)
 	// ISA PnP read-data candidates: ASPI2DOS walks 0x20B, 0x22B, ... 0x3EB until isolation finds a card (it never will)
 	for p := u16(0x20B); p <= 0x3EB; p += 0x20 {bus_whitelist(&m.bus, p)}
-	// PCI config mechanism #2 window, scanned by ASPI8DOS/ASPI8U2; floats on real 440BX too (mechanism #1 only)
-	machine_whitelist_range(&m.bus, 0xC000, 0xCFFF)
-
 	m.last_tick = time.tick_now()
 	return true
 }
@@ -595,6 +600,18 @@ machine_pci_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_pci_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	pci_out(&m.pci, port, size, val)
+}
+
+machine_reset_control_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
+	m := (^Machine)(ctx)
+	return u32(m.reset_control)
+}
+
+machine_reset_control_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
+	if size != 1 {return}
+	m := (^Machine)(ctx)
+	m.reset_control = u8(val) & 0x02
+	if val & 0x04 != 0 {machine_guest_reset(m)}
 }
 
 @(private = "file")

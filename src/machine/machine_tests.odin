@@ -377,3 +377,21 @@ test_machine_guest_reset_is_distinct_from_freeze :: proc(t: ^testing.T) {
 	testing.expect(t, machine_reset_requested(&m))
 	testing.expect(t, m.bus.frozen)
 }
+
+@(test)
+test_machine_reset_control_requests_guest_reset :: proc(t: ^testing.T) {
+	prior_logger := context.logger
+	quiet_logger := log.create_console_logger(.Fatal, {.Level})
+	context.logger = quiet_logger
+	defer {
+		context.logger = prior_logger
+		log.destroy_console_logger(quiet_logger)
+	}
+	m: Machine
+	machine_reset_control_write(&m, 0xCF9, 1, 0x02)
+	testing.expect_value(t, machine_reset_control_read(&m, 0xCF9, 1), u32(0x02))
+	testing.expect(t, !machine_reset_requested(&m))
+	machine_reset_control_write(&m, 0xCF9, 1, 0x06)
+	testing.expect(t, machine_reset_requested(&m))
+	testing.expect(t, m.bus.frozen)
+}
