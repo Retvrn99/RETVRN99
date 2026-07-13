@@ -1543,11 +1543,14 @@ mode_info_number_of_image_pages:
 no_4bpp_mode:
   mov  dx, ax
   xor  ax, ax
+  cmp  dx, [si+8] ;; Clamp before DIV can overflow a 16-bit quotient
+  jae  clamp_image_pages
   div  word [si+8] ;; Bytes per scanline
   xor  dx, dx
   div  word [si+4] ;; Y Resolution
   cmp  ax, #0x100
   jb   no_clamp
+clamp_image_pages:
   mov  ax, #0x100
 no_clamp:
   pop  dx
