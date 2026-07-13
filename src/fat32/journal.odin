@@ -13,7 +13,7 @@ Journal :: struct {
 	// guest-allocated clusters adopted by decode (may be non-contiguous)
 	claimed:         map[u32]Claim,
 	pending_deletes: [dynamic]Pending_Delete, // deferred until the chain is freed
-	pending_extends: [dynamic]^Node, // dirs whose FAT chain changed mid-update
+	pending_extends: [dynamic]^Node, // dirs with new or changed chains mid-update
 }
 
 Claim :: struct {
@@ -23,6 +23,12 @@ Claim :: struct {
 
 Pending_Delete :: struct {
 	node: ^Node,
+}
+
+Chain_State :: enum {
+	Complete,
+	Incomplete,
+	Invalid,
 }
 
 journal_init :: proc(j: ^Journal, allocator := context.allocator) {
@@ -74,22 +80,31 @@ volume_fat_sector :: proc(v: ^Volume, index: u32, out: []u8) {
 
 // follow a guest FAT chain; empty on cycles or bad links
 volume_chain :: proc(v: ^Volume, first: u32, allocator := context.allocator) -> [dynamic]u32 {
+	chain, state := volume_chain_inspect(v, first, allocator)
+	if state != .Complete {clear(&chain)}
+	return chain
+}
+
+volume_chain_inspect :: proc(
+	v: ^Volume,
+	first: u32,
+	allocator := context.allocator,
+) -> ([dynamic]u32, Chain_State) {
 	chain := make([dynamic]u32, allocator)
 	c := first
 	for len(chain) <= int(v.alloc.geo.cluster_count) {
 		if c < 2 || c >= v.alloc.geo.cluster_count + 2 {
-			clear(&chain)
-			return chain
+			return chain, .Invalid
 		}
 		append(&chain, c)
 		next := volume_fat_entry(v, c) & 0x0FFFFFFF
 		if next >= 0x0FFFFFF8 {
-			return chain
+			return chain, .Complete
 		}
+		if next == 0 {return chain, .Incomplete}
 		c = next
 	}
-	clear(&chain)
-	return chain
+	return chain, .Invalid
 }
 
 volume_write :: proc(v: ^Volume, lba: u64, buf: []u8) -> bool {
@@ -224,13 +239,21 @@ extend_pending_dirs :: proc(v: ^Volume) -> bool {
 	for i < len(v.journal.pending_extends) {
 		node := v.journal.pending_extends[i]
 		if volume_fat_entry(v, node.first_cluster) & 0x0FFFFFFF == 0 {
-			ordered_remove(&v.journal.pending_extends, i) // chain freed: a delete, not growth
+			if node.cluster_len == 0 {
+				i += 1 // new directory whose FAT chain is not committed yet
+				continue
+			}
+			ordered_remove(&v.journal.pending_extends, i) // existing chain freed: a delete, not growth
 			continue
 		}
-		chain := volume_chain(v, node.first_cluster, context.temp_allocator)
-		if len(chain) == 0 {
+		chain, state := volume_chain_inspect(v, node.first_cluster, context.temp_allocator)
+		if state == .Incomplete {
 			i += 1 // chain mid-update: retry after the next FAT write
 			continue
+		}
+		if state == .Invalid {
+			volume_fail(v, fmt.tprintf("bad FAT chain at cluster %d for %s", node.first_cluster, node.name))
+			return false
 		}
 		if u32(len(chain)) > node.cluster_len {
 			if _, claimed := v.journal.claimed[node.first_cluster]; !claimed {

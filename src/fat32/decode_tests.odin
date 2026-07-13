@@ -240,6 +240,114 @@ decode_test_mkdir :: proc(t: ^testing.T) {
 	testing.expect(t, string(inner) == "NESTED")
 }
 
+@(test)
+decode_test_mkdir_waits_for_cross_sector_fat_chain :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+
+	first := u32(130)
+	tail := u32(260)
+	decode_test_fat_set(t, v, first, tail)
+
+	dots: [SECTOR]u8
+	decode_test_put_entry(dots[:], 0, ".          ", ATTR_DIR, first, 0)
+	decode_test_put_entry(dots[:], 32, "..         ", ATTR_DIR, 0, 0)
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, first), dots[:]))
+
+	root_lba := journal_test_data_lba(v, 2)
+	root: [SECTOR]u8
+	testing.expect(t, volume_read(v, root_lba, root[:]))
+	decode_test_put_entry(root[:], 96, "WININST0400", ATTR_DIR, first, 0)
+	testing.expect(t, volume_write(v, root_lba, root[:]))
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, len(v.journal.pending_extends), 1)
+
+	node := v.alloc.root.children[len(v.alloc.root.children) - 1]
+	testing.expect(t, node.name == "WININST0.400")
+	testing.expect_value(t, node.cluster_len, u32(0))
+	testing.expect(t, os.exists(node.host_path))
+
+	decode_test_fat_set(t, v, tail, 0x0FFFFFFF)
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, len(v.journal.pending_extends), 0)
+	testing.expect_value(t, node.cluster_len, u32(2))
+	testing.expect(t, v.journal.claimed[first].node == node)
+	testing.expect(t, v.journal.claimed[tail].node == node)
+	testing.expect(t, !(first in v.journal.orphan_data))
+	back := read_test_sector(t, v, journal_test_data_lba(v, first))
+	testing.expect(t, back == dots)
+}
+
+@(test)
+decode_test_mkdir_waits_for_first_fat_entry :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+
+	first := u32(130)
+	dots: [SECTOR]u8
+	decode_test_put_entry(dots[:], 0, ".          ", ATTR_DIR, first, 0)
+	decode_test_put_entry(dots[:], 32, "..         ", ATTR_DIR, 0, 0)
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, first), dots[:]))
+
+	root_lba := journal_test_data_lba(v, 2)
+	root := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(root[:], 96, "WININST0400", ATTR_DIR, first, 0)
+	testing.expect(t, volume_write(v, root_lba, root[:]))
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, len(v.journal.pending_extends), 1)
+
+	node := v.alloc.root.children[len(v.alloc.root.children) - 1]
+	testing.expect_value(t, node.cluster_len, u32(0))
+	testing.expect(t, first in v.journal.orphan_data)
+	decode_test_fat_set(t, v, first, 0x0FFFFFFF)
+
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, len(v.journal.pending_extends), 0)
+	testing.expect_value(t, node.cluster_len, u32(1))
+	testing.expect(t, v.journal.claimed[first].node == node)
+	testing.expect(t, !(first in v.journal.orphan_data))
+	back := read_test_sector(t, v, journal_test_data_lba(v, first))
+	testing.expect(t, back == dots)
+}
+
+@(test)
+decode_test_delete_pending_dir_before_fat_allocation :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {
+		return
+	}
+
+	first := u32(130)
+	root_lba := journal_test_data_lba(v, 2)
+	root := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(root[:], 96, "WININST0400", ATTR_DIR, first, 0)
+	testing.expect(t, volume_write(v, root_lba, root[:]))
+	testing.expect_value(t, len(v.journal.pending_extends), 1)
+
+	node := v.alloc.root.children[len(v.alloc.root.children) - 1]
+	testing.expect(t, v.journal.pending_extends[0] == node)
+	host_path, _ := filepath.join({dir, "WININST0.400"})
+	root[96] = 0xE5
+	testing.expect(t, volume_write(v, root_lba, root[:]))
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, len(v.journal.pending_extends), 0)
+	testing.expect(t, !os.exists(host_path))
+
+	decode_test_fat_set(t, v, first, 0x0FFFFFFF)
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, len(v.journal.pending_extends), 0)
+}
+
 // build one LFN entry (ASCII names only)
 decode_test_put_lfn :: proc(sec: []u8, off: int, seq: u8, last: bool, csum: u8, name: string) {
 	e := sec[off:][:32]

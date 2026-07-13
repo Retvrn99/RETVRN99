@@ -215,8 +215,15 @@ claim_chain :: proc(v: ^Volume, node: ^Node, first: u32) -> bool {
 	if first == 0 {
 		return true
 	}
-	chain := volume_chain(v, first, context.temp_allocator)
-	if len(chain) == 0 {
+	chain, state := volume_chain_inspect(v, first, context.temp_allocator)
+	if state != .Complete {
+		if node.is_dir && state == .Incomplete {
+			for pending in v.journal.pending_extends {
+				if pending == node {return true}
+			}
+			append(&v.journal.pending_extends, node)
+			return true
+		}
 		volume_fail(v, fmt.tprintf("bad FAT chain at cluster %d for %s", first, node.name))
 		return false
 	}
@@ -460,6 +467,12 @@ apply_delete :: proc(v: ^Volume, node: ^Node) -> bool {
 	}
 	detach_child(node)
 	release_node_clusters(v, node)
+	for pending, i in v.journal.pending_extends {
+		if pending == node {
+			ordered_remove(&v.journal.pending_extends, i)
+			break
+		}
+	}
 	node_tree_destroy(node, v.allocator)
 	return true
 }
