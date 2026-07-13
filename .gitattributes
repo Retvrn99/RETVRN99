@@ -1,0 +1,8 @@
+*.bin binary
+*.lib binary
+*.png binary
+vendor_local/seabios/** text eol=lf
+vendor_local/seabios/**/*.gif binary
+vendor_local/seabios/**/*.jpg binary
+vendor_local/seabios/**/*.png binary
+tools/seabios/*.sh text eol=lf

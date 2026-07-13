@@ -3,12 +3,34 @@ package machine
 
 import "core:testing"
 
+@(private = "file")
+rom_test_contains :: proc(haystack, needle: []u8) -> bool {
+	if len(needle) == 0 || len(needle) > len(haystack) {return false}
+	for offset in 0 ..= len(haystack) - len(needle) {
+		match := true
+		for i in 0 ..< len(needle) {
+			if haystack[offset + i] != needle[i] {
+				match = false
+				break
+			}
+		}
+		if match {return true}
+	}
+	return false
+}
+
 @(test)
 test_rom_placement_math :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(BIOS_IMAGE), BIOS_SIZE)
 	testing.expect_value(t, int(BIOS_SHADOW_GPA), 0xE0000)
 	testing.expect_value(t, u64(BIOS_HIGH_GPA), u64(0xFFFE0000))
 	testing.expect(t, VGABIOS_GPA + len(VGABIOS_IMAGE) <= BIOS_SHADOW_GPA)
+}
+
+@(test)
+test_rom_exposes_pci_bios :: proc(t: ^testing.T) {
+	bios32_pci_service := [?]u8{0x24, 0x50, 0x43, 0x49} // "$PCI"
+	testing.expect(t, rom_test_contains(BIOS_IMAGE[:], bios32_pci_service[:]))
 }
 
 @(test)
