@@ -18,13 +18,20 @@ C: drive live from a host folder, boots MS-DOS 7.1 to an interactive
 - [Odin](https://odin-lang.org) (dev-2026-07 or newer) on `PATH`.
 - `SDL3.dll` next to `retvrn99.exe` (copy from `<odin>/vendor/sdl3`).
 - NASM only if you modify the boot code in `assets/vbr/`.
+- Rebuilding the vendored SeaBIOS firmware additionally requires a Linux GCC,
+  binutils, Make, and Python 3 toolchain. Windows builds use WSL.
 
 ## Build
 
 ```
 .\build.ps1          # produces retvrn99.exe
+.\build.ps1 -Firmware # rebuilds SeaBIOS first (WSL Debian by default)
 odin build src/smoke -out:smoke.exe   # headless smoke test
 ```
+
+Use `-WslDistro <name>` with `-Firmware` when the toolchain is installed in a
+different WSL distribution. Normal application builds use the checked-in ROM
+and do not require the firmware toolchain.
 
 Tests: `odin test src/<pkg> -define:ODIN_TEST_THREADS=1` for each of
 `profile`, `machine`, `vga`, `hv`, `disk`, `fat32`, `host`, `win98media`,
