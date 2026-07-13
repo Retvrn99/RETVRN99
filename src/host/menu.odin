@@ -13,14 +13,15 @@ Menu_Action :: enum {
 	Mount_Cdrom,
 	Eject_Cdrom,
 	Install_Windows_98,
+	Finish_Windows_98_Installation,
 	Set_Cpu_Mode,
 }
 
 Menu_State :: struct {
-	show_debug:           bool, // vCPU / exit-stats panel
-	show_log:             bool, // device-log panel
-	cpu_mode:             config.Cpu_Mode,
-	cdrom_mounted:        bool,
+	show_debug:            bool, // vCPU / exit-stats panel
+	show_log:              bool, // device-log panel
+	cpu_mode:              config.Cpu_Mode,
+	cdrom_mounted:         bool,
 	installing_windows_98: bool,
 }
 
@@ -33,8 +34,12 @@ Menu_Info :: struct {
 
 menu_action_enabled :: proc(st: ^Menu_State, action: Menu_Action) -> bool {
 	#partial switch action {
-	case .Mount_Cdrom, .Install_Windows_98:
+	case .Mount_Cdrom:
 		return !st.installing_windows_98
+	case .Install_Windows_98:
+		return true
+	case .Finish_Windows_98_Installation:
+		return st.installing_windows_98
 	case .Eject_Cdrom:
 		return st.cdrom_mounted && !st.installing_windows_98
 	}
@@ -46,7 +51,7 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 	action := Menu_Action.None
 	if imgui.BeginMainMenuBar() {
 		if imgui.BeginMenu("Machine") {
-			if imgui.MenuItem("Reset") { action = .Reset }
+			if imgui.MenuItem("Reset") {action = .Reset}
 			if imgui.BeginMenu("CPU Speed") {
 				if imgui.MenuItem("GSW-886", nil, st.cpu_mode == .GSW_886) {
 					st.cpu_mode = .GSW_886
@@ -59,21 +64,33 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 				imgui.EndMenu()
 			}
 			imgui.Separator()
+			install_label: cstring = "Install Windows 98..."
+			if st.installing_windows_98 {
+				install_label = "Restart Windows 98 installation..."
+			}
 			if imgui.MenuItem(
-				"Install Windows 98...",
+				install_label,
 				nil,
 				false,
 				menu_action_enabled(st, .Install_Windows_98),
 			) {
 				action = .Install_Windows_98
 			}
+			if imgui.MenuItem(
+				"Finish Windows 98 installation session",
+				nil,
+				false,
+				menu_action_enabled(st, .Finish_Windows_98_Installation),
+			) {
+				action = .Finish_Windows_98_Installation
+			}
 			imgui.Separator()
-			if imgui.MenuItem("Power Off") { action = .Power_Off }
+			if imgui.MenuItem("Power Off") {action = .Power_Off}
 			imgui.EndMenu()
 		}
 		if imgui.BeginMenu("Media") {
-			if imgui.MenuItem("Mount Floppy...") { action = .Mount_Floppy }
-			if imgui.MenuItem("Eject Floppy") { action = .Eject_Floppy }
+			if imgui.MenuItem("Mount Floppy...") {action = .Mount_Floppy}
+			if imgui.MenuItem("Eject Floppy") {action = .Eject_Floppy}
 			imgui.Separator()
 			if imgui.MenuItem(
 				"Mount CD-ROM...",
@@ -83,12 +100,7 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 			) {
 				action = .Mount_Cdrom
 			}
-			if imgui.MenuItem(
-				"Eject CD-ROM",
-				nil,
-				false,
-				menu_action_enabled(st, .Eject_Cdrom),
-			) {
+			if imgui.MenuItem("Eject CD-ROM", nil, false, menu_action_enabled(st, .Eject_Cdrom)) {
 				action = .Eject_Cdrom
 			}
 			imgui.EndMenu()
@@ -104,7 +116,7 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 	if st.show_debug {
 		imgui.SetNextWindowPos({20, MENU_BAR_H + 16}, .FirstUseEver)
 		if imgui.Begin("vCPU", &st.show_debug, {.AlwaysAutoResize}) {
-			for l in info.exit_lines { menu_text(l) }
+			for l in info.exit_lines {menu_text(l)}
 			if len(info.regs_text) > 0 {
 				imgui.Separator()
 				menu_text(info.regs_text)
@@ -117,7 +129,7 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 		imgui.SetNextWindowPos({400, MENU_BAR_H + 16}, .FirstUseEver)
 		imgui.SetNextWindowSize({640, 320}, .FirstUseEver)
 		if imgui.Begin("Device log", &st.show_log) {
-			for l in info.log_lines { menu_text(l) }
+			for l in info.log_lines {menu_text(l)}
 			if imgui.GetScrollY() >= imgui.GetScrollMaxY() - 1 {
 				imgui.SetScrollHereY(1) // autoscroll pinned to the end
 			}
