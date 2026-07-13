@@ -380,8 +380,14 @@ extend_pending_dirs :: proc(v: ^Volume) -> bool {
 	return true
 }
 
-@(private = "file")
+@(private)
 chain_adoption_needed :: proc(v: ^Volume, node: ^Node, chain: []u32) -> bool {
+	if len(chain) == 0 {
+		return node.first_cluster != 0 || node.cluster_len != 0
+	}
+	if node.first_cluster != chain[0] {
+		return true
+	}
 	if u32(len(chain)) != node.cluster_len {
 		return true
 	}

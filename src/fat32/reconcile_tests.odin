@@ -347,6 +347,120 @@ reconcile_test_donor_replacement_transfers_cluster_ownership :: proc(t: ^testing
 	testing.expect(t, string(reopened_guest[:]) == string(updated[:]))
 }
 
+@(test)
+reconcile_test_wininst_directory_owner_adopts_chain :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	dir_cluster := v.alloc.next_free
+	file_cluster := dir_cluster + 1
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	host_dir, _ := filepath.join({dir, "WININST0.400"})
+	testing.expect(t, os.make_directory(host_dir) == nil)
+	dir_short: [11]u8
+	copy(dir_short[:], "WININST0400")
+	owner_short: [11]u8
+	copy(owner_short[:], "STALE      ")
+	owner := managed_node_create(
+		v,
+		v.alloc.root,
+		"STALE",
+		host_dir,
+		owner_short,
+		dir_cluster,
+		0,
+		true,
+		nil,
+	)
+	testing.expect(t, owner != nil)
+	if owner == nil {return}
+	key := Mirror_Key{v.alloc.root.first_cluster, dir_short}
+	v.journal.mirrored[key] = Mirror_Entry {
+		host_path     = strings.clone(host_dir, v.allocator),
+		first_cluster = dir_cluster,
+		is_dir        = true,
+		base_node     = owner,
+	}
+
+	decode_test_put_entry(root_sector[:], 96, "WININST0400", ATTR_DIR, dir_cluster, 0)
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	dir_sector: [SECTOR]u8
+	decode_test_put_entry(dir_sector[:], 0, ".          ", ATTR_DIR, dir_cluster, 0)
+	decode_test_put_entry(dir_sector[:], 32, "..         ", ATTR_DIR, 0, 0)
+	decode_test_put_entry(dir_sector[:], 64, "DELTEMP COM", ATTR_FILE, file_cluster, 496)
+	testing.expect(
+		t,
+		volume_stage_write(v, journal_test_data_lba(v, dir_cluster), dir_sector[:]),
+	)
+	payload: [SECTOR]u8
+	for &byte, index in payload {
+		byte = u8(index * 37 + 11)
+	}
+	testing.expect(
+		t,
+		volume_stage_write(v, journal_test_data_lba(v, file_cluster), payload[:]),
+	)
+	reconcile_test_stage_fat_set(t, v, dir_cluster, 0x0FFF_FFFF)
+	reconcile_test_stage_fat_set(t, v, file_cluster, 0x0FFF_FFFF)
+
+	testing.expect(t, volume_reconcile(v))
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, owner.cluster_len, u32(1))
+	testing.expect_value(t, owner.name, "WININST0.400")
+	testing.expect_value(t, owner.short, dir_short)
+	testing.expect(t, owner.parent == v.alloc.root)
+	dir_claim, dir_claimed := v.journal.claimed[dir_cluster]
+	testing.expect(t, dir_claimed)
+	if dir_claimed {testing.expect(t, dir_claim.node == owner)}
+	host_file, _ := filepath.join({host_dir, "DELTEMP.COM"})
+	contents, read_error := os.read_entire_file(host_file, context.temp_allocator)
+	testing.expect(t, read_error == nil)
+	testing.expect_value(t, len(contents), 496)
+	if len(contents) == 496 {
+		testing.expect(t, string(contents) == string(payload[:496]))
+	}
+	child := reconcile_test_child_named(owner, "DELTEMP.COM")
+	testing.expect(t, child != nil)
+	file_claim, file_claimed := v.journal.claimed[file_cluster]
+	testing.expect(t, file_claimed)
+	if file_claimed {testing.expect(t, file_claim.node == child)}
+	guest: [SECTOR]u8
+	testing.expect(t, volume_read(v, journal_test_data_lba(v, file_cluster), guest[:]))
+	testing.expect(t, string(guest[:496]) == string(payload[:496]))
+	testing.expect(t, volume_reconcile(v))
+	stored, mirrored := v.journal.mirrored[key]
+	testing.expect(t, mirrored)
+	if mirrored {testing.expect(t, stored.base_node == owner)}
+}
+
+@(test)
+reconcile_test_seeded_directory_keeps_synthesized_chain :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	testing.expect(t, dos != nil)
+	if dos == nil {return}
+	first := dos.first_cluster
+	before := volume_fat_entry(v, first)
+	_, claimed_before := v.journal.claimed[first]
+	testing.expect(t, !claimed_before)
+	testing.expect(t, v.alloc.by_cluster[first] == dos)
+
+	testing.expect(t, volume_reconcile(v))
+
+	_, claimed_after := v.journal.claimed[first]
+	testing.expect(t, !claimed_after)
+	testing.expect(t, v.alloc.by_cluster[first] == dos)
+	testing.expect_value(t, volume_fat_entry(v, first), before)
+}
+
 @(private)
 reconcile_test_stage_fat_set :: proc(t: ^testing.T, v: ^Volume, cluster, value: u32) {
 	lba := journal_test_fat_lba(v, cluster)

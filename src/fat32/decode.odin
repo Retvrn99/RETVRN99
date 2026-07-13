@@ -969,17 +969,44 @@ managed_node_rebind :: proc(
 	   !parent.is_dir {
 		return false
 	}
+	if !managed_node_update_identity(v, node, parent, name, host_path, short, is_dir) {
+		return false
+	}
+	managed_node_adopt_chain(v, node, first, size, chain)
+	return true
+}
+
+@(private)
+managed_node_update_identity :: proc(
+	v: ^Volume,
+	node, parent: ^Node,
+	name, host_path: string,
+	short: [11]u8,
+	is_dir: bool,
+) -> bool {
+	if node == nil ||
+	   parent == nil ||
+	   node == v.alloc.root ||
+	   node.is_dir != is_dir ||
+	   !managed_node_attached(v.alloc.root, node) ||
+	   !managed_node_attached(v.alloc.root, parent) ||
+	   !parent.is_dir {
+		return false
+	}
 	if node.parent != parent {
 		detach_child(node)
 		node.parent = parent
 		append(&parent.children, node)
 	}
-	delete(node.name, v.allocator)
-	delete(node.host_path, v.allocator)
-	node.name = strings.clone(name, v.allocator)
-	node.host_path = strings.clone(host_path, v.allocator)
+	if node.name != name {
+		delete(node.name, v.allocator)
+		node.name = strings.clone(name, v.allocator)
+	}
+	if node.host_path != host_path {
+		delete(node.host_path, v.allocator)
+		node.host_path = strings.clone(host_path, v.allocator)
+	}
 	node.short = short
-	managed_node_adopt_chain(v, node, first, size, chain)
 	return true
 }
 

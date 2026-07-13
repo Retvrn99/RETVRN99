@@ -159,6 +159,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 	delete_kinds := [2]bool{false, true}
 	for want_dir in delete_kinds {
 		for action in deletes {
+			if v.frozen {return false}
 			if action.entry.is_dir != want_dir {
 				continue
 			}
@@ -189,6 +190,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 	}
 
 	for &live in scan.entries {
+		if v.frozen {return false}
 		if !live.is_dir ||
 		   !live.valid ||
 		   by_key[live.key].count != 1 ||
@@ -198,20 +200,39 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		entry, exists := v.journal.mirrored[live.key]
 		owner := entry.base_node
 		if owner != nil && (!managed_node_attached(v.alloc.root, owner) || !owner.is_dir) {
-			volume_fail(v, "FAT32 directory ownership cannot be reconciled")
+			volume_fail(
+				v,
+				fmt.tprintf("FAT32 directory %s has an invalid mirror owner", live.host_path),
+			)
 			host_failed = true
 			continue
 		}
-		parent: ^Node
-		chain: [dynamic]u32
-		if owner == nil {
-			parent = reconcile_node_for_cluster(v, live.key.parent_cluster)
-			chain, chain_state := volume_chain_inspect(v, live.first_cluster, ta)
-			if chain_state != .Complete || parent == nil || !parent.is_dir {
-				volume_fail(v, "FAT32 directory ownership cannot be reconciled")
-				host_failed = true
-				continue
-			}
+		parent := reconcile_node_for_cluster(v, live.key.parent_cluster)
+		if parent == nil || !parent.is_dir {
+			volume_fail(
+				v,
+				fmt.tprintf(
+					"FAT32 directory %s has no owner for parent cluster %d",
+					live.host_path,
+					live.key.parent_cluster,
+				),
+			)
+			host_failed = true
+			continue
+		}
+		chain, chain_state := volume_chain_inspect(v, live.first_cluster, ta)
+		if chain_state != .Complete {
+			volume_fail(
+				v,
+				fmt.tprintf(
+					"FAT32 directory %s has a %v chain at cluster %d",
+					live.host_path,
+					chain_state,
+					live.first_cluster,
+				),
+			)
+			host_failed = true
+			continue
 		}
 		if !exists {
 			if os.make_directory_all(live.host_path) != nil {
@@ -264,17 +285,51 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 				)
 			}
 		}
-		if owner == nil {
-			volume_fail(v, "FAT32 directory ownership update failed")
+		if owner != nil && chain_adoption_needed(v, owner, chain[:]) {
+			if !claim_chain(v, owner, live.first_cluster) {
+				host_failed = true
+				continue
+			}
+		}
+		identity_changed :=
+			owner != nil &&
+			(owner.parent != parent ||
+				owner.name != live.name ||
+				owner.host_path != live.host_path ||
+				owner.short != live.key.short)
+		if identity_changed &&
+		   !managed_node_update_identity(
+			   v,
+			   owner,
+			   parent,
+			   live.name,
+			   live.host_path,
+			   live.key.short,
+			   true,
+		   ) {
+			volume_fail(
+				v,
+				fmt.tprintf("FAT32 directory identity update failed for %s", live.host_path),
+			)
 			host_failed = true
 			continue
 		}
+		if owner == nil {
+			volume_fail(
+				v,
+				fmt.tprintf("FAT32 directory ownership update failed for %s", live.host_path),
+			)
+			host_failed = true
+			continue
+		}
+		owner.size = 0
 		entry.base_node = owner
 		reconcile_mirror_store(v, live.key, entry, live.host_path)
 	}
 
 	materialized := make(map[Mirror_Key]bool, ta)
 	for &live in scan.entries {
+		if v.frozen {return false}
 		if live.is_dir ||
 		   !live.valid ||
 		   by_key[live.key].count != 1 ||
@@ -287,12 +342,37 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		}
 		chain, chain_state := volume_chain_inspect(v, live.first_cluster, ta)
 		parent := reconcile_node_for_cluster(v, live.key.parent_cluster)
-		if (live.first_cluster >= 2 && chain_state != .Complete) ||
-		   parent == nil ||
-		   !parent.is_dir ||
-		   entry.base_node != nil &&
-			   (!managed_node_attached(v.alloc.root, entry.base_node) || entry.base_node.is_dir) {
-			volume_fail(v, "FAT32 file ownership cannot be reconciled")
+		if live.first_cluster >= 2 && chain_state != .Complete {
+			volume_fail(
+				v,
+				fmt.tprintf(
+					"FAT32 file %s has a %v chain at cluster %d",
+					live.host_path,
+					chain_state,
+					live.first_cluster,
+				),
+			)
+			host_failed = true
+			continue
+		}
+		if parent == nil || !parent.is_dir {
+			volume_fail(
+				v,
+				fmt.tprintf(
+					"FAT32 file %s has no owner for parent cluster %d",
+					live.host_path,
+					live.key.parent_cluster,
+				),
+			)
+			host_failed = true
+			continue
+		}
+		if entry.base_node != nil &&
+		   (!managed_node_attached(v.alloc.root, entry.base_node) || entry.base_node.is_dir) {
+			volume_fail(
+				v,
+				fmt.tprintf("FAT32 file %s has an invalid mirror owner", live.host_path),
+			)
 			host_failed = true
 			continue
 		}
@@ -366,6 +446,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 	}
 
 	for donor in donors {
+		if v.frozen {return false}
 		if !materialized[donor.target_key] {
 			continue
 		}
