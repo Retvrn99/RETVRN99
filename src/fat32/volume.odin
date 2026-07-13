@@ -70,6 +70,7 @@ volume_discard :: proc(v: ^Volume) {
 
 // freeze writes and notify the host; reads keep working
 volume_fail :: proc(v: ^Volume, msg: string) {
+	if v == nil || v.frozen {return}
 	v.frozen = true
 	if v.on_fail != nil {
 		v.on_fail(v.fail_ctx, msg)

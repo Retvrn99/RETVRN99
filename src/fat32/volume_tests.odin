@@ -4,6 +4,34 @@ package fat32
 import "core:os"
 import "core:testing"
 
+Volume_Fail_Test :: struct {
+	count:         int,
+	first_message: bool,
+}
+
+@(test)
+volume_test_failure_notification_is_one_shot :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+	failure: Volume_Fail_Test
+	v.fail_ctx = &failure
+	v.on_fail = proc(ctx: rawptr, msg: string) {
+		state := (^Volume_Fail_Test)(ctx)
+		state.count += 1
+		state.first_message = msg == "first failure"
+	}
+
+	volume_fail(v, "first failure")
+	volume_fail(v, "secondary failure")
+
+	testing.expect(t, v.frozen)
+	testing.expect_value(t, failure.count, 1)
+	testing.expect(t, failure.first_message)
+}
+
 @(test)
 volume_test_close_releases_owned_state :: proc(t: ^testing.T) {
 	allocator := context.allocator
