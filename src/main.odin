@@ -59,7 +59,8 @@ Command :: struct {
 
 Shared :: struct {
 	mu:                    sync.Mutex,
-	snap:                  vga.Text_Snapshot, // copied by the VM thread every ~8ms
+	snap:                  vga.Text_Snapshot,
+	frames:                Frame_Mailbox,
 	log_lines:             [dynamic]string,
 	cmds:                  [dynamic]Command,
 	running:               bool,
@@ -68,6 +69,26 @@ Shared :: struct {
 	regs_text:             string,
 	cdrom_mounted:         bool,
 	installing_windows_98: bool,
+}
+
+Frame_Slot_State :: enum {
+	Free,
+	Writing,
+	Ready,
+	Reading,
+}
+
+Frame_Slot :: struct {
+	state: Frame_Slot_State,
+	frame: vga.Display_Frame,
+	pixels: []u32,
+}
+
+Frame_Mailbox :: struct {
+	mu:         sync.Mutex,
+	slots:      [3]Frame_Slot,
+	published:  u64,
+	has_frame:  bool,
 }
 
 // shields the ^hv.Vm from the vCPU pacer during destroy/reinit
@@ -181,6 +202,7 @@ gui_main :: proc(
 	shared := new(Shared)
 	defer {
 		fat32.volume_close(ctx.volume)
+		frame_mailbox_destroy(&shared.frames)
 		free(shared)
 		free(ctx)
 	}
@@ -261,7 +283,6 @@ gui_main :: proc(
 
 		// copy of the shared state for this frame
 		sync.lock(&shared.mu)
-		snap := shared.snap
 		frozen := strings.clone(shared.frozen_msg, context.temp_allocator)
 		regs := strings.clone(shared.regs_text, context.temp_allocator)
 		stats := shared.exit_stats
@@ -278,7 +299,11 @@ gui_main :: proc(
 			append(&exit_lines, fmt.tprintf("%v: %d", kind, stats[kind]))
 		}
 
-		host.render_grid(&h, &snap)
+		if frame_slot := frame_mailbox_acquire(&shared.frames); frame_slot != nil {
+			_ = host.host_upload_frame(&h, &frame_slot.frame)
+			frame_mailbox_release(&shared.frames, frame_slot)
+		}
+		host.host_render_guest(&h)
 
 		imgui_impl_sdlrenderer3.NewFrame()
 		imgui_impl_sdl3.NewFrame()
@@ -382,6 +407,96 @@ snapshot_contains :: proc(snap: ^vga.Text_Snapshot, needle: string) -> bool {
 		}
 	}
 	return false
+}
+
+frame_mailbox_publish :: proc(mailbox: ^Frame_Mailbox, source: ^vga.Display_Frame) {
+	if source == nil || source.width <= 0 || source.height <= 0 {return}
+	pixel_count := source.width * source.height
+	if pixel_count <= 0 || len(source.pixels) < pixel_count {return}
+	sync.lock(&mailbox.mu)
+	if mailbox.has_frame && source.generation == mailbox.published {
+		sync.unlock(&mailbox.mu)
+		return
+	}
+
+	chosen := -1
+	for &slot, i in mailbox.slots {
+		if slot.state == .Free {chosen = i; break}
+	}
+	if chosen < 0 {
+		oldest := max(u64)
+		for &slot, i in mailbox.slots {
+			if slot.state == .Ready && slot.frame.generation < oldest {
+				oldest = slot.frame.generation
+				chosen = i
+			}
+		}
+	}
+	if chosen < 0 {
+		sync.unlock(&mailbox.mu)
+		return
+	}
+	for &slot, i in mailbox.slots {
+		if i != chosen && slot.state == .Ready {slot.state = .Free}
+	}
+	slot := &mailbox.slots[chosen]
+	slot.state = .Writing
+	sync.unlock(&mailbox.mu)
+
+	if len(slot.pixels) < pixel_count {
+		delete(slot.pixels)
+		slot.pixels = make([]u32, pixel_count)
+	}
+	copy(slot.pixels[:pixel_count], source.pixels[:pixel_count])
+	slot.frame = source^
+	slot.frame.pixels = slot.pixels[:pixel_count]
+
+	sync.lock(&mailbox.mu)
+	slot.state = .Ready
+	mailbox.published = source.generation
+	mailbox.has_frame = true
+	sync.unlock(&mailbox.mu)
+}
+
+frame_mailbox_acquire :: proc(mailbox: ^Frame_Mailbox) -> ^Frame_Slot {
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	chosen := -1
+	newest: u64
+	for &slot, i in mailbox.slots {
+		if slot.state == .Ready && (chosen < 0 || slot.frame.generation > newest) {
+			chosen = i
+			newest = slot.frame.generation
+		}
+	}
+	if chosen < 0 {return nil}
+	mailbox.slots[chosen].state = .Reading
+	return &mailbox.slots[chosen]
+}
+
+frame_mailbox_release :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot) {
+	if slot == nil {return}
+	sync.lock(&mailbox.mu)
+	if slot.state == .Reading {slot.state = .Free}
+	sync.unlock(&mailbox.mu)
+}
+
+frame_mailbox_reset :: proc(mailbox: ^Frame_Mailbox) {
+	sync.lock(&mailbox.mu)
+	for &slot in mailbox.slots {
+		if slot.state == .Ready {slot.state = .Free}
+	}
+	mailbox.published = 0
+	mailbox.has_frame = false
+	sync.unlock(&mailbox.mu)
+}
+
+frame_mailbox_destroy :: proc(mailbox: ^Frame_Mailbox) {
+	for i in 0 ..< len(mailbox.slots) {
+		delete(mailbox.slots[i].pixels)
+		mailbox.slots[i] = {}
+	}
+	mailbox^ = {}
 }
 
 set_running :: proc(s: ^Shared, v: bool) {
@@ -604,7 +719,8 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 		}
 		if time.tick_diff(last_snap, now) >= SNAP_PERIOD {
 			last_snap = now
-			snap := vga.vga_snapshot(&m.vga, m.vm.ram)
+			snap := machine.machine_text_snapshot(m)
+			frame_mailbox_publish(&s.frames, machine.machine_display_frame(m))
 			if install_waiting && !install_typing && snapshot_contains(&snap, "C:") {
 				install_typing = true
 				install_next_key = now
@@ -644,6 +760,7 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 	defer sync.unlock(&c.guard.mu)
 	m^ = {}
 	if !machine.machine_init(m, RAM_SIZE) {return false}
+	frame_mailbox_reset(&c.shared.frames)
 	if c.has_cmos {_ = machine.machine_cmos_import(m, c.cmos[:])}
 	machine.machine_set_cpu_mode(m, c.cpu_mode)
 	if !machine.load_roms(&m.vm) {
@@ -864,6 +981,9 @@ console_main :: proc(
 	last_vga := start
 	prev: vga.Text_Snapshot
 	shown := false
+	last_frame_kind := vga.Display_Kind.Invalid
+	last_frame_width, last_frame_height := 0, 0
+	graphics_content_reported := false
 	raw: [dynamic]u8
 	line: [dynamic]u8
 	iterations := 0
@@ -877,12 +997,29 @@ console_main :: proc(
 			flush_partial(&line)
 			fmt.printfln("VM frozen after %d iterations: %s", iterations, m.bus.freeze_msg)
 			dump_state(m)
-			print_grid(vga.vga_snapshot(&m.vga, m.vm.ram))
+			print_grid(machine.machine_text_snapshot(m))
 			return 2
 		}
 		if time.tick_diff(last_vga, now) >= VGA_PERIOD {
 			last_vga = now
-			snap := vga.vga_snapshot(&m.vga, m.vm.ram)
+			snap := machine.machine_text_snapshot(m)
+			frame := machine.machine_display_frame(m)
+			if frame.kind != last_frame_kind || frame.width != last_frame_width || frame.height != last_frame_height {
+				last_frame_kind = frame.kind
+				last_frame_width = frame.width
+				last_frame_height = frame.height
+				graphics_content_reported = false
+				fmt.printfln("display: %v %dx%d generation=%d", frame.kind, frame.width, frame.height, frame.generation)
+			}
+			if frame.kind != .Invalid && frame.kind != .Text && !graphics_content_reported {
+				for pixel in frame.pixels {
+					if pixel != 0xFF000000 {
+						graphics_content_reported = true
+						fmt.printfln("display: nonblack graphics content at generation=%d", frame.generation)
+						break
+					}
+				}
+			}
 			if !shown || snap.cells != prev.cells {
 				prev = snap
 				shown = true
@@ -898,7 +1035,7 @@ console_main :: proc(
 				iterations,
 			)
 			dump_state(m)
-			print_grid(vga.vga_snapshot(&m.vga, m.vm.ram))
+			print_grid(machine.machine_text_snapshot(m))
 			break
 		}
 	}

@@ -9,12 +9,18 @@ host_test_theme_layout_invariant :: proc(t: ^testing.T) {
 	testing.expect_value(t, MENU_BAR_H, THEME_FONT_PX + THEME_FRAME_PAD_Y * 2)
 	testing.expect_value(t, WIN_H, TEXT_H * 2 + MENU_BAR_H)
 
-	r := guest_view_rect()
+	r := guest_view_rect(9, 5)
 	testing.expect_value(t, r.x, f32(0))
 	testing.expect_value(t, r.y, f32(MENU_BAR_H))
 	testing.expect_value(t, r.w, f32(TEXT_W * 2))
 	testing.expect_value(t, r.h, f32(TEXT_H * 2))
 	testing.expect_value(t, int(r.y + r.h), WIN_H)
+
+	r = guest_view_rect(4, 3)
+	testing.expect_value(t, int(r.x + 0.5), 187)
+	testing.expect_value(t, int(r.y), MENU_BAR_H)
+	testing.expect_value(t, int(r.w + 0.5), 1067)
+	testing.expect_value(t, int(r.h), TEXT_H * 2)
 }
 
 @(test)

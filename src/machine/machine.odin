@@ -58,7 +58,10 @@ Machine :: struct {
 	governor:        hv.Governor,
 	idle_waiter:     hosttime.Waiter,
 	last_tick:       time.Tick,
-	dbg_out:         [dynamic]u8, // SeaBIOS port 0x402 bytes; harness drains
+	video_ns:        u64,
+	video_run_start: time.Tick,
+	video_running:   bool,
+	dbg_out:         [dynamic]u8, // firmware debug ports 0x402 and 0x500
 	mmio_seen:       [Mmio_Zone]bool, // log tolerated zones only once
 	exit_hist:       [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
 	exit_count:      u64,
@@ -74,7 +77,17 @@ Machine :: struct {
 machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_init(&m.bus)
 	if !hv.create(&m.vm, ram_size) {return false}
+	if !hv.reserve_mmio(&m.vm, video.LEGACY_APERTURE_BASE, video.LEGACY_APERTURE_END - video.LEGACY_APERTURE_BASE) {
+		hv.destroy(&m.vm)
+		return false
+	}
+	vram, vram_ok := hv.map_device_memory(&m.vm, video.VBE_LFB_BASE, video.VRAM_SIZE)
+	if !vram_ok || !video.vga_init(&m.vga, vram) {
+		hv.destroy(&m.vm)
+		return false
+	}
 	if !hv.governor_init(&m.governor, &m.vm, .GSW_886) {
+		video.vga_destroy(&m.vga)
 		hv.destroy(&m.vm)
 		return false
 	}
@@ -166,6 +179,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 		write = machine_vga_write,
 	}
 	bus_register(&m.bus, 0x3B0, 0x3DF, vga_h)
+	bus_register(&m.bus, video.DISPI_PORT_INDEX, video.DISPI_PORT_DATA, vga_h)
 
 	dbg_h := Io_Handler {
 		ctx   = m,
@@ -173,6 +187,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 		write = machine_dbg_write,
 	}
 	bus_register(&m.bus, 0x402, 0x402, dbg_h)
+	bus_register(&m.bus, 0x500, 0x500, dbg_h)
 
 	// deliberate whitelist: probed but not modeled yet
 	bus_whitelist(&m.bus, 0x80, 0xED) // POST + delay
@@ -185,7 +200,6 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_whitelist(&m.bus, 0x4D0, 0x4D1) // ELCR
 	machine_init_fdc(m)
 	machine_init_atapi(m)
-	bus_whitelist(&m.bus, 0x1CE, 0x1CF) // Bochs DISPI until the VBE device takes over
 	machine_whitelist_range(&m.bus, 0x378, 0x37A) // LPT1 probe by SeaBIOS lpt_setup; absent
 	machine_whitelist_range(&m.bus, 0x278, 0x27A) // LPT2 probe by SeaBIOS lpt_setup; absent
 	machine_whitelist_range(&m.bus, 0x3E8, 0x3EF) // COM3 probe by SeaBIOS serial_setup; absent
@@ -212,13 +226,14 @@ machine_destroy :: proc(m: ^Machine) {
 	disk.atapi_eject(&m.atapi)
 	hosttime.waiter_destroy(&m.idle_waiter)
 	hv.governor_destroy(&m.governor)
+	video.vga_destroy(&m.vga)
 	hv.destroy(&m.vm)
 	fwcfg_destroy(&m.fwcfg)
 	bus_destroy(&m.bus)
 	delete(m.dbg_out)
 }
 
-// moves the collected SeaBIOS debug bytes into sink and clears the buffer
+// moves the collected firmware debug bytes into sink and clears the buffer
 machine_drain_dbg :: proc(m: ^Machine, sink: ^[dynamic]u8) {
 	append(sink, ..m.dbg_out[:])
 	clear(&m.dbg_out)
@@ -329,7 +344,13 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 			hv.request_irq_window(&m.vm, true)
 		}
 	}
+	m.video_run_start = time.tick_now()
+	m.video_running = true
 	ex := hv.run(&m.vm)
+	run_end := time.tick_now()
+	m.video_ns += u64(max(time.Duration(0), time.tick_diff(m.video_run_start, run_end)))
+	m.video_running = false
+	video.vga_sync_to(&m.vga, m.video_ns)
 	governor_ok := ex.kind != .Canceled || hv.governor_on_cancel(&m.governor, &m.vm)
 	m.exit_hist[m.exit_count % EXIT_HISTORY] = ex.kind
 	m.exit_count += 1
@@ -406,11 +427,23 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	bus_io_write(&m.bus, port, size, val)
 }
 
-// no MMIO devices exist yet: known probe zones read FF / swallow writes
-// (logged once); anything else freezes loudly
+// VGA owns the legacy aperture; known probe zones read FF / swallow writes.
 @(private = "file")
 machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 	m := (^Machine)(ctx)
+	machine_vga_sync(m)
+	if gpa >= video.LEGACY_APERTURE_BASE && gpa + u64(len(data)) <= video.LEGACY_APERTURE_END {
+		for byte, i in data {
+			if write {
+				_ = video.vga_mmio_write(&m.vga, gpa + u64(i), 1, u32(byte))
+			} else if value, ok := video.vga_mmio_read(&m.vga, gpa + u64(i), 1); ok {
+				data[i] = u8(value)
+			} else {
+				data[i] = 0xFF
+			}
+		}
+		return
+	}
 	if !write {
 		for i in 0 ..< len(data) {data[i] = 0xFF}
 	}
@@ -633,15 +666,35 @@ machine_fwcfg_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 @(private = "file")
 machine_vga_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
-	v: u32 = 0
-	for i in 0 ..< int(size) {v |= u32(video.vga_in(&m.vga, port + u16(i))) << (8 * uint(i))}
-	return v
+	machine_vga_sync(m)
+	return video.vga_io_read(&m.vga, port, size)
 }
 
 @(private = "file")
 machine_vga_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	for i in 0 ..< int(size) {video.vga_out(&m.vga, port + u16(i), u8(val >> (8 * uint(i))))}
+	machine_vga_sync(m)
+	video.vga_io_write(&m.vga, port, size, val)
+}
+
+@(private = "file")
+machine_vga_sync :: proc(m: ^Machine) {
+	target := m.video_ns
+	if m.video_running {
+		now := time.tick_now()
+		target += u64(max(time.Duration(0), time.tick_diff(m.video_run_start, now)))
+	}
+	video.vga_sync_to(&m.vga, target)
+}
+
+machine_display_frame :: proc(m: ^Machine) -> ^video.Display_Frame {
+	machine_vga_sync(m)
+	return video.vga_display_frame(&m.vga)
+}
+
+machine_text_snapshot :: proc(m: ^Machine) -> video.Text_Snapshot {
+	machine_vga_sync(m)
+	return video.vga_text_snapshot(&m.vga)
 }
 
 @(private = "file")

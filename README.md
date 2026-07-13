@@ -8,7 +8,9 @@ License: GPL-3.0-only
 
 Boots stock SeaBIOS under hardware virtualization, synthesizes a FAT32
 C: drive live from a host folder, boots MS-DOS 7.1 to an interactive
-`C:\>` prompt, and exposes read-only ISO images through an ATAPI CD-ROM.
+`C:\>` prompt, exposes read-only ISO images through an ATAPI CD-ROM, and
+provides legacy VGA plus unaccelerated Bochs VBE 2.0 graphics through a
+vendored Bochs VGABIOS.
 
 ## Requirements
 

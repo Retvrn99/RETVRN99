@@ -7,10 +7,15 @@ WIN_W :: TEXT_W * 2 // 1440
 WIN_H :: TEXT_H * 2 + MENU_BAR_H
 
 Host :: struct {
-	win:   ^sdl3.Window,
-	ren:   ^sdl3.Renderer,
-	tex:   ^sdl3.Texture,
-	vsync: bool, // presents are paced by the display; else the UI loop sleeps
+	win:           ^sdl3.Window,
+	ren:           ^sdl3.Renderer,
+	tex:           ^sdl3.Texture,
+	tex_width:     int,
+	tex_height:    int,
+	aspect_width:  int,
+	aspect_height: int,
+	has_frame:     bool,
+	vsync:         bool, // presents are paced by the display; else the UI loop sleeps
 }
 
 host_init :: proc(h: ^Host) -> bool {
@@ -33,6 +38,10 @@ host_init :: proc(h: ^Host) -> bool {
 		return false
 	}
 	sdl3.SetTextureScaleMode(h.tex, .NEAREST)
+	h.tex_width = TEXT_W
+	h.tex_height = TEXT_H
+	h.aspect_width = 4
+	h.aspect_height = 3
 	return true
 }
 

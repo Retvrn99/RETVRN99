@@ -133,7 +133,7 @@ run_until :: proc(m: ^machine.Machine, deadline: time.Duration, needle: string) 
 	start := time.tick_now()
 	for time.tick_since(start) < deadline {
 		step_for(m, 250 * time.Millisecond)
-		snap := vga.vga_snapshot(&m.vga, m.vm.ram)
+		snap := machine.machine_text_snapshot(m)
 		if strings.contains(grid_text(&snap), needle) { return true }
 		free_all(context.temp_allocator)
 		if m.bus.frozen {
