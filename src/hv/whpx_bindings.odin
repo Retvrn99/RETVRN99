@@ -26,6 +26,25 @@ WHV_MAP_GPA_RANGE_FLAG_READ: u32 : 0x1
 WHV_MAP_GPA_RANGE_FLAG_WRITE: u32 : 0x2
 WHV_MAP_GPA_RANGE_FLAG_EXECUTE: u32 : 0x4
 
+WHV_TRANSLATE_GVA_RESULT_CODE :: enum u32 {
+	Success                 = 0,
+	PageNotPresent          = 1,
+	PrivilegeViolation      = 2,
+	InvalidPageTableFlags   = 3,
+	GpaUnmapped             = 4,
+	GpaNoReadAccess         = 5,
+	GpaNoWriteAccess        = 6,
+	GpaIllegalOverlayAccess = 7,
+	Intercept               = 8,
+}
+
+WHV_TRANSLATE_GVA_RESULT :: struct {
+	ResultCode: WHV_TRANSLATE_GVA_RESULT_CODE,
+	Reserved:   u32,
+}
+
+#assert(size_of(WHV_TRANSLATE_GVA_RESULT) == 8)
+
 WHV_PROCESSOR_COUNTER_SET :: enum u32 {
 	Runtime = 0,
 }
@@ -218,7 +237,7 @@ WHV_EMULATOR_CALLBACKS :: struct {
 	Memory:           proc "system" (ctx: rawptr, mem: ^WHV_EMULATOR_MEMORY_ACCESS_INFO) -> HRESULT,
 	GetRegs:          proc "system" (ctx: rawptr, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT,
 	SetRegs:          proc "system" (ctx: rawptr, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT,
-	TranslateGvaPage: proc "system" (ctx: rawptr, gva: u64, flags: u32, result: ^u32, gpa: ^u64) -> HRESULT,
+	TranslateGvaPage: proc "system" (ctx: rawptr, gva: u64, flags: u32, result: ^WHV_TRANSLATE_GVA_RESULT_CODE, gpa: ^u64) -> HRESULT,
 }
 
 foreign import whp "system:WinHvPlatform.lib"
@@ -232,6 +251,8 @@ foreign whp {
 	WHvGetPartitionProperty :: proc(part: WHV_PARTITION_HANDLE, code: WHV_PARTITION_PROPERTY_CODE, buf: rawptr, buf_size: u32, written: ^u32) -> HRESULT ---
 	WHvSetupPartition :: proc(part: WHV_PARTITION_HANDLE) -> HRESULT ---
 	WHvMapGpaRange :: proc(part: WHV_PARTITION_HANDLE, source: rawptr, gpa: u64, size: u64, flags: u32) -> HRESULT ---
+	WHvUnmapGpaRange :: proc(part: WHV_PARTITION_HANDLE, gpa: u64, size: u64) -> HRESULT ---
+	WHvTranslateGva :: proc(part: WHV_PARTITION_HANDLE, index: u32, gva: u64, flags: u32, result: ^WHV_TRANSLATE_GVA_RESULT, gpa: ^u64) -> HRESULT ---
 	WHvCreateVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, flags: u32) -> HRESULT ---
 	WHvRunVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, exit_ctx: rawptr, exit_ctx_size: u32) -> HRESULT ---
 	WHvCancelRunVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, flags: u32) -> HRESULT ---

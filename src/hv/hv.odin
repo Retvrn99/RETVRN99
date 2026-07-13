@@ -23,15 +23,28 @@ Rom_Mapping :: struct {
 	size: int,
 }
 
+Mmio_Reservation :: struct {
+	gpa:  u64,
+	size: u64,
+}
+
+Device_Mapping :: struct {
+	gpa:  u64,
+	host: rawptr,
+	size: int,
+}
+
 Vm :: struct {
-	part:     rawptr, // WHV_PARTITION_HANDLE
-	ram:      []u8,   // 64MB, mapped at GPA 0
-	emu:      rawptr, // WHV_EMULATOR_HANDLE
-	roms:     [dynamic]Rom_Mapping, // host copies backing map_rom regions
-	io_ctx:   rawptr,
-	io_read:  proc(ctx: rawptr, port: u16, size: u8) -> u32,
-	io_write: proc(ctx: rawptr, port: u16, size: u8, val: u32),
-	mmio:     proc(ctx: rawptr, gpa: u64, write: bool, data: []u8),
+	part:              rawptr, // WHV_PARTITION_HANDLE
+	ram:               []u8,   // 64MB, mapped at GPA 0
+	emu:               rawptr, // WHV_EMULATOR_HANDLE
+	roms:              [dynamic]Rom_Mapping, // host copies backing map_rom regions
+	mmio_reservations: [dynamic]Mmio_Reservation,
+	device_mappings:   [dynamic]Device_Mapping,
+	io_ctx:            rawptr,
+	io_read:           proc(ctx: rawptr, port: u16, size: u8) -> u32,
+	io_write:          proc(ctx: rawptr, port: u16, size: u8, val: u32),
+	mmio:              proc(ctx: rawptr, gpa: u64, write: bool, data: []u8),
 }
 
 // snapshot of the registers a freeze dump needs
@@ -103,6 +116,16 @@ reg_rax :: proc(vm: ^Vm) -> u64 {
 // maps a Read|Execute copy of data at gpa (reset-vector alias, option ROMs)
 map_rom :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
 	return whpx_map_rom(vm, gpa, data)
+}
+
+// Removes a page-aligned range from the RAM mapping so accesses exit as MMIO.
+reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
+	return whpx_reserve_mmio(vm, gpa, size)
+}
+
+// Allocates stable page-aligned storage and maps it Read|Write at gpa.
+map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
+	return whpx_map_device_memory(vm, gpa, size)
 }
 
 get_regs :: proc(vm: ^Vm) -> Regs {

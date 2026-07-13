@@ -62,8 +62,62 @@ render_snapshot :: proc(pixels: []u32, pitch_px: int, snap: ^vga.Text_Snapshot) 
 	}
 }
 
-guest_view_rect :: proc() -> sdl3.FRect {
-	return {0, f32(MENU_BAR_H), f32(TEXT_W * 2), f32(TEXT_H * 2)}
+guest_view_rect :: proc(aspect_width, aspect_height: int) -> sdl3.FRect {
+	aw := max(1, aspect_width)
+	ah := max(1, aspect_height)
+	area_w := f32(WIN_W)
+	area_h := f32(WIN_H - MENU_BAR_H)
+	target := f32(aw) / f32(ah)
+	w, h := area_w, area_h
+	if area_w / area_h > target {
+		w = area_h * target
+	} else {
+		h = area_w / target
+	}
+	return {(area_w - w) * 0.5, f32(MENU_BAR_H) + (area_h - h) * 0.5, w, h}
+}
+
+host_ensure_texture :: proc(h: ^Host, width, height: int) -> bool {
+	if width <= 0 || height <= 0 {return false}
+	if h.tex != nil && h.tex_width == width && h.tex_height == height {return true}
+	if h.tex != nil {sdl3.DestroyTexture(h.tex)}
+	h.tex = sdl3.CreateTexture(h.ren, .ARGB8888, .STREAMING, i32(width), i32(height))
+	if h.tex == nil {
+		h.tex_width = 0
+		h.tex_height = 0
+		return false
+	}
+	sdl3.SetTextureScaleMode(h.tex, .NEAREST)
+	h.tex_width = width
+	h.tex_height = height
+	return true
+}
+
+host_upload_frame :: proc(h: ^Host, frame: ^vga.Display_Frame) -> bool {
+	if frame == nil || len(frame.pixels) < frame.width * frame.height {return false}
+	if !host_ensure_texture(h, frame.width, frame.height) {return false}
+	raw: rawptr
+	pitch: c.int
+	if !sdl3.LockTexture(h.tex, nil, &raw, &pitch) {return false}
+	pitch_px := int(pitch) / size_of(u32)
+	dst := ([^]u32)(raw)[:pitch_px * frame.height]
+	for y in 0 ..< frame.height {
+		copy(dst[y * pitch_px:][:frame.width], frame.pixels[y * frame.width:][:frame.width])
+	}
+	sdl3.UnlockTexture(h.tex)
+	h.aspect_width = frame.aspect_width > 0 ? frame.aspect_width : frame.width
+	h.aspect_height = frame.aspect_height > 0 ? frame.aspect_height : frame.height
+	h.has_frame = true
+	return true
+}
+
+host_render_guest :: proc(h: ^Host) {
+	sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
+	sdl3.RenderClear(h.ren)
+	if h.tex != nil && h.has_frame {
+		dst := guest_view_rect(h.aspect_width, h.aspect_height)
+		sdl3.RenderTexture(h.ren, h.tex, nil, &dst)
+	}
 }
 
 // Upload the rasterized grid at 2x below the menu bar without presenting:
@@ -78,9 +132,8 @@ render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	pixels := ([^]u32)(raw)[:pitch_px * TEXT_H]
 	render_snapshot(pixels, pitch_px, snap)
 	sdl3.UnlockTexture(h.tex)
-
-	sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
-	sdl3.RenderClear(h.ren)
-	dst := guest_view_rect()
-	sdl3.RenderTexture(h.ren, h.tex, nil, &dst)
+	h.aspect_width = 4
+	h.aspect_height = 3
+	h.has_frame = true
+	host_render_guest(h)
 }

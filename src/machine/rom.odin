@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
-// SeaBIOS / SeaVGABIOS images baked into the binary.
+// SeaBIOS and Bochs VGABIOS images baked into the binary.
 
 import hv "../hv"
 
 @(rodata) BIOS_IMAGE := #load("../../assets/seabios/bios.bin")
-@(rodata) VGABIOS_IMAGE := #load("../../assets/seabios/vgabios-stdvga.bin")
+@(rodata) VGABIOS_IMAGE := #load("../../assets/vgabios/vgabios.bin")
 
 BIOS_SIZE :: 128 * 1024
 VGABIOS_GPA :: 0xC0000

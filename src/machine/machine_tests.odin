@@ -3,6 +3,7 @@ package machine
 
 import disk "../disk"
 import hv "../hv"
+import video "../vga"
 import "core:fmt"
 import "core:log"
 import "core:os"
@@ -394,4 +395,30 @@ test_machine_reset_control_requests_guest_reset :: proc(t: ^testing.T) {
 	machine_reset_control_write(&m, 0xCF9, 1, 0x06)
 	testing.expect(t, machine_reset_requested(&m))
 	testing.expect(t, m.bus.frozen)
+}
+
+@(test)
+test_machine_video_clock_only_advances_while_running :: proc(t: ^testing.T) {
+	backing := make([]u8, video.VRAM_SIZE)
+	defer delete(backing)
+	m: Machine
+	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
+	defer video.vga_destroy(&m.vga)
+	m.video_ns = 1_000
+	_ = machine_text_snapshot(&m)
+	testing.expect_value(t, m.vga.timing.elapsed_ns, u64(1_000))
+	time.sleep(time.Millisecond)
+	_ = machine_display_frame(&m)
+	testing.expect_value(t, m.vga.timing.elapsed_ns, u64(1_000))
+
+	m.video_running = true
+	m.video_run_start = time.tick_now()
+	time.sleep(time.Millisecond)
+	_ = machine_text_snapshot(&m)
+	testing.expect(t, m.vga.timing.elapsed_ns > 1_000)
+	m.video_running = false
+	frozen_time := m.vga.timing.elapsed_ns
+	time.sleep(time.Millisecond)
+	_ = machine_text_snapshot(&m)
+	testing.expect_value(t, m.vga.timing.elapsed_ns, frozen_time)
 }

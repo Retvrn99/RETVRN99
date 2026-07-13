@@ -1,127 +1,196 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package vga
 
-// Text-mode VGA device. The B8000 buffer is ordinary guest RAM.
+import "base:runtime"
 
-Vga :: struct {
-	crtc:        [25]u8, // CRTC registers; 0x0A/0x0B, 0x0C/0x0D, 0x0E/0x0F are interpreted
-	crtc_ix:     u8,
-	misc:        u8,
-	attr:        [32]u8,
-	attr_ix:     u8,
-	attr_flip:   bool, // false = index, true = data
-	seq:         [8]u8,
-	seq_ix:      u8,
-	gfx:         [16]u8,
-	gfx_ix:      u8,
-	pel_mask:    u8,
-	dac_read:    u8,
-	dac_write:   u8,
-	dac_sub:     u8,
-	dac:         [256 * 3]u8,
-	status_flip: bool, // toggles vertical retrace on 0x3DA
+VRAM_SIZE :: 32 * 1024 * 1024
+LEGACY_PLANE_SIZE :: 64 * 1024
+LEGACY_APERTURE_BASE :: u64(0x000A0000)
+LEGACY_APERTURE_END :: u64(0x000C0000)
+VBE_LFB_BASE :: u64(0xE0000000)
+VBE_LFB_END :: VBE_LFB_BASE + VRAM_SIZE
+
+Display_Kind :: enum {
+	Invalid,
+	Text,
+	Planar_4,
+	Cga_1,
+	Cga_2,
+	Indexed_8,
+	Rgb_555,
+	Rgb_565,
+	Rgb_888,
+	Xrgb_8888,
 }
 
 Text_Snapshot :: struct {
-	cells:      [80 * 25]u16, // character | attribute<<8
+	cells:      [80 * 25]u16,
 	cursor_row: int,
 	cursor_col: int,
 	cursor_on:  bool,
 }
 
-vga_out :: proc(v: ^Vga, port: u16, val: u8) {
-	switch port {
-	case 0x3D4:
-		v.crtc_ix = val
-	case 0x3D5:
-		if int(v.crtc_ix) < len(v.crtc) { v.crtc[v.crtc_ix] = val }
-	case 0x3C2:
-		v.misc = val
-	case 0x3C0:
-		if v.attr_flip { v.attr[v.attr_ix & 0x1F] = val } else { v.attr_ix = val }
-		v.attr_flip = !v.attr_flip
-	case 0x3C4:
-		v.seq_ix = val
-	case 0x3C5:
-		if int(v.seq_ix) < len(v.seq) { v.seq[v.seq_ix] = val }
-	case 0x3CE:
-		v.gfx_ix = val
-	case 0x3CF:
-		if int(v.gfx_ix) < len(v.gfx) { v.gfx[v.gfx_ix] = val }
-	case 0x3C6:
-		v.pel_mask = val
-	case 0x3C7:
-		v.dac_read = val
-		v.dac_sub = 0
-	case 0x3C8:
-		v.dac_write = val
-		v.dac_sub = 0
-	case 0x3C9:
-		v.dac[int(v.dac_write) * 3 + int(v.dac_sub)] = val
-		v.dac_sub += 1
-		if v.dac_sub == 3 {
-			v.dac_sub = 0
-			v.dac_write += 1
-		}
-	}
+Display_Frame :: struct {
+	kind:          Display_Kind,
+	width:         int,
+	height:        int,
+	aspect_width:  int,
+	aspect_height: int,
+	generation:    u64,
+	pixels:        []u32,
+	text:          Text_Snapshot,
 }
 
-vga_in :: proc(v: ^Vga, port: u16) -> u8 {
-	switch port {
-	case 0x3D4:
-		return v.crtc_ix
-	case 0x3D5:
-		if int(v.crtc_ix) < len(v.crtc) { return v.crtc[v.crtc_ix] }
-		return 0
-	case 0x3CC:
-		return v.misc
-	case 0x3DA:
-		// toggles bit0|bit3; reading also resets the attribute flip-flop
-		v.attr_flip = false
-		v.status_flip = !v.status_flip
-		return v.status_flip ? 0x09 : 0x00
-	case 0x3C0:
-		return v.attr_ix
-	case 0x3C1:
-		return v.attr[v.attr_ix & 0x1F]
-	case 0x3C4:
-		return v.seq_ix
-	case 0x3C5:
-		if int(v.seq_ix) < len(v.seq) { return v.seq[v.seq_ix] }
-		return 0
-	case 0x3CE:
-		return v.gfx_ix
-	case 0x3CF:
-		if int(v.gfx_ix) < len(v.gfx) { return v.gfx[v.gfx_ix] }
-		return 0
-	case 0x3C6:
-		return v.pel_mask
-	case 0x3C9:
-		val := v.dac[int(v.dac_read) * 3 + int(v.dac_sub)]
-		v.dac_sub += 1
-		if v.dac_sub == 3 {
-			v.dac_sub = 0
-			v.dac_read += 1
-		}
-		return val
-	}
-	return 0xFF
+Video_Timing :: struct {
+	elapsed_ns:     u64,
+	frame_period_ns:u64,
+	line_period_ns: u64,
+	total_lines:    int,
+	visible_lines:  int,
+	visible_dots:   int,
+	total_dots:     int,
+	retrace_start:  int,
+	retrace_end:    int,
+	generation:     u64,
 }
 
-vga_snapshot :: proc(v: ^Vga, guest_ram: []u8) -> Text_Snapshot {
-	s: Text_Snapshot
-	start := int(v.crtc[0x0C]) << 8 | int(v.crtc[0x0D])
-	base := 0xB8000 + start * 2
-	for i in 0 ..< 80 * 25 {
-		off := base + i * 2
-		if off + 1 < len(guest_ram) {
-			s.cells[i] = u16(guest_ram[off]) | u16(guest_ram[off + 1]) << 8
-		}
+Vga :: struct {
+	allocator:    runtime.Allocator,
+	vram:         []u8,
+	frame_pixels: []u32,
+	frame:        Display_Frame,
+	raster_pixels:    []u32,
+	raster_kind:      Display_Kind,
+	raster_width:     int,
+	raster_height:    int,
+	raster_next_line: int,
+	raster_frame:     u64,
+	raster_valid:     bool,
+	frame_valid:      bool,
+	present_generation: u64,
+
+	crtc:       [32]u8,
+	crtc_ix:    u8,
+	seq:        [8]u8,
+	seq_ix:     u8,
+	gfx:        [16]u8,
+	gfx_ix:     u8,
+	attr:       [32]u8,
+	attr_ix:    u8,
+	attr_flip:  bool,
+	video_on:   bool,
+	misc:       u8,
+	feature:    u8,
+	pel_mask:   u8,
+	dac_read:   u8,
+	dac_write:  u8,
+	dac_sub:    u8,
+	dac_state:  u8,
+	dac:        [256 * 3]u8,
+	latch:      [4]u8,
+
+	dispi_index: u16,
+	dispi:       [12]u16,
+	bank_read:   u16,
+	bank_write:  u16,
+
+	timing:        Video_Timing,
+	latched_start: u16,
+	pending_start: u16,
+	start_pending: bool,
+	initialized:   bool,
+}
+
+vga_init :: proc(v: ^Vga, backing: []u8) -> bool {
+	if len(backing) < VRAM_SIZE { return false }
+	if v.initialized { vga_destroy(v) }
+	v^ = {}
+	v.allocator = context.allocator
+	v.vram = backing[:VRAM_SIZE]
+	v.frame_pixels = make([]u32, 0, v.allocator)
+	v.initialized = true
+	vga_reset(v)
+	return true
+}
+
+vga_destroy :: proc(v: ^Vga) {
+	if v.frame_pixels != nil { delete(v.frame_pixels, v.allocator) }
+	if v.raster_pixels != nil { delete(v.raster_pixels, v.allocator) }
+	v^ = {}
+}
+
+vga_vram :: proc(v: ^Vga) -> []u8 {
+	return v.vram
+}
+
+vga_reset :: proc(v: ^Vga) {
+	// Power-on values describe the conventional 80x25 color text mode. The
+	// option ROM will replace these while setting its first mode.
+	v.seq = {}
+	v.seq[0] = 0x03
+	v.seq[1] = 0x00
+	v.seq[2] = 0x03
+	v.seq[4] = 0x02
+	v.gfx = {}
+	v.gfx[5] = 0x10
+	v.gfx[6] = 0x0E
+	v.gfx[7] = 0x0F
+	v.gfx[8] = 0xFF
+	v.attr = {}
+	for i in 0 ..< 16 { v.attr[i] = u8(i) }
+	v.attr[0x10] = 0x08
+	v.attr[0x12] = 0x0F
+	v.video_on = true
+	v.misc = 0x67
+	v.pel_mask = 0xFF
+	v.crtc = {}
+	v.crtc[0x00] = 0x5F
+	v.crtc[0x01] = 0x4F
+	v.crtc[0x06] = 0xBF
+	v.crtc[0x07] = 0x1F
+	v.crtc[0x09] = 0x4F
+	v.crtc[0x0A] = 0x0D
+	v.crtc[0x0B] = 0x0E
+	v.crtc[0x10] = 0x9C
+	v.crtc[0x11] = 0x8E
+	v.crtc[0x12] = 0x8F
+	v.crtc[0x13] = 0x28
+	v.crtc[0x15] = 0x96
+	v.crtc[0x16] = 0xB9
+	v.crtc[0x17] = 0xA3
+	v.crtc[0x18] = 0xFF
+	vga_init_dac(v)
+	v.dispi = {}
+	v.dispi[DISPI_INDEX_ID] = DISPI_ID5
+	v.dispi[DISPI_INDEX_XRES] = 640
+	v.dispi[DISPI_INDEX_YRES] = 480
+	v.dispi[DISPI_INDEX_BPP] = 8
+	v.dispi[DISPI_INDEX_VIRT_WIDTH] = 640
+	v.dispi[DISPI_INDEX_VIRT_HEIGHT] = u16(VRAM_SIZE / 640)
+	v.dispi[DISPI_INDEX_VIDEO_MEMORY_64K] = u16(VRAM_SIZE / 65536)
+	v.latched_start = 0
+	v.pending_start = 0
+	v.timing = {}
+	vga_recalculate_timing(v)
+}
+
+@(private = "package")
+vga_init_dac :: proc(v: ^Vga) {
+	base := [16][3]u8 {
+		{0x00, 0x00, 0x00}, {0x00, 0x00, 0x2A}, {0x00, 0x2A, 0x00}, {0x00, 0x2A, 0x2A},
+		{0x2A, 0x00, 0x00}, {0x2A, 0x00, 0x2A}, {0x2A, 0x15, 0x00}, {0x2A, 0x2A, 0x2A},
+		{0x15, 0x15, 0x15}, {0x15, 0x15, 0x3F}, {0x15, 0x3F, 0x15}, {0x15, 0x3F, 0x3F},
+		{0x3F, 0x15, 0x15}, {0x3F, 0x15, 0x3F}, {0x3F, 0x3F, 0x15}, {0x3F, 0x3F, 0x3F},
 	}
-	pos := int(v.crtc[0x0E]) << 8 | int(v.crtc[0x0F])
-	rel := pos - start
-	s.cursor_row = rel / 80
-	s.cursor_col = rel % 80
-	s.cursor_on = v.crtc[0x0A] & 0x20 == 0
-	return s
+	for i in 0 ..< 16 {
+		v.dac[i * 3 + 0] = base[i][0]
+		v.dac[i * 3 + 1] = base[i][1]
+		v.dac[i * 3 + 2] = base[i][2]
+	}
+	for i in 16 ..< 256 {
+		c := u8(i & 0x3F)
+		v.dac[i * 3 + 0] = c
+		v.dac[i * 3 + 1] = c
+		v.dac[i * 3 + 2] = c
+	}
 }
