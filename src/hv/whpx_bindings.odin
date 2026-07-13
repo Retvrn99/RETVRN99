@@ -89,6 +89,8 @@ WHV_REGISTER_NAME :: enum u32 {
 	Cr2                         = 0x0000001D,
 	Cr3                         = 0x0000001E,
 	Cr4                         = 0x0000001F,
+	Tsc                         = 0x00002000,
+	Pat                         = 0x00002004,
 	PendingInterruption         = 0x80000000,
 	InterruptState              = 0x80000001,
 	PendingEvent                = 0x80000002,
@@ -195,6 +197,15 @@ WHV_X64_CPUID_ACCESS_CONTEXT :: struct {
 
 #assert(size_of(WHV_X64_CPUID_ACCESS_CONTEXT) == 64)
 
+WHV_X64_MSR_ACCESS_CONTEXT :: struct {
+	AccessInfo: u32,
+	MsrNumber:  u32,
+	Rax:        u64,
+	Rdx:        u64,
+}
+
+#assert(size_of(WHV_X64_MSR_ACCESS_CONTEXT) == 24)
+
 // padding covers the union members we do not use (SDK: 224 total)
 WHV_RUN_VP_EXIT_CONTEXT :: struct {
 	ExitReason: WHV_RUN_VP_EXIT_REASON,
@@ -204,6 +215,7 @@ WHV_RUN_VP_EXIT_CONTEXT :: struct {
 		MemoryAccess: WHV_MEMORY_ACCESS_CONTEXT,
 		IoPortAccess: WHV_X64_IO_PORT_ACCESS_CONTEXT,
 		CpuidAccess:  WHV_X64_CPUID_ACCESS_CONTEXT,
+		MsrAccess:    WHV_X64_MSR_ACCESS_CONTEXT,
 		_pad:         [176]u8,
 	},
 }
@@ -260,6 +272,8 @@ foreign whp {
 	WHvGetVirtualProcessorRegisters :: proc(part: WHV_PARTITION_HANDLE, index: u32, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT ---
 	WHvSetVirtualProcessorRegisters :: proc(part: WHV_PARTITION_HANDLE, index: u32, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT ---
 	WHvGetVirtualProcessorCounters :: proc(part: WHV_PARTITION_HANDLE, index: u32, counter_set: WHV_PROCESSOR_COUNTER_SET, buf: rawptr, buf_size: u32, written: ^u32) -> HRESULT ---
+	WHvSuspendPartitionTime :: proc(part: WHV_PARTITION_HANDLE) -> HRESULT ---
+	WHvResumePartitionTime :: proc(part: WHV_PARTITION_HANDLE) -> HRESULT ---
 	WHvDeletePartition :: proc(part: WHV_PARTITION_HANDLE) -> HRESULT ---
 }
 

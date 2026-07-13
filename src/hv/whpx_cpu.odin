@@ -12,7 +12,7 @@ gsw_886_cpuid :: proc(function, subleaf: u32) -> Cpuid_Result {
 	case 0:
 		return {eax = 2, ebx = 0x756E6547, ecx = 0x6C65746E, edx = 0x49656E69}
 	case 1:
-		return {eax = 0x0000068A, ebx = 0x00000002, edx = 0x0383F9FF}
+		return {eax = 0x0000068A, ebx = 0x00000002, edx = 0x0383A17F}
 	case 2:
 		return {eax = 0x03020101, edx = 0x0C040882}
 	}
@@ -44,6 +44,66 @@ whpx_handle_cpuid :: proc(
 		u32(len(names)),
 		&values[0],
 	) >= 0
+}
+
+whpx_pat_valid :: proc(value: u64) -> bool {
+	for i in 0 ..< 8 {
+		entry := u8(value >> (8 * uint(i)))
+		if entry & 0xF8 != 0 {return false}
+		switch entry {
+		case 0, 1, 4, 5, 6, 7:
+		case:
+			return false
+		}
+	}
+	return true
+}
+
+@(private = "file")
+whpx_inject_general_protection :: proc(vm: ^Vm) -> bool {
+	name := WHV_REGISTER_NAME.PendingEvent
+	value: WHV_REGISTER_VALUE
+	value.Reg128[0] = u64(1) | u64(1) << 8 | u64(13) << 16
+	return WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) >= 0
+}
+
+whpx_handle_msr :: proc(
+	vm: ^Vm,
+	vp_ctx: ^WHV_VP_EXIT_CONTEXT,
+	access: ^WHV_X64_MSR_ACCESS_CONTEXT,
+) -> bool {
+	register: WHV_REGISTER_NAME
+	switch access.MsrNumber {
+	case 0x0000_0010:
+		register = .Tsc
+	case 0x0000_0277:
+		register = .Pat
+	case:
+		return whpx_inject_general_protection(vm)
+	}
+
+	is_write := access.AccessInfo & 1 != 0
+	rip := whpx_next_rip(vp_ctx)
+	if is_write {
+		value := (access.Rdx & 0xFFFF_FFFF) << 32 | (access.Rax & 0xFFFF_FFFF)
+		if register == .Pat && !whpx_pat_valid(value) {
+			return whpx_inject_general_protection(vm)
+		}
+		names := [?]WHV_REGISTER_NAME{register, .Rip}
+		values: [len(names)]WHV_REGISTER_VALUE
+		values[0].Reg64 = value
+		values[1].Reg64 = rip
+		return WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0
+	}
+
+	msr_value: WHV_REGISTER_VALUE
+	if WHvGetVirtualProcessorRegisters(vm.part, 0, &register, 1, &msr_value) < 0 {return false}
+	names := [?]WHV_REGISTER_NAME{.Rax, .Rdx, .Rip}
+	values: [len(names)]WHV_REGISTER_VALUE
+	values[0].Reg64 = msr_value.Reg64 & 0xFFFF_FFFF
+	values[1].Reg64 = msr_value.Reg64 >> 32
+	values[2].Reg64 = rip
+	return WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0
 }
 
 whpx_host_clock_hz :: proc() -> u64 {

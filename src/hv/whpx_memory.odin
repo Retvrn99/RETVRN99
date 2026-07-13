@@ -16,9 +16,7 @@ Whpx_Memory_Region :: struct {
 
 @(private = "file")
 whpx_memory_effective_gpa :: proc(vm: ^Vm, gpa: u64) -> u64 {
-	if !vm.a20_enabled && gpa >= WHPX_HMA_BASE && gpa < WHPX_HMA_BASE + WHPX_HMA_SIZE {
-		return gpa - WHPX_HMA_BASE
-	}
+	if !vm.a20_enabled {return gpa &~ WHPX_A20_BIT}
 	return gpa
 }
 

@@ -18,6 +18,12 @@ Exit :: struct {
 	detail: string, // failure or reset provenance
 }
 
+Interrupt_Injection_Result :: enum {
+	Injected,
+	Deferred,
+	Failed,
+}
+
 Rom_Mapping :: struct {
 	gpa:  u64,
 	host: rawptr,
@@ -46,6 +52,7 @@ Vm :: struct {
 	a20_requested:     bool,
 	a20_request_count: u64,
 	a20_apply_count:   u64,
+	time_suspended:    bool,
 	io_ctx:            rawptr,
 	io_read:           proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool),
 	io_write:          proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool,
@@ -77,6 +84,10 @@ guest_runtime_ns :: proc(vm: ^Vm) -> (u64, bool) {
 	return whpx_guest_runtime_ns(vm)
 }
 
+set_time_running :: proc(vm: ^Vm, running: bool) -> bool {
+	return whpx_set_time_running(vm, running)
+}
+
 create :: proc(vm: ^Vm, ram_size: int) -> bool {
 	return whpx_create(vm, ram_size)
 }
@@ -97,6 +108,10 @@ reset_cpu :: proc(vm: ^Vm) -> bool {
 // sets PendingInterruption
 inject_irq :: proc(vm: ^Vm, vector: u8) {
 	whpx_inject_irq(vm, vector)
+}
+
+try_inject_irq :: proc(vm: ^Vm, vector: u8) -> Interrupt_Injection_Result {
+	return whpx_try_inject_irq(vm, vector)
 }
 
 // DeliverabilityNotifications
@@ -145,4 +160,9 @@ set_a20 :: proc(vm: ^Vm, enabled: bool) -> bool {
 
 get_regs :: proc(vm: ^Vm) -> Regs {
 	return whpx_get_regs(vm)
+}
+
+cpu_physical_address :: proc(vm: ^Vm, gpa: u64) -> u64 {
+	if vm != nil && !vm.a20_enabled {return gpa &~ WHPX_A20_BIT}
+	return gpa
 }
