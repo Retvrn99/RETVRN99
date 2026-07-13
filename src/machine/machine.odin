@@ -91,8 +91,8 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	pci_init(&m.pci)
 	fwcfg_init(&m.fwcfg, u64(ram_size))
 	// SeaBIOS vgarom_setup memsets 0xC0000 and then deploys "vgaroms/"
-	// romfiles: the SeaVGABIOS image must arrive through fw_cfg
-	fwcfg_add_file(&m.fwcfg, "vgaroms/vgabios-stdvga.bin", VGABIOS_IMAGE, 0x0021)
+	// romfiles: the Bochs VGABIOS image must arrive through fw_cfg
+	fwcfg_add_file(&m.fwcfg, "vgaroms/vgabios.bin", VGABIOS_IMAGE, 0x0021)
 
 	pic_h := Io_Handler {
 		ctx   = m,
@@ -185,7 +185,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_whitelist(&m.bus, 0x4D0, 0x4D1) // ELCR
 	machine_init_fdc(m)
 	machine_init_atapi(m)
-	bus_whitelist(&m.bus, 0x1CE, 0x1CF) // bochs dispi probe by SeaVGABIOS bochsvga_setup
+	bus_whitelist(&m.bus, 0x1CE, 0x1CF) // Bochs DISPI until the VBE device takes over
 	machine_whitelist_range(&m.bus, 0x378, 0x37A) // LPT1 probe by SeaBIOS lpt_setup; absent
 	machine_whitelist_range(&m.bus, 0x278, 0x27A) // LPT2 probe by SeaBIOS lpt_setup; absent
 	machine_whitelist_range(&m.bus, 0x3E8, 0x3EF) // COM3 probe by SeaBIOS serial_setup; absent

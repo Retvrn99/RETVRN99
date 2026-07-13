@@ -18,14 +18,15 @@ C: drive live from a host folder, boots MS-DOS 7.1 to an interactive
 - [Odin](https://odin-lang.org) (dev-2026-07 or newer) on `PATH`.
 - `SDL3.dll` next to `retvrn99.exe` (copy from `<odin>/vendor/sdl3`).
 - NASM only if you modify the boot code in `assets/vbr/`.
-- Rebuilding the vendored SeaBIOS firmware additionally requires a Linux GCC,
-  binutils, Make, and Python 3 toolchain. Windows builds use WSL.
+- Rebuilding the vendored firmware additionally requires a Linux GCC, binutils,
+  Make, Python 3, and dev86 (`bcc` and `as86`) toolchain. Windows builds use
+  WSL; dev86 is required only for Bochs VGABIOS.
 
 ## Build
 
 ```
 .\build.ps1          # produces retvrn99.exe
-.\build.ps1 -Firmware # rebuilds SeaBIOS first (WSL Debian by default)
+.\build.ps1 -Firmware # rebuilds SeaBIOS and Bochs VGABIOS (WSL Debian by default)
 odin build src/smoke -out:smoke.exe   # headless smoke test
 ```
 
