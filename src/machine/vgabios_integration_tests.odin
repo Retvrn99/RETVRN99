@@ -19,44 +19,103 @@ Vgabios_Test_Watchdog :: struct {
 @(private = "file")
 vgabios_test_boot_floppy :: proc() -> []u8 {
 	image := make([]u8, disk.FLOPPY_144_SIZE)
-	probe := []u8{
-		0xFA,                         // cli
-		0x31, 0xC0,                   // xor ax, ax
-		0x8E, 0xD8,                   // mov ds, ax
-		0x8E, 0xC0,                   // mov es, ax
-		0x8E, 0xD0,                   // mov ss, ax
-		0xBC, 0x00, 0x7C,             // mov sp, 7c00h
-		0xFB,                         // sti
-		0xB8, 0x92, 0x00,             // mov ax, 0092h (mode 12h, preserve memory)
-		0xCD, 0x10,                   // int 10h
-		0xB4, 0x0F,                   // mov ah, 0fh
-		0xCD, 0x10,                   // int 10h
-		0xA2, 0x00, 0x05,             // mov [0500h], al
-		0xB8, 0x0F, 0x0C,             // mov ax, 0c0fh
-		0x31, 0xDB,                   // xor bx, bx
-		0xB9, 0x10, 0x00,             // mov cx, 16
-		0xBA, 0x10, 0x00,             // mov dx, 16
-		0xCD, 0x10,                   // int 10h
-		0xC7, 0x06, 0x00, 0x06, 0x56, 0x42, // mov word [0600h], "VB"
-		0xC7, 0x06, 0x02, 0x06, 0x45, 0x32, // mov word [0602h], "E2"
-		0xB8, 0x00, 0x4F,             // mov ax, 4f00h
-		0xBF, 0x00, 0x06,             // mov di, 0600h
-		0xCD, 0x10,                   // int 10h
-		0xA3, 0x02, 0x05,             // mov [0502h], ax
-		0xB8, 0x02, 0x4F,             // mov ax, 4f02h
-		0xBB, 0x01, 0x81,             // mov bx, 8101h (640x480x8, banked, preserve memory)
-		0xCD, 0x10,                   // int 10h
-		0xA3, 0x04, 0x05,             // mov [0504h], ax
-		0xB8, 0x00, 0xA0,             // mov ax, a000h
-		0x8E, 0xC0,                   // mov es, ax
-		0x31, 0xFF,                   // xor di, di
-		0xB8, 0x0F, 0x0F,             // mov ax, 0f0fh
-		0xB9, 0x00, 0x08,             // mov cx, 0800h
-		0xF3, 0xAB,                   // rep stosw
-		0xC6, 0x06, 0x06, 0x05, 0xD7, // mov byte [0506h], d7h
-		0xFA,                         // cli
-		0xF4,                         // hlt
-		0xEB, 0xFD,                   // jmp hlt
+	probe := []u8 {
+		0xFA, // cli
+		0x31,
+		0xC0, // xor ax, ax
+		0x8E,
+		0xD8, // mov ds, ax
+		0x8E,
+		0xC0, // mov es, ax
+		0x8E,
+		0xD0, // mov ss, ax
+		0xBC,
+		0x00,
+		0x7C, // mov sp, 7c00h
+		0xFB, // sti
+		0xB8,
+		0x92,
+		0x00, // mov ax, 0092h (mode 12h, preserve memory)
+		0xCD,
+		0x10, // int 10h
+		0xB4,
+		0x0F, // mov ah, 0fh
+		0xCD,
+		0x10, // int 10h
+		0xA2,
+		0x00,
+		0x05, // mov [0500h], al
+		0xB8,
+		0x0F,
+		0x0C, // mov ax, 0c0fh
+		0x31,
+		0xDB, // xor bx, bx
+		0xB9,
+		0x10,
+		0x00, // mov cx, 16
+		0xBA,
+		0x10,
+		0x00, // mov dx, 16
+		0xCD,
+		0x10, // int 10h
+		0xC7,
+		0x06,
+		0x00,
+		0x06,
+		0x56,
+		0x42, // mov word [0600h], "VB"
+		0xC7,
+		0x06,
+		0x02,
+		0x06,
+		0x45,
+		0x32, // mov word [0602h], "E2"
+		0xB8,
+		0x00,
+		0x4F, // mov ax, 4f00h
+		0xBF,
+		0x00,
+		0x06, // mov di, 0600h
+		0xCD,
+		0x10, // int 10h
+		0xA3,
+		0x02,
+		0x05, // mov [0502h], ax
+		0xB8,
+		0x02,
+		0x4F, // mov ax, 4f02h
+		0xBB,
+		0x01,
+		0x81, // mov bx, 8101h (640x480x8, banked, preserve memory)
+		0xCD,
+		0x10, // int 10h
+		0xA3,
+		0x04,
+		0x05, // mov [0504h], ax
+		0xB8,
+		0x00,
+		0xA0, // mov ax, a000h
+		0x8E,
+		0xC0, // mov es, ax
+		0x31,
+		0xFF, // xor di, di
+		0xB8,
+		0x0F,
+		0x0F, // mov ax, 0f0fh
+		0xB9,
+		0x00,
+		0x08, // mov cx, 0800h
+		0xF3,
+		0xAB, // rep stosw
+		0xC6,
+		0x06,
+		0x06,
+		0x05,
+		0xD7, // mov byte [0506h], d7h
+		0xFA, // cli
+		0xF4, // hlt
+		0xEB,
+		0xFD, // jmp hlt
 	}
 	copy(image, probe)
 	image[510] = 0x55
@@ -71,9 +130,9 @@ vgabios_test_start_watchdog :: proc(w: ^Vgabios_Test_Watchdog) -> ^thread.Thread
 			time.sleep(2 * time.Millisecond)
 			sync.lock(&ctx.mu)
 			stop := ctx.stop
-			if !stop { hv.cancel(ctx.vm) }
+			if !stop {hv.cancel(ctx.vm)}
 			sync.unlock(&ctx.mu)
-			if stop { return }
+			if stop {return}
 		}
 	})
 }
@@ -94,26 +153,55 @@ test_machine_boots_bochs_vgabios_and_sets_vbe_mode :: proc(t: ^testing.T) {
 	}
 	testing.set_fail_timeout(t, 20 * time.Second)
 	m: Machine
-	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) { return }
+	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) {return}
 	defer machine_destroy(&m)
-	if !testing.expect(t, load_roms(&m.vm)) { return }
+	if !testing.expect(t, load_roms(&m.vm)) {return}
 
 	floppy := vgabios_test_boot_floppy()
 	defer delete(floppy)
-	if !testing.expect(t, machine_mount_floppy(&m, floppy)) { return }
+	if !testing.expect(t, machine_mount_floppy(&m, floppy)) {return}
 	m.cmos.ram[0x3D] = 0x01
 	fwcfg_add_file(&m.fwcfg, "etc/show-boot-menu", []u8{0, 0, 0, 0}, 0x0022)
 
-	watchdog := Vgabios_Test_Watchdog{vm = &m.vm}
+	watchdog := Vgabios_Test_Watchdog {
+		vm = &m.vm,
+	}
 	watchdog_thread := vgabios_test_start_watchdog(&watchdog)
 	defer vgabios_test_stop_watchdog(&watchdog, watchdog_thread)
 
 	start := time.tick_now()
 	for time.tick_since(start) < 15 * time.Second && m.vm.ram[0x0506] != 0xD7 {
-		if !step(&m) { break }
+		if !step(&m) {break}
 	}
-	if !testing.expect_value(t, m.bus.freeze_msg, "") { return }
-	if !testing.expect_value(t, m.vm.ram[0x0506], u8(0xD7)) { return }
+	if m.vm.ram[0x0506] != 0xD7 {
+		r := hv.get_regs(&m.vm)
+		last_io := m.io_hist[(m.io_count - 1) % IO_HISTORY]
+		log.errorf(
+			"VGA BIOS probe timeout CS:IP=%04x:%04x DX=%04x CX=%08x last_io=%c[%04x]/%d=%x exits=%d",
+			r.cs_sel,
+			r.rip,
+			u16(r.rdx),
+			u32(r.rcx),
+			last_io.write ? 'w' : 'r',
+			last_io.port,
+			last_io.size,
+			last_io.val,
+			m.exit_count,
+		)
+		for i in 0 ..< min(16, int(m.io_count)) {
+			entry := m.io_hist[(m.io_count - u64(16) + u64(i)) % IO_HISTORY]
+			log.errorf(
+				"VGA BIOS recent I/O %d: %c[%04x]/%d=%x",
+				i,
+				entry.write ? 'w' : 'r',
+				entry.port,
+				entry.size,
+				entry.val,
+			)
+		}
+	}
+	if !testing.expect_value(t, m.bus.freeze_msg, "") {return}
+	if !testing.expect_value(t, m.vm.ram[0x0506], u8(0xD7)) {return}
 
 	testing.expect_value(t, m.vm.ram[0x0500] & 0x7F, u8(0x12))
 	testing.expect_value(t, u16(m.vm.ram[0x0502]) | u16(m.vm.ram[0x0503]) << 8, u16(0x004F))
@@ -126,7 +214,7 @@ test_machine_boots_bochs_vgabios_and_sets_vbe_mode :: proc(t: ^testing.T) {
 
 	vram_nonzero := 0
 	for byte in video.vga_vram(&m.vga)[:4096] {
-		if byte != 0 { vram_nonzero += 1 }
+		if byte != 0 {vram_nonzero += 1}
 	}
 	testing.expect(t, vram_nonzero > 0)
 
@@ -137,7 +225,7 @@ test_machine_boots_bochs_vgabios_and_sets_vbe_mode :: proc(t: ^testing.T) {
 	testing.expect_value(t, frame.height, 480)
 	nonblack := 0
 	for pixel in frame.pixels {
-		if pixel != 0xFF000000 { nonblack += 1 }
+		if pixel != 0xFF000000 {nonblack += 1}
 	}
 	testing.expect(t, nonblack > 0)
 }
