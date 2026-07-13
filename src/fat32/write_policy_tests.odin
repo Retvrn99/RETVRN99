@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package fat32
 
+import "core:fmt"
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 
@@ -66,6 +68,14 @@ protection_test_compatible_boot_code_is_ignored_but_layout_is_protected :: proc(
 	defer os.remove_all(dir)
 
 	v := volume_open(dir, 2048)
+	original_mbr := read_test_sector(t, v, 0)
+	compatible_mbr := make_mbr(v.alloc.geo.total_sectors)
+	compatible_mbr[0] = 0xFA
+	compatible_mbr[440] = 0x98
+	testing.expect(t, volume_write(v, 0, compatible_mbr[:]))
+	testing.expect(t, !v.frozen)
+	testing.expect(t, read_test_sector(t, v, 0) == original_mbr)
+
 	original := read_test_sector(t, v, PART_START_LBA)
 	compatible := make_vbr(&v.alloc.geo, v.alloc.geo.total_sectors)
 	copy(compatible[3:11], "MSWIN4.1")
@@ -83,12 +93,30 @@ protection_test_compatible_boot_code_is_ignored_but_layout_is_protected :: proc(
 	testing.expect(t, v2.frozen && failure.useful)
 
 	v3 := volume_open(dir, 2048)
+	reserved_boot: [SECTOR]u8
+	reserved_boot[0] = 0xF6
+	original_reserved := read_test_sector(t, v3, PART_START_LBA + 2)
+	testing.expect(t, volume_write(v3, PART_START_LBA + 2, reserved_boot[:]))
+	testing.expect(t, !v3.frozen)
+	testing.expect(t, read_test_sector(t, v3, PART_START_LBA + 2) == original_reserved)
+
+	v4 := volume_open(dir, 2048)
 	failure2: Protection_Test_Failure
-	protection_test_arm(v3, &failure2)
-	reserved: [SECTOR]u8
-	reserved[0] = 0xF6
-	testing.expect(t, !volume_write(v3, PART_START_LBA + 2, reserved[:]))
-	testing.expect(t, v3.frozen && failure2.useful)
+	protection_test_arm(v4, &failure2)
+	reserved_layout: [SECTOR]u8
+	reserved_layout[0] = 0xF6
+	testing.expect(t, !volume_write(v4, PART_START_LBA + 3, reserved_layout[:]))
+	testing.expect(t, v4.frozen && failure2.useful)
+}
+
+protection_test_add_root_files :: proc(t: ^testing.T, dir: string, count: int) {
+	for i in 0 ..< count {
+		name := fmt.tprintf("F%07d.BIN", i)
+		path, path_error := filepath.join({dir, name}, context.temp_allocator)
+		testing.expect(t, path_error == nil)
+		data := [1]u8{u8(i)}
+		testing.expect(t, os.write_entire_file(path, data[:]) == nil)
+	}
 }
 
 @(test)
@@ -132,6 +160,75 @@ protection_test_format_fat_and_root_writes_preserve_files :: proc(t: ^testing.T)
 }
 
 @(test)
+protection_test_format_later_root_sector_is_rejected_after_fat_free :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	protection_test_add_root_files(t, dir, 20)
+
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {
+		return
+	}
+	target: ^Node
+	target_index := -1
+	for child, index in v.alloc.root.children {
+		if index >= 16 && index < 32 && !child.is_dir && child.first_cluster >= 2 {
+			target = child
+			target_index = index
+			break
+		}
+	}
+	testing.expect(t, target != nil)
+	if target == nil {
+		return
+	}
+	target_path := strings.clone(target.host_path, context.temp_allocator)
+	fat_lba := journal_test_fat_lba(v, target.first_cluster)
+	fat := read_test_sector(t, v, fat_lba)
+	protection_test_put32(fat[:], int(target.first_cluster % 128) * 4, 0)
+	testing.expect(t, volume_write(v, fat_lba, fat[:]))
+	testing.expect(t, os.exists(target_path))
+
+	failure: Protection_Test_Failure
+	protection_test_arm(v, &failure)
+	fresh: [SECTOR]u8
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := u64(target_index / (SECTOR / 32))
+	testing.expect(t, root_sector > 0)
+	testing.expect(t, !volume_write(v, root_lba + root_sector, fresh[:]))
+	testing.expect(t, v.frozen && failure.useful)
+	testing.expect(t, os.exists(target_path))
+}
+
+@(test)
+protection_test_format_later_root_cluster_is_rejected :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	protection_test_add_root_files(t, dir, 130)
+
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {
+		return
+	}
+	testing.expect(t, v.alloc.root.cluster_len > 1)
+	if v.alloc.root.cluster_len <= 1 {
+		return
+	}
+	failure: Protection_Test_Failure
+	protection_test_arm(v, &failure)
+	fresh: [SECTOR]u8
+	second_cluster := v.alloc.root.first_cluster + 1
+	testing.expect(t, !volume_write(v, journal_test_data_lba(v, second_cluster), fresh[:]))
+	testing.expect(t, v.frozen && failure.useful)
+	last := v.alloc.root.children[len(v.alloc.root.children) - 1]
+	testing.expect(t, os.exists(last.host_path))
+}
+
+@(test)
 protection_test_preflight_and_normal_writes :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := fat32_test_fixture(t)
@@ -156,12 +253,12 @@ protection_test_preflight_and_normal_writes :: proc(t: ^testing.T) {
 	testing.expect(t, !v.frozen)
 
 	v2 := volume_open(dir, 2048)
-	two: [SECTOR * 2]u8
+	three: [SECTOR * 3]u8
 	canonical_fsinfo := make_fsinfo()
-	copy(two[:SECTOR], canonical_fsinfo[:])
-	two[488] = 0x34
-	two[SECTOR] = 0xF6
-	testing.expect(t, !volume_write(v2, PART_START_LBA + 1, two[:]))
+	copy(three[:SECTOR], canonical_fsinfo[:])
+	three[488] = 0x34
+	three[SECTOR * 2] = 0xF6
+	testing.expect(t, !volume_write(v2, PART_START_LBA + 1, three[:]))
 	testing.expect(t, v2.frozen)
 	testing.expect_value(t, len(v2.journal.overlay), 0)
 }

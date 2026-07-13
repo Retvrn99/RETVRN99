@@ -8,8 +8,11 @@ import "core:os"
 Journal :: struct {
 	overlay:         map[u32][]u8, // relative LBA -> written sector (512B)
 	shadow_fat:      map[u32]u32, // FAT entries modified by the guest
+	mirrored:        map[Mirror_Key]Mirror_Entry,
+	snapshotted:     map[^Node]bool,
 	// clusters written by the guest that belong to no node yet
 	orphan_data:     map[u32][]u8, // cluster -> 4096B
+	stale_clusters:  map[u32]bool, // detached live file chains awaiting FAT free
 	// guest-allocated clusters adopted by decode (may be non-contiguous)
 	claimed:         map[u32]Claim,
 	pending_deletes: [dynamic]Pending_Delete, // deferred until the chain is freed
@@ -34,7 +37,10 @@ Chain_State :: enum {
 journal_init :: proc(j: ^Journal, allocator := context.allocator) {
 	j.overlay = make(map[u32][]u8, allocator)
 	j.shadow_fat = make(map[u32]u32, allocator)
+	j.mirrored = make(map[Mirror_Key]Mirror_Entry, allocator)
+	j.snapshotted = make(map[^Node]bool, allocator)
 	j.orphan_data = make(map[u32][]u8, allocator)
+	j.stale_clusters = make(map[u32]bool, allocator)
 	j.claimed = make(map[u32]Claim, allocator)
 	j.pending_deletes = make([dynamic]Pending_Delete, allocator)
 	j.pending_extends = make([dynamic]^Node, allocator)
@@ -50,9 +56,15 @@ journal_destroy :: proc(j: ^Journal, allocator: runtime.Allocator) {
 	for _, cluster in j.orphan_data {
 		delete(cluster, allocator)
 	}
+	for _, entry in j.mirrored {
+		delete(entry.host_path, allocator)
+	}
 	delete(j.overlay)
 	delete(j.shadow_fat)
+	delete(j.mirrored)
+	delete(j.snapshotted)
 	delete(j.orphan_data)
+	delete(j.stale_clusters)
 	delete(j.claimed)
 	delete(j.pending_deletes)
 	delete(j.pending_extends)
@@ -89,7 +101,10 @@ volume_chain_inspect :: proc(
 	v: ^Volume,
 	first: u32,
 	allocator := context.allocator,
-) -> ([dynamic]u32, Chain_State) {
+) -> (
+	[dynamic]u32,
+	Chain_State,
+) {
 	chain := make([dynamic]u32, allocator)
 	c := first
 	for len(chain) <= int(v.alloc.geo.cluster_count) {
@@ -121,18 +136,90 @@ volume_write :: proc(v: ^Volume, lba: u64, buf: []u8) -> bool {
 	n := len(buf) / SECTOR
 	decisions := make([]Protected_Write_Decision, n, context.temp_allocator)
 	for i in 0 ..< n {
-		decisions[i] = protected_system_disk_write_policy(v, lba + u64(i), buf[i * SECTOR:][:SECTOR])
+		decisions[i] = protected_system_disk_write_policy(
+			v,
+			lba + u64(i),
+			buf[i * SECTOR:][:SECTOR],
+		)
 		if decisions[i] == .Reject {
 			return false
 		}
 	}
 	for i in 0 ..< n {
-		if decisions[i] == .Ignore { continue }
+		if decisions[i] == .Ignore {continue}
 		if !write_sector(v, lba + u64(i), buf[i * SECTOR:][:SECTOR]) {
 			return false
 		}
 	}
 	return true
+}
+
+volume_stage_write :: proc(v: ^Volume, lba: u64, buf: []u8) -> bool {
+	if v.frozen {
+		return false
+	}
+	if len(buf) % SECTOR != 0 {
+		volume_fail(
+			v,
+			fmt.tprintf("protected system disk rejected an unaligned write at LBA %d", lba),
+		)
+		return false
+	}
+	n := len(buf) / SECTOR
+	decisions := make([]Protected_Write_Decision, n, context.temp_allocator)
+	for i in 0 ..< n {
+		decisions[i] = protected_system_disk_write_policy(
+			v,
+			lba + u64(i),
+			buf[i * SECTOR:][:SECTOR],
+		)
+		if decisions[i] == .Reject {
+			return false
+		}
+	}
+	for i in 0 ..< n {
+		if decisions[i] == .Ignore {continue}
+		if !stage_sector(v, lba + u64(i), buf[i * SECTOR:][:SECTOR]) {
+			return false
+		}
+	}
+	return true
+}
+
+@(private = "file")
+stage_sector :: proc(v: ^Volume, lba: u64, sec: []u8) -> bool {
+	geo := &v.alloc.geo
+	if lba < PART_START_LBA {
+		return false
+	}
+	rel64 := lba - PART_START_LBA
+	if rel64 >= u64(geo.total_sectors) {
+		return false
+	}
+	rel := u32(rel64)
+	overlay_put(v, rel, sec)
+	if rel >= geo.fat_start && rel < geo.data_start {
+		stage_fat_sector(v, rel, sec)
+	}
+	return true
+}
+
+@(private = "file")
+stage_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) {
+	geo := &v.alloc.geo
+	if rel >= geo.fat_start + geo.sectors_per_fat {
+		return
+	}
+	base := (rel - geo.fat_start) * 128
+	for i in u32(0) ..< 128 {
+		cluster := base + i
+		raw :=
+			u32(sec[i * 4]) |
+			u32(sec[i * 4 + 1]) << 8 |
+			u32(sec[i * 4 + 2]) << 16 |
+			u32(sec[i * 4 + 3]) << 24
+		v.journal.shadow_fat[cluster] = raw
+	}
 }
 
 @(private = "file")
@@ -198,9 +285,14 @@ write_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) -> bool {
 	base := ((rel - geo.fat_start) % geo.sectors_per_fat) * 128
 	for i in u32(0) ..< 128 {
 		cluster := base + i
-		raw := u32(sec[i * 4]) | u32(sec[i * 4 + 1]) << 8 | u32(sec[i * 4 + 2]) << 16 | u32(sec[i * 4 + 3]) << 24
+		raw :=
+			u32(sec[i * 4]) |
+			u32(sec[i * 4 + 1]) << 8 |
+			u32(sec[i * 4 + 2]) << 16 |
+			u32(sec[i * 4 + 3]) << 24
 		if raw & 0x0FFFFFFF != volume_fat_entry(v, cluster) & 0x0FFFFFFF {
 			v.journal.shadow_fat[cluster] = raw
+			orphan_note_fat_change(v, cluster, raw & 0x0FFFFFFF)
 			fat_note_dir_change(v, cluster)
 		}
 	}
@@ -209,6 +301,16 @@ write_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) -> bool {
 	}
 	// a freed chain is the commit point of a guest delete
 	return volume_flush(v)
+}
+
+@(private = "file")
+orphan_note_fat_change :: proc(v: ^Volume, cluster, next: u32) {
+	delete_key(&v.journal.stale_clusters, cluster)
+	if next != 0 {return}
+	if data, ok := v.journal.orphan_data[cluster]; ok {
+		delete(data, v.allocator)
+		delete_key(&v.journal.orphan_data, cluster)
+	}
 }
 
 // a FAT entry inside a directory's chain changed: the dir may have grown
@@ -252,7 +354,10 @@ extend_pending_dirs :: proc(v: ^Volume) -> bool {
 			continue
 		}
 		if state == .Invalid {
-			volume_fail(v, fmt.tprintf("bad FAT chain at cluster %d for %s", node.first_cluster, node.name))
+			volume_fail(
+				v,
+				fmt.tprintf("bad FAT chain at cluster %d for %s", node.first_cluster, node.name),
+			)
 			return false
 		}
 		if u32(len(chain)) > node.cluster_len {
@@ -281,7 +386,14 @@ orphan_ensure :: proc(v: ^Volume, cluster: u32) -> []u8 {
 // in-size bytes land in the host file; the tail waits in orphan_data
 // until a directory entry confirms the grown size
 @(private = "file")
-write_file_sector :: proc(v: ^Volume, node: ^Node, cluster: u32, index: u32, soff: u32, sec: []u8) -> bool {
+write_file_sector :: proc(
+	v: ^Volume,
+	node: ^Node,
+	cluster: u32,
+	index: u32,
+	soff: u32,
+	sec: []u8,
+) -> bool {
 	off := i64(index) * CLUSTER_BYTES + i64(soff) * SECTOR
 	in_size := i64(node.size) - off
 	if in_size > SECTOR {

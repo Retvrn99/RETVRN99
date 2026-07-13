@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package fat32
 
+import "core:fmt"
 import "core:os"
 
 // buf is n*512; every sector is synthesized on demand
@@ -97,27 +98,57 @@ read_sector :: proc(v: ^Volume, lba: u64, out: []u8) -> bool {
 	return true
 }
 
-// short reads (EOF inside the cluster) stay zero padded
+// Bytes beyond the advertised file size stay zero padded.
 @(private = "file")
-read_file_sector :: proc(v: ^Volume, node: ^Node, cluster_index: u32, soff: u32, out: []u8) -> bool {
+read_file_sector :: proc(
+	v: ^Volume,
+	node: ^Node,
+	cluster_index: u32,
+	soff: u32,
+	out: []u8,
+) -> bool {
 	offset := i64(cluster_index) * CLUSTER_BYTES + i64(soff) * SECTOR
 	if offset >= i64(node.size) {
 		return true
 	}
 	f, oerr := os.open(node.host_path)
 	if oerr != nil {
-		volume_fail(v, node.host_path)
+		volume_fail(v, fmt.tprintf("cannot open backing file %s for reading", node.host_path))
 		return false
 	}
 	defer os.close(f)
+	expected := int(min(i64(SECTOR), i64(node.size) - offset))
+	return backing_read_exact(v, f, node.host_path, out[:expected], offset)
+}
+
+@(private)
+backing_read_exact :: proc(v: ^Volume, f: ^os.File, path: string, out: []u8, offset: i64) -> bool {
 	total := 0
-	for total < SECTOR {
+	for total < len(out) {
 		n, rerr := os.read_at(f, out[total:], offset + i64(total))
-		if n > 0 {
-			total += n
+		if n > 0 {total += n}
+		if rerr != nil && rerr != .EOF {
+			volume_fail(
+				v,
+				fmt.tprintf(
+					"backing read failed for %s at byte %d (%v)",
+					path,
+					offset + i64(total),
+					rerr,
+				),
+			)
+			return false
 		}
-		if rerr != nil || n == 0 {
-			break // EOF padding is already zeroed
+		if total < len(out) && (rerr == .EOF || n == 0) {
+			volume_fail(
+				v,
+				fmt.tprintf(
+					"backing file %s ended at byte %d before its advertised size",
+					path,
+					offset + i64(total),
+				),
+			)
+			return false
 		}
 	}
 	return true

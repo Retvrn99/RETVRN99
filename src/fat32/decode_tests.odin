@@ -7,7 +7,14 @@ import "core:path/filepath"
 import "core:testing"
 
 // write a 32-byte short entry into a directory sector buffer
-decode_test_put_entry :: proc(sec: []u8, off: int, name: string, attr: u8, cluster: u32, size: u32) {
+decode_test_put_entry :: proc(
+	sec: []u8,
+	off: int,
+	name: string,
+	attr: u8,
+	cluster: u32,
+	size: u32,
+) {
 	e := sec[off:][:32]
 	for i in 0 ..< 32 {
 		e[i] = 0
@@ -149,7 +156,14 @@ decode_test_rename_file :: proc(t: ^testing.T) {
 	sec := read_test_sector(t, v, root_lba)
 	testing.expect(t, string(sec[0:11]) == "COMMAND COM")
 	sec[0] = 0xE5
-	decode_test_put_entry(sec[:], 96, "RENAMED COM", ATTR_FILE, command.first_cluster, u32(command.size))
+	decode_test_put_entry(
+		sec[:],
+		96,
+		"RENAMED COM",
+		ATTR_FILE,
+		command.first_cluster,
+		u32(command.size),
+	)
 	testing.expect(t, volume_write(v, root_lba, sec[:]))
 	testing.expect(t, volume_flush(v))
 
@@ -194,6 +208,231 @@ decode_test_defrag_freezes :: proc(t: ^testing.T) {
 	testing.expect_value(t, mbr[510], u8(0x55))
 	p, _ := filepath.join({dir, "IO.SYS"})
 	testing.expect(t, os.exists(p)) // host untouched
+}
+
+@(test)
+decode_test_setup_replaces_freed_file_chain :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	install, _ := filepath.join({dir, "WININST0.400"})
+	lz_path, _ := filepath.join({install, "LZEXPAND.DLL"})
+	testing.expect(t, os.make_directory(install) == nil)
+	old_data := make([]u8, 9936)
+	for &b in old_data {b = 0x5A}
+	testing.expect(t, os.write_entire_file(lz_path, old_data) == nil)
+
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {return}
+	defer volume_discard(v)
+	install_node: ^Node
+	for child in v.alloc.root.children {
+		if child.name == "WININST0.400" {install_node = child}
+	}
+	testing.expect(t, install_node != nil)
+	if install_node == nil || len(install_node.children) != 1 {return}
+	lz := install_node.children[0]
+	testing.expect_value(t, lz.size, u64(9936))
+	old_first, old_len := lz.first_cluster, lz.cluster_len
+
+	decode_test_fat_set(t, v, old_first, 0)
+	new_first: u32 = 33219
+	new_clusters: u32 = 6
+	for i in u32(0) ..< new_clusters {
+		next := i + 1 == new_clusters ? u32(0x0FFFFFFF) : new_first + i + 1
+		decode_test_fat_set(t, v, new_first + i, next)
+		data: [CLUSTER_BYTES]u8
+		for &b in data {b = u8(0x30 + i)}
+		testing.expect(t, volume_write(v, journal_test_data_lba(v, new_first + i), data[:]))
+	}
+
+	dir_lba := journal_test_data_lba(v, install_node.first_cluster)
+	sec := read_test_sector(t, v, dir_lba)
+	testing.expect(t, string(sec[64:75]) == "LZEXPANDDLL")
+	new_size: u32 = 23696
+	decode_test_put_entry(sec[:], 64, "LZEXPANDDLL", ATTR_FILE, new_first, new_size)
+	testing.expect(t, volume_write(v, dir_lba, sec[:]))
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, lz.first_cluster, new_first)
+	testing.expect_value(t, lz.cluster_len, new_clusters)
+	testing.expect_value(t, lz.size, u64(new_size))
+	for i in u32(0) ..< old_len {
+		testing.expect(t, v.alloc.by_cluster[old_first + i] == nil)
+	}
+	for i in u32(0) ..< new_clusters {
+		claim, ok := v.journal.claimed[new_first + i]
+		testing.expect(t, ok && claim.node == lz && claim.index == i)
+	}
+
+	host, herr := os.read_entire_file(lz_path, context.temp_allocator)
+	testing.expect(t, herr == nil)
+	testing.expect_value(t, len(host), int(new_size))
+	for i in u32(0) ..< new_clusters {
+		base := int(i * CLUSTER_BYTES)
+		if base >= len(host) {break}
+		testing.expect_value(t, host[base], u8(0x30 + i))
+		testing.expect_value(t, host[min(base + CLUSTER_BYTES, len(host)) - 1], u8(0x30 + i))
+	}
+	for i in u32(0) ..< new_clusters - 1 {
+		testing.expect(t, !(new_first + i in v.journal.orphan_data))
+	}
+	testing.expect(t, new_first + new_clusters - 1 in v.journal.orphan_data)
+	tail := read_test_sector(t, v, journal_test_data_lba(v, new_first + new_clusters - 1) + 7)
+	testing.expect_value(t, tail[511], u8(0x35))
+}
+
+@(test)
+decode_test_directory_entry_first_file_replacement :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+	new_first := v.alloc.next_free
+	old_first := new_first + 1
+	decode_test_fat_set(t, v, old_first, 0x0FFFFFFF)
+	old_data: [CLUSTER_BYTES]u8
+	for &b in old_data {b = 0xA1}
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, old_first), old_data[:]))
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(sec[:], 96, "SUWARN  BAT", ATTR_FILE, old_first, 2000)
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+	suwarn := v.alloc.root.children[len(v.alloc.root.children) - 1]
+	testing.expect(t, suwarn.name == "SUWARN.BAT")
+	testing.expect(t, v.journal.claimed[old_first].node == suwarn)
+
+	decode_test_fat_set(t, v, new_first, 0x0FFFFFFF)
+	new_data: [CLUSTER_BYTES]u8
+	for &b in new_data {b = 0xB2}
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, new_first), new_data[:]))
+	decode_test_put_entry(sec[:], 96, "SUWARN  BAT", ATTR_FILE, new_first, u32(suwarn.size))
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+
+	testing.expect(t, !v.frozen)
+	testing.expect(t, volume_fat_entry(v, old_first) & 0x0FFFFFFF >= 0x0FFFFFF8)
+	testing.expect(t, v.alloc.by_cluster[old_first] == nil)
+	_, old_claimed := v.journal.claimed[old_first]
+	testing.expect(t, !old_claimed)
+	testing.expect(t, v.journal.stale_clusters[old_first])
+	stale := make([]u8, CLUSTER_BYTES)
+	testing.expect(t, volume_read(v, journal_test_data_lba(v, old_first), stale))
+	for b in stale {testing.expect_value(t, b, u8(0xA1))}
+	host, herr := os.read_entire_file(suwarn.host_path, context.temp_allocator)
+	testing.expect(t, herr == nil)
+	testing.expect_value(t, len(host), int(suwarn.size))
+	for b in host {testing.expect_value(t, b, u8(0xB2))}
+
+	decode_test_fat_set(t, v, old_first, 0)
+	testing.expect_value(t, volume_fat_entry(v, old_first) & 0x0FFFFFFF, u32(0))
+	testing.expect(t, !v.journal.stale_clusters[old_first])
+	testing.expect(t, !(old_first in v.journal.orphan_data))
+	cleared := read_test_sector(t, v, journal_test_data_lba(v, old_first))
+	testing.expect(t, read_test_all_zero(cleared[:]))
+}
+
+@(test)
+decode_test_replacement_can_reuse_its_freed_tail :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+	io := v.alloc.root.children[2]
+	original, _ := os.read_entire_file(io.host_path, context.temp_allocator)
+	old_first := io.first_cluster
+	old_tail := old_first + 1
+	decode_test_fat_set(t, v, old_first, 0)
+
+	new_first := v.alloc.next_free
+	decode_test_fat_set(t, v, new_first, old_tail)
+	data: [CLUSTER_BYTES]u8
+	for &b in data {b = 0xA6}
+	testing.expect(t, volume_write(v, journal_test_data_lba(v, new_first), data[:]))
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(sec[:], 64, "IO      SYS", ATTR_FILE, new_first, CLUSTER_BYTES * 2)
+	testing.expect(t, volume_write(v, root_lba, sec[:]))
+
+	testing.expect(t, !v.frozen)
+	result, rerr := os.read_entire_file(io.host_path, context.temp_allocator)
+	testing.expect(t, rerr == nil)
+	testing.expect_value(t, len(result), CLUSTER_BYTES * 2)
+	testing.expect_value(t, result[0], u8(0xA6))
+	testing.expect_value(t, result[CLUSTER_BYTES - 1], u8(0xA6))
+	testing.expect(
+		t,
+		string(result[CLUSTER_BYTES:CLUSTER_BYTES + 904]) == string(original[CLUSTER_BYTES:]),
+	)
+	for b in result[CLUSTER_BYTES + 904:] {
+		testing.expect_value(t, b, u8(0))
+	}
+	testing.expect(t, v.journal.claimed[new_first] == Claim{io, 0})
+	testing.expect(t, v.journal.claimed[old_tail] == Claim{io, 1})
+	chain, state := volume_chain_inspect(v, new_first, context.temp_allocator)
+	testing.expect_value(t, state, Chain_State.Complete)
+	testing.expect_value(t, len(chain), 2)
+	if len(chain) == 2 {
+		testing.expect_value(t, chain[0], new_first)
+		testing.expect_value(t, chain[1], old_tail)
+	}
+}
+
+@(test)
+decode_test_directory_chain_replacement_freezes :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+	dos := v.alloc.root.children[1]
+	decode_test_fat_set(t, v, dos.first_cluster, 0)
+	new_first := v.alloc.next_free
+	decode_test_fat_set(t, v, new_first, 0x0FFFFFFF)
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(sec[:], 32, "DOS        ", ATTR_DIR, new_first, 0)
+	testing.expect(t, !volume_write(v, root_lba, sec[:]))
+	testing.expect(t, v.frozen)
+	testing.expect(t, os.exists(dos.host_path))
+}
+
+@(test)
+decode_test_invalid_replacement_chain_freezes :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+	command := v.alloc.root.children[0]
+	decode_test_fat_set(t, v, command.first_cluster, 0)
+	new_first := v.alloc.next_free
+	decode_test_fat_set(t, v, new_first, 0x0FFFFFF7)
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(sec[:], 0, "COMMAND COM", ATTR_FILE, new_first, u32(command.size))
+	testing.expect(t, !volume_write(v, root_lba, sec[:]))
+	testing.expect(t, v.frozen)
+}
+
+@(test)
+decode_test_conflicting_replacement_chain_freezes :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+	command := v.alloc.root.children[0]
+	io := v.alloc.root.children[2]
+	want, _ := os.read_entire_file(command.host_path, context.temp_allocator)
+	root_lba := journal_test_data_lba(v, 2)
+	sec := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(sec[:], 0, "COMMAND COM", ATTR_FILE, io.first_cluster, u32(command.size))
+	testing.expect(t, !volume_write(v, root_lba, sec[:]))
+	testing.expect(t, v.frozen)
+	got, gerr := os.read_entire_file(command.host_path, context.temp_allocator)
+	testing.expect(t, gerr == nil && string(got) == string(want))
 }
 
 @(test)
@@ -444,7 +683,14 @@ decode_test_move_across_dirs :: proc(t: ^testing.T) {
 	// round 3: the entry reappears in DOS with the same first cluster
 	dos_lba := journal_test_data_lba(v, dos.first_cluster)
 	dsec := read_test_sector(t, v, dos_lba)
-	decode_test_put_entry(dsec[:], 96, "COMMAND COM", ATTR_FILE, command.first_cluster, u32(command.size))
+	decode_test_put_entry(
+		dsec[:],
+		96,
+		"COMMAND COM",
+		ATTR_FILE,
+		command.first_cluster,
+		u32(command.size),
+	)
 	testing.expect(t, volume_write(v, dos_lba, dsec[:]))
 
 	testing.expect(t, !v.frozen)

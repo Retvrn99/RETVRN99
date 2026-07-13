@@ -15,6 +15,11 @@ protected_system_disk_write_policy :: proc(
 	sec: []u8,
 ) -> Protected_Write_Decision {
 	geo := &v.alloc.geo
+	if lba == 0 {
+		if protected_mbr_layout_compatible(geo, sec) {return .Ignore}
+		volume_fail(v, "protected system disk rejected partition/MBR layout replacement")
+		return .Reject
+	}
 	if lba < PART_START_LBA {
 		volume_fail(
 			v,
@@ -32,11 +37,17 @@ protected_system_disk_write_policy :: proc(
 	}
 	rel := u32(rel64)
 	if rel == 0 || rel == 6 {
-		if protected_vbr_layout_compatible(geo, sec) { return .Ignore }
-		volume_fail(v, fmt.tprintf("protected system disk rejected volume layout write at LBA %d", lba))
+		if protected_vbr_layout_compatible(geo, sec) {return .Ignore}
+		volume_fail(
+			v,
+			fmt.tprintf("protected system disk rejected volume layout write at LBA %d", lba),
+		)
 		return .Reject
 	}
 	if rel < geo.fat_start {
+		if rel == 2 || rel == 8 {
+			return .Ignore
+		}
 		if rel != 1 && rel != 7 {
 			volume_fail(
 				v,
@@ -73,11 +84,21 @@ protected_system_disk_write_policy :: proc(
 }
 
 @(private = "file")
+protected_mbr_layout_compatible :: proc(geo: ^Geometry, sec: []u8) -> bool {
+	if len(sec) != SECTOR {return false}
+	want := make_mbr(geo.total_sectors)
+	for i in 446 ..< SECTOR {
+		if sec[i] != want[i] {return false}
+	}
+	return true
+}
+
+@(private = "file")
 protected_vbr_layout_compatible :: proc(geo: ^Geometry, sec: []u8) -> bool {
-	if len(sec) != SECTOR || sec[510] != 0x55 || sec[511] != 0xAA { return false }
+	if len(sec) != SECTOR || sec[510] != 0x55 || sec[511] != 0xAA {return false}
 	want := make_vbr(geo, geo.total_sectors)
 	for i in 11 ..< 64 {
-		if sec[i] != want[i] { return false }
+		if sec[i] != want[i] {return false}
 	}
 	return true
 }
@@ -152,17 +173,21 @@ protected_directory_layout_replacement :: proc(v: ^Volume, rel: u32, sec: []u8) 
 	cluster := di / SECTORS_PER_CLUSTER + 2
 	soff := di % SECTORS_PER_CLUSTER
 	node := protected_cluster_owner(v, cluster)
-	if node == nil || node != v.alloc.root || cluster != 2 || soff != 0 ||
-	   !protected_fresh_directory_sector(sec) {
+	if node == nil || node != v.alloc.root || !protected_fresh_directory_sector(sec) {
 		return false
 	}
 	old: [SECTOR]u8
 	if overlay, overlay_ok := v.journal.overlay[rel]; overlay_ok {
 		copy(old[:], overlay)
 	} else {
-		index := cluster - node.first_cluster
+		index: u32
 		if claim, claim_ok := v.journal.claimed[cluster]; claim_ok {
 			index = claim.index
+		} else if cluster >= node.first_cluster &&
+		   cluster < node.first_cluster + node.cluster_len {
+			index = cluster - node.first_cluster
+		} else {
+			return false
 		}
 		tmp: [CLUSTER_BYTES]u8
 		dir_cluster_data(&v.alloc, node, index, tmp[:])

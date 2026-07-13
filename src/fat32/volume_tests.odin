@@ -31,6 +31,6 @@ volume_test_close_releases_owned_state :: proc(t: ^testing.T) {
 	append(&v.journal.pending_deletes, Pending_Delete{v.alloc.root.children[0]})
 	append(&v.journal.pending_extends, v.alloc.root)
 
-	volume_close(v)
-	volume_close(nil)
+	testing.expect(t, volume_close(v))
+	testing.expect(t, volume_close(nil))
 }

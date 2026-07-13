@@ -7,4 +7,5 @@ Block_Device :: struct {
 	sector_count: u64,
 	read:         proc(ctx: rawptr, lba: u64, buf: []u8) -> bool, // buf = n*512
 	write:        proc(ctx: rawptr, lba: u64, buf: []u8) -> bool,
+	flush:        proc(ctx: rawptr) -> bool,
 }

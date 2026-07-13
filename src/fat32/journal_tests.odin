@@ -144,6 +144,28 @@ journal_test_orphan_cluster :: proc(t: ^testing.T) {
 }
 
 @(test)
+journal_test_stale_cluster_reallocation_and_free :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	v := volume_open(dir, 2048)
+	if v == nil {return}
+	defer volume_discard(v)
+	cluster := v.alloc.next_free
+	v.journal.shadow_fat[cluster] = 0x0FFFFFFF
+	v.journal.stale_clusters[cluster] = true
+	data := make([]u8, CLUSTER_BYTES, v.allocator)
+	v.journal.orphan_data[cluster] = data
+	data[0] = 0xA5
+
+	decode_test_fat_set(t, v, cluster, 0x0FFFFFF8)
+	testing.expect(t, !v.journal.stale_clusters[cluster])
+	testing.expect_value(t, v.journal.orphan_data[cluster][0], u8(0xA5))
+	decode_test_fat_set(t, v, cluster, 0)
+	testing.expect(t, !(cluster in v.journal.orphan_data))
+}
+
+@(test)
 journal_test_grow_tail_parked :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := fat32_test_fixture(t)
