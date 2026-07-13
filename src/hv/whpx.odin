@@ -109,9 +109,91 @@ whpx_destroy :: proc(vm: ^Vm) {
 	}
 	delete(vm.roms)
 	vm.roms = nil
+	delete(vm.mmio_reservations)
+	vm.mmio_reservations = nil
+	for mapping in vm.device_mappings {
+		win32.VirtualFree(mapping.host, 0, win32.MEM_RELEASE)
+	}
+	delete(vm.device_mappings)
+	vm.device_mappings = nil
 	if held_gate {
 		sync.unlock(&whpx_vm_gate)
 	}
+}
+
+@(private = "file")
+whpx_page_range_valid :: proc(gpa, size: u64) -> bool {
+	return size > 0 && gpa & 0xFFF == 0 && size & 0xFFF == 0 && gpa <= max(u64) - size
+}
+
+@(private = "file")
+whpx_ranges_overlap :: proc(a_gpa, a_size, b_gpa, b_size: u64) -> bool {
+	return a_gpa < b_gpa + b_size && b_gpa < a_gpa + a_size
+}
+
+whpx_reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
+	if vm.part == nil || !whpx_page_range_valid(gpa, size) || gpa + size > u64(len(vm.ram)) {
+		return false
+	}
+	for reservation in vm.mmio_reservations {
+		if reservation.gpa == gpa && reservation.size == size {
+			return true
+		}
+		if whpx_ranges_overlap(gpa, size, reservation.gpa, reservation.size) {
+			return false
+		}
+	}
+	for mapping in vm.device_mappings {
+		if whpx_ranges_overlap(gpa, size, mapping.gpa, u64(mapping.size)) {
+			return false
+		}
+	}
+	for rom in vm.roms {
+		if whpx_ranges_overlap(gpa, size, rom.gpa, u64(rom.size)) {
+			return false
+		}
+	}
+	if WHvUnmapGpaRange(vm.part, gpa, size) < 0 {
+		return false
+	}
+	append(&vm.mmio_reservations, Mmio_Reservation{gpa = gpa, size = size})
+	return true
+}
+
+whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
+	if vm.part == nil || size <= 0 || !whpx_page_range_valid(gpa, u64(size)) {
+		return nil, false
+	}
+	map_size := u64(size)
+	if gpa < u64(len(vm.ram)) && whpx_ranges_overlap(gpa, map_size, 0, u64(len(vm.ram))) {
+		return nil, false
+	}
+	for reservation in vm.mmio_reservations {
+		if whpx_ranges_overlap(gpa, map_size, reservation.gpa, reservation.size) {
+			return nil, false
+		}
+	}
+	for mapping in vm.device_mappings {
+		if whpx_ranges_overlap(gpa, map_size, mapping.gpa, u64(mapping.size)) {
+			return nil, false
+		}
+	}
+	for rom in vm.roms {
+		if whpx_ranges_overlap(gpa, map_size, rom.gpa, u64(rom.size)) {
+			return nil, false
+		}
+	}
+	mem := win32.VirtualAlloc(nil, uint(size), win32.MEM_COMMIT | win32.MEM_RESERVE, win32.PAGE_READWRITE)
+	if mem == nil {
+		return nil, false
+	}
+	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE
+	if WHvMapGpaRange(vm.part, mem, gpa, map_size, flags) < 0 {
+		win32.VirtualFree(mem, 0, win32.MEM_RELEASE)
+		return nil, false
+	}
+	append(&vm.device_mappings, Device_Mapping{gpa = gpa, host = mem, size = size})
+	return ([^]u8)(mem)[:size], true
 }
 
 // page-aligned host copy mapped Read|Execute (no Write): guest ROM
@@ -325,6 +407,18 @@ whpx_emu_mmio :: proc "system" (ctx: rawptr, mem: ^WHV_EMULATOR_MEMORY_ACCESS_IN
 		size = len(mem.Data)
 	}
 	gpa := mem.GpaAddress
+	for reservation in vm.mmio_reservations {
+		if whpx_ranges_overlap(gpa, u64(size), reservation.gpa, reservation.size) {
+			if vm.mmio != nil {
+				vm.mmio(vm.io_ctx, gpa, mem.Direction == 1, mem.Data[:size])
+			} else if mem.Direction == 0 {
+				for i in 0 ..< size {
+					mem.Data[i] = 0xFF
+				}
+			}
+			return 0
+		}
+	}
 	if gpa + u64(size) <= u64(len(vm.ram)) {
 		if mem.Direction == 1 {
 			copy(vm.ram[gpa:], mem.Data[:size])
@@ -332,6 +426,18 @@ whpx_emu_mmio :: proc "system" (ctx: rawptr, mem: ^WHV_EMULATOR_MEMORY_ACCESS_IN
 			copy(mem.Data[:size], vm.ram[gpa:gpa + u64(size)])
 		}
 		return 0
+	}
+	for mapping in vm.device_mappings {
+		if gpa >= mapping.gpa && gpa + u64(size) <= mapping.gpa + u64(mapping.size) {
+			bytes := ([^]u8)(mapping.host)[:mapping.size]
+			offset := int(gpa - mapping.gpa)
+			if mem.Direction == 1 {
+				copy(bytes[offset:], mem.Data[:size])
+			} else {
+				copy(mem.Data[:size], bytes[offset:offset + size])
+			}
+			return 0
+		}
 	}
 	if mem.Direction == 0 {
 		for rom in vm.roms {
@@ -361,9 +467,13 @@ whpx_emu_set_regs :: proc "system" (ctx: rawptr, names: [^]WHV_REGISTER_NAME, co
 	return WHvSetVirtualProcessorRegisters(vm.part, 0, names, count, values)
 }
 
-// no paging in M1: GVA == GPA
-whpx_emu_translate :: proc "system" (ctx: rawptr, gva: u64, flags: u32, result: ^u32, gpa: ^u64) -> HRESULT {
-	result^ = 0 // WHvTranslateGvaResultSuccess
-	gpa^ = gva
-	return 0
+whpx_emu_translate :: proc "system" (ctx: rawptr, gva: u64, flags: u32, result: ^WHV_TRANSLATE_GVA_RESULT_CODE, gpa: ^u64) -> HRESULT {
+	context = runtime.default_context()
+	vm := (^Vm)(ctx)
+	translation: WHV_TRANSLATE_GVA_RESULT
+	translated_gpa: u64
+	hr := WHvTranslateGva(vm.part, 0, gva, flags, &translation, &translated_gpa)
+	result^ = translation.ResultCode
+	gpa^ = translated_gpa
+	return hr
 }
