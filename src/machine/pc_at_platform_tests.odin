@@ -27,6 +27,7 @@ test_pc_at_platform_owns_typed_reset_state :: proc(t: ^testing.T) {
 	defer free(m)
 	m.reset_requested = true
 	m.reset_source = .Port_92
+	m.reset_reason = "port 92 reset"
 	m.reset_count = 2
 	m.cpu_reset_pending = true
 	m.cpu_reset_count = 3
@@ -38,6 +39,7 @@ test_pc_at_platform_owns_typed_reset_state :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, m.platform.reset.reset_requested)
 	testing.expect_value(t, m.platform.reset.reset_source, Reset_Provenance.Port_92)
+	testing.expect_value(t, m.platform.reset.reset_reason, "port 92 reset")
 	testing.expect_value(t, m.platform.reset.reset_count, u64(2))
 	testing.expect(t, m.platform.reset.cpu_reset_pending)
 	testing.expect_value(t, m.platform.reset.cpu_reset_count, u64(3))

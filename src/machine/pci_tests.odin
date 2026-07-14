@@ -19,6 +19,8 @@ pci_test_pam_writable :: proc(t: ^testing.T) {
 	pci_out(&p, 0xCF8, 4, 0x8000_0058)
 	pci_out(&p, 0xCFD, 1, 0x30)
 	testing.expect_value(t, pci_in(&p, 0xCFD, 1), 0x30)
+	pci_out(&p, 0xCFF, 1, 0xFF)
+	testing.expect_value(t, pci_in(&p, 0xCFF, 1), 0x33)
 }
 
 @(test)

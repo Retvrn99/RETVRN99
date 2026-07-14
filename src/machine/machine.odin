@@ -323,7 +323,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 }
 
 machine_destroy :: proc(m: ^Machine) {
-	_ = disk.ide_checkpoint(&m.ide)
+	_ = machine_detach_disk(m)
 	machine_clock_set_running(m, false)
 	disk.bmide_reset_channel(&m.bmide, 0)
 	disk.bmide_reset_channel(&m.bmide, 1)
@@ -360,6 +360,14 @@ machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
 	}
 	bus_register(&m.bus, 0x1F0, 0x1F7, h)
 	bus_register(&m.bus, 0x3F6, 0x3F6, h)
+}
+
+machine_detach_disk :: proc(m: ^Machine) -> bool {
+	if m == nil || !m.has_disk {return true}
+	ok := disk.ide_checkpoint(&m.ide)
+	m.ide.bd = {}
+	m.has_disk = false
+	return ok
 }
 
 // registers the FDC on the bus and installs IRQ6 and the DMA ch2 glue
@@ -538,6 +546,10 @@ machine_reset_provenance :: proc(m: ^Machine) -> Reset_Provenance {
 	return m != nil ? m.reset_source : .None
 }
 
+machine_reset_reason :: proc(m: ^Machine) -> string {
+	return m != nil ? m.reset_reason : ""
+}
+
 machine_reset_record_count :: proc(m: ^Machine) -> int {
 	return m != nil ? int(min(m.reset_count, u64(PC_AT_RESET_HISTORY))) : 0
 }
@@ -578,6 +590,7 @@ machine_mouse :: proc(m: ^Machine, dx, dy: i32, buttons: u8) {
 	machine_sync_time(m)
 	machine_sync_device(m, .I8042)
 	i8042_mouse(&m.kbd, dx, dy, buttons)
+	machine_scheduler_refresh(m)
 	machine_rearm_wake(m)
 }
 
@@ -593,6 +606,7 @@ machine_mouse_wheel :: proc(m: ^Machine, wheel: i32, buttons: u8) {
 	machine_sync_device(m, .I8042)
 	i8042_mouse(&m.kbd, 0, 0, buttons)
 	i8042_mouse_wheel(&m.kbd, wheel)
+	machine_scheduler_refresh(m)
 	machine_rearm_wake(m)
 }
 
@@ -601,7 +615,18 @@ machine_key :: proc(m: ^Machine, scancode: u8) {
 	machine_sync_time(m)
 	machine_sync_device(m, .I8042)
 	i8042_key(&m.kbd, scancode)
+	machine_scheduler_refresh(m)
 	machine_rearm_wake(m)
+}
+
+machine_key_sequence :: proc(m: ^Machine, scancodes: []u8) -> bool {
+	if m == nil || len(scancodes) == 0 {return false}
+	machine_sync_time(m)
+	machine_sync_device(m, .I8042)
+	scheduled := i8042_schedule_keys(&m.kbd, scancodes)
+	if scheduled {machine_scheduler_refresh(m)}
+	machine_rearm_wake(m)
+	return scheduled
 }
 
 machine_clock_set_running :: proc(m: ^Machine, running: bool) {
@@ -696,7 +721,8 @@ machine_scheduler_refresh :: proc(m: ^Machine) {
 	machine_scheduler_set(m, .Atapi, deadline, pending)
 	deadline, pending = disk.bmide_next_deadline(&m.bmide)
 	machine_scheduler_set(m, .Bmide, deadline, pending)
-	if delta_ns, ok := i8042_next_deadline_ns(&m.kbd); ok {
+	if deadline_ns, ok := i8042_next_deadline(&m.kbd); ok {
+		delta_ns := deadline_ns > m.active_ns ? deadline_ns - m.active_ns : 0
 		machine_scheduler_set(m, .I8042, machine_relative_ns_deadline(m, delta_ns), true)
 	} else {
 		machine_scheduler_set(m, .I8042, 0, false)
@@ -876,7 +902,9 @@ machine_sync_time :: proc(m: ^Machine) {
 }
 
 step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
+	if m == nil || m.bus.frozen {return false}
 	machine_sync_time(m)
+	if m.reset_requested {return false}
 	injected := false
 	if pic_has_pending(&m.pic) {
 		if offer, offered := pic_interrupt_preview(&m.pic); offered {
@@ -914,6 +942,7 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 	ex := hv.run(&m.vm)
 	if ex.kind == .Canceled {m.wake_scheduled = false}
 	machine_sync_time(m)
+	if m.reset_requested {return false}
 	governor_ok := ex.kind != .Canceled || hv.governor_on_cancel(&m.governor, &m.vm)
 	m.exit_hist[m.exit_count % EXIT_HISTORY] = ex.kind
 	m.exit_count += 1
@@ -969,7 +998,7 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 		m.ide_count += 1
 	}
 	machine_rearm_wake(m)
-	return v, !m.bus.frozen
+	return v, !m.bus.frozen && !m.reset_requested
 }
 
 @(private = "file")
@@ -1004,7 +1033,7 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 	}
 	bus_io_write(&m.bus, port, size, val)
 	machine_rearm_wake(m)
-	return !m.bus.frozen
+	return !m.bus.frozen && !m.reset_requested
 }
 
 @(private = "file")
@@ -1018,7 +1047,7 @@ machine_io_stream_read :: proc(
 	if m.diagnostic_tracing {return 0, false, true}
 	if port != 0x1F0 && port != 0x170 {return 0, false, true}
 	completed, handled = bus_io_stream_read(&m.bus, port, size, data)
-	return completed, handled, !m.bus.frozen
+	return completed, handled, !m.bus.frozen && !m.reset_requested
 }
 
 @(private = "file")
@@ -1032,7 +1061,7 @@ machine_io_stream_write :: proc(
 	if m.diagnostic_tracing {return 0, false, true}
 	if port != 0x1F0 && port != 0x170 {return 0, false, true}
 	completed, handled = bus_io_stream_write(&m.bus, port, size, data)
-	return completed, handled, !m.bus.frozen
+	return completed, handled, !m.bus.frozen && !m.reset_requested
 }
 
 // VGA owns the legacy aperture; known probe zones read FF / swallow writes.
@@ -1398,9 +1427,9 @@ machine_request_reset :: proc(m: ^Machine, source: Reset_Provenance) {
 	if m == nil || m.reset_requested {return}
 	machine_record_reset(m, source)
 	m.reset_requested = true
-	bus_freeze(
-		&m.bus,
-		fmt.tprintf("guest requested hardware reset (%s)", machine_reset_name(source)),
+	m.reset_reason = fmt.tprintf(
+		"guest requested hardware reset (%s)",
+		machine_reset_name(source),
 	)
 }
 
@@ -1597,6 +1626,25 @@ machine_pci_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 }
 
 @(private = "file")
+machine_i440fx_apply_option_pam :: proc(m: ^Machine, index: int, value: u8) -> bool {
+	for half in 0 ..< 2 {
+		control := (value >> (4 * uint(half))) & 0x03
+		segment := index * 2 + half
+		gpa := u64(OPTION_ROM_HOLE_GPA + segment * I440FX_PAM_SEGMENT_SIZE)
+		if !hv.set_open_bus_shadow(
+			&m.vm,
+			gpa,
+			I440FX_PAM_SEGMENT_SIZE,
+			(control & 0x01) != 0,
+			(control & 0x02) != 0,
+		) {
+			return false
+		}
+	}
+	return true
+}
+
+@(private = "file")
 machine_pci_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	machine_sync_time(m)
@@ -1607,7 +1655,22 @@ machine_pci_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 		machine_rearm_wake(m)
 		return
 	}
+	previous: [I440FX_OPTION_PAM_COUNT]u8
+	for i in 0 ..< I440FX_OPTION_PAM_COUNT {
+		previous[i] = m.pci.functions[0].cfg[I440FX_OPTION_PAM_FIRST + i]
+	}
 	pci_out(&m.pci, port, size, val)
+	for i in 0 ..< I440FX_OPTION_PAM_COUNT {
+		next := m.pci.functions[0].cfg[I440FX_OPTION_PAM_FIRST + i]
+		if next == previous[i] {continue}
+		if machine_i440fx_apply_option_pam(m, i, next) {continue}
+		for rollback in 0 ..< I440FX_OPTION_PAM_COUNT {
+			m.pci.functions[0].cfg[I440FX_OPTION_PAM_FIRST + rollback] = previous[rollback]
+			_ = machine_i440fx_apply_option_pam(m, rollback, previous[rollback])
+		}
+		bus_freeze(&m.bus, "i440FX PAM shadow mapping failed")
+		return
+	}
 	machine_bmide_synchronize(m)
 	machine_rearm_wake(m)
 }

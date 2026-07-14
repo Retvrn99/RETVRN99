@@ -1156,6 +1156,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						publish_freeze(s, m.bus.freeze_msg, "")
 					}
 				} else if machine.machine_reset_requested(m) {
+					reset_reason := strings.clone(machine.machine_reset_reason(m))
 					vm_shutdown(c, m)
 					machine_live = false
 					if profile.install_state_active(&c.install_state) {
@@ -1181,11 +1182,12 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					if machine_live {
 						frozen = false
 						publish_freeze(s, "", "")
-						vm_log(s, "machine: guest-requested reset")
+						vm_log(s, fmt.tprintf("machine: reset (%s)", reset_reason))
 					} else {
 						frozen = true
 						publish_freeze(s, "guest reset failed: machine init error", "")
 					}
+					delete(reset_reason)
 				} else {
 					frozen = true
 					r := hv.get_regs(&m.vm)
@@ -1612,6 +1614,7 @@ format_regs :: proc(r: hv.Regs, m: ^machine.Machine) -> string {
 	)
 	fmt.sbprintfln(&b, "RAX=%08x RBX=%08x RCX=%08x RDX=%08x", r.rax, r.rbx, r.rcx, r.rdx)
 	fmt.sbprintfln(&b, "RSI=%08x RDI=%08x RSP=%08x RBP=%08x", r.rsi, r.rdi, r.rsp, r.rbp)
+	fmt.sbprintfln(&b, "CR0=%08x CR3=%08x", r.cr0, r.cr3)
 	fmt.sbprintfln(
 		&b,
 		"SS=%04x (base %08x) DS=%04x ES=%04x",
@@ -1801,6 +1804,7 @@ console_main :: proc(
 	)
 	defer {
 		if vol != nil {
+			if machine_live {_ = machine.machine_detach_disk(m)}
 			closed := fat32.volume_close(vol)
 			vol = nil
 			if !closed {
@@ -1815,6 +1819,20 @@ console_main :: proc(
 		if frame_dump_path != "" && machine_live {
 			console_dump_frame(frame_dump_path, machine.machine_display_frame(m))
 		}
+	}
+	input_script: acceptance.Input_Script
+	defer acceptance.input_script_destroy(&input_script)
+	if run_options.input_script != "" {
+		input_diagnostic: acceptance.Input_Script_Diagnostic
+		input_script, input_diagnostic = acceptance.input_script_load(run_options.input_script)
+		if input_diagnostic != .None {
+			fmt.eprintfln("input script error: %v", input_diagnostic)
+			run_result.stop_reason = .Configuration_Error
+			run_result.exit_code = 1
+			result = 1
+			return
+		}
+		fmt.printfln("input script: loaded %d actions", len(input_script.actions))
 	}
 	launch_phase, launch_milestone, launch_changed, launch_ok := install_launch_stage(
 		&install_state,
@@ -1915,6 +1933,18 @@ console_main :: proc(
 	stress_queue: host.Host_Input_Queue
 	stress_next := start
 	stress_phase: u64
+	input_phase_start := start
+	input_reset_count: u32
+	input_actions: [32]acceptance.Input_Action
+	input_frame_next := start
+	input_visual_cursor := -1
+	input_visual_reset: u32
+	input_visual_sampled := false
+	input_visual_baseline: u64
+	input_visual_last: u64
+	input_visual_since := start
+	input_visual_changed := false
+	input_memory_next := start
 	if options.accept_until == .Hardware_Detection &&
 	   !profile.install_state_active(&install_state) {
 		fmt.eprintln("acceptance: hardware detection requires an active Windows 98 installation")
@@ -1922,6 +1952,80 @@ console_main :: proc(
 	}
 
 	loop: for {
+		input_now := time.tick_now()
+		input_phase_ms := i64(time.tick_diff(input_phase_start, input_now) / time.Millisecond)
+		input_frame_crc: u32
+		input_visual_ready := false
+		input_memory_ready := false
+		if time.tick_diff(input_memory_next, input_now) >= 0 {
+			input_memory_ready = acceptance.input_script_memory_matches(
+				&input_script,
+				input_reset_count,
+				input_phase_ms,
+				m.vm.ram,
+			)
+			input_memory_next = time.tick_add(input_now, 100 * time.Millisecond)
+		}
+		visual_stable_ms, visual_require_change, visual_due := acceptance.input_script_visual_due(
+			&input_script,
+			input_reset_count,
+			input_phase_ms,
+		)
+		if (acceptance.input_script_frame_due(&input_script, input_reset_count, input_phase_ms) ||
+			   visual_due) &&
+		   time.tick_diff(input_frame_next, input_now) >= 0 {
+			frame := machine.machine_display_frame(m)
+			if acceptance.input_script_frame_due(
+				&input_script,
+				input_reset_count,
+				input_phase_ms,
+			) {
+				input_frame_crc = acceptance.frame_crc32(frame.pixels, frame.width, frame.height)
+			}
+			input_frame_next = time.tick_add(input_now, 100 * time.Millisecond)
+			if visual_due {
+				visual_hash := acceptance.frame_visual_hash(
+					frame.pixels,
+					frame.width,
+					frame.height,
+				)
+				if input_visual_cursor != input_script.cursor ||
+				   input_visual_reset != input_reset_count ||
+				   !input_visual_sampled {
+					previous_hash := input_visual_last
+					previous_valid :=
+						input_visual_sampled && input_visual_reset == input_reset_count
+					input_visual_cursor = input_script.cursor
+					input_visual_reset = input_reset_count
+					input_visual_sampled = true
+					input_visual_baseline = previous_valid ? previous_hash : visual_hash
+					input_visual_last = visual_hash
+					input_visual_since = input_now
+					input_visual_changed =
+						!visual_require_change || (previous_valid && visual_hash != previous_hash)
+				} else if visual_hash != input_visual_last {
+					input_visual_last = visual_hash
+					input_visual_since = input_now
+					if visual_hash != input_visual_baseline {input_visual_changed = true}
+				} else if input_visual_changed &&
+				   time.tick_diff(input_visual_since, input_now) >=
+					   time.Duration(visual_stable_ms) * time.Millisecond {
+					input_visual_ready = true
+				}
+			}
+		}
+		input_count := acceptance.input_script_drain(
+			&input_script,
+			input_reset_count,
+			input_phase_ms,
+			input_frame_crc,
+			input_visual_ready,
+			input_memory_ready,
+			input_actions[:],
+		)
+		for action in input_actions[:input_count] {
+			console_input_apply(m, action, input_reset_count, input_phase_ms)
+		}
 		if options.mouse_stress &&
 		   time.tick_diff(stress_next, time.tick_now()) >= 4 * time.Millisecond {
 			stress_phase += 1
@@ -2026,15 +2130,17 @@ console_main :: proc(
 					reset_code,
 				)
 				delete(reason)
+				input_reset_count += 1
+				input_phase_start = time.tick_now()
 				free_all(context.temp_allocator)
 				continue
 			} else if machine.machine_reset_requested(m) {
-				reset_message := strings.clone(m.bus.freeze_msg)
+				reset_message := strings.clone(machine.machine_reset_reason(m))
 				firmware_log_host_flush(&firmware, nil)
 				fmt.printfln(
 					"guest reset requested after %d iterations: %s",
 					iterations,
-					m.bus.freeze_msg,
+					reset_message,
 				)
 				console_result_record_reset(&run_result, reset_message)
 				delete(reset_message)
@@ -2078,6 +2184,8 @@ console_main :: proc(
 					break loop
 				}
 				machine_live = true
+				input_reset_count += 1
+				input_phase_start = time.tick_now()
 				last_vga = time.tick_now()
 				post_reset_activity_generation = 0
 				post_reset_frame_changes = 0
@@ -2148,29 +2256,33 @@ console_main :: proc(
 		}
 		if profile.install_state_active(&install_state) &&
 		   install_state.reset_count > 0 &&
+		   !hardware_detection_seen &&
 		   time.tick_diff(last_evidence_check, now) >= time.Second {
 			last_evidence_check = now
-			if vol != nil && !fat32.volume_flush(vol) {
+			reconciled := vol == nil || fat32.volume_flush(vol)
+			if !reconciled && vol.frozen {
 				fmt.eprintln("Windows 98: C: reconciliation failed while observing Setup")
 				run_result.stop_reason = .Fatal_Virtualization_Failure
 				result = 2
 				run_result.exit_code = result
 				break loop
 			}
-			setup_size := console_log_total_size(paths.c_drive, setup_log_names)
-			detection_size := console_log_total_size(paths.c_drive, detection_log_names)
-			logs_changed :=
-				setup_size > 0 &&
-				detection_size > 0 &&
-				setup_size != setup_log_baseline &&
-				detection_size != detection_log_baseline
-			if !hardware_detection_seen && logs_changed && post_reset_frame_changes >= 2 {
-				if profile.install_state_advance_milestone(&install_state, .Hardware_Detection) &&
-				   profile.install_state_save(paths.install_state, &install_state) == .None {
-					hardware_detection_seen = true
-					hardware_detection_at = now
-					detection_activity = 0
-					fmt.println("Windows 98: hardware-detection milestone reached")
+			if reconciled {
+				setup_size := console_log_total_size(paths.c_drive, setup_log_names)
+				detection_size := console_log_total_size(paths.c_drive, detection_log_names)
+				logs_changed :=
+					setup_size > 0 &&
+					detection_size > 0 &&
+					setup_size != setup_log_baseline &&
+					detection_size != detection_log_baseline
+				if !hardware_detection_seen && logs_changed && post_reset_frame_changes >= 2 {
+					if profile.install_state_advance_milestone(&install_state, .Hardware_Detection) &&
+					   profile.install_state_save(paths.install_state, &install_state) == .None {
+						hardware_detection_seen = true
+						hardware_detection_at = now
+						detection_activity = 0
+						fmt.println("Windows 98: hardware-detection milestone reached")
+					}
 				}
 			}
 		}
@@ -2258,6 +2370,15 @@ print_grid :: proc(snap: vga.Text_Snapshot) {
 dump_state :: proc(m: ^machine.Machine) {
 	r := hv.get_regs(&m.vm)
 	fmt.println(format_regs(r, m))
+	code: [32]u8
+	linear := r.cs_base + r.rip
+	if hv.linear_read(&m.vm, linear, code[:]) {
+		fmt.printf("guest code %08x:", linear)
+		for byte in code {fmt.printf(" %02x", byte)}
+		fmt.println()
+	} else {
+		fmt.printfln("guest code %08x: unavailable", linear)
+	}
 	nio := int(min(m.io_count, u64(machine.IO_HISTORY)))
 	fmt.printf("last %d io:", nio)
 	for i in 0 ..< nio {

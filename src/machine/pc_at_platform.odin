@@ -22,6 +22,7 @@ Reset_Record :: struct {
 Pc_At_Reset_State :: struct {
 	reset_requested:   bool,
 	reset_source:      Reset_Provenance,
+	reset_reason:      string,
 	reset_history:     [PC_AT_RESET_HISTORY]Reset_Record,
 	reset_count:       u64,
 	cpu_reset_pending: bool,

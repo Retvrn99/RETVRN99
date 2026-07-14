@@ -40,6 +40,11 @@ PCI_MECHANISM_2_KEY_MASK :: u8(0xF1)
 PCI_MECHANISM_2_KEY :: u8(0xF0)
 PIIX3_PIRQ_COUNT :: 4
 PIIX3_IDE_BMIBA_DEFAULT :: u32(0x0000_C001)
+I440FX_PAM0 :: 0x59
+I440FX_PAM6 :: 0x5F
+I440FX_OPTION_PAM_FIRST :: 0x5B
+I440FX_OPTION_PAM_COUNT :: 3
+I440FX_PAM_SEGMENT_SIZE :: 0x4000
 
 Pci_Irq_Line_Proc :: proc(ctx: rawptr, irq: u8, asserted: bool)
 
@@ -113,6 +118,8 @@ pci_init :: proc(p: ^Pci) {
 	host.cfg[0x0B] = 0x06
 	pci_seed_intel_common_write_masks(host)
 	pci_seed_intel_extended_write_masks(host)
+	host.write_mask[I440FX_PAM0] = 0x30
+	for reg in I440FX_PAM0 + 1 ..= I440FX_PAM6 {host.write_mask[reg] = 0x33}
 	pci_seed_command_status(host, 0x0006, 0x0140, 0x0280, 0xF900)
 
 	isa := &p.functions[1]

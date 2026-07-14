@@ -13,6 +13,7 @@ acceptance_options_test_all_headless_flags :: proc(t: ^testing.T) {
 		"--install-windows:WIN98SE.ISO",
 		"--accept-until:hardware-detection",
 		"--mouse-stress",
+		"--input-script:setup.input",
 		"--firmware-log:all",
 	}
 	options, diagnostic := options_parse(args)
@@ -25,6 +26,7 @@ acceptance_options_test_all_headless_flags :: proc(t: ^testing.T) {
 	testing.expect_value(t, options.install_windows_path, "WIN98SE.ISO")
 	testing.expect_value(t, options.accept_until, Accept_Until.Hardware_Detection)
 	testing.expect(t, options.mouse_stress)
+	testing.expect_value(t, options.input_script, "setup.input")
 	testing.expect(t, options.firmware_log_all)
 	testing.expect(t, options_request_headless(&options))
 }
@@ -50,6 +52,8 @@ acceptance_options_test_rejects_invalid_values :: proc(t: ^testing.T) {
 	_, diagnostic = options_parse({"--accept-until"})
 	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
 	_, diagnostic = options_parse({"--firmware-log"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
+	_, diagnostic = options_parse({"--input-script:"})
 	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
 }
 

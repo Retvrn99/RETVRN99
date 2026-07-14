@@ -52,6 +52,13 @@ Mmio_Reservation :: struct {
 	kind: Memory_Reservation_Kind,
 }
 
+Shadow_Mapping :: struct {
+	gpa:      u64,
+	size:     u64,
+	readable: bool,
+	writable: bool,
+}
+
 Memory_Reservation_Kind :: enum {
 	Mmio,
 	Open_Bus,
@@ -69,6 +76,7 @@ Vm :: struct {
 	emu:                    rawptr, // WHV_EMULATOR_HANDLE
 	roms:                   [dynamic]Rom_Mapping, // host copies backing map_rom regions
 	mmio_reservations:      [dynamic]Mmio_Reservation,
+	shadow_mappings:        [dynamic]Shadow_Mapping,
 	device_mappings:        [dynamic]Device_Mapping,
 	a20_enabled:            bool,
 	a20_requested:          bool,
@@ -98,6 +106,7 @@ Regs :: struct {
 	rax, rbx, rcx, rdx: u64,
 	rsi, rdi, rsp, rbp: u64,
 	rip, rflags:        u64,
+	cr0, cr3:           u64,
 	cs_sel:             u16,
 	cs_base:            u64,
 	ss_sel:             u16,
@@ -191,6 +200,11 @@ reserve_open_bus :: proc(vm: ^Vm, gpa, size: u64) -> bool {
 	return whpx_reserve_open_bus(vm, gpa, size)
 }
 
+// Selects the RAM backing beneath a page-aligned open-bus reservation.
+set_open_bus_shadow :: proc(vm: ^Vm, gpa, size: u64, readable, writable: bool) -> bool {
+	return whpx_set_open_bus_shadow(vm, gpa, size, readable, writable)
+}
+
 // Allocates stable page-aligned storage and maps it Read|Write at gpa.
 map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 	return whpx_map_device_memory(vm, gpa, size)
@@ -220,6 +234,10 @@ physical_ram_read :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
 
 physical_ram_write :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
 	return whpx_physical_ram_write(vm, gpa, data)
+}
+
+linear_read :: proc(vm: ^Vm, gva: u64, data: []u8) -> bool {
+	return whpx_linear_read(vm, gva, data)
 }
 
 exception_trace_count :: proc(vm: ^Vm) -> int {

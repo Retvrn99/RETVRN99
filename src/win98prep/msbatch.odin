@@ -3,12 +3,14 @@ package win98prep
 
 import "core:os"
 import "core:strings"
+import "core:time/timezone"
 
 Msbatch_Setting :: struct {
 	section:     string,
 	key:         string,
 	value:       string,
 	add_section: bool,
+	append_csv:  bool,
 }
 
 normalize_msbatch_file :: proc(path: string) -> bool {
@@ -25,6 +27,7 @@ normalize_msbatch_file :: proc(path: string) -> bool {
 normalize_msbatch :: proc(template: string) -> (string, bool) {
 	settings := [?]Msbatch_Setting {
 		{section = "Setup", key = "Express", value = "1"},
+		{section = "Setup", key = "ProductKey", value = `"RW9MG-QR4G3-2WRR9-TG7BH-33GXB"`},
 		{section = "Setup", key = "EBD", value = "0"},
 		{section = "Setup", key = "ShowEula", value = "0"},
 		{section = "Setup", key = "ChangeDir", value = "0"},
@@ -44,6 +47,7 @@ normalize_msbatch :: proc(template: string) -> (string, bool) {
 		{section = "Network", key = "Workgroup", value = `"WORKGROUP"`, add_section = true},
 		{section = "Network", key = "Description", value = `"RETVRN99"`, add_section = true},
 		{section = "Network", key = "ValidateNetCardResources", value = "0", add_section = true},
+		{section = "Install", key = "AddReg", value = "OPKInstall", add_section = true, append_csv = true},
 	}
 	current := strings.clone(template)
 	for setting in settings {
@@ -52,7 +56,72 @@ normalize_msbatch :: proc(template: string) -> (string, bool) {
 		if !ok {return "", false}
 		current = next
 	}
+	if zone, zone_ok := msbatch_host_time_zone(); zone_ok {
+		quoted, allocation_error := strings.concatenate([]string{`"`, zone, `"`})
+		if allocation_error != nil {delete(current); return "", false}
+		defer delete(quoted)
+		setting := Msbatch_Setting {
+			section = "Setup",
+			key     = "TimeZone",
+			value   = quoted,
+		}
+		next, set_ok := msbatch_set_value(current, setting)
+		delete(current)
+		if !set_ok {return "", false}
+		current = next
+	}
+	next, opk_ok := msbatch_set_opk_install(current)
+	delete(current)
+	if !opk_ok {return "", false}
+	current = next
 	return current, true
+}
+
+@(private)
+msbatch_host_time_zone :: proc() -> (string, bool) {
+	region, ok := timezone.region_load("local")
+	if !ok {return "", false}
+	if region == nil {return "GMT", true}
+	defer timezone.region_destroy(region)
+	return msbatch_time_zone_from_host(region.name)
+}
+
+@(private)
+msbatch_time_zone_from_host :: proc(name: string) -> (string, bool) {
+	switch name {
+	case "Europe/Madrid",
+	     "Europe/Paris",
+	     "Europe/Brussels",
+	     "Europe/Copenhagen",
+	     "Romance Standard Time",
+	     "Romance":
+		return "Romance", true
+	case "Europe/Berlin",
+	     "Europe/Rome",
+	     "Europe/Stockholm",
+	     "Europe/Vienna",
+	     "Europe/Amsterdam",
+	     "W. Europe Standard Time",
+	     "W. Europe":
+		return "W. Europe", true
+	case "Europe/London", "Europe/Lisbon", "GMT Standard Time", "GMT":
+		return "GMT", true
+	case "America/Los_Angeles", "Pacific Standard Time", "Pacific":
+		return "Pacific", true
+	case "America/Denver", "Mountain Standard Time", "Mountain":
+		return "Mountain", true
+	case "America/Chicago", "Central Standard Time", "Central":
+		return "Central", true
+	case "America/New_York", "Eastern Standard Time", "Eastern":
+		return "Eastern", true
+	case "Asia/Tokyo", "Tokyo Standard Time", "Tokyo":
+		return "Tokyo", true
+	case "Australia/Sydney", "AUS Eastern Standard Time", "Sydney":
+		return "Sydney", true
+	case "UTC", "Etc/UTC", "Etc/GMT":
+		return "GMT", true
+	}
+	return "", false
 }
 
 @(private)
@@ -75,7 +144,9 @@ msbatch_set_value :: proc(template: string, setting: Msbatch_Setting) -> (string
 
 	for cursor < len(active_template) {
 		line_start := cursor
-		for cursor < len(active_template) && active_template[cursor] != '\r' && active_template[cursor] != '\n' {
+		for cursor < len(active_template) &&
+		    active_template[cursor] != '\r' &&
+		    active_template[cursor] != '\n' {
 			cursor += 1
 		}
 		line_end := cursor
@@ -97,7 +168,11 @@ msbatch_set_value :: proc(template: string, setting: Msbatch_Setting) -> (string
 		}
 
 		if in_section && msbatch_key_line(trimmed, setting.key) {
-			msbatch_write_value(&b, setting)
+			if setting.append_csv {
+				msbatch_write_csv_value(&b, trimmed, setting)
+			} else {
+				msbatch_write_value(&b, setting)
+			}
 			strings.write_string(&b, ending)
 			found_key = true
 		} else {
@@ -146,6 +221,106 @@ msbatch_write_value :: proc(b: ^strings.Builder, setting: Msbatch_Setting) {
 	strings.write_string(b, setting.key)
 	strings.write_string(b, "=")
 	strings.write_string(b, setting.value)
+}
+
+@(private)
+msbatch_write_csv_value :: proc(b: ^strings.Builder, line: string, setting: Msbatch_Setting) {
+	equals := strings.index_byte(line, '=')
+	existing := equals >= 0 ? ascii_trim(line[equals + 1:]) : ""
+	strings.write_string(b, setting.key)
+	strings.write_string(b, "=")
+	strings.write_string(b, existing)
+	if msbatch_csv_contains(existing, setting.value) {return}
+	if existing != "" {strings.write_string(b, ",")}
+	strings.write_string(b, setting.value)
+}
+
+@(private)
+msbatch_csv_contains :: proc(values, wanted: string) -> bool {
+	cursor := 0
+	for cursor <= len(values) {
+		next := strings.index_byte(values[cursor:], ',')
+		end := next < 0 ? len(values) : cursor + next
+		if ascii_equal_fold(ascii_trim(values[cursor:end]), wanted) {return true}
+		if next < 0 {break}
+		cursor = end + 1
+	}
+	return false
+}
+
+@(private)
+msbatch_set_opk_install :: proc(template: string) -> (string, bool) {
+	b := strings.builder_make(0, len(template) + 320)
+	active_template := template
+	eof_suffix := ""
+	for index in 0 ..< len(template) {
+		if template[index] == '\x1a' {
+			active_template = template[:index]
+			eof_suffix = template[index:]
+			break
+		}
+	}
+	found := false
+	skipping := false
+	line_ending := "\r\n"
+	cursor := 0
+	for cursor < len(active_template) {
+		line_start := cursor
+		for cursor < len(active_template) &&
+		    active_template[cursor] != '\r' &&
+		    active_template[cursor] != '\n' {
+			cursor += 1
+		}
+		line_end := cursor
+		if cursor < len(active_template) && active_template[cursor] == '\r' {cursor += 1}
+		if cursor < len(active_template) && active_template[cursor] == '\n' {cursor += 1}
+		ending := active_template[line_end:cursor]
+		if ending != "" {line_ending = ending}
+		line := active_template[line_start:line_end]
+		trimmed := ascii_trim(line)
+		if msbatch_section_line(trimmed) {
+			if msbatch_section_matches(trimmed, "OPKInstall") {
+				if !found {
+					strings.write_string(&b, "[OPKInstall]")
+					strings.write_string(&b, ending != "" ? ending : line_ending)
+					msbatch_write_opk_install(&b, line_ending)
+					found = true
+				}
+				skipping = true
+				continue
+			}
+			skipping = false
+		}
+		if skipping {continue}
+		strings.write_string(&b, line)
+		strings.write_string(&b, ending)
+	}
+	if !found {
+		if len(active_template) > 0 &&
+		   active_template[len(active_template) - 1] != '\r' &&
+		   active_template[len(active_template) - 1] != '\n' {
+			strings.write_string(&b, line_ending)
+		}
+		strings.write_string(&b, "[OPKInstall]")
+		strings.write_string(&b, line_ending)
+		msbatch_write_opk_install(&b, line_ending)
+	}
+	strings.write_string(&b, eof_suffix)
+	return strings.to_string(b), true
+}
+
+@(private)
+msbatch_write_opk_install :: proc(b: ^strings.Builder, line_ending: string) {
+	lines := [?]string {
+		`HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion","ProductId",,"12345-OEM-1234567-12345"`,
+		`HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion","ProductKey",,"RW9MG-QR4G3-2WRR9-TG7BH-33GXB"`,
+		`HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion","RegisteredOwner",,"RETVRN99 User"`,
+		`HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion","RegisteredOrganization",,"RETVRN99"`,
+	}
+	for line in lines {
+		strings.write_string(b, line)
+		strings.write_string(b, line_ending)
+	}
 }
 
 @(private)

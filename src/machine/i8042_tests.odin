@@ -425,3 +425,21 @@ test_i8042_unread_output_is_preserved_for_controller_response :: proc(t: ^testin
 	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
 	testing.expect_value(t, i8042_in(&k, 0x60), u8(0x1E))
 }
+
+@(test)
+test_i8042_scheduled_key_release_runs_inside_long_advance :: proc(t: ^testing.T) {
+	k: I8042
+	i8042_test_init(&k)
+	keys := [2]u8{0x1C, 0x9C}
+	testing.expect(t, i8042_schedule_keys(&k, keys[:]))
+	testing.expect(t, k.repeat_active)
+	testing.expect_value(t, k.host_key_queue.count, 1)
+	i8042_advance(&k, I8042_HOST_KEY_BYTE_NS - 1)
+	testing.expect(t, k.repeat_active)
+	i8042_advance(&k, 1)
+	testing.expect(t, !k.repeat_active)
+	testing.expect_value(t, k.host_key_queue.count, 0)
+	queued := i8042_diagnostics(&k).queued
+	i8042_advance(&k, i8042_typematic_delay_ns(&k) + i8042_typematic_period_ns(&k))
+	testing.expect_value(t, i8042_diagnostics(&k).queued, queued)
+}

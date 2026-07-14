@@ -130,6 +130,7 @@ pit_counter_latch_count :: proc(c: ^Pit_Channel) {
 	if !c.count_latched {
 		c.count_latch = u16(c.count & 0xFFFF)
 		c.count_latched = true
+		c.read_msb_next = false
 	}
 }
 
@@ -519,10 +520,25 @@ pit_tick :: proc(p: ^Pit, clocks: u64) -> int {
 pit_counter_advance_mode2 :: proc(c: ^Pit_Channel, clocks: u64) -> u64 {
 	reload := u64(pit_effective_reload(c))
 	value := u64(c.count)
-	if reload < 2 || value == 0 || value > reload {return 0}
+	if reload < 2 || value == 0 {return 0}
+	remaining := clocks
+	rises: u64
+	if value > reload {
+		if remaining < value {
+			c.count = u32(value - remaining)
+			c.out = c.count != 1
+			return 0
+		}
+		remaining -= value
+		c.count = u32(reload)
+		c.out = true
+		c.null_count = false
+		rises = 1
+		value = reload
+	}
 	phase := c.out ? reload - value : reload - 1
-	total := u128(phase) + u128(clocks)
-	rises := u64(total / u128(reload))
+	total := u128(phase) + u128(remaining)
+	rises += u64(total / u128(reload))
 	next := u64(total % u128(reload))
 	if next == reload - 1 {
 		c.count = 1
@@ -551,10 +567,22 @@ pit_counter_mode3_phase :: proc(c: ^Pit_Channel, reload: u64) -> u64 {
 pit_counter_advance_mode3 :: proc(c: ^Pit_Channel, clocks: u64) -> u64 {
 	reload := u64(pit_effective_reload(c))
 	value := u64(c.count)
-	if reload < 2 || value == 0 || value > reload {return 0}
+	if reload < 2 || value == 0 {return 0}
+	remaining := clocks
+	rises: u64
+	if value > reload {
+		edge := pit_mode3_half(value, c.out)
+		steps := min(remaining, edge)
+		for _ in 0 ..< steps {
+			if pit_counter_step(c) {rises += 1}
+		}
+		remaining -= steps
+		if remaining == 0 {return rises}
+		value = u64(c.count)
+	}
 	phase := pit_counter_mode3_phase(c, reload)
-	total := u128(phase) + u128(clocks)
-	rises := u64(total / u128(reload))
+	total := u128(phase) + u128(remaining)
+	rises += u64(total / u128(reload))
 	next := u64(total % u128(reload))
 	high_clocks := (reload + 1) / 2
 	if next < high_clocks {

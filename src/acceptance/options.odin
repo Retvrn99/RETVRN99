@@ -20,6 +20,7 @@ Options :: struct {
 	install_windows_path: string,
 	accept_until:        Accept_Until,
 	mouse_stress:        bool,
+	input_script:         string,
 	firmware_log_all:    bool,
 }
 
@@ -46,7 +47,7 @@ options_parse :: proc(args: []string) -> (Options, Options_Diagnostic) {
 			options.install_windows = true
 		case "--mouse-stress":
 			options.mouse_stress = true
-		case "--accept-until", "--firmware-log":
+		case "--accept-until", "--firmware-log", "--input-script":
 			return {}, .Missing_Value
 		}
 		if strings.has_prefix(argument, "--result-json:") ||
@@ -83,17 +84,25 @@ options_parse :: proc(args: []string) -> (Options, Options_Diagnostic) {
 			if value != "all" {return {}, .Invalid_Firmware_Log}
 			options.firmware_log_all = true
 		}
+		if strings.has_prefix(argument, "--input-script:") ||
+		   strings.has_prefix(argument, "--input-script=") {
+			options.input_script = argument[len("--input-script:"):]
+			if options.input_script == "" {return {}, .Missing_Value}
+		}
 	}
 	return options, .None
 }
 
 options_request_headless :: proc(options: ^Options) -> bool {
 	if options == nil {return false}
-	return options.test_device ||
+	return(
+		options.test_device ||
 	       options.strict_io ||
 	       options.result_json != "" ||
 	       options.artifacts != "" ||
 	       options.install_windows ||
 	       options.accept_until != .None ||
-	       options.mouse_stress
+		options.mouse_stress ||
+		options.input_script != "" \
+	)
 }

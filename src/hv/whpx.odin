@@ -132,6 +132,8 @@ whpx_destroy :: proc(vm: ^Vm) {
 	vm.roms = nil
 	delete(vm.mmio_reservations)
 	vm.mmio_reservations = nil
+	delete(vm.shadow_mappings)
+	vm.shadow_mappings = nil
 	for mapping in vm.device_mappings {
 		win32.VirtualFree(mapping.host, 0, win32.MEM_RELEASE)
 	}
@@ -194,6 +196,78 @@ whpx_reserve_open_bus :: proc(vm: ^Vm, gpa, size: u64) -> bool {
 	return whpx_reserve_memory(vm, gpa, size, .Open_Bus)
 }
 
+@(private = "file")
+whpx_shadow_flags :: proc(readable, writable: bool) -> u32 {
+	if !readable && !writable {return 0}
+	// Write faults on an RX GPA are not safely recoverable through WHPX.
+	return(
+		WHV_MAP_GPA_RANGE_FLAG_READ |
+		WHV_MAP_GPA_RANGE_FLAG_WRITE |
+		WHV_MAP_GPA_RANGE_FLAG_EXECUTE \
+	)
+}
+
+@(private = "file")
+whpx_map_ram_range :: proc(vm: ^Vm, gpa, size: u64, flags: u32) -> bool {
+	if flags == 0 {return true}
+	return WHvMapGpaRange(vm.part, raw_data(vm.ram[int(gpa):]), gpa, size, flags) >= 0
+}
+
+whpx_set_open_bus_shadow :: proc(vm: ^Vm, gpa, size: u64, readable, writable: bool) -> bool {
+	if vm.part == nil || !whpx_page_range_valid(gpa, size) || gpa + size > u64(len(vm.ram)) {
+		return false
+	}
+	contained := false
+	for reservation in vm.mmio_reservations {
+		if reservation.kind == .Open_Bus &&
+		   gpa >= reservation.gpa &&
+		   gpa + size <= reservation.gpa + reservation.size {
+			contained = true
+			break
+		}
+	}
+	if !contained {return false}
+
+	index := -1
+	for mapping, i in vm.shadow_mappings {
+		if mapping.gpa == gpa && mapping.size == size {
+			index = i
+			continue
+		}
+		if whpx_ranges_overlap(gpa, size, mapping.gpa, mapping.size) {return false}
+	}
+	old_readable, old_writable := false, false
+	if index >= 0 {
+		old := vm.shadow_mappings[index]
+		old_readable, old_writable = old.readable, old.writable
+		if old_readable == readable && old_writable == writable {return true}
+	}
+
+	new_flags := whpx_shadow_flags(readable, writable)
+	if index >= 0 && whpx_shadow_flags(old_readable, old_writable) == new_flags {
+		vm.shadow_mappings[index].readable = readable
+		vm.shadow_mappings[index].writable = writable
+		return true
+	}
+	if WHvUnmapGpaRange(vm.part, gpa, size) < 0 {return false}
+	if !whpx_map_ram_range(vm, gpa, size, new_flags) {
+		_ = whpx_map_ram_range(vm, gpa, size, whpx_shadow_flags(old_readable, old_writable))
+		return false
+	}
+	mapping := Shadow_Mapping {
+		gpa      = gpa,
+		size     = size,
+		readable = readable,
+		writable = writable,
+	}
+	if index >= 0 {
+		vm.shadow_mappings[index] = mapping
+	} else {
+		append(&vm.shadow_mappings, mapping)
+	}
+	return true
+}
+
 whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 	if vm.part == nil || size <= 0 || !whpx_page_range_valid(gpa, u64(size)) {
 		return nil, false
@@ -250,7 +324,8 @@ whpx_map_a20_region :: proc(vm: ^Vm, odd_base: u64, enabled: bool) -> bool {
 	if odd_base >= ram_size {return true}
 	size := min(WHPX_A20_BIT, ram_size - odd_base)
 	source_base := enabled ? odd_base : odd_base &~ WHPX_A20_BIT
-	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
+	flags :=
+		WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
 	if WHvUnmapGpaRange(vm.part, odd_base, size) < 0 {return false}
 	if WHvMapGpaRange(vm.part, raw_data(vm.ram[int(source_base):]), odd_base, size, flags) < 0 {
 		return false
@@ -293,7 +368,9 @@ whpx_apply_a20_mapping :: proc(vm: ^Vm, enabled: bool) -> bool {
 	for &mapping in vm.device_mappings {
 		pair_base := mapping.gpa &~ (WHPX_A20_PAIR_SIZE - 1)
 		mapping_end := mapping.gpa + u64(mapping.size)
-		for odd_base := pair_base + WHPX_A20_BIT; odd_base < mapping_end; odd_base += WHPX_A20_PAIR_SIZE {
+		for odd_base := pair_base + WHPX_A20_BIT;
+		    odd_base < mapping_end;
+		    odd_base += WHPX_A20_PAIR_SIZE {
 			if odd_base < mapping.gpa {continue}
 			if !whpx_map_a20_device_region(vm, &mapping, odd_base, enabled) {return false}
 		}
@@ -593,6 +670,8 @@ whpx_get_regs :: proc(vm: ^Vm) -> Regs {
 		.Rbp,
 		.Rip,
 		.Rflags,
+		.Cr0,
+		.Cr3,
 		.Cs,
 		.Ss,
 		.Ds,
@@ -613,13 +692,33 @@ whpx_get_regs :: proc(vm: ^Vm) -> Regs {
 		rbp = vals[7].Reg64,
 		rip = vals[8].Reg64,
 		rflags = vals[9].Reg64,
-		cs_sel = vals[10].Segment.Selector,
-		cs_base = vals[10].Segment.Base,
-		ss_sel = vals[11].Segment.Selector,
-		ss_base = vals[11].Segment.Base,
-		ds_sel = vals[12].Segment.Selector,
-		es_sel = vals[13].Segment.Selector,
+		cr0 = vals[10].Reg64,
+		cr3 = vals[11].Reg64,
+		cs_sel = vals[12].Segment.Selector,
+		cs_base = vals[12].Segment.Base,
+		ss_sel = vals[13].Segment.Selector,
+		ss_base = vals[13].Segment.Base,
+		ds_sel = vals[14].Segment.Selector,
+		es_sel = vals[15].Segment.Selector,
 	}
+}
+
+whpx_linear_read :: proc(vm: ^Vm, gva: u64, data: []u8) -> bool {
+	if vm == nil || vm.part == nil {return false}
+	cursor := 0
+	for cursor < len(data) {
+		linear := gva + u64(cursor)
+		translation: WHV_TRANSLATE_GVA_RESULT
+		gpa: u64
+		if WHvTranslateGva(vm.part, 0, linear, 0x11, &translation, &gpa) < 0 ||
+		   translation.ResultCode != .Success {
+			return false
+		}
+		chunk := min(len(data) - cursor, int(0x1000 - (gpa & 0xfff)))
+		if !whpx_physical_ram_read(vm, gpa, data[cursor:cursor + chunk]) {return false}
+		cursor += chunk
+	}
+	return true
 }
 
 // --- emulator callbacks (WinHvEmulation) ---

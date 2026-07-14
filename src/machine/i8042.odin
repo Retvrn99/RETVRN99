@@ -6,6 +6,7 @@ package machine
 I8042_CONTROLLER_INPUT_NS :: u64(20_000)
 I8042_DEVICE_BYTE_NS      :: u64(1_000_000)
 I8042_AUX_BYTE_NS         :: I8042_DEVICE_BYTE_NS
+I8042_HOST_KEY_BYTE_NS    :: u64(10_000_000)
 I8042_QUEUE_CAPACITY      :: 128
 I8042_COMMAND_TRANSLATE   :: u8(0x40)
 
@@ -44,7 +45,10 @@ I8042_Pending_Input :: struct {
 
 I8042_Diagnostics :: struct {
 	queued, keyboard_queued, auxiliary_queued: int,
+	scheduled_key_bytes:                       int,
 	output_full, output_aux, input_busy:        bool,
+	keyboard_scanning:                         bool,
+	keyboard_scan_set:                         u8,
 	command_byte:                              u8,
 	now_ns:                                    u64,
 	next_deadline_ns:                           u64,
@@ -52,7 +56,7 @@ I8042_Diagnostics :: struct {
 }
 
 I8042 :: struct {
-	kbd_queue, aux_queue: I8042_Byte_Queue,
+	kbd_queue, aux_queue, host_key_queue: I8042_Byte_Queue,
 	output:               u8,
 	output_valid:         bool,
 	output_full:          bool,
@@ -87,6 +91,7 @@ I8042 :: struct {
 	repeat_extended:      bool,
 	repeat_code:          u8,
 	repeat_wait_ns:       u64,
+	host_key_wait_ns:     u64,
 	mouse_due:            bool,
 	ctx:                  rawptr,
 	irq1:                 proc(ctx: rawptr),
@@ -192,9 +197,12 @@ i8042_diagnostics :: proc(k: ^I8042) -> I8042_Diagnostics {
 		queued = k.kbd_queue.count + k.aux_queue.count + (k.output_full ? 1 : 0),
 		keyboard_queued = k.kbd_queue.count,
 		auxiliary_queued = k.aux_queue.count,
+		scheduled_key_bytes = k.host_key_queue.count,
 		output_full = k.output_full,
 		output_aux = k.output_full && k.output_aux,
 		input_busy = k.pending_input.valid,
+		keyboard_scanning = k.kbd_scanning,
+		keyboard_scan_set = k.kbd_scan_set,
 		command_byte = k.cmd_byte,
 		now_ns = k.now_ns,
 		next_deadline_ns = next,
@@ -636,6 +644,11 @@ i8042_typematic_fire :: proc(k: ^I8042) {
 @(private = "file")
 i8042_service_due :: proc(k: ^I8042) {
 	if k.pending_input.valid && k.input_wait_ns == 0 {i8042_process_input(k)}
+	if k.host_key_queue.count > 0 && k.host_key_wait_ns == 0 {
+		value, _ := i8042_queue_pop(&k.host_key_queue)
+		i8042_key(k, value)
+		if k.host_key_queue.count > 0 {k.host_key_wait_ns = I8042_HOST_KEY_BYTE_NS}
+	}
 	if k.repeat_active && k.repeat_wait_ns == 0 {i8042_typematic_fire(k)}
 	if k.mouse_due {k.mouse_due = false; i8042_queue_mouse_packet(k)}
 	if k.serial_active && k.serial_wait_ns == 0 {
@@ -650,6 +663,7 @@ i8042_next_deadline_ns :: proc(k: ^I8042) -> (u64, bool) {
 	if k.serial_ready && !k.output_full {return 0, true}
 	next := ~u64(0)
 	if k.pending_input.valid {next = min(next, k.input_wait_ns)}
+	if k.host_key_queue.count > 0 {next = min(next, k.host_key_wait_ns)}
 	if k.serial_active {next = min(next, k.serial_wait_ns)}
 	if k.repeat_active {next = min(next, k.repeat_wait_ns)}
 	if mouse_next, ok := ps2_mouse_next_deadline_ns(&k.mouse); ok {next = min(next, mouse_next)}
@@ -664,6 +678,9 @@ i8042_next_deadline :: proc(k: ^I8042) -> (u64, bool) {
 @(private = "file")
 i8042_elapse :: proc(k: ^I8042, ns: u64) {
 	if k.pending_input.valid {k.input_wait_ns -= min(k.input_wait_ns, ns)}
+	if k.host_key_queue.count > 0 {
+		k.host_key_wait_ns -= min(k.host_key_wait_ns, ns)
+	}
 	if k.serial_active {k.serial_wait_ns -= min(k.serial_wait_ns, ns)}
 	if k.repeat_active {k.repeat_wait_ns -= min(k.repeat_wait_ns, ns)}
 	if ps2_mouse_advance(&k.mouse, ns) {k.mouse_due = true}
@@ -770,6 +787,18 @@ i8042_key :: proc(k: ^I8042, scancode: u8) {
 			i8042_key(k, scancode)
 		}
 	}
+}
+
+i8042_schedule_keys :: proc(k: ^I8042, scancodes: []u8) -> bool {
+	if k == nil || len(scancodes) == 0 {return false}
+	if len(scancodes) > len(k.host_key_queue.bytes) - k.host_key_queue.count {return false}
+	was_empty := k.host_key_queue.count == 0
+	for scancode in scancodes {_ = i8042_queue_push(&k.host_key_queue, scancode)}
+	if was_empty {
+		k.host_key_wait_ns = 0
+		i8042_service_due(k)
+	}
+	return true
 }
 
 i8042_mouse :: proc(k: ^I8042, dx, dy: i32, buttons: u8) {

@@ -413,7 +413,8 @@ test_machine_guest_reset_is_distinct_from_freeze :: proc(t: ^testing.T) {
 	record, recorded := machine_reset_record(&m, 0)
 	testing.expect(t, recorded)
 	testing.expect_value(t, record.source, Reset_Provenance.Kbc_Controller_Pulse)
-	testing.expect(t, m.bus.frozen)
+	testing.expect(t, !m.bus.frozen)
+	testing.expect_value(t, machine_reset_reason(&m), "guest requested hardware reset (i8042 pulse)")
 }
 
 @(test)
@@ -543,7 +544,7 @@ test_machine_guest_a20_toggle_stress_preserves_memory :: proc(t: ^testing.T) {
 		return
 	}
 	m: Machine
-	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) {return}
+	if !testing.expect(t, machine_init(&m, 256 * 1024 * 1024)) {return}
 	defer machine_destroy(&m)
 
 	probe := Machine_A20_Stress_Probe {
@@ -643,6 +644,33 @@ test_machine_ps2_mouse_routes_irq12 :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_machine_scheduled_host_key_rearms_headless_device_deadline :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available")
+		return
+	}
+	testing.set_fail_timeout(t, 10 * time.Second)
+	m := new(Machine)
+	defer free(m)
+	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(m)
+
+	keys := [2]u8{0x1C, 0x9C}
+	testing.expect(t, machine_key_sequence(m, keys[:]))
+	position := m.scheduler.positions[int(Scheduled_Device.I8042)]
+	testing.expect(t, position >= 0)
+	if position >= 0 {
+		testing.expect_value(t, m.scheduler.heap[position].device, Scheduled_Device.I8042)
+		testing.expect(t, m.scheduler.heap[position].deadline > master_timeline_now(m.timeline))
+	}
+	time.sleep(20 * time.Millisecond)
+	machine_sync_time(m)
+	diagnostic := i8042_diagnostics(&m.kbd)
+	testing.expect_value(t, diagnostic.scheduled_key_bytes, 0)
+	testing.expect(t, diagnostic.output_full)
+}
+
+@(test)
 test_machine_reset_control_requests_guest_reset :: proc(t: ^testing.T) {
 	prior_logger := context.logger
 	quiet_logger := log.create_console_logger(.Fatal, {.Level})
@@ -658,7 +686,29 @@ test_machine_reset_control_requests_guest_reset :: proc(t: ^testing.T) {
 	machine_reset_control_write(&m, 0xCF9, 1, 0x06)
 	testing.expect(t, machine_reset_requested(&m))
 	testing.expect_value(t, machine_reset_provenance(&m), Reset_Provenance.Pci_Cf9)
-	testing.expect(t, m.bus.frozen)
+	testing.expect(t, !m.bus.frozen)
+	testing.expect_value(t, machine_reset_reason(&m), "guest requested hardware reset (PCI reset control)")
+}
+
+@(test)
+test_machine_guest_cf9_reset_stops_without_freezing :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available")
+		return
+	}
+	m: Machine
+	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(&m)
+
+	copy(
+		m.vm.ram[0x7C00:],
+		[]u8{0xBA, 0xF9, 0x0C, 0xB0, 0x02, 0xEE, 0xB0, 0x06, 0xEE, 0xF4},
+	)
+	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
+	testing.expect(t, !step(&m))
+	testing.expect(t, machine_reset_requested(&m))
+	testing.expect_value(t, machine_reset_provenance(&m), Reset_Provenance.Pci_Cf9)
+	testing.expect(t, !m.bus.frozen)
 }
 
 @(test)
@@ -675,6 +725,7 @@ test_machine_port92_reset_has_independent_provenance :: proc(t: ^testing.T) {
 	i8042_out(&m.kbd, 0x92, 0x03)
 	testing.expect(t, machine_reset_requested(&m))
 	testing.expect_value(t, machine_reset_provenance(&m), Reset_Provenance.Port_92)
+	testing.expect(t, !m.bus.frozen)
 }
 
 @(test)

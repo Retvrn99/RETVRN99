@@ -23,6 +23,12 @@ whpx_memory_effective_gpa :: proc(vm: ^Vm, gpa: u64) -> u64 {
 
 @(private = "file")
 whpx_memory_region_at :: proc(vm: ^Vm, gpa: u64, write: bool) -> Whpx_Memory_Region {
+	for mapping in vm.shadow_mappings {
+		if gpa >= mapping.gpa && gpa - mapping.gpa < mapping.size {
+			accessible := mapping.readable || mapping.writable
+			return Whpx_Memory_Region{kind = accessible ? .Ram : .Open_Bus}
+		}
+	}
 	for reservation, i in vm.mmio_reservations {
 		if gpa >= reservation.gpa && gpa - reservation.gpa < reservation.size {
 			kind := reservation.kind == .Open_Bus ? Whpx_Memory_Region_Kind.Open_Bus : .Reserved

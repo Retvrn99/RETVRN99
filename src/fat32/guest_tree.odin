@@ -41,6 +41,8 @@ Guest_Scan :: struct {
 	entries:      [dynamic]Guest_Entry,
 	scanned_dirs: map[u32]bool,
 	error:        Guest_Scan_Error,
+	error_parent: string,
+	error_component: string,
 }
 
 Guest_Scan_Error :: enum {
@@ -89,8 +91,12 @@ guest_scan_tree :: proc(v: ^Volume, allocator := context.allocator) -> Guest_Sca
 		if !ok {
 			continue
 		}
-		if !guest_directory_short_entries_safe(bytes, allocator) {
+		unsafe_component, short_entries_safe :=
+			guest_directory_short_entries_safe(bytes, allocator)
+		if !short_entries_safe {
 			scan.error = .Invalid_Component
+			scan.error_parent = strings.clone(item.path, allocator)
+			scan.error_component = unsafe_component
 			return scan
 		}
 		scan.scanned_dirs[item.cluster] = true
@@ -106,6 +112,12 @@ guest_scan_tree :: proc(v: ^Volume, allocator := context.allocator) -> Guest_Sca
 			name, name_ok := guest_entry_name(&parsed_entry, allocator)
 			if !name_ok {
 				scan.error = .Invalid_Component
+				scan.error_parent = strings.clone(item.path, allocator)
+				if parsed_entry.lfn != "" {
+					scan.error_component = strings.clone(parsed_entry.lfn, allocator)
+				} else {
+					scan.error_component = short_to_name(parsed_entry.short, allocator)
+				}
 				return scan
 			}
 			path, path_error := guest_safe_child_path(root, item.path, name, allocator)
@@ -237,11 +249,17 @@ guest_entry_name :: proc(entry: ^Dir_Entry, allocator := context.allocator) -> (
 }
 
 @(private = "file")
-guest_directory_short_entries_safe :: proc(bytes: []u8, allocator := context.allocator) -> bool {
+guest_directory_short_entries_safe :: proc(
+	bytes: []u8,
+	allocator := context.allocator,
+) -> (
+	string,
+	bool,
+) {
 	for offset := 0; offset + 32 <= len(bytes); offset += 32 {
 		raw := bytes[offset:][:32]
 		if raw[0] == 0 {
-			return true
+			return "", true
 		}
 		if raw[0] == 0xE5 || raw[11] & 0x3F == ATTR_LFN || raw[11] & 0x08 != 0 {
 			continue
@@ -249,7 +267,7 @@ guest_directory_short_entries_safe :: proc(bytes: []u8, allocator := context.all
 		if raw[0] == '.' {
 			dot := string(raw[:11]) == ".          " || string(raw[:11]) == "..         "
 			if !dot || raw[11] & ATTR_DIR == 0 {
-				return false
+				return strings.clone(string(raw[:11]), allocator), false
 			}
 			continue
 		}
@@ -257,12 +275,12 @@ guest_directory_short_entries_safe :: proc(bytes: []u8, allocator := context.all
 		copy(short[:], raw[:11])
 		name := short_to_name(short, allocator)
 		safe := guest_component_safe(name)
-		delete(name, allocator)
 		if !safe {
-			return false
+			return name, false
 		}
+		delete(name, allocator)
 	}
-	return true
+	return "", true
 }
 
 @(private = "file")

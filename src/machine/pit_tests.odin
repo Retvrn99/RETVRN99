@@ -199,6 +199,21 @@ test_pit_count_and_status_latches :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pit_count_latch_restarts_word_read_at_lsb :: proc(t: ^testing.T) {
+	pit: Pit
+	pit_test_program(&pit, 0, 2, 0)
+	_ = pit_tick(&pit, 1)
+	_ = pit_tick(&pit, 0x0A06)
+	_ = pit_in(&pit, 0x40)
+
+	pit_out(&pit, 0x43, 0x00)
+	low := pit_in(&pit, 0x40)
+	high := pit_in(&pit, 0x40)
+	testing.expect_value(t, low, u8(0xFA))
+	testing.expect_value(t, high, u8(0xF5))
+}
+
+@(test)
 test_pit_status_tracks_null_count :: proc(t: ^testing.T) {
 	pit: Pit
 	pit_test_program(&pit, 0, 2, 100)
@@ -291,13 +306,32 @@ test_pit_master_split_is_invariant :: proc(t: ^testing.T) {
 	pit_test_program(&split, 0, 3, 7)
 	total := MASTER_CLOCK_HZ / 20
 	one_edges := pit_advance_master(&one_shot, total)
-	split_edges := pit_advance_master(&split, 17_003) +
+	split_edges :=
+		pit_advance_master(&split, 17_003) +
 	               pit_advance_master(&split, 91_117) +
 	               pit_advance_master(&split, total - 108_120)
 	testing.expect_value(t, split_edges, one_edges)
 	testing.expect_value(t, split.clock_phase.remainder, one_shot.clock_phase.remainder)
 	testing.expect_value(t, split.ch[0].count, one_shot.ch[0].count)
 	testing.expect_value(t, split.ch[0].out, one_shot.ch[0].out)
+}
+
+@(test)
+test_pit_bulk_advance_finishes_live_cycle_after_smaller_reload :: proc(t: ^testing.T) {
+	modes := [?]u8{2, 3}
+	for mode in modes {
+		pit: Pit
+		pit_test_program(&pit, 0, mode, 0)
+		_ = pit_advance(&pit, 1_000_000)
+		before := pit.ch[0].count
+		pit_out(&pit, 0x40, 0x4D)
+		pit_out(&pit, 0x40, 0x17)
+		testing.expect(t, before > u32(0x174D))
+
+		fires := pit_advance(&pit, 60_000_000)
+		testing.expect(t, fires > 0)
+		testing.expect(t, pit.ch[0].count <= u32(0x174D))
+	}
 }
 
 @(test)

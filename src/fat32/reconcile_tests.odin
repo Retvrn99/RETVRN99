@@ -7,6 +7,15 @@ import "core:strings"
 import "core:testing"
 
 @(test)
+reconcile_test_incomplete_chain_is_retryable_but_invalid_chain_freezes :: proc(t: ^testing.T) {
+	v: Volume
+	reconcile_chain_issue(&v, "BOOTLOG.PRV", .Incomplete, 12, false)
+	testing.expect(t, !v.frozen)
+	reconcile_chain_issue(&v, "BOOTLOG.PRV", .Invalid, 12, false)
+	testing.expect(t, v.frozen)
+}
+
+@(test)
 reconcile_test_duplicate_chain_is_held :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir, v := decode_test_open(t)
@@ -98,6 +107,111 @@ reconcile_test_failed_close_retains_overlay_for_retry :: proc(t: ^testing.T) {
 	contents, read_error := os.read_entire_file(blocked, context.temp_allocator)
 	testing.expect(t, read_error == nil)
 	testing.expect_value(t, string(contents), "SAFE")
+}
+
+@(test)
+reconcile_test_deleted_directory_removes_unreachable_tree_bottom_up :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	wininst, _ := filepath.join({dir, "WININST0.400"})
+	pluspack, _ := filepath.join({wininst, "PLUSPACK"})
+	file, _ := filepath.join({wininst, "SETUPX.DLL"})
+	nested, _ := filepath.join({pluspack, "PLUS.INF"})
+	testing.expect(t, os.make_directory_all(pluspack) == nil)
+	testing.expect(t, os.write_entire_file(file, "setup") == nil)
+	testing.expect(t, os.write_entire_file(nested, "plus") == nil)
+
+	v := volume_open(dir, 2048)
+	if !testing.expect(t, v != nil) {return}
+	closed := false
+	defer if !closed {volume_discard(v)}
+	owner := reconcile_test_child_named(v.alloc.root, "WININST0.400")
+	if !testing.expect(t, owner != nil) {return}
+
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	root_sector[96] = 0xE5
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	reconcile_test_stage_fat_set(t, v, owner.first_cluster, 0)
+
+	testing.expect(t, volume_reconcile(v))
+	testing.expect(t, !v.frozen)
+	testing.expect(t, !os.exists(wininst))
+	testing.expect(t, volume_close(v))
+	closed = true
+}
+
+@(test)
+reconcile_test_nested_rename_moves_parents_before_descendants :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	base, _ := os.temp_directory(context.temp_allocator)
+	dir, _ := filepath.join({base, "retvrn99_nested_rename"})
+	defer os.remove_all(dir)
+	old_parent, _ := filepath.join({dir, "PARENT~1"})
+	old_child, _ := filepath.join({old_parent, "CHILD~1"})
+	old_file, _ := filepath.join({old_child, "FILE.TXT"})
+	io_sys, _ := filepath.join({dir, "IO.SYS"})
+	testing.expect(t, os.make_directory_all(old_child) == nil)
+	testing.expect(t, os.write_entire_file(old_file, "nested") == nil)
+	testing.expect(t, os.write_entire_file(io_sys, "boot") == nil)
+
+	v := volume_open(dir, 2048)
+	if !testing.expect(t, v != nil) {return}
+	defer volume_discard(v)
+	parent := reconcile_test_child_named(v.alloc.root, "PARENT~1")
+	if !testing.expect(t, parent != nil) {return}
+	child := reconcile_test_child_named(parent, "CHILD~1")
+	if !testing.expect(t, child != nil) {return}
+	file := reconcile_test_child_named(child, "FILE.TXT")
+	if !testing.expect(t, file != nil) {return}
+
+	parent_short := [11]u8{'P','A','R','E','N','T','~','2',' ',' ',' '}
+	root_sector := read_test_sector(t, v, journal_test_data_lba(v, v.alloc.root.first_cluster))
+	parent_offset := reconcile_test_entry_offset(root_sector[:], parent.short)
+	if !testing.expect(t, parent_offset >= 0) {return}
+	decode_test_put_lfn(root_sector[:], parent_offset, 1, true, lfn_checksum(parent_short), "Parent Long")
+	decode_test_put_entry(root_sector[:], parent_offset + 32, "PARENT~2   ", ATTR_DIR, parent.first_cluster, 0)
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, v.alloc.root.first_cluster), root_sector[:]))
+
+	child_short := [11]u8{'C','H','I','L','D','~','2',' ',' ',' ',' '}
+	parent_sector := read_test_sector(t, v, journal_test_data_lba(v, parent.first_cluster))
+	child_offset := reconcile_test_entry_offset(parent_sector[:], child.short)
+	if !testing.expect(t, child_offset >= 0) {return}
+	decode_test_put_lfn(parent_sector[:], child_offset, 1, true, lfn_checksum(child_short), "Child Long")
+	decode_test_put_entry(parent_sector[:], child_offset + 32, "CHILD~2    ", ATTR_DIR, child.first_cluster, 0)
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, parent.first_cluster), parent_sector[:]))
+
+	file_short := [11]u8{'R','E','N','A','M','~','1',' ','T','X','T'}
+	child_sector := read_test_sector(t, v, journal_test_data_lba(v, child.first_cluster))
+	file_offset := reconcile_test_entry_offset(child_sector[:], file.short)
+	if !testing.expect(t, file_offset >= 0) {return}
+	decode_test_put_lfn(child_sector[:], file_offset, 1, true, lfn_checksum(file_short), "Renamed.txt")
+	decode_test_put_entry(child_sector[:], file_offset + 32, "RENAM~1 TXT", ATTR_FILE, file.first_cluster, u32(file.size))
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, child.first_cluster), child_sector[:]))
+
+	testing.expect(t, volume_reconcile(v))
+	testing.expect(t, !v.frozen)
+	new_file, _ := filepath.join({dir, "Parent Long", "Child Long", "Renamed.txt"})
+	contents, read_error := os.read_entire_file(new_file, context.temp_allocator)
+	testing.expect(t, read_error == nil)
+	testing.expect_value(t, string(contents), "nested")
+	testing.expect_value(t, parent.name, "Parent Long")
+	testing.expect_value(t, child.name, "Child Long")
+	testing.expect_value(t, file.name, "Renamed.txt")
+}
+
+@(private = "file")
+reconcile_test_entry_offset :: proc(bytes: []u8, short: [11]u8) -> int {
+	for offset := 0; offset + 32 <= len(bytes); offset += 32 {
+		if bytes[offset] == 0 {break}
+		matches := true
+		for i in 0 ..< len(short) {
+			if bytes[offset + i] != short[i] {matches = false; break}
+		}
+		if matches {return offset}
+	}
+	return -1
 }
 
 @(test)
@@ -392,18 +506,12 @@ reconcile_test_wininst_directory_owner_adopts_chain :: proc(t: ^testing.T) {
 	decode_test_put_entry(dir_sector[:], 0, ".          ", ATTR_DIR, dir_cluster, 0)
 	decode_test_put_entry(dir_sector[:], 32, "..         ", ATTR_DIR, 0, 0)
 	decode_test_put_entry(dir_sector[:], 64, "DELTEMP COM", ATTR_FILE, file_cluster, 496)
-	testing.expect(
-		t,
-		volume_stage_write(v, journal_test_data_lba(v, dir_cluster), dir_sector[:]),
-	)
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, dir_cluster), dir_sector[:]))
 	payload: [SECTOR]u8
 	for &byte, index in payload {
 		byte = u8(index * 37 + 11)
 	}
-	testing.expect(
-		t,
-		volume_stage_write(v, journal_test_data_lba(v, file_cluster), payload[:]),
-	)
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, file_cluster), payload[:]))
 	reconcile_test_stage_fat_set(t, v, dir_cluster, 0x0FFF_FFFF)
 	reconcile_test_stage_fat_set(t, v, file_cluster, 0x0FFF_FFFF)
 

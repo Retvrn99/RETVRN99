@@ -6,6 +6,7 @@ import "core:log"
 import "core:mem"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
 import "core:strings"
 
 Guest_Index_Info :: struct {
@@ -29,6 +30,44 @@ Reconcile_Donor :: struct {
 	key:        Mirror_Key,
 	entry:      Mirror_Entry,
 	target_key: Mirror_Key,
+}
+
+@(private = "file")
+reconcile_node_descends_from :: proc(node, ancestor: ^Node) -> bool {
+	for current := node; current != nil; current = current.parent {
+		if current == ancestor {return true}
+	}
+	return false
+}
+
+@(private = "file")
+reconcile_node_depth :: proc(node: ^Node) -> int {
+	depth := 0
+	for current := node; current != nil; current = current.parent {depth += 1}
+	return depth
+}
+
+@(private)
+reconcile_chain_issue :: proc(
+	v: ^Volume,
+	path: string,
+	state: Chain_State,
+	cluster: u32,
+	is_dir: bool,
+) {
+	kind := is_dir ? "directory" : "file"
+	message := fmt.tprintf(
+		"FAT32 %s %s has a %v chain at cluster %d",
+		kind,
+		path,
+		state,
+		cluster,
+	)
+	if state == .Incomplete {
+		log.warnf("fat32: holding reconcile: %s", message)
+	} else {
+		volume_fail(v, message)
+	}
 }
 
 reconcile_seed :: proc(v: ^Volume) {
@@ -65,7 +104,15 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 	scan := guest_scan_tree(v, ta)
 	if v.frozen {return false}
 	if scan.error != .None {
-		volume_fail(v, fmt.tprintf("unsafe FAT32 guest path (%v)", scan.error))
+		volume_fail(
+			v,
+			fmt.tprintf(
+				"unsafe FAT32 guest path (%v): parent=%s component=%q",
+				scan.error,
+				scan.error_parent,
+				scan.error_component,
+			),
+		)
 		return false
 	}
 	host_failed := false
@@ -121,24 +168,31 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		}
 	}
 
+	slice.sort_by(renames[:], proc(a, b: Reconcile_Rename) -> bool {
+		return reconcile_node_depth(a.entry.base_node) < reconcile_node_depth(b.entry.base_node)
+	})
 	for action in renames {
 		if action.entry.host_path != action.new_path {
-			old_exists := os.exists(action.entry.host_path)
+			source_path := action.entry.host_path
+			if action.entry.base_node != nil {
+				source_path = action.entry.base_node.host_path
+			}
+			old_exists := os.exists(source_path)
 			new_exists := os.exists(action.new_path)
 			already_applied :=
-				!old_exists &&
 				new_exists &&
 				action.entry.base_node != nil &&
-				action.entry.base_node.host_path == action.new_path
+				action.entry.base_node.host_path == action.new_path &&
+				(source_path == action.new_path || !old_exists)
 			if old_exists && !new_exists {
-				if err := os.rename(action.entry.host_path, action.new_path); err == nil {
+				if err := os.rename(source_path, action.new_path); err == nil {
 					already_applied = true
 				}
 			}
 			if !already_applied {
 				log.warnf(
 					"fat32: holding rename %s -> %s",
-					action.entry.host_path,
+					source_path,
 					action.new_path,
 				)
 				host_failed = true
@@ -153,39 +207,96 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		v.journal.mirrored[action.new_key] = entry
 		if entry.base_node != nil {
 			reconcile_rebase_node(v, entry.base_node, action.new_path)
+			live_info := by_key[action.new_key]
+			if live_info.count == 1 {
+				live := &scan.entries[live_info.index]
+				parent := reconcile_node_for_cluster(v, live.key.parent_cluster)
+				if !managed_node_update_identity(
+					v,
+					entry.base_node,
+					parent,
+					live.name,
+					live.host_path,
+					live.key.short,
+					live.is_dir,
+				) {
+					volume_fail(v, "FAT32 rename ownership update failed")
+					return false
+				}
+			}
 		}
 	}
 
-	delete_kinds := [2]bool{false, true}
-	for want_dir in delete_kinds {
-		for action in deletes {
-			if v.frozen {return false}
-			if action.entry.is_dir != want_dir {
+	deleting := make(map[Mirror_Key]bool, ta)
+	blocked_deletes := make(map[Mirror_Key]bool, ta)
+	delete_roots := make([dynamic]Reconcile_Delete, ta)
+	for action in deletes {
+		deleting[action.key] = true
+		if action.entry.is_dir {append(&delete_roots, action)}
+	}
+	for root in delete_roots {
+		if root.entry.base_node == nil {continue}
+		blocked := false
+		for key, entry in v.journal.mirrored {
+			if entry.base_node == nil ||
+			   entry.base_node == root.entry.base_node ||
+			   !reconcile_node_descends_from(entry.base_node, root.entry.base_node) {
 				continue
 			}
-			if action.entry.base_node != nil {
-				if action.entry.base_node == v.alloc.root ||
-				   !managed_node_attached(v.alloc.root, action.entry.base_node) ||
-				   action.entry.base_node.is_dir != action.entry.is_dir {
-					volume_fail(v, "FAT32 delete lost its base-node ownership")
-					host_failed = true
-					continue
-				}
+			key_live := by_key[key].count > 0
+			cluster_live := entry.first_cluster >= 2 && by_cluster[entry.first_cluster].count > 0
+			if key_live || cluster_live {
+				blocked = true
+				break
 			}
-			err := os.remove(action.entry.host_path)
-			if err != nil && os.exists(action.entry.host_path) {
-				log.warnf("fat32: holding delete %s: %v", action.entry.host_path, err)
+		}
+		if blocked {
+			log.warnf("fat32: holding directory delete %s: live descendant", root.entry.host_path)
+			host_failed = true
+			blocked_deletes[root.key] = true
+			continue
+		}
+		for key, entry in v.journal.mirrored {
+			if deleting[key] ||
+			   entry.base_node == nil ||
+			   entry.base_node == root.entry.base_node ||
+			   !reconcile_node_descends_from(entry.base_node, root.entry.base_node) {
+				continue
+			}
+			append(&deletes, Reconcile_Delete{key, entry})
+			deleting[key] = true
+		}
+	}
+	slice.sort_by(deletes[:], proc(a, b: Reconcile_Delete) -> bool {
+		if a.entry.is_dir != b.entry.is_dir {return !a.entry.is_dir}
+		if !a.entry.is_dir {return false}
+		return reconcile_node_depth(a.entry.base_node) > reconcile_node_depth(b.entry.base_node)
+	})
+	for action in deletes {
+		if v.frozen {return false}
+		if blocked_deletes[action.key] {continue}
+		if action.entry.base_node != nil {
+			if action.entry.base_node == v.alloc.root ||
+			   !managed_node_attached(v.alloc.root, action.entry.base_node) ||
+			   action.entry.base_node.is_dir != action.entry.is_dir {
+				volume_fail(v, "FAT32 delete lost its base-node ownership")
 				host_failed = true
 				continue
 			}
-			if action.entry.base_node != nil {
-				if !managed_node_destroy(v, action.entry.base_node) {
-					volume_fail(v, "FAT32 delete ownership teardown failed")
-					host_failed = true
-				}
-			} else {
-				reconcile_mirror_remove(v, action.key)
+		}
+		err := os.remove(action.entry.host_path)
+		if err != nil && os.exists(action.entry.host_path) {
+			log.warnf("fat32: holding delete %s: %v", action.entry.host_path, err)
+			host_failed = true
+			continue
+		}
+		if action.entry.base_node != nil {
+			if !managed_node_destroy(v, action.entry.base_node) {
+				volume_fail(v, "FAT32 delete ownership teardown failed")
+				host_failed = true
 			}
+		} else {
+			reconcile_mirror_remove(v, action.key)
 		}
 	}
 
@@ -222,15 +333,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		}
 		chain, chain_state := volume_chain_inspect(v, live.first_cluster, ta)
 		if chain_state != .Complete {
-			volume_fail(
-				v,
-				fmt.tprintf(
-					"FAT32 directory %s has a %v chain at cluster %d",
-					live.host_path,
-					chain_state,
-					live.first_cluster,
-				),
-			)
+			reconcile_chain_issue(v, live.host_path, chain_state, live.first_cluster, true)
 			host_failed = true
 			continue
 		}
@@ -343,15 +446,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		chain, chain_state := volume_chain_inspect(v, live.first_cluster, ta)
 		parent := reconcile_node_for_cluster(v, live.key.parent_cluster)
 		if live.first_cluster >= 2 && chain_state != .Complete {
-			volume_fail(
-				v,
-				fmt.tprintf(
-					"FAT32 file %s has a %v chain at cluster %d",
-					live.host_path,
-					chain_state,
-					live.first_cluster,
-				),
-			)
+			reconcile_chain_issue(v, live.host_path, chain_state, live.first_cluster, false)
 			host_failed = true
 			continue
 		}
