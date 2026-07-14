@@ -9,6 +9,7 @@ test_bus_dispatch :: proc(t: ^testing.T) {
 	bus: Bus
 	bus_init(&bus)
 	defer bus_destroy(&bus)
+	testing.expect_value(t, len(bus.io), 0x1_0000)
 	val: u32 = 0xAB
 	h := Io_Handler{
 		ctx   = &val,
@@ -21,6 +22,24 @@ test_bus_dispatch :: proc(t: ^testing.T) {
 	testing.expect_value(t, val, 0xCD)
 	testing.expect_value(t, bus.modeled_count, u64(2))
 	testing.expect_value(t, bus.passive_count, u64(0))
+}
+
+@(test)
+test_bus_stream_dispatch_counts_elements_once :: proc(t: ^testing.T) {
+	bus: Bus
+	bus_init(&bus)
+	defer bus_destroy(&bus)
+	h := Io_Handler {
+		stream_write = proc(_: rawptr, _: u16, size: u8, data: []u8) -> int {
+			return len(data) / int(size)
+		},
+	}
+	bus_register(&bus, 0x1F0, 0x1F0, h)
+	data: [512]u8
+	completed, handled := bus_io_stream_write(&bus, 0x1F0, 2, data[:])
+	testing.expect(t, handled)
+	testing.expect_value(t, completed, 256)
+	testing.expect_value(t, bus.modeled_count, u64(256))
 }
 
 @(test)

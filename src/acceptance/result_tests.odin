@@ -54,6 +54,7 @@ acceptance_result_test_round_trip_shape_is_bounded_and_path_free :: proc(t: ^tes
 	testing.expect(t, strings.contains(text, `"stop_reason": "test_exit"`))
 	testing.expect(t, strings.contains(text, `"installation_milestone": "first_reboot"`))
 	testing.expect(t, strings.contains(text, `"unclassified_mmio": 2`))
+	testing.expect(t, strings.contains(text, `"scheduler_dispatches": 0`))
 	testing.expect(t, !strings.contains(text, "WIN98SE.ISO"))
 	disk: Result_Test_Disk
 	testing.expect(t, json.unmarshal(payload, &disk) == nil)

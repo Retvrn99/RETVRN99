@@ -52,6 +52,7 @@ vga_test_planar_scanout_and_panning :: proc(t: ^testing.T) {
 	testing.expect_value(t, frame.width, 8)
 	testing.expect(t, frame.pixels[0] != frame.pixels[1])
 	v.attr[0x13] = 1
+	vga_note_content_change(&v)
 	frame = vga_display_frame(&v)
 	testing.expect_value(t, frame.pixels[0], frame.pixels[1])
 }
@@ -159,6 +160,7 @@ vga_test_mid_frame_palette_change_preserves_completed_line :: proc(t: ^testing.T
 		retrace_end = 3,
 	}
 	vga_sync_to(&v, 500_000)
+	vga_begin_raster_change(&v, 500_000)
 	v.dac[3] = 0x3F
 	v.dac[4] = 0
 	v.dac[5] = 0

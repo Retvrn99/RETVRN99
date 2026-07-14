@@ -73,26 +73,7 @@ Shared :: struct {
 	installing_windows_98: bool,
 	pause_state:           host.Pause_State,
 	input:                 host.Host_Input_Queue,
-}
-
-Frame_Slot_State :: enum {
-	Free,
-	Writing,
-	Ready,
-	Reading,
-}
-
-Frame_Slot :: struct {
-	state:  Frame_Slot_State,
-	frame:  vga.Display_Frame,
-	pixels: []u32,
-}
-
-Frame_Mailbox :: struct {
-	mu:        sync.Mutex,
-	slots:     [3]Frame_Slot,
-	published: u64,
-	has_frame: bool,
+	guard:                 ^Vm_Guard,
 }
 
 Vm_Ctx :: struct {
@@ -374,8 +355,12 @@ gui_main :: proc(
 		fmt.eprintln("vCPU wake adapter initialization failed")
 		return 1
 	}
+	shared.guard = &ctx.guard
 	ctx.audio_enabled = true
-	defer vm_guard_destroy(&ctx.guard)
+	defer {
+		shared.guard = nil
+		vm_guard_destroy(&ctx.guard)
+	}
 	vm_thr := thread.create_and_start_with_poly_data(ctx, vm_thread_proc)
 
 	st := host.Menu_State {
@@ -496,7 +481,9 @@ gui_main :: proc(
 		}
 
 		if frame_slot := frame_mailbox_acquire(&shared.frames); frame_slot != nil {
-			_ = host.host_upload_frame(&h, &frame_slot.frame)
+			if frame := vga.scanout_descriptor_render(&frame_slot.scanout); frame != nil {
+				_ = host.host_upload_frame(&h, frame)
+			}
 			frame_mailbox_release(&shared.frames, frame_slot)
 		}
 		host.host_render_guest(&h)
@@ -644,96 +631,6 @@ pending_mount_release :: proc(p: ^Pending_Mount) {
 	if free_now {free(p, p.allocator)}
 }
 
-frame_mailbox_publish :: proc(mailbox: ^Frame_Mailbox, source: ^vga.Display_Frame) {
-	if source == nil || source.width <= 0 || source.height <= 0 {return}
-	pixel_count := source.width * source.height
-	if pixel_count <= 0 || len(source.pixels) < pixel_count {return}
-	sync.lock(&mailbox.mu)
-	if mailbox.has_frame && source.content_generation == mailbox.published {
-		sync.unlock(&mailbox.mu)
-		return
-	}
-
-	chosen := -1
-	for &slot, i in mailbox.slots {
-		if slot.state == .Free {chosen = i; break}
-	}
-	if chosen < 0 {
-		oldest := max(u64)
-		for &slot, i in mailbox.slots {
-			if slot.state == .Ready && slot.frame.generation < oldest {
-				oldest = slot.frame.generation
-				chosen = i
-			}
-		}
-	}
-	if chosen < 0 {
-		sync.unlock(&mailbox.mu)
-		return
-	}
-	for &slot, i in mailbox.slots {
-		if i != chosen && slot.state == .Ready {slot.state = .Free}
-	}
-	slot := &mailbox.slots[chosen]
-	slot.state = .Writing
-	sync.unlock(&mailbox.mu)
-
-	if len(slot.pixels) < pixel_count {
-		delete(slot.pixels)
-		slot.pixels = make([]u32, pixel_count)
-	}
-	copy(slot.pixels[:pixel_count], source.pixels[:pixel_count])
-	slot.frame = source^
-	slot.frame.pixels = slot.pixels[:pixel_count]
-
-	sync.lock(&mailbox.mu)
-	slot.state = .Ready
-	mailbox.published = source.content_generation
-	mailbox.has_frame = true
-	sync.unlock(&mailbox.mu)
-}
-
-frame_mailbox_acquire :: proc(mailbox: ^Frame_Mailbox) -> ^Frame_Slot {
-	sync.lock(&mailbox.mu)
-	defer sync.unlock(&mailbox.mu)
-	chosen := -1
-	newest: u64
-	for &slot, i in mailbox.slots {
-		if slot.state == .Ready && (chosen < 0 || slot.frame.generation > newest) {
-			chosen = i
-			newest = slot.frame.generation
-		}
-	}
-	if chosen < 0 {return nil}
-	mailbox.slots[chosen].state = .Reading
-	return &mailbox.slots[chosen]
-}
-
-frame_mailbox_release :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot) {
-	if slot == nil {return}
-	sync.lock(&mailbox.mu)
-	if slot.state == .Reading {slot.state = .Free}
-	sync.unlock(&mailbox.mu)
-}
-
-frame_mailbox_reset :: proc(mailbox: ^Frame_Mailbox) {
-	sync.lock(&mailbox.mu)
-	for &slot in mailbox.slots {
-		if slot.state == .Ready {slot.state = .Free}
-	}
-	mailbox.published = 0
-	mailbox.has_frame = false
-	sync.unlock(&mailbox.mu)
-}
-
-frame_mailbox_destroy :: proc(mailbox: ^Frame_Mailbox) {
-	for i in 0 ..< len(mailbox.slots) {
-		delete(mailbox.slots[i].pixels)
-		mailbox.slots[i] = {}
-	}
-	mailbox^ = {}
-}
-
 set_running :: proc(s: ^Shared, v: bool) {
 	sync.lock(&s.mu)
 	s.running = v
@@ -749,6 +646,7 @@ push_cmd :: proc(s: ^Shared, cmd: Command) -> bool {
 	}
 	append(&s.cmds, cmd)
 	sync.unlock(&s.mu)
+	vm_guard_kick(s.guard)
 	return true
 }
 
@@ -770,30 +668,35 @@ push_host_key :: proc(
 	sync.lock(&s.mu)
 	_ = host.host_input_push_key(&s.input, keyboard, scancode, down, false)
 	sync.unlock(&s.mu)
+	vm_guard_kick(s.guard)
 }
 
 release_held_keys :: proc(s: ^Shared, keyboard: ^host.Host_Keyboard) {
 	sync.lock(&s.mu)
 	_ = host.host_input_release_held_keys(&s.input, keyboard)
 	sync.unlock(&s.mu)
+	vm_guard_kick(s.guard)
 }
 
 push_mouse_motion :: proc(s: ^Shared, dx, dy: i32, buttons: u8) {
 	sync.lock(&s.mu)
 	_ = host.host_input_push_motion(&s.input, dx, dy, buttons)
 	sync.unlock(&s.mu)
+	vm_guard_kick(s.guard)
 }
 
 push_mouse_buttons :: proc(s: ^Shared, buttons: u8, durable_release: bool = false) {
 	sync.lock(&s.mu)
 	_ = host.host_input_push_buttons(&s.input, buttons, durable_release)
 	sync.unlock(&s.mu)
+	vm_guard_kick(s.guard)
 }
 
 push_mouse_wheel :: proc(s: ^Shared, wheel: i32, buttons: u8) {
 	sync.lock(&s.mu)
 	_ = host.host_input_push_wheel(&s.input, wheel, buttons)
 	sync.unlock(&s.mu)
+	vm_guard_kick(s.guard)
 }
 
 // --- VM thread ---
@@ -1208,7 +1111,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			for event in input_events[:input_count] {
 				switch event.kind {
 				case .Key:
-					for i in 0 ..< int(event.key_n) {machine.i8042_key(&m.kbd, event.key[i])}
+					for i in 0 ..< int(event.key_n) {machine.machine_key(m, event.key[i])}
 				case .Mouse_Motion, .Mouse_Buttons:
 					machine.machine_mouse(m, event.dx, event.dy, event.buttons)
 				case .Mouse_Wheel:
@@ -1300,7 +1203,9 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 		if machine_live && time.tick_diff(last_snap, now) >= SNAP_PERIOD {
 			last_snap = now
 			snap := machine.machine_text_snapshot(m)
-			frame_mailbox_publish(&s.frames, machine.machine_display_frame(m))
+			if frame_mailbox_publish(&s.frames, m) {
+				machine.machine_note_scanout_copy(m)
+			}
 			sync.lock(&s.mu)
 			s.snap = snap
 			s.exit_stats = stats
@@ -1416,7 +1321,7 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine, clock_running: bool = true) -> 
 	}
 	c.guard.vm = &m.vm
 	c.guard.valid = true
-	machine.machine_set_wake_adapter(m, &c.guard, vm_guard_rearm)
+	machine.machine_set_wake_adapter(m, &c.guard, vm_guard_schedule)
 	return true
 }
 
@@ -1785,6 +1690,7 @@ console_reinitialize_machine :: proc(
 	if !machine.load_roms(&m.vm) {return false}
 	machine.machine_set_cpu_mode(m, settings.cpu_mode)
 	machine.bus_set_strict_io(&m.bus, options.strict_io)
+	machine.machine_set_diagnostic_tracing(m, options.strict_io)
 	if options.test_device {machine.machine_enable_test_device(m)}
 	if attach {
 		vol^ = fat32.volume_open(paths.c_drive, VOLUME_MB)
@@ -1797,7 +1703,7 @@ console_reinitialize_machine :: proc(
 	if cdrom_path != "" && !machine.machine_attach_cdrom(m, cdrom_path) {return false}
 	if len(floppy) > 0 && !machine.machine_mount_floppy(m, floppy) {return false}
 	vm_guard_bind(guard, &m.vm)
-	machine.machine_set_wake_adapter(m, guard, vm_guard_rearm)
+	machine.machine_set_wake_adapter(m, guard, vm_guard_schedule)
 	success = true
 	return true
 }
@@ -1933,6 +1839,7 @@ console_main :: proc(
 	}
 	machine.machine_set_cpu_mode(m, settings.cpu_mode)
 	machine.bus_set_strict_io(&m.bus, options.strict_io)
+	machine.machine_set_diagnostic_tracing(m, options.strict_io)
 	if options.test_device {machine.machine_enable_test_device(m)}
 	fmt.println(cpu_mode_log(settings.cpu_mode))
 	if cdrom_path != "" {
@@ -1982,7 +1889,7 @@ console_main :: proc(
 	}
 	defer vm_guard_destroy(&guard)
 	vm_guard_bind(&guard, &m.vm)
-	machine.machine_set_wake_adapter(m, &guard, vm_guard_rearm)
+	machine.machine_set_wake_adapter(m, &guard, vm_guard_schedule)
 
 	last_vga := start
 	prev: vga.Text_Snapshot
@@ -2051,7 +1958,7 @@ console_main :: proc(
 				case .Mouse_Wheel:
 					machine.machine_mouse_wheel(m, event.wheel, event.buttons)
 				case .Key:
-					for i in 0 ..< int(event.key_n) {machine.i8042_key(&m.kbd, event.key[i])}
+					for i in 0 ..< int(event.key_n) {machine.machine_key(m, event.key[i])}
 				}
 			}
 			stress_next = time.tick_now()

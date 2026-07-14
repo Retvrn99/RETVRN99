@@ -419,6 +419,7 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 		if handled >= WHPX_EXIT_BUDGET {
 			return Exit{kind = .Io}
 		}
+		vm.run_calls += 1
 		hr := WHvRunVirtualProcessor(vm.part, 0, &exit_ctx, size_of(exit_ctx))
 		if hr < 0 {
 			return Exit {
@@ -431,6 +432,9 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			if ok, detail := whpx_emulate_io(vm, &exit_ctx.VpContext, &exit_ctx.u.IoPortAccess);
 			   !ok {
 				return Exit{kind = .Failed, detail = detail}
+			}
+			if vm.io_should_yield != nil && vm.io_should_yield(vm.io_ctx) {
+				return Exit{kind = .Io}
 			}
 		case .MemoryAccess:
 			status: WHV_EMULATOR_STATUS
@@ -452,6 +456,9 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 					),
 				}
 			}
+			if vm.io_should_yield != nil && vm.io_should_yield(vm.io_ctx) {
+				return Exit{kind = .Io}
+			}
 		case .X64Halt:
 			// advance RIP past the HLT
 			whpx_advance_rip(vm, &exit_ctx.VpContext)
@@ -467,6 +474,7 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 				return Exit{kind = .Failed, detail = "failed to handle MSR access"}
 			}
 		case .Canceled:
+			vm.run_cancellations += 1
 			return Exit{kind = .Canceled}
 		case .UnrecoverableException:
 			return Exit{kind = .Reset, detail = "unrecoverable exception (triple fault)"}

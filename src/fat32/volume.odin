@@ -13,6 +13,8 @@ Volume :: struct {
 	journal:        Journal,
 	io_sys_lba:     u64, // absolute LBA of IO.SYS first sector, 0 if absent
 	io_sys_cluster: u32, // first cluster of IO.SYS, 0 if absent
+	backing_read_opens: u64,
+	backing_read_bytes: u64,
 	frozen:         bool,
 	on_fail:        proc(ctx: rawptr, msg: string),
 	fail_ctx:       rawptr,

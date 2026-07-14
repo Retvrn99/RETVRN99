@@ -232,7 +232,7 @@ fdc_test_write_sector :: proc(t: ^testing.T) {
 }
 
 @(test)
-fdc_test_dma_progresses_one_timed_unit_at_a_time :: proc(t: ^testing.T) {
+fdc_test_dma_moves_one_sector_per_deadline :: proc(t: ^testing.T) {
 	f: Fdc
 	d: Fdc_Test_Dma
 	irqs := 0
@@ -256,18 +256,11 @@ fdc_test_dma_progresses_one_timed_unit_at_a_time :: proc(t: ^testing.T) {
 	fdc_advance_to(&f, first - 1)
 	testing.expect_value(t, d.pos, 0)
 	fdc_advance_to(&f, first)
-	testing.expect_value(t, d.pos, 1)
-	testing.expect_value(t, guest[0], img[0])
-	second, pending_second := fdc_next_deadline(&f)
-	testing.expect(t, pending_second)
-	unit_ticks := second - first
-	testing.expect(t, unit_ticks > 0)
-	fdc_advance_to(&f, second + 8 * unit_ticks)
-	testing.expect_value(t, d.pos, 10)
-	testing.expect_value(t, irqs, 0)
-	fdc_test_run(&f)
 	testing.expect_value(t, d.pos, FLOPPY_SECTOR)
+	testing.expect_value(t, guest[0], img[0])
 	testing.expect_value(t, irqs, 1)
+	_, pending_second := fdc_next_deadline(&f)
+	testing.expect(t, !pending_second)
 }
 
 @(test)

@@ -155,6 +155,7 @@ test_machine_boots_bochs_vgabios_and_sets_vbe_mode :: proc(t: ^testing.T) {
 	m: Machine
 	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) {return}
 	defer machine_destroy(&m)
+	machine_set_diagnostic_tracing(&m, true)
 	if !testing.expect(t, load_roms(&m.vm)) {return}
 
 	floppy := vgabios_test_boot_floppy()

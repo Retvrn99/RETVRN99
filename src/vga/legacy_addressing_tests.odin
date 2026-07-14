@@ -233,11 +233,13 @@ vga_test_text_preset_pan_font_and_cursor_crc :: proc(t: ^testing.T) {
 	visible_crc := vga_test_pixels_crc32(vga_display_frame(&v).pixels)
 	testing.expect_value(t, visible_crc, u32(0x29b0_3ada))
 	v.timing.elapsed_ns = 500_000_000
+	vga_note_animation_change(&v)
 	hidden_crc := vga_test_pixels_crc32(vga_display_frame(&v).pixels)
 	testing.expect_value(t, hidden_crc, u32(0xd43d_5b18))
 	testing.expect(t, visible_crc != hidden_crc)
 	v.timing.elapsed_ns = 0
 	v.crtc[0x0a] |= 0x20
+	vga_note_content_change(&v)
 	disabled_crc := vga_test_pixels_crc32(vga_display_frame(&v).pixels)
 	testing.expect_value(t, disabled_crc, hidden_crc)
 }

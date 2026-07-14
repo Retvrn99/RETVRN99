@@ -16,6 +16,8 @@ Io_Handler :: struct {
 	ctx:   rawptr,
 	read:  proc(ctx: rawptr, port: u16, size: u8) -> u32,
 	write: proc(ctx: rawptr, port: u16, size: u8, val: u32),
+	stream_read:  proc(ctx: rawptr, port: u16, size: u8, data: []u8) -> int,
+	stream_write: proc(ctx: rawptr, port: u16, size: u8, data: []u8) -> int,
 	width: Io_Width_Policy,
 }
 
@@ -33,8 +35,8 @@ Unclassified_Mmio :: struct {
 }
 
 Bus :: struct {
-	io:                   map[u16]Io_Handler,
-	passive:              map[u16]u8,
+	io:                   []Io_Handler,
+	passive:              []u16,
 	unclassified_seen:    map[u64]bool,
 	unclassified_mmio_seen: map[u64]bool,
 	unclassified_history: [BUS_UNCLASSIFIED_HISTORY]Unclassified_Io,
@@ -45,13 +47,14 @@ Bus :: struct {
 	unclassified_mmio_count: u64,
 	strict_io:            bool,
 	log_unclassified:     bool,
+	diagnostic_tracing:   bool,
 	frozen:               bool,
 	freeze_msg:           string,
 }
 
 bus_init :: proc(b: ^Bus) {
-	b.io = {}
-	b.passive = {}
+	b.io = make([]Io_Handler, 0x1_0000)
+	b.passive = make([]u16, 0x1_0000)
 	b.unclassified_seen = {}
 	b.unclassified_mmio_seen = {}
 }
@@ -65,10 +68,12 @@ bus_destroy :: proc(b: ^Bus) {
 
 bus_set_strict_io :: proc(b: ^Bus, strict: bool) {
 	b.strict_io = strict
+	if strict {b.diagnostic_tracing = true}
 }
 
 bus_set_log_unclassified :: proc(b: ^Bus, enabled: bool) {
 	b.log_unclassified = enabled
+	if enabled {b.diagnostic_tracing = true}
 }
 
 bus_register :: proc(b: ^Bus, first, last: u16, h: Io_Handler) {
@@ -82,7 +87,7 @@ bus_register_byte_decomposed :: proc(b: ^Bus, first, last: u16, h: Io_Handler) {
 }
 
 bus_register_passive :: proc(b: ^Bus, value: u8, ports: ..u16) {
-	for p in ports {b.passive[p] = value}
+	for p in ports {b.passive[int(p)] = u16(value) + 1}
 }
 
 bus_whitelist :: proc(b: ^Bus, ports: ..u16) {
@@ -109,8 +114,9 @@ bus_unclassified_key :: proc(port: u16, write: bool, size: u8) -> u64 {
 
 @(private = "file")
 bus_record_unclassified :: proc(b: ^Bus, access: Unclassified_Io) {
-	b.unclassified_history[b.unclassified_count % BUS_UNCLASSIFIED_HISTORY] = access
 	b.unclassified_count += 1
+	if !b.diagnostic_tracing {return}
+	b.unclassified_history[(b.unclassified_count - 1) % BUS_UNCLASSIFIED_HISTORY] = access
 	key := bus_unclassified_key(access.port, access.write, access.size)
 	if !b.unclassified_seen[key] {
 		b.unclassified_seen[key] = true
@@ -127,8 +133,9 @@ bus_record_unclassified :: proc(b: ^Bus, access: Unclassified_Io) {
 }
 
 bus_record_unclassified_mmio :: proc(b: ^Bus, access: Unclassified_Mmio) {
-	b.unclassified_mmio_history[b.unclassified_mmio_count % BUS_UNCLASSIFIED_MMIO_HISTORY] = access
 	b.unclassified_mmio_count += 1
+	if !b.diagnostic_tracing {return}
+	b.unclassified_mmio_history[(b.unclassified_mmio_count - 1) % BUS_UNCLASSIFIED_MMIO_HISTORY] = access
 	key := access.gpa &~ u64(0xFFF) | u64(access.write ? 1 : 0)
 	if b.unclassified_mmio_seen[key] {return}
 	b.unclassified_mmio_seen[key] = true
@@ -147,8 +154,8 @@ bus_decomposed_read :: proc(b: ^Bus, port: u16, size: u8) -> (u32, bool) {
 	value: u32
 	for i in 0 ..< int(size) {
 		byte_port := port + u16(i)
-		h, ok := b.io[byte_port]
-		if !ok || h.width != .Byte_Decomposed {return 0, false}
+		h := b.io[int(byte_port)]
+		if h.read == nil || h.width != .Byte_Decomposed {return 0, false}
 		value |= (h.read(h.ctx, byte_port, 1) & 0xFF) << (8 * u32(i))
 	}
 	return value, true
@@ -158,15 +165,16 @@ bus_decomposed_read :: proc(b: ^Bus, port: u16, size: u8) -> (u32, bool) {
 bus_decomposed_write :: proc(b: ^Bus, port: u16, size: u8, value: u32) -> bool {
 	for i in 0 ..< int(size) {
 		byte_port := port + u16(i)
-		h, ok := b.io[byte_port]
-		if !ok || h.width != .Byte_Decomposed {return false}
+		h := b.io[int(byte_port)]
+		if h.write == nil || h.width != .Byte_Decomposed {return false}
 		h.write(h.ctx, byte_port, 1, value >> (8 * u32(i)))
 	}
 	return true
 }
 
 bus_io_read :: proc(b: ^Bus, port: u16, size: u8) -> u32 {
-	if h, ok := b.io[port]; ok {
+	h := b.io[int(port)]
+	if h.read != nil {
 		b.modeled_count += 1
 		if h.width == .Byte_Decomposed && size > 1 {
 			if value, decomposed := bus_decomposed_read(b, port, size); decomposed {return value}
@@ -176,9 +184,9 @@ bus_io_read :: proc(b: ^Bus, port: u16, size: u8) -> u32 {
 	value: u32
 	passive := true
 	for i in 0 ..< int(size) {
-		byte, ok := b.passive[port + u16(i)]
-		if !ok {passive = false; break}
-		value |= u32(byte) << (8 * u32(i))
+		encoded := b.passive[int(port + u16(i))]
+		if encoded == 0 {passive = false; break}
+		value |= u32(encoded - 1) << (8 * u32(i))
 	}
 	if passive {
 		b.passive_count += 1
@@ -191,7 +199,8 @@ bus_io_read :: proc(b: ^Bus, port: u16, size: u8) -> u32 {
 }
 
 bus_io_write :: proc(b: ^Bus, port: u16, size: u8, val: u32) {
-	if h, ok := b.io[port]; ok {
+	h := b.io[int(port)]
+	if h.write != nil {
 		b.modeled_count += 1
 		if h.width == .Byte_Decomposed && size > 1 && bus_decomposed_write(b, port, size, val) {return}
 		h.write(h.ctx, port, size, val)
@@ -199,7 +208,7 @@ bus_io_write :: proc(b: ^Bus, port: u16, size: u8, val: u32) {
 	}
 	passive := true
 	for i in 0 ..< int(size) {
-		if _, ok := b.passive[port + u16(i)]; !ok {passive = false; break}
+		if b.passive[int(port + u16(i))] == 0 {passive = false; break}
 	}
 	if passive {
 		b.passive_count += 1
@@ -210,4 +219,22 @@ bus_io_write :: proc(b: ^Bus, port: u16, size: u8, val: u32) {
 	if b.strict_io {
 		bus_freeze(b, fmt.tprintf("unclassified port write 0x%04x size %d val 0x%x", port, size, val))
 	}
+}
+
+bus_io_stream_read :: proc(b: ^Bus, port: u16, size: u8, data: []u8) -> (int, bool) {
+	if size == 0 || len(data) % int(size) != 0 {return 0, false}
+	h := b.io[int(port)]
+	if h.stream_read == nil {return 0, false}
+	completed := clamp(h.stream_read(h.ctx, port, size, data), 0, len(data) / int(size))
+	b.modeled_count += u64(completed)
+	return completed, true
+}
+
+bus_io_stream_write :: proc(b: ^Bus, port: u16, size: u8, data: []u8) -> (int, bool) {
+	if size == 0 || len(data) % int(size) != 0 {return 0, false}
+	h := b.io[int(port)]
+	if h.stream_write == nil {return 0, false}
+	completed := clamp(h.stream_write(h.ctx, port, size, data), 0, len(data) / int(size))
+	b.modeled_count += u64(completed)
+	return completed, true
 }

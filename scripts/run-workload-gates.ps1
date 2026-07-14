@@ -472,6 +472,24 @@ function Parse-QuakeTimedemo {
     throw 'Quake timedemo completion text was not found.'
 }
 
+function Test-AmplificationResult {
+    param([Parameter(Mandatory)]$Result)
+    if ($null -eq $Result.execution) {
+        return [pscustomobject]@{ passed = $false; failure = 'Result JSON has no execution counters.' }
+    }
+    $execution = $Result.execution
+    if ([int64]$execution.storage_host_calls -gt [int64]$execution.storage_transactions) {
+        return [pscustomobject]@{ passed = $false; failure = 'Storage host calls exceed bulk transactions.' }
+    }
+    if ([int64]$execution.scheduler_dispatches -gt [int64]$execution.device_advances) {
+        return [pscustomobject]@{ passed = $false; failure = 'A scheduler dispatch did not advance its device.' }
+    }
+    if ([int64]$Result.audio.frames_produced -eq 0 -and [int64]$execution.audio_blocks -ne 0) {
+        return [pscustomobject]@{ passed = $false; failure = 'Silent audio produced VM-side blocks.' }
+    }
+    return [pscustomobject]@{ passed = $true; failure = $null }
+}
+
 function Get-TextFileSource {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -588,6 +606,7 @@ function Invoke-WorkloadGates {
             $metric = $null
             $diskResult = $null
             $processResult = $null
+            $amplification = $null
             try {
                 $staged = Stage-WorkloadProfile -ProfileRoot $profileRoot -DosSeed $seedRoot -WorkloadDirectory $entry.fixture_path -Workload $workload
                 $emulatorArguments = @(
@@ -609,6 +628,8 @@ function Invoke-WorkloadGates {
                 if ([int64]$metric.value -ne [int64]$workload.expected) {
                     throw "Expected $($workload.expected) $($workload.metric), observed $($metric.value)."
                 }
+                $amplification = Test-AmplificationResult -Result $diskResult
+                if (-not $amplification.passed) { throw $amplification.failure }
                 $passed = $true
             }
             catch {
@@ -623,6 +644,7 @@ function Invoke-WorkloadGates {
             $repetitionReports += [pscustomobject]@{
                 repetition = $repetition; passed = $passed; failure = $failure
                 completion_identity = $identity; metric = $metric
+                amplification = $amplification
                 process_exit_code = if ($null -ne $processResult) { $processResult.exit_code } else { $null }
                 process_wall_milliseconds = if ($null -ne $processResult) { $processResult.wall_milliseconds } else { $null }
                 command_line = if ($null -ne $processResult) { $processResult.command_line } else { $null }
@@ -652,7 +674,8 @@ function Invoke-WorkloadGates {
         manifest_path = $manifestData.path; manifest_sha256 = $manifestHash
         emulator_path = $emulatorFile; emulator_sha256 = Get-FileSha256 -Path $emulatorFile
         dos_seed_path = $seedRoot; dos_seed_tree_sha256 = $seedHash.sha256
-        output_root = $runRoot; performance_gated = $false; workloads = $workloadReports
+        output_root = $runRoot; performance_gated = $allPassed; wall_time_gated = $false
+        workloads = $workloadReports
     }
     $reportPath = Join-Path $runRoot 'aggregate.json'
     Write-JsonFile -Path $reportPath -Value $aggregate

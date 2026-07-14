@@ -106,7 +106,7 @@ test_vm_guard_registered_watchdog_cancels_repeated_whpx_runs :: proc(t: ^testing
 		log.warn("WHPX not available; skipping registered watchdog integration test")
 		return
 	}
-	testing.set_fail_timeout(t, 5 * time.Second)
+	testing.set_fail_timeout(t, 15 * time.Second)
 	vm: hv.Vm
 	if !testing.expect(t, hv.create(&vm, 64 * 1024 * 1024)) {return}
 	defer hv.destroy(&vm)

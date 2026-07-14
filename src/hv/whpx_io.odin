@@ -383,6 +383,68 @@ whpx_io_write_port :: proc(vm: ^Vm, port: u16, size: u8, value: u32) -> bool {
 	return vm.io_write(vm.io_ctx, port, size, value & whpx_io_mask(size))
 }
 
+@(private = "file")
+whpx_io_ram_span_available :: proc(vm: ^Vm, gpa: u64, size: u64) -> bool {
+	if gpa > u64(len(vm.ram)) || size > u64(len(vm.ram)) - gpa {return false}
+	for reservation in vm.mmio_reservations {
+		if gpa < reservation.gpa + reservation.size && reservation.gpa < gpa + size {return false}
+	}
+	return true
+}
+
+@(private = "file")
+whpx_io_try_stream :: proc(
+	vm: ^Vm,
+	port: u16,
+	size: u8,
+	is_write: bool,
+	segment: WHV_X64_SEGMENT_REGISTER,
+	segment_name: WHV_REGISTER_NAME,
+	index: u64,
+	user: bool,
+	limit: u64,
+	cache: ^Whpx_IO_Translation_Cache,
+) -> (completed: u64, handled, ok: bool) {
+	if limit == 0 ||
+	   is_write && vm.io_stream_write == nil ||
+	   !is_write && vm.io_stream_read == nil {return 0, false, true}
+	fault := whpx_io_segment_fault(segment, segment_name, index, size, !is_write)
+	if fault.kind != .None {return 0, false, true}
+	linear := segment.Base + index
+	page_bytes := WHPX_IO_PAGE_SIZE - (linear & WHPX_IO_PAGE_MASK)
+	elements := min(limit, page_bytes / u64(size))
+	if elements == 0 {return 0, false, true}
+	last_index := index + (elements - 1) * u64(size)
+	if whpx_io_segment_fault(segment, segment_name, last_index, size, !is_write).kind != .None {
+		return 0, false, true
+	}
+	gpas: [4]u64
+	fault = whpx_io_translate(
+		vm,
+		segment,
+		segment_name,
+		index,
+		size,
+		!is_write,
+		user,
+		cache,
+		&gpas,
+	)
+	if fault.kind != .None {return 0, false, true}
+	byte_count := elements * u64(size)
+	if !whpx_io_ram_span_available(vm, gpas[0], byte_count) {return 0, false, true}
+	data := vm.ram[int(gpas[0]):int(gpas[0] + byte_count)]
+	count: int
+	if is_write {
+		count, handled, ok = vm.io_stream_write(vm.io_ctx, port, size, data)
+	} else {
+		count, handled, ok = vm.io_stream_read(vm.io_ctx, port, size, data)
+	}
+	if !handled {return 0, false, ok}
+	if !ok || count <= 0 || u64(count) > elements {return 0, true, false}
+	return u64(count), true, true
+}
+
 whpx_emulate_io :: proc(
 	vm: ^Vm,
 	vp: ^WHV_VP_EXIT_CONTEXT,
@@ -451,6 +513,35 @@ whpx_emulate_io :: proc(
 	completed: u64
 	for completed < iteration_limit {
 		index := whpx_io_low(is_write ? rsi : rdi, address_bits)
+		if vp.Rflags & 0x400 == 0 {
+			streamed, handled, stream_ok := whpx_io_try_stream(
+				vm,
+				io.PortNumber,
+				size,
+				is_write,
+				segment,
+				segment_name,
+				index,
+				user,
+				iteration_limit - completed,
+				&translation_cache,
+			)
+			if handled {
+				if !stream_ok {
+					_ = whpx_io_commit(vm, rax, rcx, rsi, rdi, vp.Rip)
+					return false, fmt.tprintf("streaming string I/O rejected at port 0x%04x", io.PortNumber)
+				}
+				index = whpx_io_low(index + streamed * u64(size), address_bits)
+				if is_write {rsi = whpx_io_replace_low(rsi, index, address_bits)} else {rdi = whpx_io_replace_low(rdi, index, address_bits)}
+				if has_rep {
+					remaining -= streamed
+					rcx = whpx_io_replace_low(rcx, remaining, address_bits)
+				}
+				completed += streamed
+				iteration_limit = min(iteration_limit, whpx_io_iteration_budget(vm, initial_remaining))
+				continue
+			}
+		}
 		value: u32
 		gpas: [4]u64
 		if is_write {

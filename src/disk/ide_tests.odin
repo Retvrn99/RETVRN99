@@ -179,7 +179,8 @@ ide_test_pio_roundtrip :: proc(t: ^testing.T) {
 	// RAM backing holds word 0 (0xBEEF) in little-endian
 	testing.expect_value(t, ram.data[3 * 512], u8(0xEF))
 	testing.expect_value(t, ram.data[3 * 512 + 1], u8(0xBE))
-	testing.expect_value(t, ram.flushes, 1)
+	testing.expect_value(t, ram.flushes, 0)
+	testing.expect(t, ide.writeback_pending)
 
 	// READ SECTORS from LBA 3
 	ide_test_set_lba28(&ide, 3, 1)
@@ -199,7 +200,7 @@ ide_test_pio_roundtrip :: proc(t: ^testing.T) {
 }
 
 @(test)
-ide_test_multisector_write_flushes_once :: proc(t: ^testing.T) {
+ide_test_multisector_write_checkpoints_on_flush_cache :: proc(t: ^testing.T) {
 	ram: Ide_Test_Ram
 	ide: Ide
 	ide_test_setup(&ram, &ide)
@@ -219,7 +220,11 @@ ide_test_multisector_write_flushes_once :: proc(t: ^testing.T) {
 	testing.expect_value(t, ram.writes, 1)
 	testing.expect_value(t, ram.write_attempts, 1)
 	testing.expect_value(t, ram.last_write_bytes, 3 * IDE_SECTOR_SIZE)
+	testing.expect_value(t, ram.flushes, 0)
+	testing.expect(t, ide.writeback_pending)
+	ide_test_command(&ide, 0xE7)
 	testing.expect_value(t, ram.flushes, 1)
+	testing.expect(t, !ide.writeback_pending)
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F2), u8(0))
 	st := ide_test_inb(&ide, 0x1F7)
 	testing.expect(t, st & IDE_STATUS_DRQ == 0)
@@ -227,7 +232,7 @@ ide_test_multisector_write_flushes_once :: proc(t: ^testing.T) {
 }
 
 @(test)
-ide_test_write_reconciliation_failure_aborts_command :: proc(t: ^testing.T) {
+ide_test_idle_writeback_failure_blocks_further_writes :: proc(t: ^testing.T) {
 	ram: Ide_Test_Ram
 	ide: Ide
 	ide_test_setup(&ram, &ide)
@@ -242,6 +247,11 @@ ide_test_write_reconciliation_failure_aborts_command :: proc(t: ^testing.T) {
 	testing.expect(t, ide_test_advance_deadline(&ide))
 
 	testing.expect_value(t, ram.writes, 1)
+	testing.expect_value(t, ram.flushes, 0)
+	deadline, pending := ide_next_deadline(&ide)
+	testing.expect(t, pending)
+	testing.expect_value(t, deadline - ide.now_tick, IDE_WRITEBACK_IDLE_TICKS)
+	ide_advance_to(&ide, deadline)
 	testing.expect_value(t, ram.flushes, 1)
 	testing.expect_value(t, ram.irqs, 1)
 	testing.expect_value(t, ide.state, Ide_State.Idle)
@@ -249,6 +259,9 @@ ide_test_write_reconciliation_failure_aborts_command :: proc(t: ^testing.T) {
 	status := ide_test_inb(&ide, 0x1F7)
 	testing.expect(t, status & IDE_STATUS_ERR != 0)
 	testing.expect(t, status & IDE_STATUS_DRQ == 0)
+	ide_test_set_lba28(&ide, 10, 1)
+	ide_test_outb(&ide, 0x1F7, 0x30)
+	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR != 0)
 }
 
 @(test)
@@ -379,7 +392,6 @@ ide_test_dma_request_uses_udma_66_rate :: proc(t: ^testing.T) {
 	request, pending := ide_bmide_request(&ide)
 	testing.expect(t, pending)
 	testing.expect_value(t, IDE_UDMA_MODE, u8(4))
-	testing.expect_value(t, request.bytes_per_second, u64(66_666_667))
 }
 
 @(test)

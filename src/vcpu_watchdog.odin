@@ -16,11 +16,13 @@ Vm_Guard :: struct {
 	cancel:         Vm_Guard_Cancel_Proc,
 	cancel_ctx:     rawptr,
 	deadline_count: u64,
+	external_wakes: u64,
 	arm_failures:   u64,
 }
 
 Vm_Guard_Stats :: struct {
 	deadline_count: u64,
+	external_wakes: u64,
 	arm_failures:   u64,
 	valid:          bool,
 }
@@ -93,12 +95,33 @@ vm_guard_rearm :: proc(ctx: rawptr, delay_ns: u64) {
 	sync.unlock(&guard.mu)
 }
 
+vm_guard_kick :: proc(guard: ^Vm_Guard) {
+	if guard == nil {return}
+	sync.lock(&guard.mu)
+	if guard.valid && guard.vm != nil && guard.cancel != nil {
+		guard.external_wakes += 1
+		guard.cancel(guard.cancel_ctx, guard.vm)
+	}
+	sync.unlock(&guard.mu)
+}
+
+vm_guard_schedule :: proc(ctx: rawptr, delay_ns: u64, pending: bool) {
+	guard := (^Vm_Guard)(ctx)
+	if guard == nil {return}
+	if !pending {
+		_ = hosttime.armable_wake_disarm(&guard.wake)
+		return
+	}
+	vm_guard_rearm(ctx, delay_ns)
+}
+
 vm_guard_stats :: proc(guard: ^Vm_Guard) -> Vm_Guard_Stats {
 	if guard == nil {return {}}
 	sync.lock(&guard.mu)
 	defer sync.unlock(&guard.mu)
 	return {
 		deadline_count = guard.deadline_count,
+		external_wakes = guard.external_wakes,
 		arm_failures   = guard.arm_failures,
 		valid          = guard.valid,
 	}

@@ -63,6 +63,53 @@ whpx_test_string_port_write :: proc(ctx: rawptr, port: u16, size: u8, value: u32
 	return true
 }
 
+Whpx_Stream_Probe :: struct {
+	calls: int,
+	elements: int,
+	first: u16,
+}
+
+whpx_test_stream_write :: proc(
+	ctx: rawptr,
+	port: u16,
+	size: u8,
+	data: []u8,
+) -> (int, bool, bool) {
+	probe := (^Whpx_Stream_Probe)(ctx)
+	probe.calls += 1
+	probe.elements = len(data) / int(size)
+	probe.first = u16(data[0]) | u16(data[1]) << 8
+	return probe.elements, true, true
+}
+
+@(test)
+test_whpx_rep_outsw_streams_one_page_span :: proc(t: ^testing.T) {
+	if !available() {log.warn("WHPX not available"); return}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+	for i in 0 ..< 2048 {vm.ram[0x8000 + i] = u8(i)}
+	vp: WHV_VP_EXIT_CONTEXT
+	io: WHV_X64_IO_PORT_ACCESS_CONTEXT
+	if !whpx_test_manual_io_context(t, &vm, &vp, &io, 0, 1024, 0x8000, 0, 0x77F0, 0x2) {return}
+	whpx_test_manual_io_instruction(&vp, &io, []u8{0xF3, 0x6F}, 0x35, 0x1F0)
+	probe: Whpx_Stream_Probe
+	vm.io_ctx = &probe
+	vm.io_stream_write = whpx_test_stream_write
+	translations := vm.io_string_translations
+	ok, detail := whpx_emulate_io(&vm, &vp, &io)
+	if !testing.expect(t, ok) {return}
+	testing.expect_value(t, detail, "")
+	testing.expect_value(t, probe.calls, 1)
+	testing.expect_value(t, probe.elements, 1024)
+	testing.expect_value(t, probe.first, u16(0x0100))
+	testing.expect_value(t, vm.io_string_translations - translations, u64(1))
+	regs := get_regs(&vm)
+	testing.expect_value(t, regs.rsi, u64(0x8800))
+	testing.expect_value(t, regs.rcx, u64(0))
+	testing.expect_value(t, regs.rip, u64(0x77F2))
+}
+
 @(test)
 test_whpx_string_io_budget_is_deadline_adjustable_and_bounded :: proc(t: ^testing.T) {
 	requested := u64(17)

@@ -7,7 +7,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:unicode/utf8"
 
-RESULT_SCHEMA_VERSION :: 1
+RESULT_SCHEMA_VERSION :: 2
 RESULT_MAX_BYTES :: 64 * 1024
 RESULT_MAX_HASHES :: 32
 RESULT_MAX_RESETS :: 16
@@ -41,6 +41,21 @@ Audio_Result :: struct {
 	max_callback_lateness_us: u64,
 }
 
+Execution_Result :: struct {
+	hypervisor_runs:          u64,
+	hypervisor_cancellations: u64,
+	timer_arms:               u64,
+	scheduler_dispatches:     u64,
+	device_advances:          u64,
+	storage_transactions:     u64,
+	storage_host_calls:       u64,
+	storage_bytes:            u64,
+	audio_blocks:             u64,
+	scanout_copies:           u64,
+	full_frame_renders:       u64,
+	software_rendered_pixels: u64,
+}
+
 Result :: struct {
 	stop_reason:           Stop_Reason,
 	exit_code:             int,
@@ -59,6 +74,7 @@ Result :: struct {
 	unclassified_mmio:     u64,
 	frame_crc:             u32,
 	audio:                 Audio_Result,
+	execution:             Execution_Result,
 	installation_milestone: string,
 	workload_hashes:       [RESULT_MAX_HASHES]Workload_Hash,
 	workload_hash_count:   int,
@@ -95,6 +111,7 @@ Disk_Result :: struct {
 	unclassified_mmio:      u64 `json:"unclassified_mmio"`,
 	frame_crc:              u32 `json:"frame_crc"`,
 	audio:                  Audio_Result `json:"audio"`,
+	execution:              Execution_Result `json:"execution"`,
 	installation_milestone: string `json:"installation_milestone"`,
 	workload_hashes:        []Workload_Hash `json:"workload_hashes"`,
 }
@@ -186,6 +203,7 @@ result_save :: proc(path: string, result: ^Result) -> Result_Diagnostic {
 		unclassified_mmio = result.unclassified_mmio,
 		frame_crc = result.frame_crc,
 		audio = result.audio,
+		execution = result.execution,
 		installation_milestone = result_bound(result.installation_milestone),
 		workload_hashes = hashes[:hash_count],
 	}

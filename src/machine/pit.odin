@@ -515,6 +515,126 @@ pit_tick :: proc(p: ^Pit, clocks: u64) -> int {
 	return fires
 }
 
+@(private = "file")
+pit_counter_advance_mode2 :: proc(c: ^Pit_Channel, clocks: u64) -> u64 {
+	reload := u64(pit_effective_reload(c))
+	value := u64(c.count)
+	if reload < 2 || value == 0 || value > reload {return 0}
+	phase := c.out ? reload - value : reload - 1
+	total := u128(phase) + u128(clocks)
+	rises := u64(total / u128(reload))
+	next := u64(total % u128(reload))
+	if next == reload - 1 {
+		c.count = 1
+		c.out = false
+	} else {
+		c.count = u32(reload - next)
+		c.out = true
+	}
+	c.null_count = false
+	return rises
+}
+
+@(private = "file")
+pit_counter_mode3_phase :: proc(c: ^Pit_Channel, reload: u64) -> u64 {
+	value := u64(c.count)
+	high_clocks := (reload + 1) / 2
+	if value == reload {return c.out ? 0 : high_clocks}
+	if c.out {
+		return reload & 1 == 0 ? (reload - value) / 2 : (reload - value + 1) / 2
+	}
+	low_phase := reload & 1 == 0 ? (reload - value) / 2 : (reload - value - 1) / 2
+	return high_clocks + low_phase
+}
+
+@(private = "file")
+pit_counter_advance_mode3 :: proc(c: ^Pit_Channel, clocks: u64) -> u64 {
+	reload := u64(pit_effective_reload(c))
+	value := u64(c.count)
+	if reload < 2 || value == 0 || value > reload {return 0}
+	phase := pit_counter_mode3_phase(c, reload)
+	total := u128(phase) + u128(clocks)
+	rises := u64(total / u128(reload))
+	next := u64(total % u128(reload))
+	high_clocks := (reload + 1) / 2
+	if next < high_clocks {
+		c.out = true
+		if next == 0 {
+			c.count = u32(reload)
+		} else if reload & 1 == 0 {
+			c.count = u32(reload - next * 2)
+		} else {
+			c.count = u32(reload - next * 2 + 1)
+		}
+	} else {
+		c.out = false
+		low_phase := next - high_clocks
+		if low_phase == 0 {
+			c.count = u32(reload)
+		} else if reload & 1 == 0 {
+			c.count = u32(reload - low_phase * 2)
+		} else {
+			c.count = u32(reload - low_phase * 2 - 1)
+		}
+	}
+	c.null_count = false
+	return rises
+}
+
+@(private = "file")
+pit_counter_advance_bulk :: proc(c: ^Pit_Channel, clocks: u64) -> u64 {
+	remaining := clocks
+	rises: u64
+	if remaining == 0 {return 0}
+	if c.state == .Load_Delay {
+		if pit_counter_step(c) {rises += 1}
+		remaining -= 1
+	}
+	if remaining == 0 || c.state != .Counting {return rises}
+	if !c.gate && c.mode != 1 && c.mode != 5 {
+		if c.mode == 2 || c.mode == 3 {c.out = true}
+		return rises
+	}
+	if !c.bcd {
+		switch c.mode {
+		case 2:
+			return rises + pit_counter_advance_mode2(c, remaining)
+		case 3:
+			return rises + pit_counter_advance_mode3(c, remaining)
+		}
+	}
+	for _ in 0 ..< remaining {
+		if pit_counter_step(c) {rises += 1}
+	}
+	return rises
+}
+
+@(private = "file")
+pit_channel2_advance_bulk :: proc(
+	p: ^Pit,
+	clocks: u64,
+	start_tick: u64,
+	start_phase: Rate_Phase,
+) {
+	remaining := clocks
+	elapsed_clocks: u64
+	for remaining > 0 {
+		edge, pending := pit_counter_clocks_until_edge(&p.ch[2])
+		if !pending || edge > remaining {
+			_ = pit_counter_advance_bulk(&p.ch[2], remaining)
+			return
+		}
+		old := p.ch[2].out
+		_ = pit_counter_advance_bulk(&p.ch[2], edge)
+		remaining -= edge
+		elapsed_clocks += edge
+		if p.ch[2].out != old {
+			delta, _ := rate_phase_ticks_until(start_phase, elapsed_clocks, PIT_HZ)
+			pit_record_channel2(p, pit_saturating_add(start_tick, delta), p.ch[2].out)
+		}
+	}
+}
+
 pit_advance_to :: proc(p: ^Pit, target_tick: u64) -> int {
 	pit_initialize(p)
 	if target_tick <= p.now_tick { return 0 }
@@ -526,19 +646,11 @@ pit_advance_to :: proc(p: ^Pit, target_tick: u64) -> int {
 		p.now_tick = target_tick
 		return 0
 	}
-	fires := 0
-	for clock in 1..=clocks {
-		if pit_counter_step(&p.ch[0]) { fires += 1 }
-		_ = pit_counter_step(&p.ch[1])
-		old_channel2 := p.ch[2].out
-		_ = pit_counter_step(&p.ch[2])
-		if p.ch[2].out != old_channel2 {
-			delta, _ := rate_phase_ticks_until(start_phase, clock, PIT_HZ)
-			pit_record_channel2(p, pit_saturating_add(start_tick, delta), p.ch[2].out)
-		}
-	}
+	fires_u64 := pit_counter_advance_bulk(&p.ch[0], clocks)
+	_ = pit_counter_advance_bulk(&p.ch[1], clocks)
+	pit_channel2_advance_bulk(p, clocks, start_tick, start_phase)
 	p.now_tick = target_tick
-	return fires
+	return int(min(fires_u64, u64(max(int))))
 }
 
 pit_advance_master :: proc(p: ^Pit, master_ticks: u64) -> int {

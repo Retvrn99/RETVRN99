@@ -190,6 +190,28 @@ read_test_block_device_glue :: proc(t: ^testing.T) {
 }
 
 @(test)
+read_test_contiguous_file_range_uses_one_host_open :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {return}
+
+	io := v.alloc.root.children[2]
+	testing.expect(t, io.name == "IO.SYS")
+	sectors := int((io.size + u64(SECTOR - 1)) / u64(SECTOR))
+	data := make([]u8, sectors * SECTOR)
+	v.backing_read_opens = 0
+	v.backing_read_bytes = 0
+	lba := u64(PART_START_LBA) + u64(v.alloc.geo.data_start) +
+		u64(io.first_cluster - 2) * SECTORS_PER_CLUSTER
+	testing.expect(t, volume_read(v, lba, data))
+	testing.expect_value(t, v.backing_read_opens, u64(1))
+	testing.expect_value(t, v.backing_read_bytes, io.size)
+}
+
+@(test)
 read_test_backing_type_failure_freezes_volume :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir, v := decode_test_open(t)

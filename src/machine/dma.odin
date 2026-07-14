@@ -356,6 +356,104 @@ dma_transfer_from_memory_byte :: proc(d: ^Dma, channel: int, ram: []u8) -> (u8, 
 	return value, true
 }
 
+dma_transfer_to_memory :: proc(d: ^Dma, channel: int, ram: []u8, data: []u8) -> int {
+	dma_ensure_init(d)
+	if len(data) == 0 || channel < 0 || channel >= 4 ||
+	   !dma_begin_cycle(d, channel, 1) {return 0}
+	c := &d.ch[channel]
+	count := min(len(data), int(c.count) + 1)
+	written := 0
+	if c.mode & 0x20 != 0 {
+		for written < count {
+			address, _ := dma_channel_address(d, channel)
+			if u64(address) >= u64(len(ram)) {break}
+			ram[int(address)] = data[written]
+			written += 1
+			c.addr -= 1
+		}
+	} else {
+		for written < count {
+			address, _ := dma_channel_address(d, channel)
+			if u64(address) >= u64(len(ram)) {break}
+			page_remaining := 0x1_0000 - int(c.addr)
+			ram_remaining := len(ram) - int(address)
+			chunk := min(count - written, page_remaining, ram_remaining)
+			if chunk <= 0 {break}
+			copy(ram[int(address):int(address) + chunk], data[written:written + chunk])
+			written += chunk
+			c.addr += u16(chunk)
+		}
+	}
+	if written == 0 {dma_finish_cycle(d, channel, false); return 0}
+	c.transfer_cycles += u64(written)
+	reached_tc := written == int(c.count) + 1
+	c.count -= u16(written)
+	c.tc = reached_tc
+	if reached_tc {
+		chip := &d.master
+		local := channel & 3
+		chip.status |= u8(1) << u8(local)
+		chip.software_request &~= u8(1) << u8(local)
+		if c.mode & 0x10 != 0 {
+			c.addr = c.base_addr
+			c.count = c.base_count
+		} else {
+			c.masked = true
+		}
+	}
+	dma_finish_cycle(d, channel, true)
+	return written
+}
+
+dma_transfer_from_memory :: proc(d: ^Dma, channel: int, ram: []u8, out: []u8) -> int {
+	dma_ensure_init(d)
+	if len(out) == 0 || channel < 0 || channel >= 4 ||
+	   !dma_begin_cycle(d, channel, 2) {return 0}
+	c := &d.ch[channel]
+	count := min(len(out), int(c.count) + 1)
+	read := 0
+	if c.mode & 0x20 != 0 {
+		for read < count {
+			address, _ := dma_channel_address(d, channel)
+			if u64(address) >= u64(len(ram)) {break}
+			out[read] = ram[int(address)]
+			read += 1
+			c.addr -= 1
+		}
+	} else {
+		for read < count {
+			address, _ := dma_channel_address(d, channel)
+			if u64(address) >= u64(len(ram)) {break}
+			page_remaining := 0x1_0000 - int(c.addr)
+			ram_remaining := len(ram) - int(address)
+			chunk := min(count - read, page_remaining, ram_remaining)
+			if chunk <= 0 {break}
+			copy(out[read:read + chunk], ram[int(address):int(address) + chunk])
+			read += chunk
+			c.addr += u16(chunk)
+		}
+	}
+	if read == 0 {dma_finish_cycle(d, channel, false); return 0}
+	c.transfer_cycles += u64(read)
+	reached_tc := read == int(c.count) + 1
+	c.count -= u16(read)
+	c.tc = reached_tc
+	if reached_tc {
+		chip := &d.master
+		local := channel & 3
+		chip.status |= u8(1) << u8(local)
+		chip.software_request &~= u8(1) << u8(local)
+		if c.mode & 0x10 != 0 {
+			c.addr = c.base_addr
+			c.count = c.base_count
+		} else {
+			c.masked = true
+		}
+	}
+	dma_finish_cycle(d, channel, true)
+	return read
+}
+
 dma_transfer_to_memory_word :: proc(d: ^Dma, channel: int, ram: []u8, value: u16) -> (u32, bool) {
 	dma_ensure_init(d)
 	if channel < 5 || channel >= 8 || !dma_begin_cycle(d, channel, 1) {return 0, false}

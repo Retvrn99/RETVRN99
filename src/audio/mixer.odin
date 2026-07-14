@@ -13,6 +13,7 @@ AUDIO_GAIN_UNITY :: u32(65_536)
 Audio_Mixer :: struct {
 	now_ticks:       u64,
 	output_phase:    u64,
+	speaker_enabled: bool,
 	speaker_level:   i32,
 	speaker_area:    i128,
 	speaker_ticks:   u64,
@@ -25,6 +26,7 @@ Audio_Mixer :: struct {
 	mix_batch:       [AUDIO_RENDER_BATCH]Audio_Frame,
 	mix_batch_count: int,
 	output:          Audio_Output,
+	blocks_rendered: u64,
 }
 
 audio_mixer_init :: proc(mixer: ^Audio_Mixer) -> bool {
@@ -116,11 +118,16 @@ audio_mixer_cdda_queued :: proc(mixer: ^Audio_Mixer) -> int {
 audio_mixer_flush_batch :: proc(mixer: ^Audio_Mixer) {
 	if mixer.mix_batch_count == 0 {return}
 	audio_output_queue(&mixer.output, mixer.mix_batch[:mixer.mix_batch_count])
+	mixer.blocks_rendered += 1
 	mixer.mix_batch_count = 0
 }
 
 audio_mixer_publish_pending :: proc(mixer: ^Audio_Mixer) {
 	audio_mixer_flush_batch(mixer)
+}
+
+audio_mixer_blocks_rendered :: proc(mixer: ^Audio_Mixer) -> u64 {
+	return mixer != nil ? mixer.blocks_rendered : 0
 }
 
 @(private = "file")
@@ -176,16 +183,23 @@ audio_mixer_set_speaker_state :: proc(
 ) -> bool {
 	if at_tick < mixer.now_ticks {return false}
 	_ = audio_mixer_advance_to(mixer, at_tick)
+	mixer.speaker_enabled = enabled
 	mixer.speaker_level =
 		!enabled ? 0 : (pit_high ? AUDIO_SPEAKER_AMPLITUDE : -AUDIO_SPEAKER_AMPLITUDE)
 	return true
 }
 
-audio_mixer_next_deadline_tick :: proc(mixer: ^Audio_Mixer) -> u64 {
+audio_mixer_active :: proc(mixer: ^Audio_Mixer) -> bool {
+	return mixer != nil &&
+	       (mixer.speaker_enabled || mixer.cdda_count > 0 || mixer.mix_batch_count > 0)
+}
+
+audio_mixer_next_deadline_tick :: proc(mixer: ^Audio_Mixer) -> (deadline: u64, pending: bool) {
+	if !audio_mixer_active(mixer) {return 0, false}
 	frames_needed := u64(AUDIO_RENDER_BATCH - mixer.mix_batch_count)
 	phase_needed := u128(frames_needed) * u128(AUDIO_MASTER_CLOCK_HZ) - u128(mixer.output_phase)
 	until_publish := u64((phase_needed + u128(AUDIO_OUTPUT_HZ) - 1) / u128(AUDIO_OUTPUT_HZ))
 	until_publish = max(until_publish, u64(1))
-	if ~u64(0) - mixer.now_ticks < until_publish {return ~u64(0)}
-	return mixer.now_ticks + until_publish
+	if ~u64(0) - mixer.now_ticks < until_publish {return ~u64(0), true}
+	return mixer.now_ticks + until_publish, true
 }

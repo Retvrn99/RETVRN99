@@ -5,6 +5,12 @@ import "base:runtime"
 import "core:time"
 import win32 "core:sys/windows"
 
+foreign import kernel32 "system:Kernel32.lib"
+
+foreign kernel32 {
+	CancelWaitableTimer :: proc(timer: win32.HANDLE) -> win32.BOOL ---
+}
+
 Armable_Wake_Callback :: #type proc(ctx: rawptr)
 
 Armable_Wake :: struct {
@@ -69,4 +75,9 @@ armable_wake_arm :: proc(wake: ^Armable_Wake, duration: time.Duration) -> bool {
 	ticks_100ns := max(i64(1), (max(i64(duration), i64(1)) + 99) / 100)
 	due := win32.LARGE_INTEGER(-ticks_100ns)
 	return bool(win32.SetWaitableTimerEx(wake.timer, &due, 0, nil, nil, nil, 0))
+}
+
+armable_wake_disarm :: proc(wake: ^Armable_Wake) -> bool {
+	if wake == nil || wake.timer == nil || wake.registration == nil {return false}
+	return bool(CancelWaitableTimer(wake.timer))
 }

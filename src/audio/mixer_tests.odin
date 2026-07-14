@@ -32,12 +32,23 @@ test_audio_mixer_speaker_transition_area :: proc(t: ^testing.T) {
 		audio_mixer_advance_to(mixer, AUDIO_MASTER_CLOCK_HZ / AUDIO_OUTPUT_HZ),
 		u64(1),
 	)
-	testing.expect_value(t, audio_mixer_next_deadline_tick(mixer), AUDIO_MASTER_CLOCK_HZ / 1_000)
+	deadline, pending := audio_mixer_next_deadline_tick(mixer)
+	testing.expect(t, pending)
+	testing.expect_value(t, deadline, AUDIO_MASTER_CLOCK_HZ / 1_000)
 	audio_mixer_publish_pending(mixer)
 	frame: [1]Audio_Frame
 	audio_consumer_read(&consumer, frame[:])
 	testing.expect_value(t, frame[0], Audio_Frame{left = 4_000, right = 4_000})
 	testing.expect(t, !audio_mixer_set_speaker_state(mixer, 0, false, false))
+}
+
+@(test)
+test_audio_mixer_silence_has_no_deadline :: proc(t: ^testing.T) {
+	mixer := audio_test_new_mixer(t)
+	if mixer == nil {return}
+	defer free(mixer)
+	_, pending := audio_mixer_next_deadline_tick(mixer)
+	testing.expect(t, !pending)
 }
 
 audio_test_fill_cdda :: proc(frames: []Audio_Frame, content_frames: int) {

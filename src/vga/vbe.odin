@@ -52,6 +52,36 @@ vga_vbe_pitch :: proc(v: ^Vga) -> int {
 	return dispi_pitch(width, int(v.dispi[DISPI_INDEX_BPP]))
 }
 
+vga_gsw_present :: proc(v: ^Vga, width, height, pitch: u32, format: Gsw_Pixel_Format) -> bool {
+	if v == nil || width == 0 || height == 0 {return false}
+	bpp, bytes: u16
+	switch format {
+	case .Indexed_8: bpp, bytes = 8, 1
+	case .Rgb_555: bpp, bytes = 15, 2
+	case .Rgb_565: bpp, bytes = 16, 2
+	case .Rgb_888: bpp, bytes = 24, 3
+	case .Xrgb_8888: bpp, bytes = 32, 4
+	case: return false
+	}
+	if pitch % u32(bytes) != 0 {return false}
+	virtual_width := pitch / u32(bytes)
+	if width > u32(max(u16)) || height > u32(max(u16)) || virtual_width > u32(max(u16)) {return false}
+	candidate := v.dispi
+	candidate[DISPI_INDEX_XRES] = u16(width)
+	candidate[DISPI_INDEX_YRES] = u16(height)
+	candidate[DISPI_INDEX_BPP] = bpp
+	candidate[DISPI_INDEX_VIRT_WIDTH] = u16(virtual_width)
+	candidate[DISPI_INDEX_X_OFFSET] = 0
+	candidate[DISPI_INDEX_Y_OFFSET] = 0
+	candidate[DISPI_INDEX_ENABLE] = DISPI_ENABLED | DISPI_LFB_ENABLED | DISPI_NOCLEARMEM
+	if !dispi_mode_valid(&candidate) {return false}
+	v.dispi = candidate
+	v.video_on = true
+	vga_recalculate_timing(v)
+	vga_note_content_change(v)
+	return true
+}
+
 @(private = "package")
 dispi_pitch :: proc(width, bpp: int) -> int {
 	switch bpp {

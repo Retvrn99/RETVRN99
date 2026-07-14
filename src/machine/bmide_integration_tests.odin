@@ -168,7 +168,8 @@ bmide_machine_test_ata_write_commits_one_block_transaction :: proc(t: ^testing.T
 	machine_advance_time_ns(&m, 2_000_000)
 
 	testing.expect_value(t, block.writes, 1)
-	testing.expect_value(t, block.flushes, 1)
+	testing.expect_value(t, block.flushes, 0)
+	testing.expect(t, m.ide.writeback_pending)
 	testing.expect_value(t, block.last_lba, u64(3))
 	testing.expect_value(t, block.last_len, byte_count)
 	testing.expect(t, bmide_test_bytes_equal(

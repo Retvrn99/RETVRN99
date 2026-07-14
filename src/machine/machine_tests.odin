@@ -62,8 +62,8 @@ Machine_String_IO_Wake_Probe :: struct {
 	rearms: int,
 }
 
-machine_test_string_io_rearm :: proc(ctx: rawptr, delay_ns: u64) {
-	(^Machine_String_IO_Wake_Probe)(ctx).rearms += 1
+machine_test_string_io_rearm :: proc(ctx: rawptr, delay_ns: u64, pending: bool) {
+	if pending {(^Machine_String_IO_Wake_Probe)(ctx).rearms += 1}
 }
 
 @(test)
@@ -685,7 +685,7 @@ test_machine_master_clock_controls_all_device_time :: proc(t: ^testing.T) {
 	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
 	defer video.vga_destroy(&m.vga)
 	machine_advance_time_ns(&m, 1_000)
-	testing.expect_value(t, m.vga.timing.elapsed_ns, u64(1_000))
+	testing.expect_value(t, m.vga.timing.elapsed_ns, u64(0))
 	testing.expect_value(t, master_timeline_now(m.timeline), u64(6_600))
 
 	time.sleep(time.Millisecond)
@@ -697,6 +697,7 @@ test_machine_master_clock_controls_all_device_time :: proc(t: ^testing.T) {
 	_ = machine_text_snapshot(&m)
 	testing.expect(t, m.vga.timing.elapsed_ns > 1_000)
 	machine_clock_set_running(&m, false)
+	_ = machine_text_snapshot(&m)
 	frozen_time := m.vga.timing.elapsed_ns
 	time.sleep(time.Millisecond)
 	_ = machine_text_snapshot(&m)
@@ -713,7 +714,7 @@ test_machine_string_io_batches_time_sync_and_wake_rearm :: proc(t: ^testing.T) {
 	defer video.vga_destroy(&m.vga)
 	probe: Machine_String_IO_Wake_Probe
 	m.wake_ctx = &probe
-	m.wake_rearm = machine_test_string_io_rearm
+	m.wake_schedule = machine_test_string_io_rearm
 	m.clock_running = true
 	m.active_tick = time.tick_now()
 

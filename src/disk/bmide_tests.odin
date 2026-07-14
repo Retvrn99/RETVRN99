@@ -184,12 +184,11 @@ bmide_test_request :: proc(
 	device: ^Bmide_Test_Device,
 	direction: Bmide_Direction,
 	byte_count: u32,
-	bytes_per_second: u64,
+	ignored_rate: ..u64,
 ) -> Bmide_Request {
 	return {
 		direction = direction,
 		byte_count = byte_count,
-		bytes_per_second = bytes_per_second,
 		device = bmide_test_device_adapter(device),
 	}
 }
@@ -227,12 +226,12 @@ bmide_test_start :: proc(
 	channel: u8,
 	direction: Bmide_Direction,
 	byte_count: u32,
-	bytes_per_second: u64,
+	ignored_rate: ..u64,
 ) -> bool {
 	if !bmide_submit_request(
 		bm,
 		channel,
-		bmide_test_request(device, direction, byte_count, bytes_per_second),
+		bmide_test_request(device, direction, byte_count),
 	) {
 		return false
 	}
@@ -240,15 +239,13 @@ bmide_test_start :: proc(
 	if direction == .Device_To_Memory {command |= BMIDE_COMMAND_READ_FROM_DISK}
 	bmide_io_write(bm, channel * 8, 1, u32(command))
 	bmide_synchronize(bm, true, memory)
-	return bmide_channel_active(bm, channel)
+	return u8(bmide_io_read(bm, channel * 8 + 2, 1)) & BMIDE_STATUS_ERROR == 0
 }
 
 bmide_test_run_until_idle :: proc(bm: ^Bmide, memory: Bmide_Memory_Adapter) -> u8 {
 	events: u8
-	for steps := 0; steps < 100_000; steps += 1 {
-		deadline, pending := bmide_next_deadline(bm)
-		if !pending {return events}
-		events |= bmide_advance_to(bm, deadline, memory)
+	for index in 0 ..< BMIDE_CHANNEL_COUNT {
+		if bmide_interrupt_latched(bm, u8(index)) {events |= u8(1 << uint(index))}
 	}
 	return events
 }
@@ -285,7 +282,7 @@ bmide_test_register_banks_are_byte_decomposed :: proc(t: ^testing.T) {
 }
 
 @(test)
-bmide_test_device_to_memory_progresses_by_due_unit :: proc(t: ^testing.T) {
+bmide_test_device_to_memory_completes_one_bulk_transaction :: proc(t: ^testing.T) {
 	memory: Bmide_Test_Memory
 	device: Bmide_Test_Device
 	bmide_test_memory_init(&memory, 2 * 1024 * 1024)
@@ -305,15 +302,12 @@ bmide_test_device_to_memory_progresses_by_due_unit :: proc(t: ^testing.T) {
 		bmide_test_start(&bm, adapter, &device, 0, .Device_To_Memory, 1024, 1_024_000),
 	)
 	bmide_io_write(&bm, 4, 4, 0x4000)
-	testing.expect_value(t, bmide_io_read(&bm, 4, 4), BMIDE_TEST_TABLE)
-	deadline, pending := bmide_next_deadline(&bm)
-	testing.expect(t, pending)
-	testing.expect_value(t, bmide_advance_to(&bm, deadline - 1, adapter), u8(0))
-	testing.expect_value(t, memory.data[BMIDE_TEST_BUFFER], u8(0))
-	testing.expect_value(t, bmide_advance_to(&bm, deadline, adapter), u8(0))
+	testing.expect_value(t, bmide_io_read(&bm, 4, 4), u32(0x4000))
+	_, pending := bmide_next_deadline(&bm)
+	testing.expect(t, !pending)
 	testing.expect_value(t, device.reads, 1)
 	testing.expect_value(t, memory.data[BMIDE_TEST_BUFFER], device.source[0])
-	testing.expect_value(t, memory.data[BMIDE_TEST_BUFFER + 256], u8(0))
+	testing.expect_value(t, memory.data[BMIDE_TEST_BUFFER + 256], device.source[256])
 
 	events := bmide_test_run_until_idle(&bm, adapter)
 	testing.expect_value(t, events, u8(1))
@@ -324,14 +318,40 @@ bmide_test_device_to_memory_progresses_by_due_unit :: proc(t: ^testing.T) {
 			device.source,
 		),
 	)
-	testing.expect_value(t, device.reads, 3)
+	testing.expect_value(t, device.reads, 1)
 	testing.expect_value(t, device.commits, 1)
+	testing.expect_value(t, bm.transactions, u64(1))
+	testing.expect_value(t, bm.prd_spans, u64(1))
+	testing.expect_value(t, bm.bytes_moved, u64(1024))
 	testing.expect_value(t, device.aborts, 0)
 	testing.expect(t, !bmide_channel_active(&bm, 0))
 	testing.expect(t, bmide_interrupt_latched(&bm, 0))
 	testing.expect(t, bmide_take_irq(&bm, 0))
 	bmide_io_write(&bm, 2, 1, u32(BMIDE_STATUS_INTERRUPT))
 	testing.expect(t, !bmide_interrupt_latched(&bm, 0))
+}
+
+@(test)
+bmide_test_128k_request_coalesces_to_one_host_transaction :: proc(t: ^testing.T) {
+	memory: Bmide_Test_Memory
+	device: Bmide_Test_Device
+	bmide_test_memory_init(&memory, 1024 * 1024)
+	bmide_test_device_init(&device, 128 * 1024)
+	defer bmide_test_memory_destroy(&memory)
+	defer bmide_test_device_destroy(&device)
+	bmide_test_write_prd(&memory, BMIDE_TEST_TABLE, 0, 0x2_0000, 65_536, false)
+	bmide_test_write_prd(&memory, BMIDE_TEST_TABLE, 1, 0x3_0000, 65_536, true)
+	bm: Bmide
+	bmide_init(&bm)
+	bmide_test_program_prd(&bm, 0, BMIDE_TEST_TABLE)
+	adapter := bmide_test_memory_adapter(&memory)
+	testing.expect(t, bmide_test_start(&bm, adapter, &device, 0, .Device_To_Memory, 128 * 1024, 1))
+	testing.expect_value(t, bm.transactions, u64(1))
+	testing.expect_value(t, bm.host_calls, u64(1))
+	testing.expect_value(t, bm.prd_spans, u64(1))
+	testing.expect_value(t, device.reads, 1)
+	_, pending := bmide_next_deadline(&bm)
+	testing.expect(t, !pending)
 }
 
 @(test)
@@ -402,10 +422,8 @@ bmide_test_memory_to_device_commits_atomically :: proc(t: ^testing.T) {
 		t,
 		bmide_test_start(&bm, adapter, &device, 0, .Memory_To_Device, 1024, 1_024_000),
 	)
-	deadline, _ := bmide_next_deadline(&bm)
-	_ = bmide_advance_to(&bm, deadline, adapter)
-	testing.expect_value(t, device.stages, 1)
-	testing.expect_value(t, device.committed[0], u8(0))
+	testing.expect_value(t, device.stages, 2)
+	testing.expect_value(t, device.committed[0], expected[0])
 	_ = bmide_test_run_until_idle(&bm, adapter)
 	testing.expect_value(t, device.commits, 1)
 	testing.expect(t, bmide_test_bytes_equal(device.committed, expected[:]))
@@ -426,7 +444,7 @@ bmide_test_rejected_commit_aborts_transaction :: proc(t: ^testing.T) {
 	bmide_init(&bm)
 	bmide_test_program_prd(&bm, 0, BMIDE_TEST_TABLE)
 	adapter := bmide_test_memory_adapter(&memory)
-	testing.expect(t, bmide_test_start(&bm, adapter, &device, 0, .Memory_To_Device, 512, 512_000))
+	testing.expect(t, !bmide_test_start(&bm, adapter, &device, 0, .Memory_To_Device, 512, 512_000))
 	testing.expect_value(t, bmide_test_run_until_idle(&bm, adapter), u8(1))
 	testing.expect_value(t, device.commits, 0)
 	testing.expect_value(t, device.aborts, 1)
@@ -527,11 +545,11 @@ bmide_test_zero_prd_count_transfers_64k :: proc(t: ^testing.T) {
 		t,
 		bmide_test_start(&bm, adapter, &device, 0, .Device_To_Memory, 65_536, 65_536),
 	)
-	events := bmide_advance_to(&bm, BMIDE_COMMAND_LATENCY_TICKS + BMIDE_MASTER_CLOCK_HZ, adapter)
+	events := bmide_test_run_until_idle(&bm, adapter)
 	testing.expect_value(t, events, u8(1))
 	testing.expect_value(t, memory.data[0x1_0000], device.source[0])
 	testing.expect_value(t, memory.data[0x1_FFFF], device.source[65_535])
-	testing.expect_value(t, device.reads, 128)
+	testing.expect_value(t, device.reads, 1)
 }
 
 @(test)
@@ -560,9 +578,9 @@ bmide_test_channels_complete_independently :: proc(t: ^testing.T) {
 		t,
 		bmide_test_start(&bm, adapter, &secondary, 1, .Device_To_Memory, 512, 512_000),
 	)
-	deadline, pending := bmide_next_deadline(&bm)
-	testing.expect(t, pending)
-	testing.expect_value(t, bmide_advance_to(&bm, deadline, adapter), u8(3))
+	_, pending := bmide_next_deadline(&bm)
+	testing.expect(t, !pending)
+	testing.expect_value(t, bmide_test_run_until_idle(&bm, adapter), u8(3))
 	testing.expect(t, bmide_test_bytes_equal(memory.data[0x2_0000:0x2_0200], primary.source))
 	testing.expect(t, bmide_test_bytes_equal(memory.data[0x3_0000:0x3_0200], secondary.source))
 	testing.expect(t, bmide_take_irq(&bm, 0))
@@ -570,7 +588,7 @@ bmide_test_channels_complete_independently :: proc(t: ^testing.T) {
 }
 
 @(test)
-bmide_test_stop_and_pci_disable_abort_active_transfer :: proc(t: ^testing.T) {
+bmide_test_stop_and_pci_disable_leave_completed_transfer_intact :: proc(t: ^testing.T) {
 	memory: Bmide_Test_Memory
 	device: Bmide_Test_Device
 	bmide_test_memory_init(&memory, 1024 * 1024)
@@ -586,11 +604,9 @@ bmide_test_stop_and_pci_disable_abort_active_transfer :: proc(t: ^testing.T) {
 		t,
 		bmide_test_start(&bm, adapter, &device, 0, .Device_To_Memory, 1024, 1_024_000),
 	)
-	deadline, _ := bmide_next_deadline(&bm)
-	_ = bmide_advance_to(&bm, deadline, adapter)
 	bmide_io_write(&bm, 0, 1, 0)
-	testing.expect_value(t, device.aborts, 1)
-	testing.expect_value(t, u8(bmide_io_read(&bm, 2, 1)) & BMIDE_STATUS_ERROR, BMIDE_STATUS_ERROR)
+	testing.expect_value(t, device.aborts, 0)
+	testing.expect_value(t, u8(bmide_io_read(&bm, 2, 1)) & BMIDE_STATUS_ERROR, u8(0))
 
 	bmide_reset_channel(&bm, 0)
 	bmide_test_device_reset_stats(&device)
@@ -600,7 +616,7 @@ bmide_test_stop_and_pci_disable_abort_active_transfer :: proc(t: ^testing.T) {
 		bmide_test_start(&bm, adapter, &device, 0, .Device_To_Memory, 1024, 1_024_000),
 	)
 	bmide_synchronize(&bm, false, adapter)
-	testing.expect_value(t, device.aborts, 1)
+	testing.expect_value(t, device.aborts, 0)
 	testing.expect(t, !bmide_channel_active(&bm, 0))
 }
 

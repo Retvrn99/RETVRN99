@@ -75,6 +75,22 @@ try {
         Assert-Equal $metric.source 'QCONSOLE.LOG'
     }
 
+    Invoke-SelfTest 'Amplification gates reject sectorized storage and silent audio work' {
+        $good = [pscustomobject]@{
+            audio = [pscustomobject]@{ frames_produced = 0 }
+            execution = [pscustomobject]@{
+                storage_host_calls = 1; storage_transactions = 1
+                scheduler_dispatches = 5; device_advances = 5; audio_blocks = 0
+            }
+        }
+        Assert-True (Test-AmplificationResult -Result $good).passed
+        $good.execution.storage_host_calls = 2
+        Assert-True (-not (Test-AmplificationResult -Result $good).passed)
+        $good.execution.storage_host_calls = 1
+        $good.execution.audio_blocks = 1
+        Assert-True (-not (Test-AmplificationResult -Result $good).passed)
+    }
+
     Invoke-SelfTest 'Metric parsers reject incomplete output' {
         Assert-Throws { Parse-DoomTimedemo -Sources @([pscustomobject]@{ name = 'x'; text = '2134 ticks' }) } 'not found'
         Assert-Throws { Parse-QuakeTimedemo -Sources @([pscustomobject]@{ name = 'x'; text = '969 frames' }) } 'not found'

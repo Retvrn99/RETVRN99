@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import persona "../persona"
+
 // Register behavior selectively adapted from IzarraVM d930de57acccbc6a70cda8cc5a603173bf23cd1c.
 
 GSW_PCI_VENDOR_ID :: u16(0xFFFE) // private development ID; not PCI-SIG assigned
 GSW_CHIPSET_PCI_DEVICE_ID :: u16(0x0001)
 GSW_CHIPSET_CAPABILITY_OFFSET :: 0x40
 GSW_CHIPSET_CAPABILITY_SIGNATURE :: u32(0x4357_5347) // "GSWC"
-GSW_CHIPSET_CAPABILITY_VERSION :: u16(1)
+GSW_CHIPSET_CAPABILITY_VERSION :: u16(2)
 GSW_CHIPSET_CAPABILITY_LENGTH :: u16(0x14)
-GSW_CHIPSET_RAM_MIB :: u16(256)
-GSW_CHIPSET_CPU_MHZ :: u16(700)
-GSW_CHIPSET_MAX_UDMA_MODE :: u8(4)
-GSW_CHIPSET_CD_SPEED :: u8(52)
-GSW_CHIPSET_DVD_SPEED :: u8(10)
+GSW_CHIPSET_RAM_MIB :: persona.GUEST_PERSONA.ram_mib
+GSW_CHIPSET_CPU_MHZ :: persona.GUEST_PERSONA.cpu_mhz
+GSW_CHIPSET_MAX_UDMA_MODE :: persona.GUEST_PERSONA.max_udma_mode
+GSW_CHIPSET_CD_SPEED :: persona.GUEST_PERSONA.cd_speed
+GSW_CHIPSET_DVD_SPEED :: persona.GUEST_PERSONA.dvd_speed
 GSW_CHIPSET_FLAG_PC133 :: u8(1 << 0)
 GSW_CHIPSET_FLAG_BUS_MASTER_IDE :: u8(1 << 1)
 GSW_CHIPSET_FLAG_DVD :: u8(1 << 2)
@@ -23,10 +25,17 @@ GSW_CHIPSET_CAPABILITY_FLAGS ::
 	GSW_CHIPSET_FLAG_BUS_MASTER_IDE |
 	GSW_CHIPSET_FLAG_DVD |
 	GSW_CHIPSET_FLAG_LEGACY_PC_AT
-GSW_CHIPSET_MASTER_TIMELINE_MHZ :: u16(6600)
+GSW_CHIPSET_RESERVED_TIMELINE :: u16(0)
+GSW_VGA_PCI_DEVICE_ID :: u16(0x0002)
+GSW_VGA_CAPABILITY_OFFSET :: 0x40
+GSW_VGA_CAPABILITY_SIGNATURE :: u32(0x5657_5347) // "GSWV"
+GSW_VGA_CAPABILITY_VERSION :: u16(1)
+GSW_VGA_CAPABILITY_LENGTH :: u16(0x14)
+GSW_VGA_CONTROL_BAR :: u32(0xF100_0000)
+GSW_VGA_FRAMEBUFFER_BAR :: u32(0xE000_0000)
 
 PCI_CONFIG_ADDRESS_MASK :: u32(0x80FF_FFFC)
-PCI_FUNCTION_COUNT :: 4
+PCI_FUNCTION_COUNT :: 5
 PCI_MECHANISM_2_KEY_MASK :: u8(0xF1)
 PCI_MECHANISM_2_KEY :: u8(0xF0)
 PIIX3_PIRQ_COUNT :: 4
@@ -41,6 +50,8 @@ Pci_Function :: struct {
 	cfg:        [256]u8,
 	write_mask: [256]u8,
 	w1c_mask:   [256]u8,
+	bar_size_mask: [6]u32,
+	bar_probe:     [6]bool,
 }
 
 Pci :: struct {
@@ -154,7 +165,33 @@ pci_init :: proc(p: ^Pci) {
 	chipset.cfg[cap + 13] = GSW_CHIPSET_CD_SPEED
 	chipset.cfg[cap + 14] = GSW_CHIPSET_DVD_SPEED
 	chipset.cfg[cap + 15] = GSW_CHIPSET_CAPABILITY_FLAGS
-	pci_seed_u16(&chipset.cfg, cap + 16, GSW_CHIPSET_MASTER_TIMELINE_MHZ)
+	pci_seed_u16(&chipset.cfg, cap + 16, GSW_CHIPSET_RESERVED_TIMELINE)
+
+	graphics := &p.functions[4]
+	pci_seed_function(graphics, 0, 2, 0, GSW_PCI_VENDOR_ID, GSW_VGA_PCI_DEVICE_ID)
+	graphics.cfg[0x08] = 0x01
+	graphics.cfg[0x0A] = 0x00
+	graphics.cfg[0x0B] = 0x03
+	pci_seed_command_status(graphics, 0x0006, 0x0006, 0x0200, 0x7800)
+	pci_seed_u16(&graphics.cfg, 0x2C, GSW_PCI_VENDOR_ID)
+	pci_seed_u16(&graphics.cfg, 0x2E, GSW_VGA_PCI_DEVICE_ID)
+	for i in 0 ..< 4 {
+		graphics.cfg[0x10 + i] = u8(GSW_VGA_CONTROL_BAR >> (8 * uint(i)))
+		graphics.cfg[0x14 + i] = u8(GSW_VGA_FRAMEBUFFER_BAR >> (8 * uint(i)))
+	}
+	graphics.bar_size_mask[0] = 0xFFFF_F000
+	graphics.bar_size_mask[1] = 0xFE00_0000
+	graphics.cfg[0x3C] = 11
+	graphics.cfg[0x3D] = 1
+	cap = GSW_VGA_CAPABILITY_OFFSET
+	for i in 0 ..< 4 {graphics.cfg[cap + i] = u8(GSW_VGA_CAPABILITY_SIGNATURE >> (8 * uint(i)))}
+	pci_seed_u16(&graphics.cfg, cap + 4, GSW_VGA_CAPABILITY_VERSION)
+	pci_seed_u16(&graphics.cfg, cap + 6, GSW_VGA_CAPABILITY_LENGTH)
+	pci_seed_u16(&graphics.cfg, cap + 8, u16(persona.GUEST_PERSONA.vram_bytes / (1024 * 1024)))
+	pci_seed_u16(&graphics.cfg, cap + 10, persona.GUEST_PERSONA.graphics_core_mhz)
+	graphics.cfg[cap + 12] = persona.GUEST_PERSONA.graphics_agp_rate
+	graphics.cfg[cap + 13] = 1
+	graphics.cfg[cap + 14] = 0x03
 }
 
 @(private = "file")
@@ -197,15 +234,36 @@ pci_config_access_valid :: proc(reg: u32, size: u8) -> bool {
 pci_config_read :: proc(f: ^Pci_Function, reg: u32, size: u8) -> u32 {
 	if f == nil || !pci_config_access_valid(reg, size) {return pci_size_mask(size)}
 	value: u32
-	for i in 0 ..< u32(size) {value |= u32(f.cfg[reg + i]) << (8 * i)}
+	for i in 0 ..< u32(size) {
+		index := reg + i
+		byte := f.cfg[index]
+		if index >= 0x10 && index < 0x28 {
+			bar := int((index - 0x10) / 4)
+			if f.bar_probe[bar] {
+				byte = u8(f.bar_size_mask[bar] >> (8 * ((index - 0x10) & 3)))
+			}
+		}
+		value |= u32(byte) << (8 * i)
+	}
 	return value
 }
 
 @(private = "file")
 pci_config_write :: proc(f: ^Pci_Function, reg: u32, size: u8, value: u32) {
 	if f == nil || !pci_config_access_valid(reg, size) {return}
+	if size == 4 && reg >= 0x10 && reg < 0x28 && reg & 3 == 0 {
+		bar := int((reg - 0x10) / 4)
+		if f.bar_size_mask[bar] != 0 {
+			f.bar_probe[bar] = value == 0xFFFF_FFFF
+			return
+		}
+	}
 	for i in 0 ..< u32(size) {
 		index := reg + i
+		if index >= 0x10 && index < 0x28 {
+			bar := int((index - 0x10) / 4)
+			if f.bar_size_mask[bar] != 0 {f.bar_probe[bar] = false}
+		}
 		old := f.cfg[index]
 		incoming := u8(value >> (8 * i))
 		writable := f.write_mask[index] & ~f.w1c_mask[index]
@@ -313,6 +371,12 @@ pci_ide_io_enabled :: proc(p: ^Pci) -> bool {
 
 pci_ide_bus_master_enabled :: proc(p: ^Pci) -> bool {
 	return (pci_ide_command(p) & 0x0004) != 0
+}
+
+pci_gsw_vga_memory_enabled :: proc(p: ^Pci) -> bool {
+	graphics := &p.functions[4]
+	command := u16(graphics.cfg[0x04]) | u16(graphics.cfg[0x05]) << 8
+	return command & 0x0002 != 0
 }
 
 pci_ide_bus_master_io_base :: proc(p: ^Pci) -> (base: u16, valid: bool) {

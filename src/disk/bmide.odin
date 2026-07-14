@@ -9,7 +9,6 @@ BMIDE_COMMAND_LATENCY_TICKS :: BMIDE_MASTER_CLOCK_HZ / 10_000
 BMIDE_CHANNEL_COUNT :: 2
 BMIDE_IO_SIZE :: 16
 BMIDE_MAX_PRDS :: 512
-BMIDE_DMA_UNIT_BYTES :: 512
 
 BMIDE_COMMAND_START :: u8(0x01)
 BMIDE_COMMAND_READ_FROM_DISK :: u8(0x08)
@@ -31,6 +30,7 @@ Bmide_Memory_Adapter :: struct {
 	size:  u64,
 	read:  proc(ctx: rawptr, address: u64, data: []u8) -> bool,
 	write: proc(ctx: rawptr, address: u64, data: []u8) -> bool,
+	direct: proc(ctx: rawptr, address: u64, length: int, write: bool) -> ([]u8, bool),
 }
 
 Bmide_Device_Adapter :: struct {
@@ -50,7 +50,6 @@ Bmide_Device_Adapter :: struct {
 Bmide_Request :: struct {
 	direction:        Bmide_Direction,
 	byte_count:       u32,
-	bytes_per_second: u64,
 	device:           Bmide_Device_Adapter,
 }
 
@@ -64,13 +63,8 @@ Bmide_Transfer :: struct {
 	direction:     Bmide_Direction,
 	spans:         [BMIDE_MAX_PRDS]Bmide_Prd_Span,
 	span_count:    int,
-	span_index:    int,
-	span_offset:   u32,
 	completed:     u32,
 	byte_count:    u32,
-	bytes_per_sec: u64,
-	start_tick:    u64,
-	next_tick:     u64,
 	retires_eot:   bool,
 }
 
@@ -83,12 +77,16 @@ Bmide_Channel :: struct {
 	transfer:                  Bmide_Transfer,
 	completion_waits_for_stop: bool,
 	irq_signal:                bool,
-	scratch:                   [BMIDE_DMA_UNIT_BYTES]u8,
 }
 
 Bmide :: struct {
-	now_tick: u64,
-	channels: [BMIDE_CHANNEL_COUNT]Bmide_Channel,
+	now_tick:      u64,
+	channels:      [BMIDE_CHANNEL_COUNT]Bmide_Channel,
+	transactions:  u64,
+	bytes_moved:   u64,
+	prd_spans:     u64,
+	memory_copies: u64,
+	host_calls:    u64,
 }
 
 bmide_init :: proc(bm: ^Bmide) {
@@ -225,9 +223,7 @@ bmide_io_write :: proc(bm: ^Bmide, offset, size: u8, value: u32) {
 }
 
 bmide_submit_request :: proc(bm: ^Bmide, channel_index: u8, request: Bmide_Request) -> bool {
-	if channel_index >= BMIDE_CHANNEL_COUNT ||
-	   request.byte_count == 0 ||
-	   request.bytes_per_second == 0 {
+	if channel_index >= BMIDE_CHANNEL_COUNT || request.byte_count == 0 {
 		return false
 	}
 	channel := &bm.channels[channel_index]
@@ -271,6 +267,19 @@ bmide_memory_write :: proc(memory: Bmide_Memory_Adapter, address: u64, data: []u
 		bmide_memory_range_valid(memory, address, u64(len(data))) &&
 		memory.write(memory.ctx, address, data) \
 	)
+}
+
+@(private = "file")
+bmide_memory_map :: proc(
+	memory: Bmide_Memory_Adapter,
+	address: u64,
+	length: int,
+	write: bool,
+) -> ([]u8, bool) {
+	if memory.direct == nil || length < 0 || !bmide_memory_range_valid(memory, address, u64(length)) {
+		return nil, false
+	}
+	return memory.direct(memory.ctx, address, length, write)
 }
 
 @(private = "file")
@@ -320,11 +329,20 @@ bmide_parse_prds :: proc(
 		if !bmide_memory_range_valid(memory, u64(effective_address), u64(count)) {return false}
 		remaining := u64(request.byte_count) - covered
 		used := u32(min(u64(count), remaining))
-		transfer.spans[index] = {
-			address = effective_address,
-			length  = used,
+		span_index := transfer.span_count
+		if span_index > 0 {
+			previous := &transfer.spans[span_index - 1]
+			if u64(previous.address) + u64(previous.length) == u64(effective_address) &&
+			   u64(previous.length) + u64(used) <= u64(max(u32)) {
+				previous.length += used
+			} else {
+				transfer.spans[span_index] = {address = effective_address, length = used}
+				transfer.span_count += 1
+			}
+		} else {
+			transfer.spans[0] = {address = effective_address, length = used}
+			transfer.span_count = 1
 		}
-		transfer.span_count = index + 1
 		covered += u64(used)
 		if covered == u64(request.byte_count) {
 			transfer.retires_eot = used == count && descriptor & BMIDE_PRD_EOT != 0
@@ -333,40 +351,6 @@ bmide_parse_prds :: proc(
 		if descriptor & BMIDE_PRD_EOT != 0 {return false}
 	}
 	return false
-}
-
-@(private = "file")
-bmide_saturating_add :: proc(left, right: u64) -> u64 {
-	if right > ~u64(0) - left {return ~u64(0)}
-	return left + right
-}
-
-@(private = "file")
-bmide_data_ticks :: proc(bytes, bytes_per_second: u64) -> u64 {
-	numerator := u128(bytes) * u128(BMIDE_MASTER_CLOCK_HZ)
-	value := (numerator + u128(bytes_per_second) - 1) / u128(bytes_per_second)
-	return value > u128(~u64(0)) ? ~u64(0) : u64(value)
-}
-
-@(private = "file")
-bmide_next_unit_length :: proc(transfer: ^Bmide_Transfer) -> u32 {
-	if !transfer.active || transfer.span_index >= transfer.span_count {return 0}
-	span := transfer.spans[transfer.span_index]
-	span_remaining := span.length - transfer.span_offset
-	transfer_remaining := transfer.byte_count - transfer.completed
-	return min(min(span_remaining, transfer_remaining), u32(BMIDE_DMA_UNIT_BYTES))
-}
-
-@(private = "file")
-bmide_schedule_next_unit :: proc(transfer: ^Bmide_Transfer) -> bool {
-	unit := bmide_next_unit_length(transfer)
-	if unit == 0 {return false}
-	data_tick := bmide_data_ticks(u64(transfer.completed) + u64(unit), transfer.bytes_per_sec)
-	transfer.next_tick = bmide_saturating_add(
-		bmide_saturating_add(transfer.start_tick, BMIDE_COMMAND_LATENCY_TICKS),
-		data_tick,
-	)
-	return true
 }
 
 @(private = "file")
@@ -395,10 +379,8 @@ bmide_arm_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Ad
 		return
 	}
 	transfer := Bmide_Transfer {
-		direction     = request.direction,
-		byte_count    = request.byte_count,
-		bytes_per_sec = request.bytes_per_second,
-		start_tick    = bm.now_tick,
+		direction  = request.direction,
+		byte_count = request.byte_count,
 	}
 	if !bmide_parse_prds(memory, request, channel.prd_address, &transfer) {
 		bmide_fail_channel(channel, channel_index)
@@ -415,13 +397,12 @@ bmide_arm_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Ad
 		return
 	}
 	transfer.active = true
-	if !bmide_schedule_next_unit(&transfer) {
-		bmide_fail_channel(channel, channel_index)
-		return
-	}
 	channel.transfer = transfer
 	channel.completion_waits_for_stop = false
 	channel.status |= BMIDE_STATUS_ACTIVE
+	if !bmide_transfer_channel(bm, channel_index, memory) {
+		bmide_fail_channel(channel, channel_index)
+	}
 }
 
 bmide_synchronize :: proc(bm: ^Bmide, bus_master_enabled: bool, memory: Bmide_Memory_Adapter) {
@@ -469,58 +450,43 @@ bmide_complete_channel :: proc(channel: ^Bmide_Channel, channel_index: u8) -> bo
 }
 
 @(private = "file")
-bmide_step_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Adapter) -> bool {
+bmide_transfer_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Adapter) -> bool {
+	bm.host_calls += 1
 	channel := &bm.channels[channel_index]
 	transfer := &channel.transfer
-	unit := bmide_next_unit_length(transfer)
-	if unit == 0 {
-		bmide_fail_channel(channel, channel_index)
-		return true
-	}
-	span := transfer.spans[transfer.span_index]
-	address := u64(span.address) + u64(transfer.span_offset)
-	data := channel.scratch[:int(unit)]
 	adapter := channel.request.device
-	ok := false
-	switch transfer.direction {
-	case .Device_To_Memory:
-		ok =
-			adapter.read(adapter.ctx, channel_index, transfer.completed, data) &&
-			bmide_memory_write(memory, address, data)
-	case .Memory_To_Device:
-		ok =
-			bmide_memory_read(memory, address, data) &&
-			adapter.stage_write(adapter.ctx, channel_index, transfer.completed, data)
+	for span in transfer.spans[:transfer.span_count] {
+		length := int(span.length)
+		data, mapped := bmide_memory_map(
+			memory,
+			u64(span.address),
+			length,
+			transfer.direction == .Device_To_Memory,
+		)
+		if !mapped {data = make([]u8, length, context.temp_allocator)}
+		ok := false
+		switch transfer.direction {
+		case .Device_To_Memory:
+			ok = adapter.read(adapter.ctx, channel_index, transfer.completed, data)
+			if ok && !mapped {ok = bmide_memory_write(memory, u64(span.address), data)}
+		case .Memory_To_Device:
+			ok = mapped || bmide_memory_read(memory, u64(span.address), data)
+			if ok {ok = adapter.stage_write(adapter.ctx, channel_index, transfer.completed, data)}
+		}
+		if !ok {return false}
+		if !mapped {bm.memory_copies += 1}
+		transfer.completed += span.length
 	}
-	if !ok {
-		bmide_fail_channel(channel, channel_index)
-		return true
-	}
-	transfer.completed += unit
-	transfer.span_offset += unit
-	if transfer.span_offset == span.length {
-		transfer.span_index += 1
-		transfer.span_offset = 0
-	}
-	if transfer.completed == transfer.byte_count {
-		return bmide_complete_channel(channel, channel_index)
-	}
-	if !bmide_schedule_next_unit(transfer) {
-		bmide_fail_channel(channel, channel_index)
-		return true
-	}
-	return false
+	if transfer.completed != transfer.byte_count {return false}
+	bm.transactions += 1
+	bm.bytes_moved += u64(transfer.completed)
+	bm.prd_spans += u64(transfer.span_count)
+	_ = bmide_complete_channel(channel, channel_index)
+	return true
 }
 
 bmide_next_deadline :: proc(bm: ^Bmide) -> (deadline: u64, pending: bool) {
-	for &channel in bm.channels {
-		if !channel.transfer.active {continue}
-		if !pending || channel.transfer.next_tick < deadline {
-			deadline = channel.transfer.next_tick
-			pending = true
-		}
-	}
-	return
+	return 0, false
 }
 
 bmide_advance_to :: proc(
@@ -531,25 +497,12 @@ bmide_advance_to :: proc(
 	irq_mask: u8,
 ) {
 	if target_tick < bm.now_tick {return 0}
-	for {
-		deadline, pending := bmide_next_deadline(bm)
-		if !pending || deadline > target_tick {break}
-		bm.now_tick = deadline
-		for index in 0 ..< BMIDE_CHANNEL_COUNT {
-			channel := &bm.channels[index]
-			if channel.transfer.active &&
-			   channel.transfer.next_tick == deadline &&
-			   bmide_step_channel(bm, u8(index), memory) {
-				irq_mask |= u8(1 << uint(index))
-			}
-		}
-	}
 	bm.now_tick = target_tick
 	return
 }
 
 bmide_advance :: proc(bm: ^Bmide, master_ticks: u64, memory: Bmide_Memory_Adapter) -> u8 {
-	target := bmide_saturating_add(bm.now_tick, master_ticks)
+	target := bm.now_tick + min(master_ticks, ~u64(0) - bm.now_tick)
 	return bmide_advance_to(bm, target, memory)
 }
 

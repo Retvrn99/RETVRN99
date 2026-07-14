@@ -125,6 +125,40 @@ disc_image_read_data_sector :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> 
 	return disc_image_read_exact(image.file, offset, out)
 }
 
+disc_image_read_data_sectors :: proc(
+	image: ^Disc_Image,
+	lba, count: u32,
+	out: []u8,
+) -> bool {
+	if count == 0 {return len(out) == 0}
+	if u64(count) * DISC_DATA_SECTOR_SIZE != u64(len(out)) {return false}
+	cursor := lba
+	remaining := count
+	written := 0
+	for remaining > 0 {
+		track, ok := disc_image_track_at_lba(image, cursor)
+		if !ok || track.mode == .Audio_2352 {return false}
+		track_end := u64(track.start_lba) + u64(track.sector_count)
+		run := u32(min(track_end - u64(cursor), u64(remaining)))
+		if run == 0 {return false}
+		if track.mode == .Mode1_2048 {
+			bytes := int(run) * DISC_DATA_SECTOR_SIZE
+			offset := track.file_offset + u64(cursor - track.start_lba) * DISC_DATA_SECTOR_SIZE
+			if !disc_image_read_exact(image.file, offset, out[written:written + bytes]) {return false}
+			written += bytes
+		} else {
+			for index in 0 ..< run {
+				sector := out[written:written + DISC_DATA_SECTOR_SIZE]
+				if !disc_image_read_data_sector(image, cursor + index, sector) {return false}
+				written += DISC_DATA_SECTOR_SIZE
+			}
+		}
+		cursor += run
+		remaining -= run
+	}
+	return true
+}
+
 disc_image_read_audio_frame :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> bool {
 	if len(out) != DISC_RAW_SECTOR_SIZE {
 		return false

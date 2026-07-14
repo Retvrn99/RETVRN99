@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package disk
 
+import persona "../persona"
 import "core:os"
 import "core:fmt"
 import "core:path/filepath"
@@ -164,7 +165,7 @@ atapi_test_read_capacity_and_multiblock_read_10 :: proc(t: ^testing.T) {
 	second: [CDROM_SECTOR_SIZE]u8
 	atapi_test_read(&a, first[:])
 	testing.expect_value(t, first[0], u8(18))
-	testing.expect(t, atapi_test_inb(&a, 0x177) & ATAPI_STATUS_BSY != 0)
+	testing.expect(t, atapi_test_inb(&a, 0x177) & ATAPI_STATUS_DRQ != 0)
 	atapi_test_read(&a, second[:])
 	testing.expect_value(t, second[0], u8(19))
 	testing.expect(t, atapi_test_inb(&a, 0x177) & ATAPI_STATUS_DRQ == 0)
@@ -393,7 +394,7 @@ atapi_test_packet_trace_is_bounded_and_dispatch_labeled :: proc(t: ^testing.T) {
 }
 
 @(test)
-atapi_test_data_phase_obeys_52x_deadline :: proc(t: ^testing.T) {
+atapi_test_data_phase_is_host_speed_while_reporting_52x :: proc(t: ^testing.T) {
 	path := cdrom_test_iso(t)
 	defer os.remove(path)
 	a: Atapi
@@ -404,25 +405,16 @@ atapi_test_data_phase_obeys_52x_deadline :: proc(t: ^testing.T) {
 	read: [ATAPI_PACKET_BYTES]u8
 	read[0], read[5], read[8] = 0x28, 18, 1
 	atapi_test_packet(&a, read)
-	testing.expect(t, a.data_pending)
-	testing.expect(t, a.reg_status & ATAPI_STATUS_BSY != 0)
-	deadline, pending := atapi_next_deadline(&a)
-	testing.expect(t, pending)
-	testing.expect_value(
-		t,
-		deadline,
-		u64(DISC_DATA_SECTOR_SIZE) * ATAPI_MASTER_CLOCK_HZ /
-			u64(DISC_DATA_SECTOR_SIZE * DISC_FRAMES_PER_SECOND * 52),
-	)
-	atapi_advance_to(&a, deadline - 1)
-	testing.expect(t, a.reg_status & ATAPI_STATUS_BSY != 0)
-	atapi_advance_to(&a, deadline)
+	testing.expect(t, !a.data_pending)
+	_, pending := atapi_next_deadline(&a)
+	testing.expect(t, !pending)
 	testing.expect(t, a.reg_status & ATAPI_STATUS_DRQ != 0)
 	testing.expect_value(t, atapi_test_inw(&a) & 0xFF, u16(18))
+	testing.expect_value(t, persona.GUEST_PERSONA.cd_speed, u8(52))
 }
 
 @(test)
-atapi_test_dvd_media_uses_10x_data_rate :: proc(t: ^testing.T) {
+atapi_test_dvd_media_reports_10x_without_pacing_data :: proc(t: ^testing.T) {
 	path := cdrom_test_iso(t)
 	defer os.remove(path)
 	a: Atapi
@@ -433,16 +425,8 @@ atapi_test_dvd_media_uses_10x_data_rate :: proc(t: ^testing.T) {
 	read: [ATAPI_PACKET_BYTES]u8
 	read[0], read[5], read[8] = 0x28, 18, 1
 	atapi_test_packet(&a, read)
-	deadline, pending := atapi_next_deadline(&a)
-	testing.expect(t, pending)
-	testing.expect_value(
-		t,
-		deadline,
-		u64(DISC_DATA_SECTOR_SIZE) * ATAPI_MASTER_CLOCK_HZ /
-			ATAPI_DVD_DATA_BYTES_PER_SECOND,
-	)
-
-	atapi_advance_to(&a, deadline)
+	_, pending := atapi_next_deadline(&a)
+	testing.expect(t, !pending)
 	sector: [DISC_DATA_SECTOR_SIZE]u8
 	atapi_test_read(&a, sector[:])
 	mode: [ATAPI_PACKET_BYTES]u8
@@ -509,7 +493,7 @@ atapi_test_dvd_dma_request_uses_10x_data_rate :: proc(t: ^testing.T) {
 	atapi_test_packet(&a, read)
 	request, pending := atapi_bmide_request(&a)
 	testing.expect(t, pending)
-	testing.expect_value(t, request.bytes_per_second, ATAPI_DVD_DATA_BYTES_PER_SECOND)
+	testing.expect_value(t, persona.GUEST_PERSONA.dvd_speed, u8(10))
 }
 
 Atapi_Test_Cdda_Sink :: struct {

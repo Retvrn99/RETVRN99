@@ -14,8 +14,12 @@ ide_cancel_pio :: proc(ide: ^Ide) {
 }
 
 ide_next_deadline :: proc(ide: ^Ide) -> (u64, bool) {
-	if ide == nil || ide.deadline_action == .None {return 0, false}
-	return ide.deadline_tick, true
+	if ide == nil {return 0, false}
+	command_pending := ide.deadline_action != .None
+	writeback_pending := ide.writeback_pending && ide.writeback_deadline_tick != 0
+	if !command_pending {return ide.writeback_deadline_tick, writeback_pending}
+	if !writeback_pending {return ide.deadline_tick, true}
+	return min(ide.deadline_tick, ide.writeback_deadline_tick), true
 }
 
 @(private = "file")
@@ -28,11 +32,11 @@ ide_publish_data_in :: proc(ide: ^Ide) {
 @(private = "file")
 ide_complete_write :: proc(ide: ^Ide) {
 	if ide.pio_staged_bytes <= 0 ||
-	   !ide.bd.write(ide.bd.ctx, ide.pio_start_lba, ide.dma_buf[:ide.pio_staged_bytes]) ||
-	   !ide_flush(ide) {
+	   !ide.bd.write(ide.bd.ctx, ide.pio_start_lba, ide.dma_buf[:ide.pio_staged_bytes]) {
 		ide_abort(ide)
 		return
 	}
+	ide_note_writeback(ide)
 	sectors := u64(ide.pio_staged_bytes / IDE_SECTOR_SIZE)
 	ide_dma_set_taskfile_lba(ide, ide.pio_start_lba + sectors)
 	ide.reg_seccount = 0
@@ -62,7 +66,7 @@ ide_service_deadline :: proc(ide: ^Ide, action: Ide_Deadline_Action) {
 		ide.reg_status = IDE_STATUS_DRDY
 		ide_raise_irq(ide)
 	case .Flush_Complete:
-		if !ide_flush(ide) {ide_abort(ide); return}
+		if !ide_checkpoint(ide) {ide_abort(ide); return}
 		ide.state = .Idle
 		ide.reg_status = IDE_STATUS_DRDY
 		ide_raise_irq(ide)
@@ -72,11 +76,18 @@ ide_service_deadline :: proc(ide: ^Ide, action: Ide_Deadline_Action) {
 
 ide_advance_to :: proc(ide: ^Ide, tick: u64) {
 	if ide == nil || tick < ide.now_tick {return}
-	for ide.deadline_action != .None && ide.deadline_tick <= tick {
-		ide.now_tick = ide.deadline_tick
-		action := ide.deadline_action
-		ide.deadline_action = .None
-		ide_service_deadline(ide, action)
+	for {
+		deadline, pending := ide_next_deadline(ide)
+		if !pending || deadline > tick {break}
+		ide.now_tick = deadline
+		if ide.deadline_action != .None && ide.deadline_tick == deadline {
+			action := ide.deadline_action
+			ide.deadline_action = .None
+			ide_service_deadline(ide, action)
+		}
+		if ide.writeback_pending && ide.writeback_deadline_tick == deadline {
+			_ = ide_checkpoint(ide)
+		}
 	}
 	ide.now_tick = tick
 }

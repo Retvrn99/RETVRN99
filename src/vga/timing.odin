@@ -64,6 +64,16 @@ vga_sync_to :: proc(v: ^Vga, now_ns: u64) {
 	v.timing.elapsed_ns = now_ns
 }
 
+vga_begin_raster_change :: proc(v: ^Vga, now_ns: u64) {
+	if v == nil {return}
+	period := max(v.timing.frame_period_ns, u64(1))
+	was_active := v.raster_fallback
+	v.raster_fallback = true
+	v.raster_change_frame = now_ns / period
+	if !was_active && now_ns <= v.timing.elapsed_ns {scanout_begin_raster_change(v, now_ns)}
+	vga_sync_to(v, now_ns)
+}
+
 vga_advance :: proc(v: ^Vga, now_ns: u64) {
 	vga_sync_to(v, now_ns)
 }

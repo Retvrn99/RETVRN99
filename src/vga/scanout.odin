@@ -91,6 +91,8 @@ vga_display_frame :: proc(v: ^Vga) -> ^Display_Frame {
 		render_vbe(v, v.frame_pixels, width, height)
 	case .Invalid:
 	}
+	v.full_frame_renders += 1
+	v.frame_valid = true
 	return &v.frame
 }
 
@@ -100,6 +102,19 @@ scanout_sync :: proc(v: ^Vga, old_ns, now_ns: u64) {
 	old_frame := old_ns / period
 	new_frame := now_ns / period
 	start_latch := start_retrace_crossed(v, old_ns, now_ns)
+	if v.defer_scanout_conversion {
+		v.raster_valid = false
+		if start_latch {latch_display_start(v)}
+		if v.raster_fallback && new_frame >= v.raster_change_frame + 3 {
+			v.raster_fallback = false
+		}
+		return
+	}
+	if !v.raster_fallback {
+		v.raster_valid = false
+		if start_latch {latch_display_start(v)}
+		return
+	}
 	if !video_output_enabled(v) || period < 1_000_000 {
 		v.raster_valid = false
 		if start_latch {latch_display_start(v)}
@@ -115,8 +130,21 @@ scanout_sync :: proc(v: ^Vga, old_ns, now_ns: u64) {
 	scanout_capture_through_line(v, v.raster_height - 1)
 	scanout_finalize(v)
 	if start_latch {latch_display_start(v)}
+	if new_frame >= v.raster_change_frame + 3 {
+		v.raster_fallback = false
+		v.raster_valid = false
+		return
+	}
 	scanout_prepare(v, new_frame)
 	scanout_capture_through_time(v, now_ns % period)
+}
+
+@(private = "package")
+scanout_begin_raster_change :: proc(v: ^Vga, now_ns: u64) {
+	if v.defer_scanout_conversion {return}
+	period := max(v.timing.frame_period_ns, u64(1))
+	scanout_prepare(v, now_ns / period)
+	if v.raster_valid {scanout_capture_through_time(v, now_ns % period)}
 }
 
 @(private = "file")
@@ -158,6 +186,7 @@ scanout_capture_through_line :: proc(v: ^Vga, last_line: int) {
 	last := min(last_line, v.raster_height - 1)
 	for y := v.raster_next_line; y <= last; y += 1 {
 		render_scanline(v, v.raster_pixels, v.raster_kind, v.raster_width, v.raster_height, y)
+		v.raster_pixels_rendered += u64(v.raster_width)
 	}
 	v.raster_next_line = max(v.raster_next_line, last + 1)
 }
@@ -386,7 +415,7 @@ display_start :: proc(v: ^Vga) -> u16 {
 	return v.latched_start
 }
 
-@(private = "file")
+@(private = "package")
 display_geometry :: proc(v: ^Vga) -> (Display_Kind, int, int) {
 	if vga_vbe_enabled(v) {
 		kind: Display_Kind

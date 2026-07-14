@@ -3,7 +3,7 @@ package disk
 
 // Subset of the 82077AA used by SeaBIOS (upstream src/hw/floppy.c,
 // https://github.com/coreboot/seabios).
-// Ports 0x3F0-0x3F5 and 0x3F7; READ/WRITE execution uses timed DMA units.
+// Ports 0x3F0-0x3F5 and 0x3F7; READ/WRITE execution uses sector DMA transactions.
 
 FDC_MASTER_CLOCK_HZ :: u64(6_600_000_000)
 
@@ -309,25 +309,9 @@ fdc_rw :: proc(f: ^Fdc, is_write: bool) {
 }
 
 @(private = "file")
-fdc_data_rate :: proc(f: ^Fdc) -> u64 {
-	switch f.ccr & 3 {
-	case 0: return 500_000
-	case 1: return 300_000
-	case 2: return 250_000
-	case: return 1_000_000
-	}
-}
-
-@(private = "file")
-fdc_unit_ticks :: proc(f: ^Fdc) -> u64 {
-	rate := fdc_data_rate(f)
-	return u64((u128(8) * u128(FDC_MASTER_CLOCK_HZ) + u128(rate - 1)) / u128(rate))
-}
-
-@(private = "file")
 fdc_schedule_unit :: proc(f: ^Fdc) {
 	f.deadline_pending = true
-	f.next_tick = f.now_tick + min(fdc_unit_ticks(f), ~u64(0) - f.now_tick)
+	f.next_tick = f.now_tick + min(u64(1), ~u64(0) - f.now_tick)
 }
 
 @(private = "file")
@@ -386,17 +370,18 @@ fdc_transfer_unit :: proc(f: ^Fdc) {
 	transferred := 0
 	if f.rw_write {
 		if f.dma_from_mem != nil {
-			transferred = f.dma_from_mem(f.dma_ctx, f.rw_buf[f.rw_pos:f.rw_pos + 1])
+			transferred = f.dma_from_mem(f.dma_ctx, f.rw_buf[f.rw_pos:])
 		}
 	} else if f.dma_to_mem != nil {
-		transferred = f.dma_to_mem(f.dma_ctx, f.rw_buf[f.rw_pos:f.rw_pos + 1])
+		transferred = f.dma_to_mem(f.dma_ctx, f.rw_buf[f.rw_pos:])
 	}
-	if transferred != 1 {
+	if transferred <= 0 {
 		fdc_schedule_unit(f)
 		return
 	}
-	f.rw_pos += 1
+	f.rw_pos += transferred
 	if f.rw_pos < FLOPPY_SECTOR {
+		if f.dma_tc != nil && f.dma_tc(f.dma_ctx) {fdc_finish_rw(f, 0, 0); return}
 		fdc_schedule_unit(f)
 		return
 	}

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package disk
 
+import persona "../persona"
+
 // Primary IDE channel (0x1F0-0x1F7, 0x3F6), master only.
 // Bus-master DMA command handling is adapted from IzarraVM commit
 // d930de57acccbc6a70cda8cc5a603173bf23cd1c.
@@ -15,11 +17,12 @@ IDE_ERROR_ABRT :: 0x04
 IDE_SECTOR_SIZE :: 512
 IDE_DMA_MAX_SECTORS :: 256
 IDE_DMA_MAX_BYTES :: IDE_SECTOR_SIZE * IDE_DMA_MAX_SECTORS
-IDE_UDMA_MODE :: u8(4)
+IDE_UDMA_MODE :: persona.GUEST_PERSONA.max_udma_mode
 IDE_UDMA_BYTES_PER_SECOND :: [5]u64{16_700_000, 25_000_000, 33_333_333, 44_444_444, 66_666_667}
 IDE_MWDMA_BYTES_PER_SECOND :: [3]u64{4_200_000, 13_300_000, 16_700_000}
 IDE_MASTER_CLOCK_HZ :: u64(6_600_000_000)
 IDE_COMMAND_LATENCY_TICKS :: IDE_MASTER_CLOCK_HZ / 10_000
+IDE_WRITEBACK_IDLE_TICKS :: IDE_MASTER_CLOCK_HZ
 IDE_PIO_BYTES_PER_SECOND :: u64(16_700_000)
 IDE_PIO_SECTOR_TICKS :: u64(
 	(u128(IDE_SECTOR_SIZE) * u128(IDE_MASTER_CLOCK_HZ) + u128(IDE_PIO_BYTES_PER_SECOND - 1)) /
@@ -67,6 +70,9 @@ Ide :: struct {
 	now_tick:         u64,
 	deadline_tick:    u64,
 	deadline_action:  Ide_Deadline_Action,
+	writeback_deadline_tick: u64,
+	writeback_pending:       bool,
+	writeback_failed:        bool,
 	pio_start_lba:    u64,
 	pio_staged_bytes: int,
 	// A full ATA command is staged before commit so protected folder-backed
@@ -214,6 +220,30 @@ ide_flush :: proc(ide: ^Ide) -> bool {
 	return ide.bd.flush == nil || ide.bd.flush(ide.bd.ctx)
 }
 
+ide_checkpoint :: proc(ide: ^Ide) -> bool {
+	if ide == nil {return true}
+	if !ide_flush(ide) {
+		ide.writeback_failed = true
+		ide.writeback_deadline_tick = 0
+		ide.reg_error = IDE_ERROR_ABRT
+		ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_ERR
+		return false
+	}
+	ide.writeback_pending = false
+	ide.writeback_failed = false
+	ide.writeback_deadline_tick = 0
+	return true
+}
+
+@(private = "package")
+ide_note_writeback :: proc(ide: ^Ide) {
+	ide.writeback_pending = true
+	ide.writeback_deadline_tick = ide.now_tick + min(
+		IDE_WRITEBACK_IDLE_TICKS,
+		~u64(0) - ide.now_tick,
+	)
+}
+
 ide_load_sector :: proc(ide: ^Ide) -> bool {
 	if ide.lba >= ide.bd.sector_count || !ide.bd.read(ide.bd.ctx, ide.lba, ide.buf[:]) {
 		ide_abort(ide)
@@ -250,6 +280,7 @@ ide_command :: proc(ide: ^Ide, cmd: u8) {
 		ide.reg_status = IDE_STATUS_BSY
 		ide_schedule(ide, .Read_Ready, IDE_COMMAND_LATENCY_TICKS)
 	case 0x30: // WRITE SECTORS
+		if ide.writeback_failed {ide_abort(ide); return}
 		ide.lba = ide_current_lba(ide)
 		ide.pending = int(ide.reg_seccount)
 		if ide.pending == 0 { ide.pending = 256 }
@@ -267,6 +298,7 @@ ide_command :: proc(ide: ^Ide, cmd: u8) {
 	case 0xC8, 0xC9: // READ DMA / READ DMA WITHOUT RETRY
 		ide_begin_dma(ide, .Device_To_Memory)
 	case 0xCA, 0xCB: // WRITE DMA / WRITE DMA WITHOUT RETRY
+		if ide.writeback_failed {ide_abort(ide); return}
 		ide_begin_dma(ide, .Memory_To_Device)
 	case 0xEF: // SET FEATURES
 		if ide.reg_features == 0x03 {
@@ -397,10 +429,10 @@ ide_dma_commit_adapter :: proc(ctx: rawptr, channel: u8) -> bool {
 	ide := (^Ide)(ctx)
 	if channel != 0 || !ide.dma_pending {return false}
 	if ide.dma_direction == .Memory_To_Device {
-		if !ide.bd.write(ide.bd.ctx, ide.dma_lba, ide.dma_buf[:ide.dma_bytes]) ||
-		   !ide_flush(ide) {
+		if !ide.bd.write(ide.bd.ctx, ide.dma_lba, ide.dma_buf[:ide.dma_bytes]) {
 			return false
 		}
+		ide_note_writeback(ide)
 	}
 	ide_dma_set_taskfile_lba(ide, ide.dma_lba + u64(ide.dma_sectors))
 	ide.reg_seccount = 0
@@ -426,7 +458,6 @@ ide_bmide_request :: proc(ide: ^Ide) -> (Bmide_Request, bool) {
 	return Bmide_Request {
 		direction        = ide.dma_direction,
 		byte_count       = u32(ide.dma_bytes),
-		bytes_per_second = ide_transfer_mode_rate(ide.transfer_mode),
 		device           = {
 			ctx         = ide,
 			begin       = ide_dma_begin_adapter,

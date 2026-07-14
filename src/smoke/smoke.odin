@@ -114,8 +114,8 @@ run_smoke :: proc() -> (result: int) {
 
 	// DIR + Enter, set-1 make/break pairs
 	for sc in ([]u8{0x20, 0x17, 0x13, 0x1C}) {
-		machine.i8042_key(&m.kbd, sc)
-		machine.i8042_key(&m.kbd, sc | 0x80)
+		machine.machine_key(m, sc)
+		machine.machine_key(m, sc | 0x80)
 		step_for(m, 100 * time.Millisecond)
 	}
 	// any file we know the user placed there; COMMAND.COM must exist to boot

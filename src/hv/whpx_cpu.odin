@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package hv
 
-GSW_886_TSC_HZ :: u64(700_000_000)
-GSW_886_THROUGHPUT_HZ :: u64(700_000_000)
+import persona "../persona"
+
+GSW_886_TSC_HZ :: persona.GUEST_PERSONA.cpu_tsc_hz
+GSW_886_THROUGHPUT_HZ :: persona.GUEST_PERSONA.cpu_throughput_hz
 GSW_886_FEATURES_EDX :: u32(0x0383_A17B)
 GSW_886_EXTENDED_FEATURES_EDX :: u32(0x0183_A17B)
 

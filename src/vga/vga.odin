@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package vga
 
+import persona "../persona"
+
 import "base:runtime"
 
-VRAM_SIZE :: 32 * 1024 * 1024
+VRAM_SIZE :: persona.GUEST_PERSONA.vram_bytes
 LEGACY_PLANE_SIZE :: 64 * 1024
 LEGACY_APERTURE_BASE :: u64(0x000A0000)
 LEGACY_APERTURE_END :: u64(0x000C0000)
 VBE_LFB_BASE :: u64(0xE0000000)
-VBE_LFB_END :: VBE_LFB_BASE + VRAM_SIZE
+VBE_LFB_END :: VBE_LFB_BASE + u64(VRAM_SIZE)
 
 Display_Kind :: enum {
 	Invalid,
@@ -68,10 +70,15 @@ Vga :: struct {
 	raster_next_line: int,
 	raster_frame:     u64,
 	raster_valid:     bool,
+	raster_fallback:  bool,
+	raster_change_frame: u64,
+	defer_scanout_conversion: bool,
 	frame_valid:      bool,
 	present_generation: u64,
 	content_generation: u64,
 	guest_activity_generation: u64,
+	full_frame_renders: u64,
+	raster_pixels_rendered: u64,
 
 	crtc:       [32]u8,
 	crtc_ix:    u8,
@@ -125,6 +132,15 @@ vga_destroy :: proc(v: ^Vga) {
 
 vga_vram :: proc(v: ^Vga) -> []u8 {
 	return v.vram
+}
+
+vga_set_deferred_scanout :: proc(v: ^Vga, deferred: bool) {
+	if v == nil {return}
+	v.defer_scanout_conversion = deferred
+	if deferred {
+		v.raster_valid = false
+		v.frame_valid = false
+	}
 }
 
 vga_reset :: proc(v: ^Vga) {
@@ -186,12 +202,14 @@ vga_note_content_change :: proc(v: ^Vga) {
 	if v.content_generation == 0 {v.content_generation = 1}
 	v.guest_activity_generation += 1
 	if v.guest_activity_generation == 0 {v.guest_activity_generation = 1}
+	if !v.raster_fallback {v.frame_valid = false}
 }
 
 vga_note_animation_change :: proc(v: ^Vga) {
 	if v == nil {return}
 	v.content_generation += 1
 	if v.content_generation == 0 {v.content_generation = 1}
+	if !v.raster_fallback {v.frame_valid = false}
 }
 
 @(private = "package")

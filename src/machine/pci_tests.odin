@@ -184,19 +184,51 @@ pci_test_gsw_chipset_identity :: proc(t: ^testing.T) {
 }
 
 @(test)
+pci_test_gsw_vga_identity_bars_and_persona :: proc(t: ^testing.T) {
+	p: Pci
+	pci_init(&p)
+	pci_out(&p, 0xCF8, 4, 0x8000_1000)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), 0x0002_FFFE)
+	pci_out(&p, 0xCF8, 4, 0x8000_1008)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4) >> 16, u32(0x0300))
+	pci_out(&p, 0xCF8, 4, 0x8000_1010)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), GSW_VGA_CONTROL_BAR)
+	pci_out(&p, 0xCFC, 4, 0xFFFF_FFFF)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0xFFFF_F000))
+	pci_out(&p, 0xCFC, 4, GSW_VGA_CONTROL_BAR)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), GSW_VGA_CONTROL_BAR)
+	pci_out(&p, 0xCF8, 4, 0x8000_1014)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), GSW_VGA_FRAMEBUFFER_BAR)
+	pci_out(&p, 0xCFC, 4, 0xFFFF_FFFF)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0xFE00_0000))
+	pci_out(&p, 0xCFC, 4, GSW_VGA_FRAMEBUFFER_BAR)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), GSW_VGA_FRAMEBUFFER_BAR)
+	pci_out(&p, 0xCF8, 4, 0x8000_1040)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), GSW_VGA_CAPABILITY_SIGNATURE)
+	pci_out(&p, 0xCF8, 4, 0x8000_1048)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(150) << 16 | 32)
+	pci_out(&p, 0xCF8, 4, 0x8000_104C)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4) & 0x00FF_FFFF, u32(0x0003_0104))
+}
+
+@(test)
 pci_test_gsw_chipset_capability_contract :: proc(t: ^testing.T) {
 	p: Pci
 	pci_init(&p)
 	pci_out(&p, 0xCF8, 4, 0x8000_1840)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), GSW_CHIPSET_CAPABILITY_SIGNATURE)
 	pci_out(&p, 0xCF8, 4, 0x8000_1844)
-	testing.expect_value(t, pci_in(&p, 0xCFC, 4), 0x0014_0001)
+	testing.expect_value(
+		t,
+		pci_in(&p, 0xCFC, 4),
+		u32(GSW_CHIPSET_CAPABILITY_LENGTH) << 16 | u32(GSW_CHIPSET_CAPABILITY_VERSION),
+	)
 	pci_out(&p, 0xCF8, 4, 0x8000_1848)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), 0x02BC_0100)
 	pci_out(&p, 0xCF8, 4, 0x8000_184C)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), 0x0F0A_3404)
 	pci_out(&p, 0xCF8, 4, 0x8000_1850)
-	testing.expect_value(t, pci_in(&p, 0xCFC, 2), u32(GSW_CHIPSET_MASTER_TIMELINE_MHZ))
+	testing.expect_value(t, pci_in(&p, 0xCFC, 2), u32(GSW_CHIPSET_RESERVED_TIMELINE))
 
 	pci_out(&p, 0xCF8, 4, 0x8000_1840)
 	pci_out(&p, 0xCFC, 4, 0)
@@ -312,7 +344,7 @@ pci_test_mechanism_2_bus_device_and_function :: proc(t: ^testing.T) {
 	testing.expect_value(t, pci_in(&p, 0xC000, 4), 0xFFFF_FFFF)
 	pci_out(&p, 0xCF8, 1, 0xF0)
 	testing.expect_value(t, pci_in(&p, 0xC300, 4), 0x0001_FFFE)
-	testing.expect_value(t, pci_in(&p, 0xC200, 4), 0xFFFF_FFFF)
+	testing.expect_value(t, pci_in(&p, 0xC200, 4), 0x0002_FFFE)
 	pci_out(&p, 0xCFA, 1, 1)
 	testing.expect_value(t, pci_in(&p, 0xC000, 4), 0xFFFF_FFFF)
 }
@@ -370,7 +402,7 @@ pci_test_mechanism_2_precedes_default_bus_master_bar :: proc(t: ^testing.T) {
 pci_test_absent_device :: proc(t: ^testing.T) {
 	p: Pci
 	pci_init(&p)
-	pci_out(&p, 0xCF8, 4, 0x8000_1000) // dev 2: absent
+	pci_out(&p, 0xCF8, 4, 0x8000_2000) // dev 4: absent
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), 0xFFFFFFFF)
 	pci_out(&p, 0xCF8, 4, 0x8000_0A00) // 00:01.2: absent function
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), 0xFFFFFFFF)

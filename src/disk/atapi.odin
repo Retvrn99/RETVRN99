@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package disk
 
+import persona "../persona"
+
 // ATAPI bus-master DMA command handling is adapted from IzarraVM commit
 // d930de57acccbc6a70cda8cc5a603173bf23cd1c.
 
@@ -14,7 +16,7 @@ ATAPI_ERROR_ABRT :: 0x04
 ATAPI_PACKET_BYTES :: 12
 ATAPI_TRACE_HISTORY :: 64
 ATAPI_MASTER_CLOCK_HZ :: u64(6_600_000_000)
-ATAPI_CD_DATA_SECTORS_PER_SECOND :: u64(DISC_FRAMES_PER_SECOND * 52)
+ATAPI_CD_DATA_SECTORS_PER_SECOND :: DISC_FRAMES_PER_SECOND * u64(persona.GUEST_PERSONA.cd_speed)
 ATAPI_DVD_DATA_BYTES_PER_SECOND :: u64(13_850_000)
 ATAPI_CD_SPEED_KBPS :: u16(7_987)
 ATAPI_DVD_SPEED_KBPS :: u16(13_850)
@@ -73,8 +75,6 @@ Atapi :: struct {
 	read_sector_size: int,
 	data_pending: bool,
 	data_ready_tick: u64,
-	data_rate_phase: u64,
-	data_rate_denominator: u64,
 	now_tick: u64,
 	data_out_remaining:       int,
 	data_out_phase_remaining: int,
@@ -191,8 +191,6 @@ atapi_set_media :: proc(
 	atapi_stop_audio(a, .Stopped)
 	a.media_changed = changed
 	a.sense_key, a.sense_asc, a.sense_ascq = 0, 0, 0
-	a.data_rate_phase = 0
-	a.data_rate_denominator = 0
 	a.reg_status = ATAPI_STATUS_DRDY
 	return true
 }
@@ -660,39 +658,15 @@ atapi_read_blocks :: proc(a: ^Atapi, lba, count: u32) {
 }
 
 @(private = "file")
-atapi_data_sector_interval :: proc(a: ^Atapi) -> u64 {
-	bytes_per_second := atapi_transfer_bytes_per_second(a, a.read_sector_size)
-	if a.data_rate_denominator != bytes_per_second {
-		a.data_rate_phase = 0
-		a.data_rate_denominator = bytes_per_second
-	}
-	numerator := u64(a.read_sector_size) * ATAPI_MASTER_CLOCK_HZ
-	base := numerator / bytes_per_second
-	a.data_rate_phase += numerator % bytes_per_second
-	if a.data_rate_phase >= bytes_per_second {
-		a.data_rate_phase -= bytes_per_second
-		base += 1
-	}
-	return base
-}
-
-@(private = "file")
-atapi_transfer_bytes_per_second :: proc(a: ^Atapi, sector_size: int) -> u64 {
-	if a != nil && a.image.media_class == .Dvd_Rom {
-		return ATAPI_DVD_DATA_BYTES_PER_SECOND
-	}
-	return u64(max(sector_size, 1)) * ATAPI_CD_DATA_SECTORS_PER_SECOND
-}
-
-@(private = "file")
 atapi_schedule_read_sector :: proc(a: ^Atapi) {
 	a.state = .Idle
 	a.buf_len = 0
 	a.buf_pos = 0
 	a.phase_end = 0
 	a.data_pending = true
-	a.data_ready_tick = a.now_tick + atapi_data_sector_interval(a)
+	a.data_ready_tick = a.now_tick
 	a.reg_status = ATAPI_STATUS_BSY
+	atapi_publish_read_sector(a)
 }
 
 @(private = "file")
@@ -985,6 +959,17 @@ atapi_dma_read_adapter :: proc(
 	   offset > a.dma_byte_count || u32(len(data)) > a.dma_byte_count - offset {
 		return false
 	}
+	if !a.dma_raw && a.dma_cd_selection == 0 &&
+	   offset % u32(DISC_DATA_SECTOR_SIZE) == 0 &&
+	   len(data) % DISC_DATA_SECTOR_SIZE == 0 {
+		lba := a.dma_lba + offset / u32(DISC_DATA_SECTOR_SIZE)
+		return disc_image_read_data_sectors(
+			&a.image,
+			lba,
+			u32(len(data) / DISC_DATA_SECTOR_SIZE),
+			data,
+		)
+	}
 	written := 0
 	for written < len(data) {
 		absolute := u64(offset) + u64(written)
@@ -1019,7 +1004,6 @@ atapi_bmide_request :: proc(a: ^Atapi) -> (Bmide_Request, bool) {
 	return Bmide_Request {
 		direction        = .Device_To_Memory,
 		byte_count       = a.dma_byte_count,
-		bytes_per_second = atapi_transfer_bytes_per_second(a, a.dma_sector_size),
 		device           = {
 			ctx    = a,
 			begin  = atapi_dma_begin_adapter,
