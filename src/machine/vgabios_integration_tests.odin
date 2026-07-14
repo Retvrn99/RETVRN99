@@ -142,7 +142,7 @@ vgabios_test_stop_watchdog :: proc(w: ^Vgabios_Test_Watchdog, th: ^thread.Thread
 	sync.lock(&w.mu)
 	w.stop = true
 	sync.unlock(&w.mu)
-	thread.join(th)
+	thread.destroy(th)
 }
 
 @(test)

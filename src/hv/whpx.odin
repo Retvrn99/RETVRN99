@@ -15,8 +15,8 @@ import win32 "core:sys/windows"
 @(private = "file")
 whpx_vm_gate: sync.Mutex
 
-WHPX_HMA_BASE :: u64(0x00100000)
-WHPX_HMA_SIZE :: u64(0x00010000)
+WHPX_A20_BIT :: u64(0x00100000)
+WHPX_A20_PAIR_SIZE :: u64(0x00200000)
 
 whpx_available :: proc() -> bool {
 	present: win32.BOOL
@@ -25,7 +25,7 @@ whpx_available :: proc() -> bool {
 	return hr >= 0 && bool(present)
 }
 
-whpx_create :: proc(vm: ^Vm, ram_size: int) -> bool {
+whpx_create :: proc(vm: ^Vm, ram_size: int, options: Vm_Create_Options) -> bool {
 	if !whpx_available() {
 		return false
 	}
@@ -43,10 +43,17 @@ whpx_create :: proc(vm: ^Vm, ram_size: int) -> bool {
 		whpx_destroy(vm)
 		return false
 	}
-	ext_exits: u64 = 1 // CPUID exits keep the GSW-886 profile independent of the host
+	ext_exits: u64 = 0x3 // CPUID and MSR exits keep the GSW-886 profile independent of the host
+	if options.trace_ud_gp_exits {ext_exits |= 1 << 2}
 	if WHvSetPartitionProperty(part, .ExtendedVmExits, &ext_exits, size_of(ext_exits)) < 0 {
 		whpx_destroy(vm)
 		return false
+	}
+	if options.trace_ud_gp_exits {
+		if !whpx_configure_exception_tracing(vm) {
+			whpx_destroy(vm)
+			return false
+		}
 	}
 	if !whpx_apply_cpu_profile(part) {
 		whpx_destroy(vm)
@@ -130,6 +137,10 @@ whpx_destroy :: proc(vm: ^Vm) {
 	}
 	delete(vm.device_mappings)
 	vm.device_mappings = nil
+	delete(vm.exception_trace)
+	vm.exception_trace = nil
+	vm.exception_count = 0
+	vm.trace_ud_gp_exits = false
 	if held_gate {
 		sync.unlock(&whpx_vm_gate)
 	}
@@ -145,13 +156,14 @@ whpx_ranges_overlap :: proc(a_gpa, a_size, b_gpa, b_size: u64) -> bool {
 	return a_gpa < b_gpa + b_size && b_gpa < a_gpa + a_size
 }
 
-whpx_reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
+@(private = "file")
+whpx_reserve_memory :: proc(vm: ^Vm, gpa, size: u64, kind: Memory_Reservation_Kind) -> bool {
 	if vm.part == nil || !whpx_page_range_valid(gpa, size) || gpa + size > u64(len(vm.ram)) {
 		return false
 	}
 	for reservation in vm.mmio_reservations {
 		if reservation.gpa == gpa && reservation.size == size {
-			return true
+			return reservation.kind == kind
 		}
 		if whpx_ranges_overlap(gpa, size, reservation.gpa, reservation.size) {
 			return false
@@ -170,8 +182,16 @@ whpx_reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
 	if WHvUnmapGpaRange(vm.part, gpa, size) < 0 {
 		return false
 	}
-	append(&vm.mmio_reservations, Mmio_Reservation{gpa = gpa, size = size})
+	append(&vm.mmio_reservations, Mmio_Reservation{gpa = gpa, size = size, kind = kind})
 	return true
+}
+
+whpx_reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
+	return whpx_reserve_memory(vm, gpa, size, .Mmio)
+}
+
+whpx_reserve_open_bus :: proc(vm: ^Vm, gpa, size: u64) -> bool {
+	return whpx_reserve_memory(vm, gpa, size, .Open_Bus)
 }
 
 whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
@@ -216,7 +236,7 @@ whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 }
 
 whpx_set_a20 :: proc(vm: ^Vm, enabled: bool) -> bool {
-	if vm.part == nil || len(vm.ram) < int(WHPX_HMA_BASE + WHPX_HMA_SIZE) {
+	if vm.part == nil || len(vm.ram) <= int(WHPX_A20_BIT) {
 		return false
 	}
 	if vm.a20_requested != enabled {vm.a20_request_count += 1}
@@ -225,20 +245,71 @@ whpx_set_a20 :: proc(vm: ^Vm, enabled: bool) -> bool {
 }
 
 @(private = "file")
+whpx_map_a20_region :: proc(vm: ^Vm, odd_base: u64, enabled: bool) -> bool {
+	ram_size := u64(len(vm.ram))
+	if odd_base >= ram_size {return true}
+	size := min(WHPX_A20_BIT, ram_size - odd_base)
+	source_base := enabled ? odd_base : odd_base &~ WHPX_A20_BIT
+	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
+	if WHvUnmapGpaRange(vm.part, odd_base, size) < 0 {return false}
+	if WHvMapGpaRange(vm.part, raw_data(vm.ram[int(source_base):]), odd_base, size, flags) < 0 {
+		return false
+	}
+
+	source_end := source_base + size
+	for reservation in vm.mmio_reservations {
+		first := max(source_base, reservation.gpa)
+		last := min(source_end, reservation.gpa + reservation.size)
+		if first >= last {continue}
+		alias := odd_base + first - source_base
+		if WHvUnmapGpaRange(vm.part, alias, last - first) < 0 {return false}
+	}
+	return true
+}
+
+@(private = "file")
+whpx_map_a20_device_region :: proc(
+	vm: ^Vm,
+	mapping: ^Device_Mapping,
+	odd_base: u64,
+	enabled: bool,
+) -> bool {
+	mapping_end := mapping.gpa + u64(mapping.size)
+	if odd_base < mapping.gpa || odd_base >= mapping_end {return true}
+	size := min(WHPX_A20_BIT, mapping_end - odd_base)
+	source_base := enabled ? odd_base : odd_base &~ WHPX_A20_BIT
+	if source_base < mapping.gpa || source_base + size > mapping_end {return false}
+	if WHvUnmapGpaRange(vm.part, odd_base, size) < 0 {return false}
+	source := rawptr(uintptr(mapping.host) + uintptr(source_base - mapping.gpa))
+	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE
+	return WHvMapGpaRange(vm.part, source, odd_base, size, flags) >= 0
+}
+
+@(private = "file")
+whpx_apply_a20_mapping :: proc(vm: ^Vm, enabled: bool) -> bool {
+	for odd_base := WHPX_A20_BIT; odd_base < u64(len(vm.ram)); odd_base += WHPX_A20_PAIR_SIZE {
+		if !whpx_map_a20_region(vm, odd_base, enabled) {return false}
+	}
+	for &mapping in vm.device_mappings {
+		pair_base := mapping.gpa &~ (WHPX_A20_PAIR_SIZE - 1)
+		mapping_end := mapping.gpa + u64(mapping.size)
+		for odd_base := pair_base + WHPX_A20_BIT; odd_base < mapping_end; odd_base += WHPX_A20_PAIR_SIZE {
+			if odd_base < mapping.gpa {continue}
+			if !whpx_map_a20_device_region(vm, &mapping, odd_base, enabled) {return false}
+		}
+	}
+	return true
+}
+
+@(private = "file")
 whpx_apply_a20_request :: proc(vm: ^Vm) -> (ok: bool, rollback_ok: bool) {
 	if vm.a20_enabled == vm.a20_requested {return true, true}
 
-	flags :=
-		WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
-	old_source := vm.a20_enabled ? raw_data(vm.ram[WHPX_HMA_BASE:]) : raw_data(vm.ram)
-	new_source := vm.a20_requested ? raw_data(vm.ram[WHPX_HMA_BASE:]) : raw_data(vm.ram)
-	if WHvUnmapGpaRange(vm.part, WHPX_HMA_BASE, WHPX_HMA_SIZE) < 0 {
-		vm.a20_requested = vm.a20_enabled
-		return false, true
-	}
-	if WHvMapGpaRange(vm.part, new_source, WHPX_HMA_BASE, WHPX_HMA_SIZE, flags) < 0 {
-		rollback_ok = WHvMapGpaRange(vm.part, old_source, WHPX_HMA_BASE, WHPX_HMA_SIZE, flags) >= 0
-		vm.a20_requested = vm.a20_enabled
+	old_enabled := vm.a20_enabled
+	new_enabled := vm.a20_requested
+	if !whpx_apply_a20_mapping(vm, new_enabled) {
+		rollback_ok = whpx_apply_a20_mapping(vm, old_enabled)
+		vm.a20_requested = old_enabled
 		return false, rollback_ok
 	}
 	vm.a20_enabled = vm.a20_requested
@@ -341,8 +412,8 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 	exit_ctx: WHV_RUN_VP_EXIT_CONTEXT
 	for handled := 0;; handled += 1 {
 		if ok, rollback_ok := whpx_apply_a20_request(vm); !ok {
-			detail := "A20 HMA remap failed"
-			if !rollback_ok {detail = "A20 HMA remap and rollback failed"}
+			detail := "global A20 remap failed"
+			if !rollback_ok {detail = "global A20 remap and rollback failed"}
 			return Exit{kind = .Failed, detail = detail}
 		}
 		if handled >= WHPX_EXIT_BUDGET {
@@ -391,16 +462,23 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			if !whpx_handle_cpuid(vm, &exit_ctx.VpContext, &exit_ctx.u.CpuidAccess) {
 				return Exit{kind = .Failed, detail = "failed to apply CPUID result"}
 			}
+		case .X64MsrAccess:
+			if !whpx_handle_msr(vm, &exit_ctx.VpContext, &exit_ctx.u.MsrAccess) {
+				return Exit{kind = .Failed, detail = "failed to handle MSR access"}
+			}
 		case .Canceled:
 			return Exit{kind = .Canceled}
 		case .UnrecoverableException:
 			return Exit{kind = .Reset, detail = "unrecoverable exception (triple fault)"}
-		case .None,
-		     .InvalidVpRegisterValue,
-		     .UnsupportedFeature,
-		     .X64ApicEoi,
-		     .X64MsrAccess,
-		     .Exception:
+		case .Exception:
+			if ok, detail := whpx_trace_and_reinject_exception(
+				vm,
+				&exit_ctx.VpContext,
+				&exit_ctx.u.VpException,
+			); !ok {
+				return Exit{kind = .Failed, detail = detail}
+			}
+		case .None, .InvalidVpRegisterValue, .UnsupportedFeature, .X64ApicEoi:
 			return Exit {
 				kind = .Failed,
 				detail = fmt.tprintf("unhandled exit: %v", exit_ctx.ExitReason),
@@ -419,6 +497,19 @@ whpx_cancel :: proc(vm: ^Vm) {
 	WHvCancelRunVirtualProcessor(vm.part, 0, 0)
 }
 
+whpx_set_time_running :: proc(vm: ^Vm, running: bool) -> bool {
+	if vm == nil || vm.part == nil {return false}
+	if vm.time_suspended == !running {return true}
+	if running {
+		if WHvResumePartitionTime(vm.part) < 0 {return false}
+		vm.time_suspended = false
+	} else {
+		if WHvSuspendPartitionTime(vm.part) < 0 {return false}
+		vm.time_suspended = true
+	}
+	return true
+}
+
 whpx_advance_rip :: proc(vm: ^Vm, vp_ctx: ^WHV_VP_EXIT_CONTEXT) {
 	name := WHV_REGISTER_NAME.Rip
 	val: WHV_REGISTER_VALUE
@@ -432,6 +523,27 @@ whpx_inject_irq :: proc(vm: ^Vm, vector: u8) {
 	// bit0 pending, type 0 (external interrupt), vector in bits 16..31
 	val.Reg64 = 0x1 | (u64(vector) << 16)
 	WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &val)
+}
+
+whpx_try_inject_irq :: proc(vm: ^Vm, vector: u8) -> Interrupt_Injection_Result {
+	if vm == nil || vm.part == nil {return .Failed}
+	names := [?]WHV_REGISTER_NAME{.Rflags, .PendingInterruption, .InterruptState}
+	values: [len(names)]WHV_REGISTER_VALUE
+	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) < 0 {
+		return .Failed
+	}
+	if_set := values[0].Reg64 & 0x200 != 0
+	pending := values[1].Reg64 & 0x1 != 0
+	shadow := values[2].Reg64 & 0x1 != 0
+	if !if_set || pending || shadow {return .Deferred}
+
+	name := WHV_REGISTER_NAME.PendingInterruption
+	value: WHV_REGISTER_VALUE
+	value.Reg64 = 0x1 | u64(vector) << 16
+	if WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) < 0 {
+		return .Failed
+	}
+	return .Injected
 }
 
 whpx_request_irq_window :: proc(vm: ^Vm, enable: bool) {

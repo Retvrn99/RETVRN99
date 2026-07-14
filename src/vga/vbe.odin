@@ -90,16 +90,19 @@ dispi_mode_valid :: proc(regs: ^[12]u16) -> bool {
 }
 
 @(private = "package")
-dispi_io_write :: proc(v: ^Vga, port: u16, size: u8, value: u32) {
+dispi_io_write :: proc(v: ^Vga, port: u16, size: u8, value: u32) -> bool {
 	mask: u32 = size >= 2 ? 0xFFFF : 0xFF
 	if port == DISPI_PORT_INDEX {
 		v.dispi_index = u16(value & mask)
-		return
+		return false
 	}
-	if port != DISPI_PORT_DATA { return }
+	if port != DISPI_PORT_DATA {return false}
 	old := dispi_read_register(v, v.dispi_index)
 	merged := size >= 2 ? u16(value) : (old & 0xFF00) | u16(value & 0xFF)
-	dispi_write_register(v, v.dispi_index, merged)
+	before := v.dispi
+	bank_read, bank_write := v.bank_read, v.bank_write
+	if !dispi_write_register(v, v.dispi_index, merged) {return false}
+	return before != v.dispi || bank_read != v.bank_read || bank_write != v.bank_write
 }
 
 @(private = "package")

@@ -172,3 +172,25 @@ vga_test_mid_frame_palette_change_preserves_completed_line :: proc(t: ^testing.T
 	testing.expect_value(t, frame.pixels[2], new_color)
 	testing.expect_value(t, frame.pixels[3], new_color)
 }
+
+@(test)
+vga_test_periodic_animation_does_not_count_as_guest_activity :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	initial_content := v.content_generation
+	initial_activity := v.guest_activity_generation
+	vga_sync_to(&v, 16_000_000)
+	testing.expect_value(t, v.content_generation, initial_content)
+	testing.expect_value(t, v.guest_activity_generation, initial_activity)
+	testing.expect(t, vga_mmio_write(&v, 0xB8000, 1, 'A'))
+	testing.expect_value(t, v.content_generation, initial_content + 1)
+	testing.expect_value(t, v.guest_activity_generation, initial_activity + 1)
+	vga_sync_to(&v, 500_000_000)
+	testing.expect_value(t, v.content_generation, initial_content + 2)
+	testing.expect_value(t, v.guest_activity_generation, initial_activity + 1)
+	frame := vga_display_frame(&v)
+	testing.expect_value(t, frame.content_generation, v.content_generation)
+	testing.expect_value(t, frame.guest_activity_generation, v.guest_activity_generation)
+}

@@ -8,33 +8,7 @@ import "core:testing"
 import "fat32"
 import "machine"
 import "profile"
-import "vga"
 import "win98prep"
-
-install_test_snapshot :: proc(line: string) -> vga.Text_Snapshot {
-	snap: vga.Text_Snapshot
-	for &cell in snap.cells {cell = u16(' ')}
-	for ch, col in line {
-		if col >= 80 {break}
-		snap.cells[24 * 80 + col] = u16(ch)
-	}
-	return snap
-}
-
-@(test)
-install_test_requires_root_c_prompt :: proc(t: ^testing.T) {
-	root := install_test_snapshot(`C:\>`)
-	testing.expect(t, snapshot_has_c_prompt(&root))
-	lower := install_test_snapshot(`c:\>`)
-	testing.expect(t, snapshot_has_c_prompt(&lower))
-
-	boot_text := install_test_snapshot(`Checking drive C:`)
-	testing.expect(t, !snapshot_has_c_prompt(&boot_text))
-	floppy := install_test_snapshot(`A:\>`)
-	testing.expect(t, !snapshot_has_c_prompt(&floppy))
-	subdirectory := install_test_snapshot(`C:\WINDOWS>`)
-	testing.expect(t, !snapshot_has_c_prompt(&subdirectory))
-}
 
 @(test)
 install_test_hdd_first_boot_order :: proc(t: ^testing.T) {
@@ -123,11 +97,6 @@ install_test_invalid_retry_restores_previous_launch_pending_state :: proc(t: ^te
 	testing.expect_value(t, ctx.install_state.source_path, "original.iso")
 	testing.expect_value(t, ctx.install_state.reset_count, u32(3))
 	testing.expect_value(t, ctx.cdrom_path, "original.iso")
-	waiting, typing, key_index := false, true, 9
-	install_autorun_restore(&waiting, &typing, &key_index, &ctx.install_state)
-	testing.expect(t, waiting)
-	testing.expect(t, !typing)
-	testing.expect_value(t, key_index, 0)
 	loaded, diagnostic := profile.install_state_load(state_path)
 	defer profile.install_state_destroy(&loaded)
 	testing.expect_value(t, diagnostic, profile.Install_State_Diagnostic.None)
@@ -220,7 +189,6 @@ install_test_previous_state_restore_failure_keeps_preparing_recovery_state :: pr
 	testing.expect_value(t, ctx.install_state.phase, profile.Install_Phase.Preparing)
 	testing.expect_value(t, ctx.install_state.source_path, "retry.iso")
 	testing.expect_value(t, ctx.cdrom_path, "retry.iso")
-	testing.expect(t, !install_state_launch_pending(&ctx.install_state))
 	testing.expect_value(t, previous.phase, profile.Install_Phase.Launch_Pending)
 	testing.expect_value(t, previous.source_path, "original.iso")
 	testing.expect(t, strings.contains(shared.frozen_msg, "recovery state retained"))
@@ -264,59 +232,67 @@ install_test_first_successful_boot_captures_unknown_cmos_before_override :: proc
 }
 
 @(test)
-install_test_preparing_state_never_autoruns :: proc(t: ^testing.T) {
+install_test_direct_launch_only_transitions_pending_state :: proc(t: ^testing.T) {
+	phases := [?]profile.Install_Phase {
+		profile.Install_Phase.None,
+		profile.Install_Phase.Setup_Running,
+	}
+	for phase in phases {
+		state := profile.Install_State {
+			phase = phase,
+		}
+		_, _, changed, ok := install_launch_stage(&state)
+		testing.expect(t, ok)
+		testing.expect(t, !changed)
+		testing.expect_value(t, state.phase, phase)
+	}
 	preparing := profile.Install_State {
 		phase = .Preparing,
 	}
+	_, _, changed, ok := install_launch_stage(&preparing)
+	testing.expect(t, !ok)
+	testing.expect(t, !changed)
+	testing.expect_value(t, preparing.phase, profile.Install_Phase.Preparing)
 	pending := profile.Install_State {
-		phase = .Launch_Pending,
+		phase       = .Launch_Pending,
+		source_path = "WIN98SE.ISO",
 	}
-	running := profile.Install_State {
-		phase = .Setup_Running,
-	}
-	testing.expect(t, !install_state_launch_pending(&preparing))
-	testing.expect(t, install_state_launch_pending(&pending))
-	testing.expect(t, !install_state_launch_pending(&running))
+	_, _, changed, ok = install_launch_stage(&pending)
+	testing.expect(t, ok)
+	testing.expect(t, changed)
+	testing.expect_value(t, pending.phase, profile.Install_Phase.Setup_Running)
+	testing.expect_value(t, pending.milestone, profile.Install_Milestone.DOS_Setup)
 }
 
 @(test)
-install_test_retry_cancels_pending_autorun :: proc(t: ^testing.T) {
-	waiting := true
-	typing := true
-	key_index := 7
-	install_autorun_cancel(&waiting, &typing, &key_index)
-	testing.expect(t, !waiting)
-	testing.expect(t, !typing)
-	testing.expect_value(t, key_index, 0)
+install_test_interrupted_preparation_recovers_but_remains_nonbootable :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	root := install_test_directory(t)
+	defer os.remove_all(root)
+	install_root, _ := filepath.join({root, "install"})
+	c_drive, _ := filepath.join({root, "c_drive"})
+	testing.expect(t, os.make_directory(install_root) == nil)
+	testing.expect(t, os.make_directory(c_drive) == nil)
+	autoexec, _ := filepath.join({c_drive, win98prep.BOOTSTRAP_AUTOEXEC_NAME})
+	testing.expect(t, os.write_entire_file(autoexec, win98prep.BOOTSTRAP_AUTOEXEC) == nil)
+	paths := profile.Paths {
+		install = install_root,
+		c_drive = c_drive,
+	}
+	state := profile.Install_State {
+		phase       = .Preparing,
+		source_path = "WIN98SE.ISO",
+	}
+
+	interrupted, recovered := install_interrupted_preparation_recover(&paths, &state)
+	testing.expect(t, interrupted)
+	testing.expect(t, recovered)
+	testing.expect(t, !os.exists(autoexec))
+	testing.expect(t, !install_state_boot_allowed(&state))
 }
 
 @(test)
-install_test_reboot_restores_only_surviving_launch_pending :: proc(t: ^testing.T) {
-	pending := profile.Install_State {
-		phase = .Launch_Pending,
-	}
-	waiting := false
-	typing := true
-	key_index := 7
-	install_autorun_restore(&waiting, &typing, &key_index, &pending)
-	testing.expect(t, waiting)
-	testing.expect(t, !typing)
-	testing.expect_value(t, key_index, 0)
-
-	preparing := profile.Install_State {
-		phase = .Preparing,
-	}
-	waiting = true
-	typing = true
-	key_index = 4
-	install_autorun_restore(&waiting, &typing, &key_index, &preparing)
-	testing.expect(t, !waiting)
-	testing.expect(t, !typing)
-	testing.expect_value(t, key_index, 0)
-}
-
-@(test)
-install_test_launch_state_save_failure_freezes_before_enter :: proc(t: ^testing.T) {
+install_test_launch_state_save_failure_keeps_pending :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := install_test_directory(t)
 	defer os.remove_all(dir)
@@ -334,17 +310,46 @@ install_test_launch_state_save_failure_freezes_before_enter :: proc(t: ^testing.
 	}
 	defer profile.install_state_destroy(&ctx.install_state)
 	defer vm_log_destroy(&shared)
-	waiting := true
-	typing := true
-	key_index := len(INSTALL_AUTORUN_KEYS) - 1
-	frozen := false
-	testing.expect(t, !install_autorun_prepare_enter(&ctx, &waiting, &typing, &key_index, &frozen))
+	testing.expect(t, !install_launch_prepare(&ctx))
 	testing.expect_value(t, ctx.install_state.phase, profile.Install_Phase.Launch_Pending)
-	testing.expect(t, waiting)
-	testing.expect(t, !typing)
-	testing.expect_value(t, key_index, 0)
-	testing.expect(t, frozen)
-	testing.expect(t, strings.contains(shared.frozen_msg, "Reset to retry"))
+	testing.expect_value(t, ctx.install_state.milestone, profile.Install_Milestone.None)
+	testing.expect_value(t, len(shared.log_lines), 1)
+	testing.expect(t, strings.contains(shared.log_lines[0], "before direct Setup launch"))
+}
+
+@(test)
+install_test_successful_direct_launch_persists_setup_milestone :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := install_test_directory(t)
+	defer os.remove_all(dir)
+	state_path, _ := filepath.join({dir, "install-state.json"})
+	milestones := [?]profile.Install_Milestone {
+		profile.Install_Milestone.DOS_Setup,
+		profile.Install_Milestone.First_Reboot,
+	}
+	for expected, reset_count in milestones {
+		shared: Shared
+		ctx := Vm_Ctx {
+			shared = &shared,
+			paths = profile.Paths{install_state = state_path},
+			install_state = profile.Install_State {
+				phase = .Launch_Pending,
+				source_path = strings.clone("WIN98SE.ISO"),
+				reset_count = u32(reset_count),
+			},
+		}
+		testing.expect(t, install_launch_prepare(&ctx))
+		testing.expect_value(t, ctx.install_state.phase, profile.Install_Phase.Setup_Running)
+		testing.expect_value(t, ctx.install_state.milestone, expected)
+
+		loaded, diagnostic := profile.install_state_load(state_path)
+		testing.expect_value(t, diagnostic, profile.Install_State_Diagnostic.None)
+		testing.expect_value(t, loaded.phase, profile.Install_Phase.Setup_Running)
+		testing.expect_value(t, loaded.milestone, expected)
+		profile.install_state_destroy(&loaded)
+		profile.install_state_destroy(&ctx.install_state)
+		vm_log_destroy(&shared)
+	}
 }
 
 @(test)

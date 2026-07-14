@@ -53,7 +53,7 @@ governor_rebase :: proc(g: ^Governor, vm: ^Vm) {
 }
 
 governor_on_cancel :: proc(g: ^Governor, vm: ^Vm) -> bool {
-	if g.mode != .GSW_886 || g.host_hz <= GSW_886_TSC_HZ { return true }
+	if g.mode != .GSW_886 || g.host_hz <= GSW_886_THROUGHPUT_HZ { return true }
 	now := time.tick_now()
 	guest_ns, ok := guest_runtime_ns(vm)
 	if !ok { return false }
@@ -79,8 +79,8 @@ governor_on_cancel :: proc(g: ^Governor, vm: ^Vm) -> bool {
 }
 
 governor_charge :: proc(g: ^Governor, guest_ns, wall_ns: u64) -> i64 {
-	if g.mode != .GSW_886 || g.host_hz <= GSW_886_TSC_HZ { return 0 }
-	required_wall_ns := i128(guest_ns) * i128(g.host_hz) / i128(GSW_886_TSC_HZ)
+	if g.mode != .GSW_886 || g.host_hz <= GSW_886_THROUGHPUT_HZ { return 0 }
+	required_wall_ns := i128(guest_ns) * i128(g.host_hz) / i128(GSW_886_THROUGHPUT_HZ)
 	balance := i128(g.balance_ns) + required_wall_ns - i128(wall_ns)
 	balance = clamp(balance, -i128(GOVERNOR_MAX_CREDIT_NS), i128(0x7FFFFFFFFFFFFFFF))
 	g.balance_ns = i64(balance)

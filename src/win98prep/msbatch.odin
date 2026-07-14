@@ -24,8 +24,19 @@ normalize_msbatch_file :: proc(path: string) -> bool {
 
 normalize_msbatch :: proc(template: string) -> (string, bool) {
 	settings := [?]Msbatch_Setting {
+		{section = "Setup", key = "Express", value = "1"},
+		{section = "Setup", key = "EBD", value = "0"},
+		{section = "Setup", key = "ShowEula", value = "0"},
+		{section = "Setup", key = "ChangeDir", value = "0"},
 		{section = "Setup", key = "OptionalComponents", value = "0"},
-		{section = "Setup", key = "NoPrompt2Boot", value = "0"},
+		{section = "Setup", key = "System", value = "0"},
+		{section = "Setup", key = "CCP", value = "0"},
+		{section = "Setup", key = "CleanBoot", value = "0"},
+		{section = "Setup", key = "Display", value = "0"},
+		{section = "Setup", key = "DevicePath", value = "0"},
+		{section = "Setup", key = "NoDirWarn", value = "1"},
+		{section = "Setup", key = "Uninstall", value = "0"},
+		{section = "Setup", key = "NoPrompt2Boot", value = "1"},
 		{section = "Setup", key = "PenWinWarning", value = "0"},
 		{section = "NameAndOrg", key = "Name", value = `"RETVRN99 User"`, add_section = true},
 		{section = "NameAndOrg", key = "Org", value = `"RETVRN99"`, add_section = true},

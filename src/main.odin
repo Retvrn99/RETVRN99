@@ -8,11 +8,13 @@ package main
 import imgui "../vendor_local/imgui"
 import "../vendor_local/imgui/imgui_impl_sdl3"
 import "../vendor_local/imgui/imgui_impl_sdlrenderer3"
+import "acceptance"
 import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:log"
 import "core:os"
+import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
@@ -21,7 +23,6 @@ import "core:time"
 import "disk"
 import "fat32"
 import "host"
-import "hosttime"
 import "hv"
 import "machine"
 import "profile"
@@ -30,15 +31,14 @@ import "vga"
 import "vmconfig"
 import "win98prep"
 
-RAM_SIZE :: 64 * 1024 * 1024
+RAM_SIZE :: vmconfig.GSW_RAM_BYTES
 VOLUME_MB :: 2048
-VCPU_PULSE_PERIOD :: time.Millisecond
 SNAP_PERIOD :: 8 * time.Millisecond
 MAX_LOG_LINES :: 2000
-INSTALL_AUTORUN_KEYS :: [9]u8{0x22, 0x1F, 0x11, 0x1F, 0x12, 0x14, 0x16, 0x19, 0x1C}
+HOST_SDL_EVENTS_PER_FRAME :: 512
+HOST_INPUTS_PER_VM_STEP :: 256
 
 Command_Kind :: enum {
-	Key,
 	Reset,
 	Power_Off,
 	Mount_Floppy,
@@ -48,14 +48,15 @@ Command_Kind :: enum {
 	Install_Windows_98,
 	Finish_Windows_98_Installation,
 	Set_Cpu_Mode,
+	Set_Pause,
 }
 
 Command :: struct {
-	kind:     Command_Kind,
-	key:      [2]u8, // set-1 bytes (E0-prefixed when extended)
-	key_n:    int,
-	path:     string, // Mount_Floppy; owned by the VM thread once queued
-	cpu_mode: vmconfig.Cpu_Mode, // Set_Cpu_Mode: absolute selection
+	kind:         Command_Kind,
+	path:         string, // Mount_Floppy; owned by the VM thread once queued
+	cpu_mode:     vmconfig.Cpu_Mode, // Set_Cpu_Mode: absolute selection
+	pause_reason: host.Pause_Reason,
+	pause_active: bool,
 }
 
 Shared :: struct {
@@ -70,10 +71,8 @@ Shared :: struct {
 	regs_text:             string,
 	cdrom_mounted:         bool,
 	installing_windows_98: bool,
-	mouse_dx:              i64,
-	mouse_dy:              i64,
-	mouse_buttons:         u8,
-	mouse_pending:         bool,
+	pause_state:           host.Pause_State,
+	input:                 host.Host_Input_Queue,
 }
 
 Frame_Slot_State :: enum {
@@ -96,27 +95,25 @@ Frame_Mailbox :: struct {
 	has_frame: bool,
 }
 
-// shields the ^hv.Vm from the vCPU pacer during destroy/reinit
-Vm_Guard :: struct {
-	mu:    sync.Mutex,
-	vm:    ^hv.Vm,
-	valid: bool,
-	stop:  bool,
-}
-
 Vm_Ctx :: struct {
-	shared:        ^Shared,
-	guard:         Vm_Guard,
-	volume:        ^fat32.Volume,
-	bd:            disk.Block_Device,
-	attach:        bool,
-	floppy:        []u8, // retained copy of the mounted image so Reset keeps it in the drive
-	cdrom_path:    string, // retained path; each machine instance opens its own handle
-	cpu_mode:      vmconfig.Cpu_Mode,
-	paths:         profile.Paths,
-	cmos:          profile.Cmos_Data,
-	has_cmos:      bool,
-	install_state: profile.Install_State,
+	shared:                  ^Shared,
+	guard:                   Vm_Guard,
+	audio:                   host.Host_Audio,
+	audio_enabled:           bool,
+	volume:                  ^fat32.Volume,
+	bd:                      disk.Block_Device,
+	attach:                  bool,
+	floppy:                  []u8, // retained copy of the mounted image so Reset keeps it in the drive
+	floppy_path:             string,
+	cdrom_path:              string, // retained path; each machine instance opens its own handle
+	cpu_mode:                vmconfig.Cpu_Mode,
+	paths:                   profile.Paths,
+	cmos:                    profile.Cmos_Data,
+	has_cmos:                bool,
+	install_state:           profile.Install_State,
+	preparation_interrupted: bool,
+	preparation_recovered:   bool,
+	firmware_log_all:        bool,
 }
 
 main :: proc() {
@@ -135,6 +132,13 @@ run_main :: proc() -> int {
 	cdrom_path := ""
 	profile_root := ""
 	frame_dump_path := ""
+	seconds_explicit := false
+	acceptance_options, acceptance_diagnostic := acceptance.options_parse(os.args[1:])
+	if acceptance_diagnostic != .None {
+		fmt.eprintfln("acceptance option error: %v", acceptance_diagnostic)
+		return 1
+	}
+	if acceptance.options_request_headless(&acceptance_options) {console = true}
 	for a in os.args[1:] {
 		if a == "--console" {console = true}
 		if a == "--no-disk" {attach = false}
@@ -143,6 +147,7 @@ run_main :: proc() -> int {
 		}
 		if strings.has_prefix(a, "--seconds:") {
 			run_seconds, _ = strconv.parse_int(a[len("--seconds:"):])
+			seconds_explicit = true
 		}
 		if strings.has_prefix(a, "--floppy:") {
 			floppy_path = a[len("--floppy:"):]
@@ -157,6 +162,9 @@ run_main :: proc() -> int {
 			frame_dump_path = a[len("--frame-dump:"):]
 		}
 	}
+	if acceptance_options.accept_until == .Hardware_Detection && !seconds_explicit {
+		run_seconds = 30 * 60
+	}
 
 	paths: profile.Paths
 	perr: os.Error
@@ -167,7 +175,12 @@ run_main :: proc() -> int {
 	}
 	if perr != nil {
 		fmt.eprintfln("profile path resolution failed: %v", perr)
-		return 1
+		return console_acceptance_configuration_error(
+			&acceptance_options,
+			nil,
+			.GSW_886,
+			"profile path resolution failed",
+		)
 	}
 	defer profile.paths_destroy(&paths)
 	switch dos_diagnostic := profile.dos_seed_prepare(paths.c_drive); dos_diagnostic {
@@ -197,6 +210,52 @@ run_main :: proc() -> int {
 	}
 
 	if console {
+		owned_cdrom_path := ""
+		defer delete(owned_cdrom_path)
+		if acceptance_options.install_windows {
+			if !attach {
+				fmt.eprintln("Windows 98: --install-windows requires the protected C: drive")
+				return console_acceptance_configuration_error(
+					&acceptance_options,
+					&paths,
+					settings.cpu_mode,
+					"Windows 98 installation requires the protected C: drive",
+				)
+			}
+			if acceptance_options.install_windows_path != "" {
+				if !console_prepare_windows_install(
+					acceptance_options.install_windows_path,
+					&paths,
+					cmos,
+					has_cmos,
+					floppy_path,
+				) {
+					return console_acceptance_configuration_error(
+						&acceptance_options,
+						&paths,
+						settings.cpu_mode,
+						"Windows 98 media preparation failed",
+					)
+				}
+				owned_cdrom_path = strings.clone(acceptance_options.install_windows_path)
+			} else {
+				state, diagnostic := profile.install_state_load(paths.install_state)
+				if diagnostic != .None || !profile.install_state_active(&state) {
+					profile.install_state_destroy(&state)
+					fmt.eprintln("Windows 98: no prepared installation session to resume")
+					return console_acceptance_configuration_error(
+						&acceptance_options,
+						&paths,
+						settings.cpu_mode,
+						"no prepared Windows 98 installation session",
+					)
+				}
+				owned_cdrom_path = strings.clone(state.source_path)
+				profile.install_state_destroy(&state)
+			}
+			floppy_path = ""
+			cdrom_path = owned_cdrom_path
+		}
 		return console_main(
 			attach,
 			run_seconds,
@@ -207,9 +266,18 @@ run_main :: proc() -> int {
 			cmos,
 			has_cmos,
 			frame_dump_path,
+			acceptance_options,
 		)
 	}
-	return gui_main(attach, auto_close, &paths, settings, cmos, has_cmos)
+	return gui_main(
+		attach,
+		auto_close,
+		&paths,
+		settings,
+		cmos,
+		has_cmos,
+		acceptance_options.firmware_log_all,
+	)
 }
 
 // --- GUI ---
@@ -221,6 +289,7 @@ gui_main :: proc(
 	settings: profile.Settings,
 	cmos: profile.Cmos_Data,
 	has_cmos: bool,
+	firmware_log_all: bool,
 ) -> (
 	result: int,
 ) {
@@ -251,8 +320,11 @@ gui_main :: proc(
 	ctx.paths = paths^
 	ctx.cmos = cmos
 	ctx.has_cmos = has_cmos
+	ctx.firmware_log_all = firmware_log_all
 	install_state, install_diagnostic := profile.install_state_load(paths.install_state)
 	ctx.install_state = install_state
+	ctx.preparation_interrupted, ctx.preparation_recovered =
+		install_interrupted_preparation_recover(&ctx.paths, &ctx.install_state)
 	if profile.install_state_active(&ctx.install_state) {
 		shared.installing_windows_98 = true
 		ctx.cdrom_path = strings.clone(ctx.install_state.source_path)
@@ -275,6 +347,20 @@ gui_main :: proc(
 		fmt.eprintfln("host_init failed: %s", sdl3.GetError())
 		return 1
 	}
+	lifecycle_watch := Lifecycle_Watch {
+			shared = shared,
+		}
+	lifecycle_watch_registered := sdl3.AddEventWatch(lifecycle_event_watch, &lifecycle_watch)
+	if !lifecycle_watch_registered {
+		fmt.eprintfln("SDL lifecycle watch failed: %s", sdl3.GetError())
+		host.host_destroy(&h)
+		return 1
+	}
+	defer {
+		if lifecycle_watch_registered {
+			sdl3.RemoveEventWatch(lifecycle_event_watch, &lifecycle_watch)
+		}
+	}
 
 	imgui.CHECKVERSION()
 	imgui.CreateContext()
@@ -284,16 +370,22 @@ gui_main :: proc(
 	imgui_impl_sdl3.InitForSDLRenderer(h.win, h.ren)
 	imgui_impl_sdlrenderer3.Init(h.ren)
 
+	if !vm_guard_init(&ctx.guard) {
+		fmt.eprintln("vCPU wake adapter initialization failed")
+		return 1
+	}
+	ctx.audio_enabled = true
+	defer vm_guard_destroy(&ctx.guard)
 	vm_thr := thread.create_and_start_with_poly_data(ctx, vm_thread_proc)
-	pacer_thr := thread.create_and_start_with_poly_data(&ctx.guard, vcpu_pacer_proc)
 
 	st := host.Menu_State {
-		cpu_mode = ctx.cpu_mode,
-	}
+			cpu_mode = ctx.cpu_mode,
+		}
 	floppy_pending := pending_mount_create()
 	cdrom_pending := pending_mount_create()
 	install_pending := pending_mount_create()
 	release_mouse_key := false
+	keyboard: host.Host_Keyboard
 	start := time.tick_now()
 
 	for {
@@ -303,7 +395,8 @@ gui_main :: proc(
 		if !running {break}
 
 		ev: sdl3.Event
-		for sdl3.PollEvent(&ev) {
+		for event_count in 0 ..< HOST_SDL_EVENTS_PER_FRAME {
+			if !sdl3.PollEvent(&ev) {break}
 			mouse_event :=
 				ev.type == .MOUSE_MOTION ||
 				ev.type == .MOUSE_BUTTON_DOWN ||
@@ -314,10 +407,12 @@ gui_main :: proc(
 			case .QUIT:
 				push_cmd(shared, Command{kind = .Power_Off})
 			case .KEY_DOWN, .KEY_UP:
-				if ev.key.scancode == .RCTRL && (h.mouse_captured || release_mouse_key) {
+				if ev.key.repeat {continue}
+				if ev.key.scancode == .RCTRL &&
+				   ((ev.key.down && h.mouse_captured) || release_mouse_key) {
 					if ev.key.down {
 						release_mouse_key = true
-						if host.mouse_capture(&h, false) {push_mouse(shared, 0, 0, 0)}
+						if host.mouse_capture(&h, false) {push_mouse_buttons(shared, 0, true)}
 					} else {
 						release_mouse_key = false
 					}
@@ -326,14 +421,16 @@ gui_main :: proc(
 				// releases always reach the guest: swallowing a break code
 				// while ImGui captures the keyboard leaves a stuck key
 				if ev.key.down && io.WantCaptureKeyboard {continue}
-				if s, ok := host.scancode_to_set1(ev.key.scancode); ok {
-					buf, n := host.set1_bytes(s, ev.key.down)
-					push_cmd(shared, Command{kind = .Key, key = buf, key_n = n})
-				}
+				push_host_key(shared, &keyboard, ev.key.scancode, ev.key.down)
 			case .MOUSE_MOTION:
 				if h.mouse_captured {
 					h.mouse_buttons = host.mouse_buttons_from_sdl(ev.motion.state)
-					push_mouse(shared, i32(ev.motion.xrel), i32(ev.motion.yrel), h.mouse_buttons)
+					push_mouse_motion(
+						shared,
+						i32(ev.motion.xrel),
+						i32(ev.motion.yrel),
+						h.mouse_buttons,
+					)
 				}
 			case .MOUSE_BUTTON_DOWN, .MOUSE_BUTTON_UP:
 				if !h.mouse_captured {
@@ -349,11 +446,20 @@ gui_main :: proc(
 					ev.button.button,
 					ev.button.down,
 				)
-				push_mouse(shared, 0, 0, h.mouse_buttons)
-			case .WINDOW_FOCUS_LOST:
+				push_mouse_buttons(shared, h.mouse_buttons, !ev.button.down)
+			case .MOUSE_WHEEL:
+				if h.mouse_captured {
+					wheel := ev.wheel.integer_y
+					if wheel == 0 && ev.wheel.y != 0 {wheel = ev.wheel.y > 0 ? 1 : -1}
+					if ev.wheel.direction == .FLIPPED {wheel = -wheel}
+					push_mouse_wheel(shared, wheel, h.mouse_buttons)
+				}
+			case .WINDOW_FOCUS_LOST, .WILL_ENTER_BACKGROUND, .DID_ENTER_BACKGROUND:
+				release_mouse_key = false
+				release_held_keys(shared, &keyboard)
 				if h.mouse_captured {
 					_ = host.mouse_capture(&h, false)
-					push_mouse(shared, 0, 0, 0)
+					push_mouse_buttons(shared, 0, true)
 				}
 			}
 		}
@@ -375,6 +481,7 @@ gui_main :: proc(
 		stats := shared.exit_stats
 		st.cdrom_mounted = shared.cdrom_mounted
 		st.installing_windows_98 = shared.installing_windows_98
+		st.user_paused = host.pause_reason_active(&shared.pause_state, .User)
 		nlog := len(shared.log_lines)
 		first := max(0, nlog - 200)
 		logs := make([]string, nlog - first, context.temp_allocator)
@@ -406,6 +513,12 @@ gui_main :: proc(
 		switch host.menu_draw(&st, info) {
 		case .Reset:
 			push_cmd(shared, Command{kind = .Reset})
+		case .Toggle_Pause:
+			st.user_paused = !st.user_paused
+			push_cmd(
+				shared,
+				Command{kind = .Set_Pause, pause_reason = .User, pause_active = st.user_paused},
+			)
 		case .Power_Off:
 			push_cmd(shared, Command{kind = .Power_Off})
 		case .Mount_Floppy:
@@ -441,6 +554,8 @@ gui_main :: proc(
 			auto_close_after = -1
 		}
 	}
+	sdl3.RemoveEventWatch(lifecycle_event_watch, &lifecycle_watch)
+	lifecycle_watch_registered = false
 	pending_mount_release(floppy_pending)
 	floppy_pending = nil
 	pending_mount_release(cdrom_pending)
@@ -448,11 +563,7 @@ gui_main :: proc(
 	pending_mount_release(install_pending)
 	install_pending = nil
 
-	thread.join(vm_thr)
-	sync.lock(&ctx.guard.mu)
-	ctx.guard.stop = true
-	sync.unlock(&ctx.guard.mu)
-	thread.join(pacer_thr)
+	thread.destroy(vm_thr)
 
 	imgui_impl_sdlrenderer3.Shutdown()
 	imgui_impl_sdl3.Shutdown()
@@ -533,29 +644,12 @@ pending_mount_release :: proc(p: ^Pending_Mount) {
 	if free_now {free(p, p.allocator)}
 }
 
-snapshot_has_c_prompt :: proc(snap: ^vga.Text_Snapshot) -> bool {
-	for row in 0 ..< 25 {
-		end := 79
-		for end >= 0 && u8(snap.cells[row * 80 + end]) == ' ' {end -= 1}
-		if end < 3 {continue}
-		base := row * 80 + end - 3
-		drive := u8(snap.cells[base])
-		if (drive == 'C' || drive == 'c') &&
-		   u8(snap.cells[base + 1]) == ':' &&
-		   u8(snap.cells[base + 2]) == '\\' &&
-		   u8(snap.cells[base + 3]) == '>' {
-			return true
-		}
-	}
-	return false
-}
-
 frame_mailbox_publish :: proc(mailbox: ^Frame_Mailbox, source: ^vga.Display_Frame) {
 	if source == nil || source.width <= 0 || source.height <= 0 {return}
 	pixel_count := source.width * source.height
 	if pixel_count <= 0 || len(source.pixels) < pixel_count {return}
 	sync.lock(&mailbox.mu)
-	if mailbox.has_frame && source.generation == mailbox.published {
+	if mailbox.has_frame && source.content_generation == mailbox.published {
 		sync.unlock(&mailbox.mu)
 		return
 	}
@@ -594,7 +688,7 @@ frame_mailbox_publish :: proc(mailbox: ^Frame_Mailbox, source: ^vga.Display_Fram
 
 	sync.lock(&mailbox.mu)
 	slot.state = .Ready
-	mailbox.published = source.generation
+	mailbox.published = source.content_generation
 	mailbox.has_frame = true
 	sync.unlock(&mailbox.mu)
 }
@@ -667,12 +761,38 @@ command_queue_destroy :: proc(s: ^Shared) {
 	sync.unlock(&s.mu)
 }
 
-push_mouse :: proc(s: ^Shared, dx, dy: i32, buttons: u8) {
+push_host_key :: proc(
+	s: ^Shared,
+	keyboard: ^host.Host_Keyboard,
+	scancode: sdl3.Scancode,
+	down: bool,
+) {
 	sync.lock(&s.mu)
-	s.mouse_dx += i64(dx)
-	s.mouse_dy += i64(dy)
-	s.mouse_buttons = buttons
-	s.mouse_pending = true
+	_ = host.host_input_push_key(&s.input, keyboard, scancode, down, false)
+	sync.unlock(&s.mu)
+}
+
+release_held_keys :: proc(s: ^Shared, keyboard: ^host.Host_Keyboard) {
+	sync.lock(&s.mu)
+	_ = host.host_input_release_held_keys(&s.input, keyboard)
+	sync.unlock(&s.mu)
+}
+
+push_mouse_motion :: proc(s: ^Shared, dx, dy: i32, buttons: u8) {
+	sync.lock(&s.mu)
+	_ = host.host_input_push_motion(&s.input, dx, dy, buttons)
+	sync.unlock(&s.mu)
+}
+
+push_mouse_buttons :: proc(s: ^Shared, buttons: u8, durable_release: bool = false) {
+	sync.lock(&s.mu)
+	_ = host.host_input_push_buttons(&s.input, buttons, durable_release)
+	sync.unlock(&s.mu)
+}
+
+push_mouse_wheel :: proc(s: ^Shared, wheel: i32, buttons: u8) {
+	sync.lock(&s.mu)
+	_ = host.host_input_push_wheel(&s.input, wheel, buttons)
 	sync.unlock(&s.mu)
 }
 
@@ -682,31 +802,49 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 	context.logger = log.create_console_logger(.Info, {.Level})
 	s := c.shared
 	m := new(machine.Machine)
+	pause_state: host.Pause_State
 
-	machine_live := vm_boot(c, m)
-	if !machine_live {
+	preparation_blocked := !install_state_boot_allowed(&c.install_state)
+	launch_state_ready := !preparation_blocked && install_launch_prepare(c)
+	machine_live := false
+	if launch_state_ready {
+		machine_live = vm_boot(c, m, !host.pause_active(&pause_state))
+	}
+	if preparation_blocked {
+		message := "Windows 98: interrupted preparation is blocked; choose Install Windows 98 to retry"
+		if !c.preparation_recovered {
+			message = "Windows 98: interrupted preparation recovery is ambiguous; retained files were preserved"
+		}
+		publish_freeze(s, message, "")
+	} else if !launch_state_ready {
+		publish_freeze(
+			s,
+			"Windows 98: cannot record the direct Setup launch; fix install-state storage and Reset to retry",
+			"",
+		)
+	} else if !machine_live {
 		publish_freeze(s, "machine init failed (WHPX unavailable?)", "")
 	} else {
 		vm_log(s, cpu_mode_log(c.cpu_mode))
 	}
 
 	firmware: Firmware_Log
+	firmware.live_stdout = c.firmware_log_all
 	defer firmware_log_destroy(&firmware)
 	stats: [hv.Exit_Kind]u64
 	frozen := false
-	install_waiting := false
-	install_typing := false
-	install_key_index := 0
-	install_next_key: time.Tick
-	install_keys := INSTALL_AUTORUN_KEYS
-	install_waiting = install_state_launch_pending(&c.install_state)
-	if install_waiting {
-		vm_log(s, "Windows 98: resuming pending unattended Setup launch")
-	} else if c.install_state.phase == .Preparing {
-		vm_log(
-			s,
-			"Windows 98: preparation was interrupted; restart or finish the installation session",
-		)
+	if c.install_state.phase == .Preparing {
+		if c.preparation_recovered {
+			vm_log(
+				s,
+				"Windows 98: interrupted preparation recovered; select Install Windows 98 to retry",
+			)
+		} else {
+			vm_log(
+				s,
+				"Windows 98: interrupted preparation retained because recovery was not provably safe",
+			)
+		}
 	} else if c.install_state.phase == .Setup_Running {
 		vm_log(
 			s,
@@ -728,13 +866,6 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 		cmds := make([]Command, len(s.cmds), context.allocator)
 		copy(cmds, s.cmds[:])
 		clear(&s.cmds)
-		mouse_dx := i32(clamp(s.mouse_dx, i64(-2147483648), i64(2147483647)))
-		mouse_dy := i32(clamp(s.mouse_dy, i64(-2147483648), i64(2147483647)))
-		mouse_buttons := s.mouse_buttons
-		mouse_pending := s.mouse_pending
-		s.mouse_dx -= i64(mouse_dx)
-		s.mouse_dy -= i64(mouse_dy)
-		s.mouse_pending = s.mouse_dx != 0 || s.mouse_dy != 0
 		sync.unlock(&s.mu)
 
 		quit := false
@@ -744,22 +875,21 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				continue
 			}
 			switch cmd.kind {
-			case .Key:
-				if machine_live && !frozen {
-					for i in 0 ..< cmd.key_n {machine.i8042_key(&m.kbd, cmd.key[i])}
-				}
 			case .Reset:
-				install_typing = false
-				install_key_index = 0
-				install_waiting = install_state_launch_pending(&c.install_state)
 				if machine_live {
 					vm_shutdown(c, m)
 					machine_live = false
 				}
 				stats = {}
 				volume_ready := vm_ensure_volume(c)
-				if volume_ready {
-					machine_live = vm_boot(c, m)
+				preparation_blocked = !install_state_boot_allowed(&c.install_state)
+				state_ready :=
+					!preparation_blocked &&
+					(!profile.install_state_active(&c.install_state) ||
+							install_state_save(c, "before manual reset"))
+				launch_ready := state_ready && install_launch_prepare(c)
+				if volume_ready && launch_ready {
+					machine_live = vm_boot(c, m, !host.pause_active(&pause_state))
 				}
 				if machine_live {
 					frozen = false
@@ -767,6 +897,20 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					vm_log(
 						s,
 						fmt.tprintf("machine: reset (%s)", vmconfig.cpu_mode_name(c.cpu_mode)),
+					)
+				} else if preparation_blocked {
+					frozen = true
+					publish_freeze(
+						s,
+						"reset blocked: interrupted Windows 98 preparation must be retried or finished",
+						"",
+					)
+				} else if !launch_ready {
+					frozen = true
+					publish_freeze(
+						s,
+						"reset blocked: Windows 98 install state or direct launch could not be persisted",
+						"",
 					)
 				} else if !volume_ready {
 					frozen = true
@@ -800,6 +944,8 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					if machine.machine_mount_floppy(m, img) {
 						delete(c.floppy)
 						c.floppy = img
+						delete(c.floppy_path)
+						c.floppy_path = strings.clone(cmd.path)
 						vm_log(s, fmt.tprintf("floppy: mounted %s", cmd.path))
 					} else {
 						vm_log(s, fmt.tprintf("floppy: %s is not a 1.44MB image", cmd.path))
@@ -817,6 +963,8 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				machine.machine_eject_floppy(m)
 				delete(c.floppy)
 				c.floppy = nil
+				delete(c.floppy_path)
+				c.floppy_path = ""
 				vm_log(s, "floppy: ejected")
 			case .Mount_Cdrom:
 				if !machine_live {
@@ -849,7 +997,6 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					delete(cmd.path)
 					continue
 				}
-				install_autorun_cancel(&install_waiting, &install_typing, &install_key_index)
 				publish_install_state(s, true)
 				vm_log(s, fmt.tprintf("Windows 98: validating and extracting %s", cmd.path))
 				if !vm_close_then_shutdown(c, m, &machine_live) {
@@ -882,7 +1029,12 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					delete(c.cdrom_path)
 					c.cdrom_path = strings.clone(cmd.path)
 
-					report := win98prep.prepare(cmd.path, c.paths.install, c.paths.c_drive)
+					report := win98prep.prepare(
+						cmd.path,
+						c.paths.install,
+						c.paths.c_drive,
+						c.floppy_path,
+					)
 					prepared := report.diagnostic == .None
 					if prepared {
 						vm_log(
@@ -903,6 +1055,16 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 								)
 							}
 							launch_ready = true
+							if c.floppy_path != "" {
+								delete(c.floppy)
+								c.floppy = nil
+								delete(c.floppy_path)
+								c.floppy_path = ""
+								vm_log(
+									s,
+									"Windows 98: boot floppy seed consumed; direct HDD launch armed",
+								)
+							}
 							if report.retry_cleanup.archived_count > 0 {
 								vm_log(
 									s,
@@ -924,12 +1086,19 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 							}
 						}
 					} else {
+						if report.bootstrap_diagnostic == .Boot_Image_Required {
+							vm_log(
+								s,
+								"Windows 98: mount a matching Windows 98 boot floppy before retrying a fresh installation",
+							)
+						}
 						vm_log(
 							s,
 							fmt.tprintf(
-								"Windows 98: preparation failed (%v, media %v, cleanup %v)",
+								"Windows 98: preparation failed (%v, media %v, bootstrap %v, cleanup %v)",
 								report.diagnostic,
 								report.media_diagnostic,
+								report.bootstrap_diagnostic,
 								report.retry_cleanup.diagnostic,
 							),
 						)
@@ -943,12 +1112,6 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 							&report,
 						) {
 						case .Restored:
-							install_autorun_restore(
-								&install_waiting,
-								&install_typing,
-								&install_key_index,
-								&c.install_state,
-							)
 							vm_log(
 								s,
 								"Windows 98: failed preparation rolled back; previous installation state restored",
@@ -990,47 +1153,79 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					)
 					continue
 				}
-				machine_live = vm_boot(c, m)
+				preparation_blocked = !install_state_boot_allowed(&c.install_state)
+				if preparation_blocked {
+					frozen = true
+					publish_freeze(
+						s,
+						"Windows 98: interrupted preparation remains blocked; retry installation or finish the session",
+						"",
+					)
+					continue
+				}
+				launch_state_ready = install_launch_prepare(c)
+				if launch_state_ready {
+					machine_live = vm_boot(c, m, !host.pause_active(&pause_state))
+				}
 				if machine_live {
 					frozen = false
 					publish_freeze(s, "", "")
-					install_autorun_restore(
-						&install_waiting,
-						&install_typing,
-						&install_key_index,
-						&c.install_state,
-					)
 					if launch_ready {
-						vm_log(s, "Windows 98: rebooting to DOS before unattended Setup")
-					} else if install_waiting {
-						vm_log(s, "Windows 98: resuming the surviving pending Setup launch")
+						vm_log(s, "Windows 98: booting the direct unattended Setup launcher")
 					}
+				} else if !launch_state_ready {
+					frozen = true
+					publish_freeze(
+						s,
+						"Windows 98: direct Setup launch state could not be persisted; Reset to retry",
+						"",
+					)
 				} else {
 					frozen = true
 					publish_freeze(s, "Windows 98: reboot after preparation failed", "")
 				}
 			case .Finish_Windows_98_Installation:
-				if install_session_finish(c, m) {
-					install_waiting = false
-					install_typing = false
-					install_key_index = 0
-				}
+				_ = install_session_finish(c, m)
 			case .Set_Cpu_Mode:
 				c.cpu_mode = cmd.cpu_mode
 				if machine_live {machine.machine_set_cpu_mode(m, c.cpu_mode)}
 				vm_log(s, cpu_mode_log(c.cpu_mode))
+			case .Set_Pause:
+				transition := host.pause_set(&pause_state, cmd.pause_reason, cmd.pause_active)
+				if machine_live && transition != .Unchanged {
+					machine.machine_clock_set_running(m, transition == .Resumed)
+				}
+				publish_pause_state(s, pause_state)
 			}
 		}
 		delete(cmds)
-		if mouse_pending && machine_live && !frozen {
-			machine.machine_mouse(m, mouse_dx, mouse_dy, mouse_buttons)
-		}
 		if quit {break loop}
+		if machine_live && !frozen && !host.pause_active(&pause_state) {
+			input_events: [HOST_INPUTS_PER_VM_STEP]host.Host_Input_Event
+			sync.lock(&s.mu)
+			input_count := host.host_input_drain(&s.input, input_events[:])
+			sync.unlock(&s.mu)
+			for event in input_events[:input_count] {
+				switch event.kind {
+				case .Key:
+					for i in 0 ..< int(event.key_n) {machine.i8042_key(&m.kbd, event.key[i])}
+				case .Mouse_Motion, .Mouse_Buttons:
+					machine.machine_mouse(m, event.dx, event.dy, event.buttons)
+				case .Mouse_Wheel:
+					machine.machine_mouse_wheel(m, event.wheel, event.buttons)
+				}
+			}
+		}
 
-		if machine_live && !frozen {
+		if machine_live && !frozen && !host.pause_active(&pause_state) {
 			alive := machine.step(m)
 			stats[m.exit_hist[(m.exit_count - 1) % machine.EXIT_HISTORY]] += 1
 			firmware_log_drain(&firmware, m, s)
+			if vm_guard_failed(&c.guard) {
+				frozen = true
+				publish_freeze(s, "vCPU watchdog scheduling failed", "")
+				continue loop
+			}
 			if !alive {
 				if machine.machine_cpu_reset_pending(m) {
 					reason := machine.machine_cpu_reset_reason(m)
@@ -1040,6 +1235,9 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					reset_ok := machine.machine_cpu_reset(m)
 					c.guard.valid = reset_ok
 					sync.unlock(&c.guard.mu)
+					if reset_ok {
+						vm_guard_rearm(&c.guard, machine.machine_next_wake_ns(m))
+					}
 					if reset_ok {
 						frozen = false
 						vm_log(
@@ -1055,17 +1253,28 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						publish_freeze(s, m.bus.freeze_msg, "")
 					}
 				} else if machine.machine_reset_requested(m) {
-					install_typing = false
-					install_key_index = 0
-					install_waiting = install_state_launch_pending(&c.install_state)
 					vm_shutdown(c, m)
 					machine_live = false
 					if profile.install_state_active(&c.install_state) {
 						c.install_state.reset_count += 1
-						_ = install_state_save(c, "after guest reset")
+						if c.install_state.phase == .Setup_Running {
+							_ = profile.install_state_advance_milestone(
+								&c.install_state,
+								.First_Reboot,
+							)
+						}
+						if !install_state_save(c, "after guest reset") {
+							frozen = true
+							publish_freeze(
+								s,
+								"guest reset blocked: Windows 98 install state could not be persisted; Reset to retry",
+								"",
+							)
+							continue loop
+						}
 					}
 					stats = {}
-					machine_live = vm_boot(c, m)
+					machine_live = vm_boot(c, m, !host.pause_active(&pause_state))
 					if machine_live {
 						frozen = false
 						publish_freeze(s, "", "")
@@ -1088,43 +1297,10 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 		}
 
 		now := time.tick_now()
-		if machine_live &&
-		   !frozen &&
-		   install_typing &&
-		   time.tick_diff(install_next_key, now) >= 100 * time.Millisecond {
-			last_key := install_key_index == len(install_keys) - 1
-			send_key := true
-			if last_key {
-				send_key = install_autorun_prepare_enter(
-					c,
-					&install_waiting,
-					&install_typing,
-					&install_key_index,
-					&frozen,
-				)
-			}
-			if send_key {
-				scancode := install_keys[install_key_index]
-				machine.i8042_key(&m.kbd, scancode)
-				machine.i8042_key(&m.kbd, scancode | 0x80)
-				install_key_index += 1
-				install_next_key = now
-				if install_key_index == len(install_keys) {
-					install_typing = false
-					install_waiting = false
-					vm_log(s, "Windows 98: GSWSETUP launched")
-				}
-			}
-		}
 		if machine_live && time.tick_diff(last_snap, now) >= SNAP_PERIOD {
 			last_snap = now
 			snap := machine.machine_text_snapshot(m)
 			frame_mailbox_publish(&s.frames, machine.machine_display_frame(m))
-			if install_waiting && !install_typing && snapshot_has_c_prompt(&snap) {
-				install_typing = true
-				install_next_key = now
-				vm_log(s, "Windows 98: DOS prompt reached; starting GSWSETUP")
-			}
 			sync.lock(&s.mu)
 			s.snap = snap
 			s.exit_stats = stats
@@ -1139,6 +1315,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 	firmware_log_host_flush(&firmware, s)
 	if machine_live {vm_shutdown(c, m)}
 	delete(c.floppy)
+	delete(c.floppy_path)
 	delete(c.cdrom_path)
 	free(m)
 }
@@ -1198,12 +1375,19 @@ vm_close_then_shutdown :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: ^b
 	return true
 }
 
-vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
-	if c == nil || m == nil || !vm_volume_ready(c) {return false}
+vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine, clock_running: bool = true) -> bool {
+	if c == nil ||
+	   m == nil ||
+	   !install_state_boot_allowed(&c.install_state) ||
+	   !vm_volume_ready(c) {
+		return false
+	}
 	sync.lock(&c.guard.mu)
 	defer sync.unlock(&c.guard.mu)
+	host.host_audio_close(&c.audio)
 	m^ = {}
 	if !machine.machine_init(m, RAM_SIZE) {return false}
+	if !clock_running {machine.machine_clock_set_running(m, false)}
 	frame_mailbox_reset(&c.shared.frames)
 	if c.has_cmos {_ = machine.machine_cmos_import(m, c.cmos[:])}
 	if profile.install_state_active(&c.install_state) {
@@ -1227,8 +1411,12 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 			vm_log(c.shared, fmt.tprintf("CD-ROM: cannot reopen %s", c.cdrom_path))
 		}
 	}
+	if c.audio_enabled && !host.host_audio_open(&c.audio, machine.machine_audio_output(m)) {
+		vm_log(c.shared, fmt.tprintf("audio: SDL3 output unavailable (%s)", sdl3.GetError()))
+	}
 	c.guard.vm = &m.vm
 	c.guard.valid = true
+	machine.machine_set_wake_adapter(m, &c.guard, vm_guard_rearm)
 	return true
 }
 
@@ -1236,6 +1424,7 @@ vm_shutdown :: proc(c: ^Vm_Ctx, m: ^machine.Machine) {
 	sync.lock(&c.guard.mu)
 	defer sync.unlock(&c.guard.mu)
 	c.guard.valid = false
+	host.host_audio_close(&c.audio)
 	if m == nil || m.vm.part == nil {return}
 	saved_cmos := machine.machine_cmos_export(m)
 	copy(c.cmos[:], saved_cmos[:])
@@ -1244,6 +1433,7 @@ vm_shutdown :: proc(c: ^Vm_Ctx, m: ^machine.Machine) {
 		vm_log(c.shared, fmt.tprintf("CMOS: save failed (%v)", diag))
 	}
 	machine.machine_destroy(m)
+	c.guard.vm = nil
 }
 
 install_state_save :: proc(c: ^Vm_Ctx, reason: string) -> bool {
@@ -1274,6 +1464,7 @@ install_state_clone :: proc(state: ^profile.Install_State) -> profile.Install_St
 	if state == nil {return {}}
 	return profile.Install_State {
 		phase = state.phase,
+		milestone = state.milestone,
 		source_path = strings.clone(state.source_path),
 		reset_count = state.reset_count,
 		saved_cmos_valid = state.saved_cmos_valid,
@@ -1359,10 +1550,6 @@ install_prepare_boot_cmos :: proc(c: ^Vm_Ctx, cmos: []u8) -> bool {
 	return true
 }
 
-install_state_launch_pending :: proc(state: ^profile.Install_State) -> bool {
-	return state != nil && state.phase == .Launch_Pending
-}
-
 install_preparation_rollback_failed :: proc(report: ^win98prep.Report) -> bool {
 	return(
 		report != nil &&
@@ -1370,41 +1557,46 @@ install_preparation_rollback_failed :: proc(report: ^win98prep.Report) -> bool {
 	)
 }
 
-install_autorun_cancel :: proc(waiting, typing: ^bool, key_index: ^int) {
-	if waiting != nil {waiting^ = false}
-	if typing != nil {typing^ = false}
-	if key_index != nil {key_index^ = 0}
-}
-
-install_autorun_restore :: proc(
-	waiting, typing: ^bool,
-	key_index: ^int,
+install_launch_stage :: proc(
 	state: ^profile.Install_State,
+) -> (
+	previous_phase: profile.Install_Phase,
+	previous_milestone: profile.Install_Milestone,
+	changed, ok: bool,
 ) {
-	if waiting != nil {waiting^ = install_state_launch_pending(state)}
-	if typing != nil {typing^ = false}
-	if key_index != nil {key_index^ = 0}
+	if state == nil {return {}, {}, false, false}
+	previous_phase = state.phase
+	previous_milestone = state.milestone
+	if state.phase == .Preparing {return previous_phase, previous_milestone, false, false}
+	if state.phase != .Launch_Pending {return previous_phase, previous_milestone, false, true}
+	state.phase = .Setup_Running
+	target := profile.Install_Milestone.DOS_Setup
+	if state.reset_count > 0 {target = .First_Reboot}
+	if !profile.install_state_advance_milestone(state, target) {
+		state.phase = previous_phase
+		state.milestone = previous_milestone
+		return previous_phase, previous_milestone, false, false
+	}
+	return previous_phase, previous_milestone, true, true
 }
 
-install_autorun_prepare_enter :: proc(
-	c: ^Vm_Ctx,
-	waiting, typing: ^bool,
-	key_index: ^int,
-	frozen: ^bool,
-) -> bool {
-	if c == nil || c.shared == nil {return false}
-	c.install_state.phase = .Setup_Running
-	if install_state_save(c, "before Setup launch") {return true}
-	c.install_state.phase = .Launch_Pending
-	if waiting != nil {waiting^ = true}
-	if typing != nil {typing^ = false}
-	if key_index != nil {key_index^ = 0}
-	if frozen != nil {frozen^ = true}
-	publish_freeze(
-		c.shared,
-		"Windows 98: cannot record the Setup launch; fix install-state storage and Reset to retry",
-		"",
-	)
+install_launch_restore :: proc(
+	state: ^profile.Install_State,
+	phase: profile.Install_Phase,
+	milestone: profile.Install_Milestone,
+) {
+	if state == nil {return}
+	state.phase = phase
+	state.milestone = milestone
+}
+
+install_launch_prepare :: proc(c: ^Vm_Ctx) -> bool {
+	if c == nil {return false}
+	phase, milestone, changed, ok := install_launch_stage(&c.install_state)
+	if !ok {return false}
+	if !changed {return true}
+	if install_state_save(c, "before direct Setup launch") {return true}
+	install_launch_restore(&c.install_state, phase, milestone)
 	return false
 }
 
@@ -1497,6 +1689,12 @@ publish_freeze :: proc(s: ^Shared, msg: string, regs: string) {
 	sync.unlock(&s.mu)
 }
 
+publish_pause_state :: proc(s: ^Shared, state: host.Pause_State) {
+	sync.lock(&s.mu)
+	s.pause_state = state
+	sync.unlock(&s.mu)
+}
+
 format_regs :: proc(r: hv.Regs, m: ^machine.Machine) -> string {
 	b := strings.builder_make()
 	fmt.sbprintfln(
@@ -1549,33 +1747,60 @@ vm_log_destroy :: proc(s: ^Shared) {
 cpu_mode_log :: proc(mode: vmconfig.Cpu_Mode) -> string {
 	switch mode {
 	case .GSW_886:
-		return "cpu: GSW-886 (1 GHz TSC, approximate throughput)"
+		return "cpu: GSW-886 (700 MHz TSC, K7-class throughput)"
 	case .Turbo:
-		return "cpu: Turbo (1 GHz TSC, unrestricted throughput)"
+		return "cpu: Turbo (700 MHz TSC, unrestricted throughput)"
 	}
 	return "cpu: unknown mode"
 }
 
-vcpu_pacer_proc :: proc(g: ^Vm_Guard) {
-	waiter: hosttime.Waiter
-	hosttime.waiter_init(&waiter)
-	defer hosttime.waiter_destroy(&waiter)
-	for {
-		hosttime.waiter_sleep(&waiter, VCPU_PULSE_PERIOD)
-		sync.lock(&g.mu)
-		if g.stop {
-			sync.unlock(&g.mu)
-			return
-		}
-		if g.valid {hv.cancel(g.vm)}
-		sync.unlock(&g.mu)
-	}
-}
-
 // --- console harness (--console) ---
 
-RUN_SECONDS :: 60
-VGA_PERIOD :: 500 * time.Millisecond
+console_reinitialize_machine :: proc(
+	m: ^machine.Machine,
+	guard: ^Vm_Guard,
+	vol: ^^fat32.Volume,
+	paths: ^profile.Paths,
+	settings: profile.Settings,
+	cmos: []u8,
+	attach: bool,
+	cdrom_path: string,
+	floppy: []u8,
+	options: ^acceptance.Options,
+) -> bool {
+	if m == nil || guard == nil || vol == nil || paths == nil || options == nil {return false}
+	reinitialized := false
+	success := false
+	defer if reinitialized && !success {machine.machine_destroy(m)}
+	vm_guard_unbind(guard)
+	machine.machine_destroy(m)
+	if vol^ != nil {
+		if !fat32.volume_close(vol^) {return false}
+		vol^ = nil
+	}
+	m^ = {}
+	if !machine.machine_init(m, RAM_SIZE) {return false}
+	reinitialized = true
+	if len(cmos) > 0 {_ = machine.machine_cmos_import(m, cmos)}
+	if !machine.load_roms(&m.vm) {return false}
+	machine.machine_set_cpu_mode(m, settings.cpu_mode)
+	machine.bus_set_strict_io(&m.bus, options.strict_io)
+	if options.test_device {machine.machine_enable_test_device(m)}
+	if attach {
+		vol^ = fat32.volume_open(paths.c_drive, VOLUME_MB)
+		if vol^ == nil {return false}
+		vol^^.on_fail = proc(ctx: rawptr, msg: string) {
+			fmt.printfln("disk: writes frozen: %s", msg)
+		}
+		machine.machine_attach_disk(m, fat32.volume_block_device(vol^))
+	}
+	if cdrom_path != "" && !machine.machine_attach_cdrom(m, cdrom_path) {return false}
+	if len(floppy) > 0 && !machine.machine_mount_floppy(m, floppy) {return false}
+	vm_guard_bind(guard, &m.vm)
+	machine.machine_set_wake_adapter(m, guard, vm_guard_rearm)
+	success = true
+	return true
+}
 
 console_main :: proc(
 	attach: bool,
@@ -1587,33 +1812,119 @@ console_main :: proc(
 	cmos: profile.Cmos_Data,
 	has_cmos: bool,
 	frame_dump_path: string,
+	options: acceptance.Options,
 ) -> (
 	result: int,
 ) {
+	run_options := options
+	start := time.tick_now()
+	run_result := acceptance.Result {
+		stop_reason            = .Configuration_Error,
+		exit_code              = 1,
+		cpu_mode               = console_cpu_mode_name(settings.cpu_mode),
+		installation_milestone = "none",
+	}
+	defer console_result_destroy(&run_result)
+	firmware: Firmware_Log
+	firmware.live_stdout =
+		run_options.firmware_log_all || !acceptance.options_request_headless(&run_options)
 	loaded_cmos := cmos
+	install_state, install_diagnostic := profile.install_state_load(paths.install_state)
+	defer profile.install_state_destroy(&install_state)
+	if install_diagnostic != .None && install_diagnostic != .Missing {
+		fmt.eprintfln("Windows 98: install state ignored (%v)", install_diagnostic)
+	}
+	interrupted, recovered := install_interrupted_preparation_recover(paths, &install_state)
+	if interrupted {
+		message := "interrupted Windows 98 preparation recovered; rerun --install-windows with media"
+		if !recovered {
+			message = "interrupted Windows 98 preparation recovery was not provably safe"
+		}
+		fmt.eprintln(message)
+		return console_acceptance_configuration_error(
+			&run_options,
+			paths,
+			settings.cpu_mode,
+			message,
+		)
+	}
+	if profile.install_state_active(&install_state) {install_apply_boot_order(loaded_cmos[:])}
 	vol: ^fat32.Volume
+	floppy_image: []u8
+	defer delete(floppy_image)
 	m := new(machine.Machine)
 	if !machine.machine_init(m, RAM_SIZE) {
 		fmt.eprintln("machine_init failed (WHPX unavailable?)")
+		console_acceptance_finalize(
+			&run_options,
+			&run_result,
+			m,
+			nil,
+			&firmware,
+			paths,
+			start,
+			&result,
+		)
+		firmware_log_destroy(&firmware)
 		free(m)
 		return 1
 	}
+	machine_live := true
 	defer {
-		saved_cmos := machine.machine_cmos_export(m)
-		stored: profile.Cmos_Data
-		copy(stored[:], saved_cmos[:])
-		if diag := profile.cmos_save(paths.cmos, stored); diag != .None {
-			fmt.eprintfln("CMOS save failed: %v", diag)
-		}
-		machine.machine_destroy(m)
-		if vol != nil && !fat32.volume_close(vol) {
-			fmt.eprintln("disk: close failed; staged C: writes remain retained")
-			if result == 0 {result = 2}
+		if machine_live {
+			saved_cmos := machine.machine_cmos_export(m)
+			stored: profile.Cmos_Data
+			copy(stored[:], saved_cmos[:])
+			if diag := profile.cmos_save(paths.cmos, stored); diag != .None {
+				fmt.eprintfln("CMOS save failed: %v", diag)
+			}
+			machine.machine_destroy(m)
 		}
 		free(m)
 	}
-	defer if frame_dump_path != "" {
-		console_dump_frame(frame_dump_path, machine.machine_display_frame(m))
+	defer firmware_log_destroy(&firmware)
+	defer console_acceptance_finalize(
+		&run_options,
+		&run_result,
+		m,
+		&machine_live,
+		&firmware,
+		paths,
+		start,
+		&result,
+	)
+	defer {
+		if vol != nil {
+			closed := fat32.volume_close(vol)
+			vol = nil
+			if !closed {
+				fmt.eprintln("disk: close failed; staged C: writes remain retained")
+				result = 2
+				run_result.stop_reason = .Fatal_Virtualization_Failure
+				run_result.exit_code = result
+			}
+		}
+	}
+	defer {
+		if frame_dump_path != "" && machine_live {
+			console_dump_frame(frame_dump_path, machine.machine_display_frame(m))
+		}
+	}
+	launch_phase, launch_milestone, launch_changed, launch_ok := install_launch_stage(
+		&install_state,
+	)
+	if !launch_ok {
+		fmt.eprintln("Windows 98: invalid pending Setup launch state")
+		return 1
+	}
+	if launch_changed {
+		if diagnostic := profile.install_state_save(paths.install_state, &install_state);
+		   diagnostic != .None {
+			install_launch_restore(&install_state, launch_phase, launch_milestone)
+			fmt.eprintfln("Windows 98: cannot persist direct Setup launch state (%v)", diagnostic)
+			return 1
+		}
+		fmt.println("Windows 98: direct unattended Setup launch armed")
 	}
 	if has_cmos {_ = machine.machine_cmos_import(m, loaded_cmos[:])}
 	if !machine.load_roms(&m.vm) {
@@ -1621,6 +1932,8 @@ console_main :: proc(
 		return 1
 	}
 	machine.machine_set_cpu_mode(m, settings.cpu_mode)
+	machine.bus_set_strict_io(&m.bus, options.strict_io)
+	if options.test_device {machine.machine_enable_test_device(m)}
 	fmt.println(cpu_mode_log(settings.cpu_mode))
 	if cdrom_path != "" {
 		if !machine.machine_attach_cdrom(m, cdrom_path) {
@@ -1647,13 +1960,13 @@ console_main :: proc(
 
 	if floppy_path != "" {
 		if img, err := os.read_entire_file_from_path(floppy_path, context.allocator); err == nil {
-			if machine.machine_mount_floppy(m, img) {
+			floppy_image = img
+			if machine.machine_mount_floppy(m, floppy_image) {
 				fmt.printfln("floppy: mounted %s", floppy_path)
 			} else {
 				fmt.eprintfln("floppy: %s is not a 1.44MB image", floppy_path)
 				return 1
 			}
-			delete(img)
 		} else {
 			fmt.eprintfln("floppy: cannot read %s", floppy_path)
 			return 1
@@ -1663,47 +1976,140 @@ console_main :: proc(
 	// a guest that stops doing I/O never leaves WHvRunVirtualProcessor;
 	// periodic cancels keep the clock and the time cap alive
 	guard: Vm_Guard
-	guard.vm = &m.vm
-	guard.valid = true
-	pacer_thr := thread.create_and_start_with_poly_data(&guard, vcpu_pacer_proc)
-	defer {
-		sync.lock(&guard.mu)
-		guard.stop = true
-		sync.unlock(&guard.mu)
-		thread.join(pacer_thr)
+	if !vm_guard_init(&guard) {
+		fmt.eprintln("vCPU wake adapter initialization failed")
+		return 1
 	}
+	defer vm_guard_destroy(&guard)
+	vm_guard_bind(&guard, &m.vm)
+	machine.machine_set_wake_adapter(m, &guard, vm_guard_rearm)
 
-	start := time.tick_now()
 	last_vga := start
 	prev: vga.Text_Snapshot
 	shown := false
 	last_frame_kind := vga.Display_Kind.Invalid
 	last_frame_width, last_frame_height := 0, 0
 	graphics_content_reported := false
-	firmware: Firmware_Log
-	defer firmware_log_destroy(&firmware)
 	iterations := 0
+	setup_log_names := []string{"SETUPLOG.TXT"}
+	detection_log_names := []string{"DETLOG.TXT", "DETCRASH.LOG"}
+	setup_log_baseline := console_log_total_size(paths.c_drive, setup_log_names)
+	detection_log_baseline := console_log_total_size(paths.c_drive, detection_log_names)
+	last_evidence_check := start
+	post_reset_activity_generation: u64
+	post_reset_frame_changes := 0
+	hardware_detection_at: time.Tick
+	hardware_detection_seen := false
+	detection_activity := 0
+	if install_state.milestone == .Hardware_Detection {
+		hardware_detection_at = start
+		hardware_detection_seen = true
+	}
+	stress_queue: host.Host_Input_Queue
+	stress_next := start
+	stress_phase: u64
+	if options.accept_until == .Hardware_Detection &&
+	   !profile.install_state_active(&install_state) {
+		fmt.eprintln("acceptance: hardware detection requires an active Windows 98 installation")
+		return 1
+	}
 
-	for {
+	loop: for {
+		if options.mouse_stress &&
+		   time.tick_diff(stress_next, time.tick_now()) >= 4 * time.Millisecond {
+			stress_phase += 1
+			buttons := u8((stress_phase / 32) & 1)
+			dx := stress_phase & 1 == 0 ? i32(7) : i32(-5)
+			dy := stress_phase & 2 == 0 ? i32(3) : i32(-4)
+			_ = host.host_input_push_motion(&stress_queue, dx, dy, buttons)
+			if stress_phase % 32 == 0 {
+				previous_buttons := u8(((stress_phase - 1) / 32) & 1)
+				released := previous_buttons & ~buttons != 0
+				_ = host.host_input_push_buttons(&stress_queue, buttons, released)
+			}
+			if stress_phase % 64 == 0 {_ = host.host_input_push_wheel(&stress_queue, 1, buttons)}
+			if stress_phase % 128 == 0 {
+				make := host.Host_Input_Event {
+					kind  = .Key,
+					key_n = 1,
+				}
+				make.key[0] = 0x1e
+				brk := host.Host_Input_Event {
+					kind  = .Key,
+					key_n = 1,
+				}
+				brk.key[0] = 0x9e
+				_ = host.host_input_push(&stress_queue, make)
+				_ = host.host_input_push(&stress_queue, brk)
+			}
+			stress_events: [64]host.Host_Input_Event
+			stress_count := host.host_input_drain(&stress_queue, stress_events[:])
+			for event in stress_events[:stress_count] {
+				switch event.kind {
+				case .Mouse_Motion, .Mouse_Buttons:
+					machine.machine_mouse(m, event.dx, event.dy, event.buttons)
+				case .Mouse_Wheel:
+					machine.machine_mouse_wheel(m, event.wheel, event.buttons)
+				case .Key:
+					for i in 0 ..< int(event.key_n) {machine.i8042_key(&m.kbd, event.key[i])}
+				}
+			}
+			stress_next = time.tick_now()
+		}
 		alive := machine.step(m)
 		iterations += 1
 		firmware_log_drain(&firmware, m, nil)
 		now := time.tick_now()
+		if vm_guard_failed(&guard) {
+			fmt.eprintln("vCPU watchdog scheduling failed")
+			run_result.stop_reason = .Fatal_Virtualization_Failure
+			result = 2
+			run_result.exit_code = result
+			break loop
+		}
+		switch command := machine.machine_test_device_take_command(m); command {
+		case .Crc:
+			_ = machine.machine_test_device_frame_crc(m)
+		case .Snapshot:
+			if options.artifacts != "" {
+				frame := machine.machine_display_frame(m)
+				_ = acceptance.artifact_write_bundle(
+					options.artifacts,
+					"guest-requested snapshot\n",
+					frame.pixels,
+					frame.width,
+					frame.height,
+				)
+			}
+		case .Exit:
+			run_result.stop_reason = .Test_Exit
+			run_result.test_exit_code = machine.machine_test_device_exit_code(m)
+			result = run_result.test_exit_code == 0 ? 0 : 2
+			run_result.exit_code = result
+			break loop
+		case .None:
+		}
 		if !alive {
 			if machine.machine_cpu_reset_pending(m) {
-				reason := machine.machine_cpu_reset_reason(m)
+				reason := strings.clone(machine.machine_cpu_reset_reason(m))
 				reset_code := m.cpu_reset_cmos_0f
 				sync.lock(&guard.mu)
 				guard.valid = false
 				reset_ok := machine.machine_cpu_reset(m)
 				guard.valid = reset_ok
 				sync.unlock(&guard.mu)
+				if reset_ok {vm_guard_rearm(&guard, machine.machine_next_wake_ns(m))}
 				if !reset_ok {
 					firmware_log_host_flush(&firmware, nil)
 					fmt.printfln("CPU reset failed: %s", m.bus.freeze_msg)
 					dump_state(m)
-					return 2
+					run_result.stop_reason = .Fatal_Virtualization_Failure
+					result = 2
+					run_result.exit_code = result
+					delete(reason)
+					break loop
 				}
+				console_result_record_reset(&run_result, reason)
 				firmware_log_host_flush(&firmware, nil)
 				fmt.printfln(
 					"warm CPU reset %d after %d iterations: %s, CMOS 0F=%02x",
@@ -1712,28 +2118,93 @@ console_main :: proc(
 					reason,
 					reset_code,
 				)
+				delete(reason)
 				free_all(context.temp_allocator)
 				continue
 			} else if machine.machine_reset_requested(m) {
+				reset_message := strings.clone(m.bus.freeze_msg)
 				firmware_log_host_flush(&firmware, nil)
 				fmt.printfln(
 					"guest reset requested after %d iterations: %s",
 					iterations,
 					m.bus.freeze_msg,
 				)
-				dump_state(m)
-				break
+				console_result_record_reset(&run_result, reset_message)
+				delete(reset_message)
+				if !profile.install_state_active(&install_state) {
+					run_result.stop_reason = .Reset
+					run_result.exit_code = 0
+					break loop
+				}
+				console_result_accumulate_machine(&run_result, m)
+				reboot_cmos := machine.machine_cmos_export(m)
+				install_state.reset_count += 1
+				if install_state.phase == .Setup_Running {
+					_ = profile.install_state_advance_milestone(&install_state, .First_Reboot)
+				}
+				if diagnostic := profile.install_state_save(paths.install_state, &install_state);
+				   diagnostic != .None {
+					fmt.eprintfln("Windows 98: cannot persist first-reboot state (%v)", diagnostic)
+					run_result.stop_reason = .Configuration_Error
+					result = 2
+					run_result.exit_code = result
+					break loop
+				}
+				install_apply_boot_order(reboot_cmos[:])
+				machine_live = false
+				if !console_reinitialize_machine(
+					m,
+					&guard,
+					&vol,
+					paths,
+					settings,
+					reboot_cmos[:],
+					attach,
+					cdrom_path,
+					floppy_image,
+					&run_options,
+				) {
+					fmt.eprintln("Windows 98: machine reinitialization failed after guest reset")
+					run_result.stop_reason = .Fatal_Virtualization_Failure
+					result = 2
+					run_result.exit_code = result
+					break loop
+				}
+				machine_live = true
+				last_vga = time.tick_now()
+				post_reset_activity_generation = 0
+				post_reset_frame_changes = 0
+				free_all(context.temp_allocator)
+				continue
 			}
 			firmware_log_host_flush(&firmware, nil)
 			fmt.printfln("VM frozen after %d iterations: %s", iterations, m.bus.freeze_msg)
 			dump_state(m)
 			print_grid(machine.machine_text_snapshot(m))
-			return 2
+			if options.strict_io &&
+			   (strings.has_prefix(m.bus.freeze_msg, "unclassified port") ||
+					   strings.has_prefix(m.bus.freeze_msg, "unclassified MMIO")) {
+				run_result.stop_reason = .Strict_IO_Failure
+			} else {
+				run_result.stop_reason = .Fatal_Virtualization_Failure
+			}
+			result = 2
+			run_result.exit_code = result
+			break loop
 		}
 		if time.tick_diff(last_vga, now) >= VGA_PERIOD {
 			last_vga = now
 			snap := machine.machine_text_snapshot(m)
 			frame := machine.machine_display_frame(m)
+			if install_state.reset_count > 0 && frame.kind != .Invalid {
+				if console_acceptance_observe_display_activity(
+					&post_reset_activity_generation,
+					frame,
+				) {
+					post_reset_frame_changes += 1
+					if hardware_detection_seen {detection_activity += 1}
+				}
+			}
 			if frame.kind != last_frame_kind ||
 			   frame.width != last_frame_width ||
 			   frame.height != last_frame_height {
@@ -1768,6 +2239,44 @@ console_main :: proc(
 				print_grid(snap)
 			}
 		}
+		if profile.install_state_active(&install_state) &&
+		   install_state.reset_count > 0 &&
+		   time.tick_diff(last_evidence_check, now) >= time.Second {
+			last_evidence_check = now
+			if vol != nil && !fat32.volume_flush(vol) {
+				fmt.eprintln("Windows 98: C: reconciliation failed while observing Setup")
+				run_result.stop_reason = .Fatal_Virtualization_Failure
+				result = 2
+				run_result.exit_code = result
+				break loop
+			}
+			setup_size := console_log_total_size(paths.c_drive, setup_log_names)
+			detection_size := console_log_total_size(paths.c_drive, detection_log_names)
+			logs_changed :=
+				setup_size > 0 &&
+				detection_size > 0 &&
+				setup_size != setup_log_baseline &&
+				detection_size != detection_log_baseline
+			if !hardware_detection_seen && logs_changed && post_reset_frame_changes >= 2 {
+				if profile.install_state_advance_milestone(&install_state, .Hardware_Detection) &&
+				   profile.install_state_save(paths.install_state, &install_state) == .None {
+					hardware_detection_seen = true
+					hardware_detection_at = now
+					detection_activity = 0
+					fmt.println("Windows 98: hardware-detection milestone reached")
+				}
+			}
+		}
+		if options.accept_until == .Hardware_Detection &&
+		   hardware_detection_seen &&
+		   detection_activity > 0 &&
+		   time.tick_diff(hardware_detection_at, now) >= HARDWARE_DETECTION_STABLE_TIME {
+			run_result.stop_reason = .Acceptance_Reached
+			run_result.exit_code = 0
+			result = 0
+			fmt.println("Windows 98: hardware detection remained active for 60 seconds")
+			break loop
+		}
 		if time.tick_diff(start, now) >= time.Duration(run_seconds) * time.Second {
 			firmware_log_host_flush(&firmware, nil)
 			fmt.printfln(
@@ -1777,11 +2286,14 @@ console_main :: proc(
 			)
 			dump_state(m)
 			print_grid(machine.machine_text_snapshot(m))
-			break
+			run_result.stop_reason = .Timeout
+			result = acceptance.options_request_headless(&run_options) ? 2 : 0
+			run_result.exit_code = result
+			break loop
 		}
 		free_all(context.temp_allocator)
 	}
-	return 0
+	return result
 }
 
 @(private)
@@ -1852,12 +2364,15 @@ dump_state :: proc(m: ^machine.Machine) {
 		if c > 0 {fmt.printf(" vec%02x=%d", v, c)}
 	}
 	fmt.println()
+	kbd_diag := machine.i8042_diagnostics(&m.kbd)
 	fmt.printfln(
-		"i8042: count=%d cmd_byte=%02x head=%d tail=%d",
-		m.kbd.count,
-		m.kbd.cmd_byte,
-		m.kbd.head,
-		m.kbd.tail,
+		"i8042: queued=%d keyboard=%d auxiliary=%d obf=%t aux=%t ibf=%t",
+		kbd_diag.queued,
+		kbd_diag.keyboard_queued,
+		kbd_diag.auxiliary_queued,
+		kbd_diag.output_full,
+		kbd_diag.output_aux,
+		kbd_diag.input_busy,
 	)
 	fmt.printfln(
 		"a20: controller=%t applied=%t requested=%t requests=%d remaps=%d",

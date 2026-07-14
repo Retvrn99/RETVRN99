@@ -995,3 +995,107 @@ test_whpx_can_inject_interrupt_shadow :: proc(t: ^testing.T) {
 	testing.expect(t, !can_inject(&vm))
 
 }
+
+@(test)
+test_whpx_a20_aliases_high_product_memory :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 256 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+	low := 0x0800_0500
+	high := low | int(WHPX_A20_BIT)
+	vm.ram[low] = 0x31
+	vm.ram[high] = 0x72
+	copy(vm.ram[0x7C00:], []u8{0xA0, u8(high), u8(high >> 8), u8(high >> 16), u8(high >> 24), 0xF4})
+
+	vp: WHV_VP_EXIT_CONTEXT
+	io: WHV_X64_IO_PORT_ACCESS_CONTEXT
+	if !whpx_test_manual_io_context(t, &vm, &vp, &io, 0, 0, 0, 0, 0x7C00, 0x2) {return}
+	testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt)
+	testing.expect_value(t, u8(reg_rax(&vm)), u8(0x72))
+
+	testing.expect(t, set_a20(&vm, false))
+	if !whpx_test_manual_io_context(t, &vm, &vp, &io, 0, 0, 0, 0, 0x7C00, 0x2) {return}
+	testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt)
+	testing.expect(t, !vm.a20_enabled)
+	testing.expect_value(t, u8(reg_rax(&vm)), u8(0x31))
+}
+
+@(test)
+test_whpx_a20_aliases_every_odd_megabyte :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+	device, mapped := map_device_memory(&vm, 0xE000_0000, 0x20_0000)
+	if !testing.expect(t, mapped) {return}
+	device[0x000500] = 0x55
+	device[0x100500] = 0x66
+	vm.ram[0x200500] = 0x33
+	vm.ram[0x300500] = 0x44
+	copy(vm.ram[0x7000:], []u8{0xA0, 0x00, 0x05, 0x30, 0x00, 0xF4})
+
+	set_entry :: proc(t: ^testing.T, vm: ^Vm) -> bool {
+		code := WHV_X64_SEGMENT_REGISTER{Base = 0, Limit = 0xFFFF_FFFF, Selector = 8, Attributes = 0xC09B}
+		data := WHV_X64_SEGMENT_REGISTER{Base = 0, Limit = 0xFFFF_FFFF, Selector = 16, Attributes = 0xC093}
+		names := [?]WHV_REGISTER_NAME{.Cs, .Ds, .Es, .Ss, .Fs, .Gs, .Rip, .Rflags, .Rsp, .Cr0}
+		values: [len(names)]WHV_REGISTER_VALUE
+		values[0].Segment = code
+		for i in 1 ..< 6 {values[i].Segment = data}
+		values[6].Reg64 = 0x7000
+		values[7].Reg64 = 0x2
+		values[8].Reg64 = 0x8000
+		values[9].Reg64 = 0x11
+		return WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0
+	}
+
+	if !testing.expect(t, set_entry(t, &vm)) {return}
+	testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt)
+	testing.expect_value(t, u8(reg_rax(&vm)), u8(0x44))
+	if !testing.expect(t, set_a20(&vm, false)) {return}
+	if !testing.expect(t, set_entry(t, &vm)) {return}
+	testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt)
+	testing.expect_value(t, u8(reg_rax(&vm)), u8(0x33))
+
+	copy(vm.ram[0x7000:], []u8{0xA0, 0x00, 0x05, 0x10, 0xE0, 0xF4})
+	if !testing.expect(t, set_a20(&vm, true)) {return}
+	if !testing.expect(t, set_entry(t, &vm)) {return}
+	testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt)
+	testing.expect_value(t, u8(reg_rax(&vm)), u8(0x66))
+	if !testing.expect(t, set_a20(&vm, false)) {return}
+	if !testing.expect(t, set_entry(t, &vm)) {return}
+	testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt)
+	testing.expect_value(t, u8(reg_rax(&vm)), u8(0x55))
+}
+
+@(test)
+test_whpx_transactional_interrupt_injection :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	name := WHV_REGISTER_NAME.Rflags
+	value: WHV_REGISTER_VALUE
+	value.Reg64 = 0x2
+	if !testing.expect(t, WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) >= 0) {return}
+	testing.expect_value(t, try_inject_irq(&vm, 0x21), Interrupt_Injection_Result.Deferred)
+
+	value.Reg64 = 0x202
+	if !testing.expect(t, WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) >= 0) {return}
+	testing.expect_value(t, try_inject_irq(&vm, 0x21), Interrupt_Injection_Result.Injected)
+
+	name = .PendingInterruption
+	if !testing.expect(t, WHvGetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) >= 0) {return}
+	testing.expect_value(t, value.Reg64 & 0xFFFF_0001, u64(0x0021_0001))
+	testing.expect_value(t, try_inject_irq(&vm, 0x22), Interrupt_Injection_Result.Deferred)
+}

@@ -10,10 +10,13 @@ Fdc_Test_Dma :: struct {
 	limit: int,
 }
 
-fdc_test_to_mem :: proc(ctx: rawptr, data: []u8) {
+fdc_test_to_mem :: proc(ctx: rawptr, data: []u8) -> int {
 	d := (^Fdc_Test_Dma)(ctx)
-	n := copy(d.ram[d.pos:], data)
+	end := min(d.pos + len(data), d.limit, len(d.ram))
+	if end <= d.pos {return 0}
+	n := copy(d.ram[d.pos:end], data)
 	d.pos += n
+	return n
 }
 
 fdc_test_from_mem :: proc(ctx: rawptr, buf: []u8) -> int {
@@ -55,6 +58,14 @@ fdc_test_enable :: proc(f: ^Fdc) {
 		fdc_out(f, 0x3F5, 0x08)
 		_ = fdc_in(f, 0x3F5)
 		_ = fdc_in(f, 0x3F5)
+	}
+}
+
+fdc_test_run :: proc(f: ^Fdc) {
+	for {
+		deadline, pending := fdc_next_deadline(f)
+		if !pending {return}
+		fdc_advance_to(f, deadline)
 	}
 }
 
@@ -164,6 +175,7 @@ fdc_test_read_first_sector :: proc(t: ^testing.T) {
 	fdc_out(&f, 0x3F5, 0xE6)
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x90))
 	for p in ([]u8{0x00, 0, 0, 1, 2, 18, 0x1B, 0xFF}) { fdc_out(&f, 0x3F5, p) }
+	fdc_test_run(&f)
 
 	testing.expect_value(t, irqs, 1)
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0xD0))
@@ -205,6 +217,7 @@ fdc_test_write_sector :: proc(t: ^testing.T) {
 	// WRITE C0/H0/S2
 	fdc_out(&f, 0x3F5, 0xC5)
 	for p in ([]u8{0x00, 0, 0, 2, 2, 18, 0x1B, 0xFF}) { fdc_out(&f, 0x3F5, p) }
+	fdc_test_run(&f)
 
 	res: [7]u8
 	for i in 0 ..< 7 { res[i] = fdc_in(&f, 0x3F5) }
@@ -216,6 +229,45 @@ fdc_test_write_sector :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, ok)
 	testing.expect(t, f.img.dirty)
+}
+
+@(test)
+fdc_test_dma_progresses_one_timed_unit_at_a_time :: proc(t: ^testing.T) {
+	f: Fdc
+	d: Fdc_Test_Dma
+	irqs := 0
+	fdc_test_setup(&f, &d, &irqs)
+	img := fdc_test_image()
+	defer delete(img)
+	testing.expect(t, fdc_set_media(&f, img))
+	defer fdc_eject_media(&f)
+	fdc_test_enable(&f)
+	guest := make([]u8, FLOPPY_SECTOR)
+	defer delete(guest)
+	d.ram = guest
+	d.limit = FLOPPY_SECTOR
+	irqs = 0
+
+	fdc_out(&f, 0x3F5, 0xE6)
+	for p in ([]u8{0x00, 0, 0, 1, 2, 18, 0x1B, 0xFF}) {fdc_out(&f, 0x3F5, p)}
+	first, pending := fdc_next_deadline(&f)
+	testing.expect(t, pending)
+	testing.expect_value(t, d.pos, 0)
+	fdc_advance_to(&f, first - 1)
+	testing.expect_value(t, d.pos, 0)
+	fdc_advance_to(&f, first)
+	testing.expect_value(t, d.pos, 1)
+	testing.expect_value(t, guest[0], img[0])
+	second, pending_second := fdc_next_deadline(&f)
+	testing.expect(t, pending_second)
+	unit_ticks := second - first
+	testing.expect(t, unit_ticks > 0)
+	fdc_advance_to(&f, second + 8 * unit_ticks)
+	testing.expect_value(t, d.pos, 10)
+	testing.expect_value(t, irqs, 0)
+	fdc_test_run(&f)
+	testing.expect_value(t, d.pos, FLOPPY_SECTOR)
+	testing.expect_value(t, irqs, 1)
 }
 
 @(test)
@@ -344,6 +396,7 @@ fdc_test_seabios_boot_read_sequence :: proc(t: ^testing.T) {
 		for p in ([]u8{0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x1B, 0xFF}) {
 			fdc_out(f, 0x3F5, p)
 		}
+		fdc_test_run(f)
 		testing.expect_value(t, irqs^, 1)
 		res: [7]u8
 		for i in 0 ..< 7 { res[i] = fdc_in(f, 0x3F5) }
@@ -414,6 +467,7 @@ fdc_test_read_full_track :: proc(t: ^testing.T) {
 
 	fdc_out(&f, 0x3F5, 0xE6)
 	for p in ([]u8{0x04, 50, 1, 1, 2, 18, 0x1B, 0xFF}) { fdc_out(&f, 0x3F5, p) }
+	fdc_test_run(&f)
 
 	res: [7]u8
 	for i in 0 ..< 7 { res[i] = fdc_in(&f, 0x3F5) }
@@ -448,6 +502,7 @@ fdc_test_read_mt_head_wrap :: proc(t: ^testing.T) {
 	// C0/H0/S17 .. C0/H1/S2
 	fdc_out(&f, 0x3F5, 0xE6)
 	for p in ([]u8{0x00, 0, 0, 17, 2, 20, 0x1B, 0xFF}) { fdc_out(&f, 0x3F5, p) }
+	fdc_test_run(&f)
 
 	res: [7]u8
 	for i in 0 ..< 7 { res[i] = fdc_in(&f, 0x3F5) }
@@ -487,6 +542,7 @@ fdc_test_read_end_of_cylinder :: proc(t: ^testing.T) {
 
 	fdc_out(&f, 0x3F5, 0xE6)
 	for p in ([]u8{0x04, 3, 1, 18, 2, 18, 0x1B, 0xFF}) { fdc_out(&f, 0x3F5, p) }
+	fdc_test_run(&f)
 
 	res: [7]u8
 	for i in 0 ..< 7 { res[i] = fdc_in(&f, 0x3F5) }

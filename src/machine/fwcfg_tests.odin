@@ -74,6 +74,19 @@ test_fwcfg_e820_via_file_dir :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_fwcfg_e820_reports_product_memory_size :: proc(t: ^testing.T) {
+	f: Fwcfg
+	fwcfg_init(&f, 256 * 1024 * 1024)
+	defer fwcfg_destroy(&f)
+	fwcfg_out(&f, FWCFG_PORT_SEL, 2, FWCFG_E820)
+	e820: [40]u8
+	fwcfg_test_read(&f, e820[:])
+	testing.expect_value(t, fwcfg_get_le64(e820[20:28]), u64(0x100000))
+	testing.expect_value(t, fwcfg_get_le64(e820[28:36]), u64(255 * 1024 * 1024))
+	testing.expect_value(t, fwcfg_get_le32(e820[36:40]), u32(1))
+}
+
+@(test)
 test_fwcfg_add_file :: proc(t: ^testing.T) {
 	f: Fwcfg
 	fwcfg_init(&f, 64 * 1024 * 1024)

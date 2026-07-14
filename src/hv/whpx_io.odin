@@ -4,6 +4,17 @@ package hv
 import "core:fmt"
 
 WHPX_IO_STRING_BUDGET :: u64(4096)
+WHPX_IO_PAGE_SIZE :: u64(4096)
+WHPX_IO_PAGE_MASK :: WHPX_IO_PAGE_SIZE - 1
+
+@(private = "package")
+whpx_io_iteration_budget :: proc(vm: ^Vm, remaining: u64) -> u64 {
+	budget := WHPX_IO_STRING_BUDGET
+	if vm != nil && vm.io_string_budget != nil {
+		budget = clamp(vm.io_string_budget(vm.io_ctx), u64(1), WHPX_IO_STRING_BUDGET)
+	}
+	return min(remaining, budget)
+}
 
 Whpx_IO_Fault_Kind :: enum {
 	None,
@@ -18,6 +29,13 @@ Whpx_IO_Fault :: struct {
 	linear:      u64,
 	error_code:  u32,
 	translation: WHV_TRANSLATE_GVA_RESULT_CODE,
+}
+
+Whpx_IO_Translation_Cache :: struct {
+	valid:       bool,
+	linear_page: u64,
+	gpa_page:    u64,
+	flags:       u32,
 }
 
 @(private = "file")
@@ -140,8 +158,7 @@ whpx_io_segment_fault :: proc(
 	if !allowed || !whpx_io_segment_contains(segment, offset, size) {
 		return Whpx_IO_Fault{kind = kind}
 	}
-	if segment.Base > max(u64) - offset ||
-	   segment.Base + offset > max(u64) - u64(size - 1) {
+	if segment.Base > max(u64) - offset || segment.Base + offset > max(u64) - u64(size - 1) {
 		return Whpx_IO_Fault{kind = kind}
 	}
 	return {}
@@ -158,10 +175,7 @@ whpx_io_reserved_gpa :: proc(vm: ^Vm, gpa: u64) -> bool {
 }
 
 @(private = "package")
-whpx_io_page_fault_error :: proc(
-	result: WHV_TRANSLATE_GVA_RESULT_CODE,
-	write, user: bool,
-) -> u32 {
+whpx_io_page_fault_error :: proc(result: WHV_TRANSLATE_GVA_RESULT_CODE, write, user: bool) -> u32 {
 	error := u32(0)
 	if result == .PrivilegeViolation || result == .InvalidPageTableFlags {error |= 0x1}
 	if write {error |= 0x2}
@@ -179,6 +193,7 @@ whpx_io_translate :: proc(
 	size: u8,
 	write: bool,
 	user: bool,
+	cache: ^Whpx_IO_Translation_Cache,
 	gpas: ^[4]u64,
 ) -> Whpx_IO_Fault {
 	if fault := whpx_io_segment_fault(segment, segment_name, offset, size, write);
@@ -189,9 +204,16 @@ whpx_io_translate :: proc(
 	flags := u32(0x10)
 	if write {flags |= 0x2} else {flags |= 0x1}
 	for i in 0 ..< int(size) {
+		fault_linear := linear + u64(i)
+		linear_page := fault_linear &~ WHPX_IO_PAGE_MASK
+		page_offset := fault_linear & WHPX_IO_PAGE_MASK
+		if cache.valid && cache.linear_page == linear_page && cache.flags == flags {
+			gpas[i] = cache.gpa_page + page_offset
+			continue
+		}
 		translation: WHV_TRANSLATE_GVA_RESULT
 		gpa: u64
-		fault_linear := linear + u64(i)
+		vm.io_string_translations += 1
 		if WHvTranslateGva(vm.part, 0, fault_linear, flags, &translation, &gpa) < 0 {
 			return Whpx_IO_Fault{kind = .Host, linear = fault_linear}
 		}
@@ -200,28 +222,29 @@ whpx_io_translate :: proc(
 		case .GpaUnmapped:
 			if !whpx_io_reserved_gpa(vm, gpa) {
 				return Whpx_IO_Fault {
-					kind        = .Host,
-					linear      = fault_linear,
+					kind = .Host,
+					linear = fault_linear,
 					translation = translation.ResultCode,
 				}
 			}
 		case .PageNotPresent, .PrivilegeViolation, .InvalidPageTableFlags:
 			return Whpx_IO_Fault {
-				kind        = .Page,
-				linear      = fault_linear,
-				error_code  = whpx_io_page_fault_error(translation.ResultCode, write, user),
+				kind = .Page,
+				linear = fault_linear,
+				error_code = whpx_io_page_fault_error(translation.ResultCode, write, user),
 				translation = translation.ResultCode,
 			}
-		case .GpaNoReadAccess,
-		     .GpaNoWriteAccess,
-		     .GpaIllegalOverlayAccess,
-		     .Intercept:
+		case .GpaNoReadAccess, .GpaNoWriteAccess, .GpaIllegalOverlayAccess, .Intercept:
 			return Whpx_IO_Fault {
-				kind        = .Host,
-				linear      = fault_linear,
+				kind = .Host,
+				linear = fault_linear,
 				translation = translation.ResultCode,
 			}
 		}
+		cache.valid = true
+		cache.linear_page = linear_page
+		cache.gpa_page = gpa &~ WHPX_IO_PAGE_MASK
+		cache.flags = flags
 		gpas[i] = gpa
 	}
 	return {}
@@ -241,24 +264,17 @@ whpx_io_inject_fault :: proc(vm: ^Vm, fault: Whpx_IO_Fault) -> bool {
 		return false
 	}
 	pending: WHV_REGISTER_VALUE
-	pending.Reg128[0] =
-		u64(1) |
-		u64(1) << 8 |
-		u64(vector) << 16 |
-		u64(fault.error_code) << 32
+	pending.Reg128[0] = u64(1) | u64(1) << 8 | u64(vector) << 16 | u64(fault.error_code) << 32
 	pending.Reg128[1] = fault.linear
 	if fault.kind == .Page {
 		names := [?]WHV_REGISTER_NAME{.Cr2, .PendingEvent}
 		values: [len(names)]WHV_REGISTER_VALUE
 		values[0].Reg64 = fault.linear
 		values[1] = pending
-		return WHvSetVirtualProcessorRegisters(
-			vm.part,
-			0,
-			&names[0],
-			u32(len(names)),
-			&values[0],
-		) >= 0
+		return(
+			WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >=
+			0 \
+		)
 	}
 	name := WHV_REGISTER_NAME.PendingEvent
 	return WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &pending) >= 0
@@ -266,15 +282,29 @@ whpx_io_inject_fault :: proc(vm: ^Vm, fault: Whpx_IO_Fault) -> bool {
 
 @(private = "file")
 whpx_io_memory_access :: proc(vm: ^Vm, gpas: ^[4]u64, size: u8, write: bool, value: ^u32) -> bool {
-	for i in 0 ..< int(size) {
-		mem := WHV_EMULATOR_MEMORY_ACCESS_INFO {
-			GpaAddress = gpas[i],
-			Direction  = write ? 1 : 0,
-			AccessSize = 1,
+	start := 0
+	for start < int(size) {
+		end := start + 1
+		for end < int(size) && gpas[end] == gpas[end - 1] + 1 {
+			end += 1
 		}
-		if write {mem.Data[0] = u8(value^ >> u32(8 * i))}
+		mem := WHV_EMULATOR_MEMORY_ACCESS_INFO {
+			GpaAddress = gpas[start],
+			Direction  = write ? 1 : 0,
+			AccessSize = u8(end - start),
+		}
+		if write {
+			for i in start ..< end {
+				mem.Data[i - start] = u8(value^ >> u32(8 * i))
+			}
+		}
 		if whpx_emu_mmio(vm, &mem) < 0 {return false}
-		if !write {value^ |= u32(mem.Data[0]) << u32(8 * i)}
+		if !write {
+			for i in start ..< end {
+				value^ |= u32(mem.Data[i - start]) << u32(8 * i)
+			}
+		}
+		start = end
 	}
 	return true
 }
@@ -319,7 +349,10 @@ whpx_io_raise_fault :: proc(
 	fault: Whpx_IO_Fault,
 	rax, rcx, rsi, rdi, rip: u64,
 	operand: string,
-) -> (bool, string) {
+) -> (
+	bool,
+	string,
+) {
 	if !whpx_io_commit(vm, rax, rcx, rsi, rdi, rip) {
 		return false, "failed to commit faulting string-I/O state"
 	}
@@ -410,8 +443,13 @@ whpx_emulate_io :: proc(
 		if !segment_ok {return false, "failed to read string-I/O source segment"}
 	}
 	user := vp.Cs.Selector & 3 == 3
-	iterations := min(remaining, WHPX_IO_STRING_BUDGET)
-	for _ in 0 ..< iterations {
+	if vm.io_string_begin != nil {vm.io_string_begin(vm.io_ctx)}
+	defer if vm.io_string_end != nil {vm.io_string_end(vm.io_ctx)}
+	initial_remaining := remaining
+	iteration_limit := whpx_io_iteration_budget(vm, initial_remaining)
+	translation_cache: Whpx_IO_Translation_Cache
+	completed: u64
+	for completed < iteration_limit {
 		index := whpx_io_low(is_write ? rsi : rdi, address_bits)
 		value: u32
 		gpas: [4]u64
@@ -424,6 +462,7 @@ whpx_emulate_io :: proc(
 				size,
 				false,
 				user,
+				&translation_cache,
 				&gpas,
 			)
 			if fault.kind != .None {
@@ -431,7 +470,10 @@ whpx_emulate_io :: proc(
 			}
 			if !whpx_io_memory_access(vm, &gpas, size, false, &value) {
 				_ = whpx_io_commit(vm, rax, rcx, rsi, rdi, vp.Rip)
-				return false, fmt.tprintf("string I/O source memory access failed at 0x%x", segment.Base + index)
+				return false, fmt.tprintf(
+					"string I/O source memory access failed at 0x%x",
+					segment.Base + index,
+				)
 			}
 			if !whpx_io_write_port(vm, io.PortNumber, size, value) {
 				_ = whpx_io_commit(vm, rax, rcx, rsi, rdi, vp.Rip)
@@ -449,6 +491,7 @@ whpx_emulate_io :: proc(
 				size,
 				true,
 				user,
+				&translation_cache,
 				&gpas,
 			)
 			if fault.kind != .None {
@@ -476,6 +519,8 @@ whpx_emulate_io :: proc(
 			remaining -= 1
 			rcx = whpx_io_replace_low(rcx, remaining, address_bits)
 		}
+		completed += 1
+		iteration_limit = min(iteration_limit, whpx_io_iteration_budget(vm, initial_remaining))
 	}
 	rip := vp.Rip
 	if !has_rep || remaining == 0 {rip = whpx_next_rip(vp)}

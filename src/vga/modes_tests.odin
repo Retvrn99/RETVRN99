@@ -5,11 +5,12 @@ import "core:testing"
 
 test_bochs_legacy_mode :: proc(v: ^Vga, mode: u8) {
 	v.seq = {}
+	v.seq[0] = 0x03
 	v.crtc = {}
 	v.attr = {}
 	v.gfx = {}
 	v.video_on = true
-	for i in 0 ..< 16 { v.attr[i] = u8(i) }
+	for i in 0 ..< 16 {v.attr[i] = u8(i)}
 	v.attr[0x12] = 0x0F
 	v.gfx[7] = 0x0F
 	v.gfx[8] = 0xFF
@@ -26,21 +27,21 @@ test_bochs_legacy_mode :: proc(v: ^Vga, mode: u8) {
 		v.seq[1] = 0x09; v.seq[2] = 0x0F; v.seq[4] = 0x06; v.misc = 0x63
 		v.crtc[0] = 0x2D; v.crtc[1] = 0x27; v.crtc[6] = 0xBF; v.crtc[7] = 0x1F
 		v.crtc[9] = 0xC0; v.crtc[0x10] = 0x9C; v.crtc[0x11] = 0x8E; v.crtc[0x12] = 0x8F
-		v.crtc[0x13] = 0x14; v.crtc[0x18] = 0xFF
+		v.crtc[0x13] = 0x14; v.crtc[0x17] = 0xE3; v.crtc[0x18] = 0xFF
 		v.attr[0x10] = 0x01
 		v.gfx[5] = 0x00; v.gfx[6] = 0x05
 	case 0x12:
 		v.seq[1] = 0x01; v.seq[2] = 0x0F; v.seq[4] = 0x06; v.misc = 0xE3
 		v.crtc[0] = 0x5F; v.crtc[1] = 0x4F; v.crtc[6] = 0x0B; v.crtc[7] = 0x3E
 		v.crtc[9] = 0x40; v.crtc[0x10] = 0xEA; v.crtc[0x11] = 0x8C; v.crtc[0x12] = 0xDF
-		v.crtc[0x13] = 0x28; v.crtc[0x18] = 0xFF
+		v.crtc[0x13] = 0x28; v.crtc[0x17] = 0xE3; v.crtc[0x18] = 0xFF
 		v.attr[0x10] = 0x01
 		v.gfx[5] = 0x00; v.gfx[6] = 0x05
 	case 0x13:
 		v.seq[1] = 0x01; v.seq[2] = 0x0F; v.seq[4] = 0x0E; v.misc = 0x63
 		v.crtc[0] = 0x5F; v.crtc[1] = 0x4F; v.crtc[6] = 0xBF; v.crtc[7] = 0x1F
 		v.crtc[9] = 0x41; v.crtc[0x10] = 0x9C; v.crtc[0x11] = 0x8E; v.crtc[0x12] = 0x8F
-		v.crtc[0x13] = 0x28; v.crtc[0x18] = 0xFF
+		v.crtc[0x13] = 0x28; v.crtc[0x14] = 0x40; v.crtc[0x17] = 0xA3; v.crtc[0x18] = 0xFF
 		v.attr[0x10] = 0x41
 		v.gfx[5] = 0x40; v.gfx[6] = 0x05
 	}
@@ -87,12 +88,12 @@ vga_test_bochs_mode13_tuple_and_max_scan_repeat :: proc(t: ^testing.T) {
 	defer delete(backing)
 	defer vga_destroy(&v)
 	test_bochs_legacy_mode(&v, 0x13)
-	for p in 0 ..< 4 { set_plane_byte(&v, p, 0, u8(p + 1)) }
+	for p in 0 ..< 4 {set_plane_byte(&v, p, 0, u8(p + 1))}
 	frame := vga_display_frame(&v)
 	testing.expect_value(t, frame.kind, Display_Kind.Indexed_8)
 	testing.expect_value(t, frame.width, 320)
 	testing.expect_value(t, frame.height, 200)
-	for x in 1 ..< 4 { testing.expect(t, frame.pixels[x] != frame.pixels[x - 1]) }
+	for x in 1 ..< 4 {testing.expect(t, frame.pixels[x] != frame.pixels[x - 1])}
 }
 
 @(test)
@@ -124,6 +125,10 @@ vga_test_screen_blank_controls :: proc(t: ^testing.T) {
 	testing.expect_value(t, frame.pixels[0], u32(0xFF000000))
 	v.video_on = true
 	v.seq[1] |= 0x20
+	frame = vga_display_frame(&v)
+	testing.expect_value(t, frame.pixels[0], u32(0xFF000000))
+	v.seq[1] &= ~u8(0x20)
+	v.seq[0] = 1
 	frame = vga_display_frame(&v)
 	testing.expect_value(t, frame.pixels[0], u32(0xFF000000))
 }
@@ -160,8 +165,8 @@ vga_test_font_map_permutation_and_attribute_select :: proc(t: ^testing.T) {
 	defer vga_destroy(&v)
 	v.seq[3] = 0x01
 	a, b := font_blocks(&v)
-	testing.expect_value(t, a, 0)
-	testing.expect_value(t, b, 2)
+	testing.expect_value(t, a, 2)
+	testing.expect_value(t, b, 0)
 	set_plane_byte(&v, 0, 0, 'A')
 	set_plane_byte(&v, 1, 0, 0x07)
 	set_plane_byte(&v, 0, 1, 'A')

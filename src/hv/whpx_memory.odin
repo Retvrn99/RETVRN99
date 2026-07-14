@@ -3,6 +3,7 @@ package hv
 
 Whpx_Memory_Region_Kind :: enum {
 	Reserved,
+	Open_Bus,
 	Ram,
 	Device,
 	Rom,
@@ -16,9 +17,7 @@ Whpx_Memory_Region :: struct {
 
 @(private = "file")
 whpx_memory_effective_gpa :: proc(vm: ^Vm, gpa: u64) -> u64 {
-	if !vm.a20_enabled && gpa >= WHPX_HMA_BASE && gpa < WHPX_HMA_BASE + WHPX_HMA_SIZE {
-		return gpa - WHPX_HMA_BASE
-	}
+	if !vm.a20_enabled {return gpa &~ WHPX_A20_BIT}
 	return gpa
 }
 
@@ -26,7 +25,8 @@ whpx_memory_effective_gpa :: proc(vm: ^Vm, gpa: u64) -> u64 {
 whpx_memory_region_at :: proc(vm: ^Vm, gpa: u64, write: bool) -> Whpx_Memory_Region {
 	for reservation, i in vm.mmio_reservations {
 		if gpa >= reservation.gpa && gpa - reservation.gpa < reservation.size {
-			return Whpx_Memory_Region{kind = .Reserved, index = i}
+			kind := reservation.kind == .Open_Bus ? Whpx_Memory_Region_Kind.Open_Bus : .Reserved
+			return Whpx_Memory_Region{kind = kind, index = i}
 		}
 	}
 	if gpa < u64(len(vm.ram)) {
@@ -76,6 +76,10 @@ whpx_memory_region_access :: proc(
 		rom := &vm.roms[region.index]
 		offset := int(gpa - rom.gpa)
 		copy(data, ([^]u8)(rom.host)[offset:][:len(data)])
+	case .Open_Bus:
+		if !write {
+			for &byte in data {byte = 0xFF}
+		}
 	case .Reserved, .Fallback:
 		if vm.mmio != nil {
 			vm.mmio(vm.io_ctx, gpa, write, data)
@@ -110,4 +114,30 @@ whpx_emulate_memory_access :: proc(vm: ^Vm, mem: ^WHV_EMULATOR_MEMORY_ACCESS_INF
 		start = end
 	}
 	return 0
+}
+
+whpx_physical_ram_read :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
+	if vm == nil || gpa > u64(len(vm.ram)) || u64(len(data)) > u64(len(vm.ram)) - gpa {
+		return false
+	}
+	end := gpa + u64(len(data))
+	for reservation in vm.mmio_reservations {
+		reservation_end := reservation.gpa + reservation.size
+		if gpa < reservation_end && reservation.gpa < end {return false}
+	}
+	copy(data, vm.ram[int(gpa):int(end)])
+	return true
+}
+
+whpx_physical_ram_write :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
+	if vm == nil || gpa > u64(len(vm.ram)) || u64(len(data)) > u64(len(vm.ram)) - gpa {
+		return false
+	}
+	end := gpa + u64(len(data))
+	for reservation in vm.mmio_reservations {
+		reservation_end := reservation.gpa + reservation.size
+		if gpa < reservation_end && reservation.gpa < end {return false}
+	}
+	copy(vm.ram[int(gpa):int(end)], data)
+	return true
 }

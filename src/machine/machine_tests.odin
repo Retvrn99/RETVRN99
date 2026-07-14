@@ -50,6 +50,22 @@ machine_test_bd :: proc(backing: ^[]u8) -> disk.Block_Device {
 	}
 }
 
+machine_test_run_fdc :: proc(m: ^Machine) {
+	for {
+		deadline, pending := disk.fdc_next_deadline(&m.fdc)
+		if !pending {return}
+		disk.fdc_advance_to(&m.fdc, deadline)
+	}
+}
+
+Machine_String_IO_Wake_Probe :: struct {
+	rearms: int,
+}
+
+machine_test_string_io_rearm :: proc(ctx: rawptr, delay_ns: u64) {
+	(^Machine_String_IO_Wake_Probe)(ctx).rearms += 1
+}
+
 @(test)
 test_machine_port_echo :: proc(t: ^testing.T) {
 	if !hv.available() {
@@ -166,9 +182,13 @@ test_machine_irq_no_starvation :: proc(t: ^testing.T) {
 		sync.lock(&cctx.mu)
 		cctx.stop = true
 		sync.unlock(&cctx.mu)
-		thread.join(th)
+		thread.destroy(th)
 	}
 
+	pit_out(&m.pit, 0x43, 0x36)
+	pit_out(&m.pit, 0x40, 0xE8)
+	pit_out(&m.pit, 0x40, 0x03)
+	machine_advance_time_ns(&m, 1_000_000)
 	pic_raise(&m.pic, 1)
 	start := time.tick_now()
 	delivered := false
@@ -225,6 +245,8 @@ test_machine_fdc_dma_read :: proc(t: ^testing.T) {
 	testing.expect_value(t, bus_io_read(&m.bus, 0x3F7, 1), u32(0x00)) // DSKCHG cleared
 
 	// program DMA ch2: single mode, write to memory, 512 bytes at 0x1000
+	dma_out(&m.dma, 0xD6, 0xC0) // channel 4 cascades the 8-bit controller
+	dma_out(&m.dma, 0xD4, 0x00)
 	dma_out(&m.dma, 0x0A, 0x06) // mask ch2
 	dma_out(&m.dma, 0x0C, 0x00) // clear flip-flop
 	dma_out(&m.dma, 0x0B, 0x46) // mode: single, write, ch2
@@ -239,6 +261,7 @@ test_machine_fdc_dma_read :: proc(t: ^testing.T) {
 	for b in ([]u8{0xE6, 0x00, 0, 0, 1, 2, 18, 0x1B, 0xFF}) {
 		bus_io_write(&m.bus, 0x3F5, 1, u32(b))
 	}
+	machine_test_run_fdc(&m)
 	testing.expect_value(t, bus_io_read(&m.bus, 0x3F4, 1), u32(0xD0))
 	res: [7]u8
 	for i in 0 ..< 7 {res[i] = u8(bus_io_read(&m.bus, 0x3F5, 1))}
@@ -280,6 +303,8 @@ test_machine_fdc_dma_back_to_back :: proc(t: ^testing.T) {
 		_ = bus_io_read(&m.bus, 0x3F5, 1)
 		_ = bus_io_read(&m.bus, 0x3F5, 1)
 	}
+	dma_out(&m.dma, 0xD6, 0xC0)
+	dma_out(&m.dma, 0xD4, 0x00)
 
 	// programs ch2 the way SeaBIOS dma_floppy does, then runs one READ
 	read :: proc(m: ^Machine, addr: u32, count: int, params: []u8) -> [7]u8 {
@@ -295,6 +320,7 @@ test_machine_fdc_dma_back_to_back :: proc(t: ^testing.T) {
 		dma_out(&m.dma, 0x0A, 0x02)
 		bus_io_write(&m.bus, 0x3F5, 1, 0xE6)
 		for p in params {bus_io_write(&m.bus, 0x3F5, 1, u32(p))}
+		machine_test_run_fdc(m)
 		res: [7]u8
 		for i in 0 ..< 7 {res[i] = u8(bus_io_read(&m.bus, 0x3F5, 1))}
 		return res
@@ -330,6 +356,11 @@ test_machine_attach_disk :: proc(t: ^testing.T) {
 	bus_io_write(&m.bus, 0x1F6, 1, 0xE0)
 	bus_io_write(&m.bus, 0x1F7, 1, 0xEC)
 	st := bus_io_read(&m.bus, 0x1F7, 1)
+	testing.expect_value(t, st, u32(disk.IDE_STATUS_BSY))
+	deadline, pending := disk.ide_next_deadline(&m.ide)
+	testing.expect(t, pending)
+	disk.ide_advance_to(&m.ide, deadline)
+	st = bus_io_read(&m.bus, 0x1F7, 1)
 	testing.expect_value(t, st & 0x08, u32(0x08)) // DRQ
 	w0 := bus_io_read(&m.bus, 0x1F0, 2)
 	testing.expect_value(t, w0, u32(0x0040))
@@ -359,7 +390,7 @@ test_machine_mount_cdrom_secondary_ide :: proc(t: ^testing.T) {
 	testing.expect(t, !m.bus.frozen)
 
 	machine_eject_cdrom(&m)
-	testing.expect(t, !disk.cdrom_image_present(&m.atapi.image))
+	testing.expect(t, !disk.disc_image_present(&m.atapi.image))
 }
 
 @(test)
@@ -375,7 +406,13 @@ test_machine_guest_reset_is_distinct_from_freeze :: proc(t: ^testing.T) {
 	i8042_init(&m.kbd, &m, nil, nil, machine_guest_reset)
 	testing.expect(t, !machine_reset_requested(&m))
 	i8042_out(&m.kbd, 0x64, 0xFE)
+	testing.expect(t, !machine_reset_requested(&m))
+	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
 	testing.expect(t, machine_reset_requested(&m))
+	testing.expect_value(t, machine_reset_provenance(&m), Reset_Provenance.Kbc_Controller_Pulse)
+	record, recorded := machine_reset_record(&m, 0)
+	testing.expect(t, recorded)
+	testing.expect_value(t, record.source, Reset_Provenance.Kbc_Controller_Pulse)
 	testing.expect(t, m.bus.frozen)
 }
 
@@ -393,22 +430,32 @@ test_machine_a20_controller_updates_hypervisor_mapping :: proc(t: ^testing.T) {
 	m.vm.ram[0x100500] = 0x22
 	copy(m.vm.ram[0x7C00:], []u8{0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xA0, 0x10, 0x05, 0xF4})
 
-	testing.expect(t, m.kbd.a20 && m.vm.a20_enabled)
+	testing.expect(t, m.kbd.a20 && !m.kbd.a20_kbc && m.kbd.a20_fast && m.vm.a20_enabled)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
 	testing.expect(t, step(&m))
 	testing.expect_value(t, u8(hv.reg_rax(&m.vm)), u8(0x22))
 
 	bus_io_write(&m.bus, 0x92, 1, 0x00)
-	testing.expect(t, !m.kbd.a20 && m.vm.a20_enabled && !m.vm.a20_requested)
+	testing.expect(
+		t,
+		!m.kbd.a20 && !m.kbd.a20_kbc && !m.kbd.a20_fast && m.vm.a20_enabled && !m.vm.a20_requested,
+	)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
+	m.cpu_halted = false
 	testing.expect(t, step(&m))
 	testing.expect(t, !m.vm.a20_enabled && !m.vm.a20_requested)
 	testing.expect_value(t, u8(hv.reg_rax(&m.vm)), u8(0x11))
 
 	bus_io_write(&m.bus, 0x64, 1, 0xD1)
+	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
 	bus_io_write(&m.bus, 0x60, 1, 0x03)
-	testing.expect(t, m.kbd.a20 && !m.vm.a20_enabled && m.vm.a20_requested)
+	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
+	testing.expect(
+		t,
+		m.kbd.a20 && m.kbd.a20_kbc && !m.kbd.a20_fast && !m.vm.a20_enabled && m.vm.a20_requested,
+	)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
+	m.cpu_halted = false
 	testing.expect(t, step(&m))
 	testing.expect(t, m.vm.a20_enabled && m.vm.a20_requested)
 	testing.expect_value(t, u8(hv.reg_rax(&m.vm)), u8(0x22))
@@ -451,10 +498,36 @@ test_machine_guest_a20_toggle_invalidates_active_mapping :: proc(t: ^testing.T) 
 	// Read HMA, disable A20, read its wrap alias, re-enable, then read HMA again.
 	copy(
 		m.vm.ram[0x7C00:],
-		[]u8{
-			0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xA0, 0x10, 0x05, 0xE6, 0x99,
-			0x30, 0xC0, 0xE6, 0x92, 0xA0, 0x10, 0x05, 0xE6, 0x99,
-			0xB0, 0x02, 0xE6, 0x92, 0xA0, 0x10, 0x05, 0xE6, 0x99, 0xF4,
+		[]u8 {
+			0xB8,
+			0xFF,
+			0xFF,
+			0x8E,
+			0xD8,
+			0xA0,
+			0x10,
+			0x05,
+			0xE6,
+			0x99,
+			0x30,
+			0xC0,
+			0xE6,
+			0x92,
+			0xA0,
+			0x10,
+			0x05,
+			0xE6,
+			0x99,
+			0xB0,
+			0x02,
+			0xE6,
+			0x92,
+			0xA0,
+			0x10,
+			0x05,
+			0xE6,
+			0x99,
+			0xF4,
 		},
 	)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
@@ -473,7 +546,9 @@ test_machine_guest_a20_toggle_stress_preserves_memory :: proc(t: ^testing.T) {
 	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) {return}
 	defer machine_destroy(&m)
 
-	probe := Machine_A20_Stress_Probe{valid = true}
+	probe := Machine_A20_Stress_Probe {
+		valid = true,
+	}
 	bus_register(&m.bus, 0x99, 0x99, Io_Handler {
 		ctx = &probe,
 		read = proc(ctx: rawptr, port: u16, size: u8) -> u32 {return 0xFF},
@@ -490,11 +565,36 @@ test_machine_guest_a20_toggle_stress_preserves_memory :: proc(t: ^testing.T) {
 	m.vm.ram[0x100500] = 0x22
 	copy(
 		m.vm.ram[0x7C00:],
-		[]u8{
-			0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xB9, 0x00, 0x01,
-			0xA0, 0x10, 0x05, 0xE6, 0x99, 0x30, 0xC0, 0xE6, 0x92,
-			0xA0, 0x10, 0x05, 0xE6, 0x99, 0xB0, 0x02, 0xE6, 0x92,
-			0xE2, 0xEC, 0xF4,
+		[]u8 {
+			0xB8,
+			0xFF,
+			0xFF,
+			0x8E,
+			0xD8,
+			0xB9,
+			0x00,
+			0x01,
+			0xA0,
+			0x10,
+			0x05,
+			0xE6,
+			0x99,
+			0x30,
+			0xC0,
+			0xE6,
+			0x92,
+			0xA0,
+			0x10,
+			0x05,
+			0xE6,
+			0x99,
+			0xB0,
+			0x02,
+			0xE6,
+			0x92,
+			0xE2,
+			0xEC,
+			0xF4,
 		},
 	)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
@@ -530,8 +630,14 @@ test_machine_ps2_mouse_routes_irq12 :: proc(t: ^testing.T) {
 	m: Machine
 	pic_setup(&m.pic)
 	i8042_init(&m.kbd, &m, nil, machine_irq12)
-	i8042_out(&m.kbd, 0x64, 0x60); i8042_out(&m.kbd, 0x60, 0x02)
-	i8042_out(&m.kbd, 0x64, 0xD4); i8042_out(&m.kbd, 0x60, 0xF2)
+	i8042_out(&m.kbd, 0x64, 0x60)
+	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
+	i8042_out(&m.kbd, 0x60, 0x02)
+	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
+	i8042_out(&m.kbd, 0x64, 0xD4)
+	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
+	i8042_out(&m.kbd, 0x60, 0xF2)
+	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS + I8042_DEVICE_BYTE_NS)
 	testing.expect(t, m.pic.slave.irr & 0x10 != 0)
 	testing.expect(t, m.pic.master.irr & 0x04 != 0)
 }
@@ -551,31 +657,128 @@ test_machine_reset_control_requests_guest_reset :: proc(t: ^testing.T) {
 	testing.expect(t, !machine_reset_requested(&m))
 	machine_reset_control_write(&m, 0xCF9, 1, 0x06)
 	testing.expect(t, machine_reset_requested(&m))
+	testing.expect_value(t, machine_reset_provenance(&m), Reset_Provenance.Pci_Cf9)
 	testing.expect(t, m.bus.frozen)
 }
 
 @(test)
-test_machine_video_clock_only_advances_while_running :: proc(t: ^testing.T) {
+test_machine_port92_reset_has_independent_provenance :: proc(t: ^testing.T) {
+	prior_logger := context.logger
+	quiet_logger := log.create_console_logger(.Fatal, {.Level})
+	context.logger = quiet_logger
+	defer {
+		context.logger = prior_logger
+		log.destroy_console_logger(quiet_logger)
+	}
+	m: Machine
+	i8042_init(&m.kbd, &m, nil, nil, machine_guest_reset)
+	i8042_out(&m.kbd, 0x92, 0x03)
+	testing.expect(t, machine_reset_requested(&m))
+	testing.expect_value(t, machine_reset_provenance(&m), Reset_Provenance.Port_92)
+}
+
+@(test)
+test_machine_master_clock_controls_all_device_time :: proc(t: ^testing.T) {
 	backing := make([]u8, video.VRAM_SIZE)
 	defer delete(backing)
 	m: Machine
 	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
 	defer video.vga_destroy(&m.vga)
-	m.video_ns = 1_000
-	_ = machine_text_snapshot(&m)
+	machine_advance_time_ns(&m, 1_000)
 	testing.expect_value(t, m.vga.timing.elapsed_ns, u64(1_000))
+	testing.expect_value(t, master_timeline_now(m.timeline), u64(6_600))
+
 	time.sleep(time.Millisecond)
 	_ = machine_display_frame(&m)
 	testing.expect_value(t, m.vga.timing.elapsed_ns, u64(1_000))
 
-	m.video_running = true
-	m.video_run_start = time.tick_now()
+	machine_clock_set_running(&m, true)
 	time.sleep(time.Millisecond)
 	_ = machine_text_snapshot(&m)
 	testing.expect(t, m.vga.timing.elapsed_ns > 1_000)
-	m.video_running = false
+	machine_clock_set_running(&m, false)
 	frozen_time := m.vga.timing.elapsed_ns
 	time.sleep(time.Millisecond)
 	_ = machine_text_snapshot(&m)
 	testing.expect_value(t, m.vga.timing.elapsed_ns, frozen_time)
+}
+
+@(test)
+test_machine_string_io_batches_time_sync_and_wake_rearm :: proc(t: ^testing.T) {
+	backing := make([]u8, video.VRAM_SIZE)
+	defer delete(backing)
+	m := new(Machine)
+	defer free(m)
+	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
+	defer video.vga_destroy(&m.vga)
+	probe: Machine_String_IO_Wake_Probe
+	m.wake_ctx = &probe
+	m.wake_rearm = machine_test_string_io_rearm
+	m.clock_running = true
+	m.active_tick = time.tick_now()
+
+	machine_io_string_begin(m)
+	start := master_timeline_now(m.timeline)
+	time.sleep(time.Millisecond)
+	for _ in 0 ..< 4 {
+		machine_sync_time(m)
+		machine_rearm_wake(m)
+	}
+	testing.expect_value(t, master_timeline_now(m.timeline), start)
+	testing.expect_value(t, probe.rearms, 0)
+
+	machine_io_string_begin(m)
+	machine_sync_time(m)
+	machine_rearm_wake(m)
+	machine_io_string_end(m)
+	testing.expect_value(t, m.io_string_depth, u32(1))
+	testing.expect_value(t, master_timeline_now(m.timeline), start)
+	testing.expect_value(t, probe.rearms, 0)
+
+	machine_io_string_end(m)
+	testing.expect_value(t, m.io_string_depth, u32(0))
+	testing.expect(t, master_timeline_now(m.timeline) > start)
+	testing.expect_value(t, probe.rearms, 1)
+}
+
+@(test)
+test_machine_pause_suspends_master_timeline_and_tsc :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available")
+		return
+	}
+	testing.set_fail_timeout(t, 10 * time.Second)
+	m := new(Machine)
+	defer free(m)
+	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(m)
+
+	machine_clock_set_running(m, false)
+	paused_tick := master_timeline_now(m.timeline)
+	name := hv.WHV_REGISTER_NAME.Tsc
+	before: hv.WHV_REGISTER_VALUE
+	if !testing.expect(
+		t,
+		hv.WHvGetVirtualProcessorRegisters(m.vm.part, 0, &name, 1, &before) >= 0,
+	) {return}
+	time.sleep(5 * time.Millisecond)
+	machine_sync_time(m)
+	after: hv.WHV_REGISTER_VALUE
+	if !testing.expect(
+		t,
+		hv.WHvGetVirtualProcessorRegisters(m.vm.part, 0, &name, 1, &after) >= 0,
+	) {return}
+	testing.expect_value(t, master_timeline_now(m.timeline), paused_tick)
+	testing.expect_value(t, after.Reg64, before.Reg64)
+
+	machine_clock_set_running(m, true)
+	time.sleep(time.Millisecond)
+	machine_sync_time(m)
+	resumed: hv.WHV_REGISTER_VALUE
+	if !testing.expect(
+		t,
+		hv.WHvGetVirtualProcessorRegisters(m.vm.part, 0, &name, 1, &resumed) >= 0,
+	) {return}
+	testing.expect(t, master_timeline_now(m.timeline) > paused_tick)
+	testing.expect(t, resumed.Reg64 > after.Reg64)
 }

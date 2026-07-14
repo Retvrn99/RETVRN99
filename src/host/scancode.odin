@@ -117,7 +117,7 @@ scancode_to_set1 :: proc(sc: sdl3.Scancode) -> (s: Set1, ok: bool) {
 	case .DOWN: return {0x50, true}, true
 	case .UP: return {0x48, true}, true
 	}
-	return {}, false // PrintScreen/Pause and the rest: unmapped in M1
+	return {}, false
 }
 
 // bytes to queue into the i8042: make or break (bit 7), E0 prefix if extended
@@ -131,4 +131,40 @@ set1_bytes :: proc(s: Set1, down: bool) -> (buf: [2]u8, n: int) {
 	}
 	buf[0] = c
 	return buf, 1
+}
+
+scancode_set1_event :: proc(
+	sc: sdl3.Scancode,
+	down: bool,
+) -> (buf: [HOST_INPUT_KEY_BYTES]u8, n: int, code: u8, extended, tracks_hold, ok: bool) {
+	#partial switch sc {
+	case .PRINTSCREEN:
+		code = 0x37
+		extended = true
+		tracks_hold = true
+		ok = true
+		if down {
+			buf[0] = 0xE0
+			buf[1] = 0x2A
+			buf[2] = 0xE0
+			buf[3] = 0x37
+		} else {
+			buf[0] = 0xE0
+			buf[1] = 0xB7
+			buf[2] = 0xE0
+			buf[3] = 0xAA
+		}
+		return buf, 4, code, extended, tracks_hold, ok
+	case .PAUSE:
+		if down {
+			buf = {0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5}
+			return buf, 6, 0, false, false, true
+		}
+		return {}, 0, 0, false, false, true
+	}
+	s, mapped := scancode_to_set1(sc)
+	if !mapped {return {}, 0, 0, false, false, false}
+	short, count := set1_bytes(s, down)
+	copy(buf[:], short[:count])
+	return buf, count, s.code, s.ext, true, true
 }

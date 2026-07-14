@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import sound "../audio"
 import disk "../disk"
 import hosttime "../hosttime"
 import hv "../hv"
@@ -21,6 +22,10 @@ Mmio_Zone :: enum {
 EXIT_HISTORY :: 32
 IO_HISTORY :: 64
 IDE_HISTORY :: 128
+MACHINE_FAIRNESS_NS :: u64(1_000_000)
+MACHINE_CDDA_PENDING_FRAMES :: disk.DISC_RAW_SECTOR_SIZE / size_of(sound.Audio_Frame) * 2
+
+Wake_Rearm_Proc :: proc(ctx: rawptr, delay_ns: u64)
 
 // forensics: one recorded port access
 Io_Trace :: struct {
@@ -39,43 +44,44 @@ Ide_Cmd_Trace :: struct {
 }
 
 Machine :: struct {
-	bus:               Bus,
-	pic:               Pic_Pair,
-	pit:               Pit,
-	cmos:              Cmos,
-	kbd:               I8042,
-	pci:               Pci,
-	fwcfg:             Fwcfg,
-	dma:               Dma,
-	vga:               video.Vga,
-	ide:               disk.Ide,
-	atapi:             disk.Atapi,
-	fdc:               disk.Fdc,
-	has_disk:          bool,
-	reset_requested:   bool,
-	cpu_reset_pending: bool,
-	cpu_reset_reason:  string,
-	cpu_reset_cmos_0f: u8,
-	cpu_reset_count:   u64,
-	reset_control:     u8,
-	vm:                hv.Vm,
-	governor:          hv.Governor,
-	idle_waiter:       hosttime.Waiter,
-	last_tick:         time.Tick,
-	video_ns:          u64,
-	video_run_start:   time.Tick,
-	video_running:     bool,
-	dbg_out:           [dynamic]u8, // firmware debug ports 0x402 and 0x500
-	mmio_seen:         [Mmio_Zone]bool, // log tolerated zones only once
-	exit_hist:         [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
-	exit_count:        u64,
-	io_hist:           [IO_HISTORY]Io_Trace, // ring, io_count % IO_HISTORY
-	io_count:          u64,
-	ide_hist:          [IDE_HISTORY]Io_Trace, // ring of IDE-port accesses only
-	ide_count:         u64,
-	cmd_hist:          [IDE_HISTORY]Ide_Cmd_Trace, // ring of IDE commands
-	cmd_count:         u64,
-	inj_count:         [256]u64, // injected IRQ vectors
+	using platform:      Pc_At_Platform,
+	pci:                 Pci,
+	fwcfg:               Fwcfg,
+	vga:                 video.Vga,
+	ide:                 disk.Ide,
+	atapi:               disk.Atapi,
+	bmide:               disk.Bmide,
+	audio:               sound.Audio_Mixer,
+	cdda_pending:        [MACHINE_CDDA_PENDING_FRAMES]sound.Audio_Frame,
+	cdda_pending_count:  int,
+	fdc:                 disk.Fdc,
+	test_device:         Test_Device,
+	test_device_enabled: bool,
+	has_disk:            bool,
+	vm:                  hv.Vm,
+	governor:            hv.Governor,
+	idle_waiter:         hosttime.Waiter,
+	timeline:            Master_Timeline,
+	time_source:         Master_Source_Phase,
+	nanosecond_phase:    Rate_Phase,
+	active_tick:         time.Tick,
+	active_ns:           u64,
+	clock_running:       bool,
+	wake_ctx:            rawptr,
+	wake_rearm:          Wake_Rearm_Proc,
+	io_string_depth:     u32,
+	cpu_halted:          bool,
+	dbg_out:             [dynamic]u8, // firmware debug ports 0x402 and 0x500
+	mmio_seen:           [Mmio_Zone]bool, // log tolerated zones only once
+	exit_hist:           [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
+	exit_count:          u64,
+	io_hist:             [IO_HISTORY]Io_Trace, // ring, io_count % IO_HISTORY
+	io_count:            u64,
+	ide_hist:            [IDE_HISTORY]Io_Trace, // ring of IDE-port accesses only
+	ide_count:           u64,
+	cmd_hist:            [IDE_HISTORY]Ide_Cmd_Trace, // ring of IDE commands
+	cmd_count:           u64,
+	inj_count:           [256]u64, // injected IRQ vectors
 }
 
 machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
@@ -99,17 +105,36 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 		hv.destroy(&m.vm)
 		return false
 	}
+	if !sound.audio_mixer_init(&m.audio) {
+		video.vga_destroy(&m.vga)
+		hv.destroy(&m.vm)
+		return false
+	}
 	hosttime.waiter_init(&m.idle_waiter)
 	m.vm.io_ctx = m
 	m.vm.io_read = machine_io_read
 	m.vm.io_write = machine_io_write
+	m.vm.io_string_budget = machine_io_string_budget
+	m.vm.io_string_begin = machine_io_string_begin
+	m.vm.io_string_end = machine_io_string_end
 	m.vm.mmio = machine_mmio
 
 	cmos_init(&m.cmos, u64(ram_size))
-	hh, mm, ss := time.clock_from_time(time.now())
-	cmos_set_time(&m.cmos, u8(hh), u8(mm), u8(ss))
+	now := time.now()
+	year, month, day := time.date(now)
+	hh, mm, ss := time.clock_from_time(now)
+	weekday := int(time.weekday(now)) + 1
+	cmos_set_datetime(&m.cmos, u16(year), u8(month), u8(day), u8(weekday), u8(hh), u8(mm), u8(ss))
 	i8042_init(&m.kbd, m, machine_irq1, machine_irq12, machine_guest_reset, machine_a20_control)
+	i8042_set_irq_lower_callbacks(&m.kbd, machine_irq1_lower, machine_irq12_lower)
+	uart_init_com1(&m.serial1)
+	uart_init_com2(&m.serial2)
+	lpt_init_lpt1(&m.parallel1)
+	lpt_init_lpt2(&m.parallel2)
+	dma_init(&m.dma)
 	pci_init(&m.pci)
+	pci_connect_pic(&m.pci, &m.pic)
+	disk.bmide_init(&m.bmide)
 	fwcfg_init(&m.fwcfg, u64(ram_size))
 	// SeaBIOS vgarom_setup memsets 0xC0000 and then deploys "vgaroms/"
 	// romfiles: the Bochs VGABIOS image must arrive through fw_cfg
@@ -122,6 +147,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	}
 	bus_register(&m.bus, 0x20, 0x21, pic_h)
 	bus_register(&m.bus, 0xA0, 0xA1, pic_h)
+	bus_register(&m.bus, 0x4D0, 0x4D1, pic_h)
 
 	pit_h := Io_Handler {
 		ctx   = m,
@@ -135,6 +161,22 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 		write = machine_port61_write,
 	}
 	bus_register(&m.bus, 0x61, 0x61, p61_h)
+
+	serial_h := Io_Handler {
+		ctx   = m,
+		read  = machine_uart_read,
+		write = machine_uart_write,
+	}
+	bus_register_byte_decomposed(&m.bus, UART_COM1_BASE, UART_COM1_BASE + 7, serial_h)
+	bus_register_byte_decomposed(&m.bus, UART_COM2_BASE, UART_COM2_BASE + 7, serial_h)
+
+	parallel_h := Io_Handler {
+		ctx   = m,
+		read  = machine_lpt_read,
+		write = machine_lpt_write,
+	}
+	bus_register_byte_decomposed(&m.bus, LPT1_BASE, LPT1_BASE + 2, parallel_h)
+	bus_register_byte_decomposed(&m.bus, LPT2_BASE, LPT2_BASE + 2, parallel_h)
 
 	cmos_h := Io_Handler {
 		ctx   = m,
@@ -158,7 +200,36 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 		write = machine_dma_write,
 	}
 	bus_register(&m.bus, 0x00, 0x0F, dma_h)
-	bus_register(&m.bus, 0x81, 0x81, dma_h)
+	for port := u16(0xC0); port <= 0xDE; port += 2 {
+		bus_register(&m.bus, port, port, dma_h)
+	}
+	dma_page_ports := [?]u16 {
+		0x81,
+		0x82,
+		0x83,
+		0x84,
+		0x85,
+		0x86,
+		0x87,
+		0x88,
+		0x89,
+		0x8A,
+		0x8B,
+		0x8C,
+		0x8D,
+		0x8E,
+		0x8F,
+	}
+	for port in dma_page_ports {
+		bus_register(&m.bus, port, port, dma_h)
+	}
+
+	delay_h := Io_Handler {
+		ctx   = m,
+		read  = machine_isa_delay_read,
+		write = machine_isa_delay_write,
+	}
+	bus_register(&m.bus, 0x80, 0x80, delay_h)
 
 	pci_h := Io_Handler {
 		ctx   = m,
@@ -201,15 +272,8 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_whitelist(&m.bus, 0x80, 0xED) // POST + delay
 	machine_whitelist_range(&m.bus, 0x1F0, 0x1F7) // IDE until machine_attach_disk
 	bus_whitelist(&m.bus, 0x3F6)
-	machine_whitelist_range(&m.bus, 0x2F8, 0x2FF) // UARTs absent
-	machine_whitelist_range(&m.bus, 0x3F8, 0x3FF)
-	machine_whitelist_range(&m.bus, 0xC0, 0xDF) // master DMA + cascade
-	machine_whitelist_range(&m.bus, 0x88, 0x8F) // DMA page registers
-	bus_whitelist(&m.bus, 0x4D0, 0x4D1) // ELCR
 	machine_init_fdc(m)
 	machine_init_atapi(m)
-	machine_whitelist_range(&m.bus, 0x378, 0x37A) // LPT1 probe by SeaBIOS lpt_setup; absent
-	machine_whitelist_range(&m.bus, 0x278, 0x27A) // LPT2 probe by SeaBIOS lpt_setup; absent
 	machine_whitelist_range(&m.bus, 0x3E8, 0x3EF) // COM3 probe by SeaBIOS serial_setup; absent
 	machine_whitelist_range(&m.bus, 0x2E8, 0x2EF) // COM4 probe by SeaBIOS serial_setup; absent
 	machine_whitelist_range(&m.bus, 0x2F2, 0x2F7) // IO.SYS boot probe: writes 0xFF here (tertiary FDC range); absent
@@ -217,19 +281,27 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	machine_whitelist_range(&m.bus, 0x1E8, 0x1EF) // IDE tertiary: Win98 boot-disk ATAPI driver probe; absent
 	machine_whitelist_range(&m.bus, 0x168, 0x16F) // IDE quaternary, same driver probe series
 	bus_whitelist(&m.bus, 0x36E, 0x36F) // IDE quaternary device control, same probe (tertiary's 0x3EE is inside the COM3 range above)
-	// Adaptec/BusLogic ISA windows probed by the EBD SCSI drivers (BTDOSM/ASPI2DOS/ASPI4DOS); absent.
-	// Registered handlers always beat the whitelist, so future devices in these ranges are unaffected.
-	machine_whitelist_range(&m.bus, 0x100, 0x15F)
-	machine_whitelist_range(&m.bus, 0x200, 0x25F)
-	machine_whitelist_range(&m.bus, 0x300, 0x35F)
+	// Known-absent ISA game, sound, SCSI, and network adapter probe windows.
+	machine_whitelist_range(&m.bus, 0x130, 0x13F)
+	machine_whitelist_range(&m.bus, 0x200, 0x207)
+	machine_whitelist_range(&m.bus, 0x220, 0x22F)
+	machine_whitelist_range(&m.bus, 0x230, 0x23F)
+	machine_whitelist_range(&m.bus, 0x240, 0x24F)
+	machine_whitelist_range(&m.bus, 0x280, 0x29F)
+	machine_whitelist_range(&m.bus, 0x300, 0x31F)
+	machine_whitelist_range(&m.bus, 0x330, 0x35F)
+	machine_whitelist_range(&m.bus, 0x388, 0x38B)
 	bus_whitelist(&m.bus, 0xA79) // ISA PnP write-data, ASPI2DOS card isolation (address port 0x279 sits in the LPT2 range above)
 	// ISA PnP read-data candidates: ASPI2DOS walks 0x20B, 0x22B, ... 0x3EB until isolation finds a card (it never will)
 	for p := u16(0x20B); p <= 0x3EB; p += 0x20 {bus_whitelist(&m.bus, p)}
-	m.last_tick = time.tick_now()
+	machine_clock_set_running(m, true)
 	return true
 }
 
 machine_destroy :: proc(m: ^Machine) {
+	machine_clock_set_running(m, false)
+	disk.bmide_reset_channel(&m.bmide, 0)
+	disk.bmide_reset_channel(&m.bmide, 1)
 	disk.fdc_eject_media(&m.fdc)
 	disk.atapi_eject(&m.atapi)
 	hosttime.waiter_destroy(&m.idle_waiter)
@@ -249,6 +321,7 @@ machine_drain_dbg :: proc(m: ^Machine, sink: ^[dynamic]u8) {
 
 // stores the device and takes over the IDE ports whitelisted at init
 machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
+	disk.bmide_reset_channel(&m.bmide, 0)
 	disk.ide_init(&m.ide, bd)
 	m.ide.irq_ctx = m
 	m.ide.irq = machine_irq14
@@ -298,6 +371,7 @@ machine_init_atapi :: proc(m: ^Machine) {
 	disk.atapi_init(&m.atapi)
 	m.atapi.irq_ctx = m
 	m.atapi.irq = machine_irq15
+	disk.atapi_set_cdda_output(&m.atapi, m, machine_cdda_frame)
 	h := Io_Handler {
 		ctx   = m,
 		read  = machine_atapi_read,
@@ -308,15 +382,60 @@ machine_init_atapi :: proc(m: ^Machine) {
 }
 
 machine_mount_cdrom :: proc(m: ^Machine, path: string) -> bool {
+	disk.bmide_reset_channel(&m.bmide, 1)
+	machine_audio_reset_cdda(m)
 	return disk.atapi_mount(&m.atapi, path)
 }
 
 machine_attach_cdrom :: proc(m: ^Machine, path: string) -> bool {
+	disk.bmide_reset_channel(&m.bmide, 1)
+	machine_audio_reset_cdda(m)
 	return disk.atapi_attach(&m.atapi, path)
 }
 
 machine_eject_cdrom :: proc(m: ^Machine) {
+	disk.bmide_reset_channel(&m.bmide, 1)
 	disk.atapi_eject(&m.atapi)
+	machine_audio_reset_cdda(m)
+}
+
+machine_enable_test_device :: proc(m: ^Machine) {
+	if m == nil || m.test_device_enabled {return}
+	h := Io_Handler {
+		ctx   = m,
+		read  = machine_test_device_read,
+		write = machine_test_device_write,
+	}
+	bus_register_byte_decomposed(&m.bus, TEST_DEVICE_INDEX_PORT, TEST_DEVICE_COMMAND_PORT, h)
+	m.test_device_enabled = true
+}
+
+machine_test_device_take_command :: proc(m: ^Machine) -> Test_Device_Command {
+	if m == nil || !m.test_device_enabled {return .None}
+	return test_device_take_command(&m.test_device)
+}
+
+machine_test_device_frame_crc :: proc(m: ^Machine) -> u32 {
+	if m == nil || !m.test_device_enabled {return 0}
+	frame := machine_display_frame(m)
+	crc := test_device_frame_crc(frame, test_device_rect(&m.test_device))
+	test_device_set_crc(&m.test_device, crc)
+	return crc
+}
+
+machine_test_device_exit_code :: proc(m: ^Machine) -> u8 {
+	if m == nil || !m.test_device_enabled {return 0}
+	return test_device_exit_code(&m.test_device)
+}
+
+machine_audio_output :: proc(m: ^Machine) -> ^sound.Audio_Output {
+	if m == nil {return nil}
+	return sound.audio_mixer_output(&m.audio)
+}
+
+machine_audio_metrics :: proc(m: ^Machine) -> sound.Audio_Metrics_Snapshot {
+	if m == nil {return {}}
+	return sound.audio_output_metrics(sound.audio_mixer_output(&m.audio))
 }
 
 machine_cmos_export :: proc(m: ^Machine) -> [CMOS_NVRAM_SIZE]u8 {
@@ -329,6 +448,21 @@ machine_cmos_import :: proc(m: ^Machine, data: []u8) -> bool {
 
 machine_reset_requested :: proc(m: ^Machine) -> bool {
 	return m != nil && m.reset_requested
+}
+
+machine_reset_provenance :: proc(m: ^Machine) -> Reset_Provenance {
+	return m != nil ? m.reset_source : .None
+}
+
+machine_reset_record_count :: proc(m: ^Machine) -> int {
+	return m != nil ? int(min(m.reset_count, u64(PC_AT_RESET_HISTORY))) : 0
+}
+
+machine_reset_record :: proc(m: ^Machine, index: int) -> (Reset_Record, bool) {
+	count := machine_reset_record_count(m)
+	if index < 0 || index >= count {return {}, false}
+	oldest := m.reset_count - u64(count)
+	return m.reset_history[(oldest + u64(index)) % PC_AT_RESET_HISTORY], true
 }
 
 machine_cpu_reset_pending :: proc(m: ^Machine) -> bool {
@@ -348,9 +482,10 @@ machine_cpu_reset :: proc(m: ^Machine) -> bool {
 	}
 	m.cpu_reset_pending = false
 	m.cpu_reset_reason = ""
+	m.cpu_halted = false
 	m.cpu_reset_count += 1
 	hv.governor_rebase(&m.governor, &m.vm)
-	m.last_tick = time.tick_now()
+	m.active_tick = time.tick_now()
 	return true
 }
 
@@ -358,34 +493,232 @@ machine_mouse :: proc(m: ^Machine, dx, dy: i32, buttons: u8) {
 	i8042_mouse(&m.kbd, dx, dy, buttons)
 }
 
-step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
+machine_mouse_wheel :: proc(m: ^Machine, wheel: i32, buttons: u8) {
+	i8042_mouse(&m.kbd, 0, 0, buttons)
+	i8042_mouse_wheel(&m.kbd, wheel)
+}
+
+machine_clock_set_running :: proc(m: ^Machine, running: bool) {
+	if m == nil {return}
+	if m.clock_running && !running {machine_sync_time(m)}
+	if m.vm.part != nil && !hv.set_time_running(&m.vm, running) {
+		bus_freeze(
+			&m.bus,
+			running ? "failed to resume partition time" : "failed to suspend partition time",
+		)
+		return
+	}
+	m.clock_running = running
+	m.active_tick = time.tick_now()
+}
+
+machine_set_wake_adapter :: proc(m: ^Machine, ctx: rawptr, rearm: Wake_Rearm_Proc) {
+	if m == nil {return}
+	m.wake_ctx = ctx
+	m.wake_rearm = rearm
+	machine_rearm_wake(m)
+}
+
+machine_next_wake_ns :: proc(m: ^Machine) -> u64 {
+	if m == nil {return MACHINE_FAIRNESS_NS}
+	delay := MACHINE_FAIRNESS_NS
+	if next, ok := i8042_next_deadline_ns(&m.kbd); ok {delay = min(delay, max(next, u64(1)))}
+	delay = min(delay, cmos_next_deadline_ns(&m.cmos))
+	now := master_timeline_now(m.timeline)
+	master_deadlines := [11]struct {
+		value:   u64,
+		pending: bool,
+	}{}
+	master_deadlines[0].value, master_deadlines[0].pending = pit_next_deadline(&m.pit)
+	master_deadlines[1].value, master_deadlines[1].pending = uart_next_deadline(&m.serial1)
+	master_deadlines[2].value, master_deadlines[2].pending = uart_next_deadline(&m.serial2)
+	master_deadlines[3].value, master_deadlines[3].pending = lpt_next_deadline(&m.parallel1)
+	master_deadlines[4].value, master_deadlines[4].pending = lpt_next_deadline(&m.parallel2)
+	master_deadlines[5].value, master_deadlines[5].pending = disk.fdc_next_deadline(&m.fdc)
+	master_deadlines[6].value, master_deadlines[6].pending = disk.ide_next_deadline(&m.ide)
+	master_deadlines[7].value, master_deadlines[7].pending = disk.atapi_next_deadline(&m.atapi)
+	master_deadlines[8].value, master_deadlines[8].pending = disk.bmide_next_deadline(&m.bmide)
+	master_deadlines[9].value = sound.audio_mixer_next_deadline_tick(&m.audio)
+	master_deadlines[9].pending = true
+	for deadline in master_deadlines {
+		if !deadline.pending {continue}
+		delta := deadline.value > now ? deadline.value - now : 1
+		ns := u64(
+			(u128(delta) * 1_000_000_000 + u128(MASTER_CLOCK_HZ - 1)) / u128(MASTER_CLOCK_HZ),
+		)
+		delay = min(delay, max(ns, u64(1)))
+	}
+	return delay
+}
+
+machine_rearm_wake :: proc(m: ^Machine) {
+	if m != nil && m.io_string_depth == 0 && m.wake_rearm != nil {
+		m.wake_rearm(m.wake_ctx, machine_next_wake_ns(m))
+	}
+}
+
+@(private = "file")
+machine_io_string_budget :: proc(ctx: rawptr) -> u64 {
+	m := (^Machine)(ctx)
+	deadline_ns := machine_next_wake_ns(m)
+	if deadline_ns <= 10_000 {return 1}
+	if deadline_ns <= 100_000 {return 64}
+	if deadline_ns <= 1_000_000 {return 512}
+	return 4096
+}
+
+@(private = "package")
+machine_io_string_begin :: proc(ctx: rawptr) {
+	m := (^Machine)(ctx)
+	if m.io_string_depth == 0 {machine_sync_time(m)}
+	m.io_string_depth += 1
+}
+
+@(private = "package")
+machine_io_string_end :: proc(ctx: rawptr) {
+	m := (^Machine)(ctx)
+	assert(m.io_string_depth > 0)
+	m.io_string_depth -= 1
+	if m.io_string_depth == 0 {
+		machine_sync_time(m)
+		machine_rearm_wake(m)
+	}
+}
+
+@(private = "file")
+machine_master_deadline :: proc(m: ^Machine, target: u64) -> u64 {
+	now := master_timeline_now(m.timeline)
+	deadline := target
+	master_deadlines := [11]struct {
+		value:   u64,
+		pending: bool,
+	}{}
+	master_deadlines[0].value, master_deadlines[0].pending = pit_next_deadline(&m.pit)
+	master_deadlines[1].value, master_deadlines[1].pending = uart_next_deadline(&m.serial1)
+	master_deadlines[2].value, master_deadlines[2].pending = uart_next_deadline(&m.serial2)
+	master_deadlines[3].value, master_deadlines[3].pending = lpt_next_deadline(&m.parallel1)
+	master_deadlines[4].value, master_deadlines[4].pending = lpt_next_deadline(&m.parallel2)
+	master_deadlines[5].value, master_deadlines[5].pending = dma_next_deadline(&m.dma)
+	master_deadlines[6].value, master_deadlines[6].pending = disk.fdc_next_deadline(&m.fdc)
+	master_deadlines[7].value, master_deadlines[7].pending = disk.ide_next_deadline(&m.ide)
+	master_deadlines[8].value, master_deadlines[8].pending = disk.atapi_next_deadline(&m.atapi)
+	master_deadlines[9].value, master_deadlines[9].pending = disk.bmide_next_deadline(&m.bmide)
+	master_deadlines[10] = {
+		value   = sound.audio_mixer_next_deadline_tick(&m.audio),
+		pending = true,
+	}
+	for candidate in master_deadlines {
+		if candidate.pending {deadline = min(deadline, max(candidate.value, now + min(u64(1), ~u64(0) - now)))}
+	}
+	if delta_ns, pending := i8042_next_deadline_ns(&m.kbd); pending {
+		delta, running := rate_phase_ticks_until(m.nanosecond_phase, delta_ns, NANOSECOND_HZ)
+		if running {
+			candidate := now + min(delta, ~u64(0) - now)
+			deadline = min(deadline, max(candidate, now + min(u64(1), ~u64(0) - now)))
+		}
+	}
+	cmos_delta, running := rate_phase_ticks_until(
+		m.nanosecond_phase,
+		cmos_next_deadline_ns(&m.cmos),
+		NANOSECOND_HZ,
+	)
+	if running {
+		candidate := now + min(cmos_delta, ~u64(0) - now)
+		deadline = min(deadline, max(candidate, now + min(u64(1), ~u64(0) - now)))
+	}
+	return deadline
+}
+
+@(private = "file")
+machine_advance_devices_to :: proc(m: ^Machine, target_tick: u64) {
+	elapsed_ticks := master_timeline_advance_to(&m.timeline, target_tick)
+	elapsed_ns := master_ticks_to_nanoseconds(&m.nanosecond_phase, elapsed_ticks)
+	m.active_ns += elapsed_ns
+	if elapsed_ns == 0 {
+		i8042_advance(&m.kbd, 0)
+	} else {
+		i8042_advance_to(&m.kbd, m.active_ns)
+	}
+	now := master_timeline_now(m.timeline)
+	for _ in 0 ..< pit_advance_to(&m.pit, now) {pic_raise(&m.pic, 0)}
+	machine_audio_apply_pit_transitions(m)
+	uart_advance_to(&m.serial1, now)
+	uart_advance_to(&m.serial2, now)
+	lpt_advance_to(&m.parallel1, now)
+	lpt_advance_to(&m.parallel2, now)
+	_ = dma_advance_to(&m.dma, now, m.vm.ram)
+	disk.fdc_advance_to(&m.fdc, now)
+	disk.ide_advance_to(&m.ide, now)
+	disk.atapi_advance_to(&m.atapi, now)
+	_ = disk.bmide_advance_to(&m.bmide, now, machine_bmide_memory(m))
+	machine_bmide_poll_irqs(m)
+	machine_audio_advance_to(m, now)
+	if uart_take_irq(&m.serial1) {pic_raise(&m.pic, uart_irq_number(&m.serial1))}
+	if uart_take_irq(&m.serial2) {pic_raise(&m.pic, uart_irq_number(&m.serial2))}
+	if lpt_take_irq(&m.parallel1) {pic_raise(&m.pic, lpt_irq_number(&m.parallel1))}
+	if lpt_take_irq(&m.parallel2) {pic_raise(&m.pic, lpt_irq_number(&m.parallel2))}
+	for _ in 0 ..< cmos_advance(&m.cmos, elapsed_ns) {pic_raise(&m.pic, 8)}
+	video.vga_sync_to(&m.vga, m.active_ns)
+}
+
+machine_advance_time_ns :: proc(m: ^Machine, nanoseconds: u64) {
+	if m == nil || nanoseconds == 0 {return}
+	master_ticks := master_source_advance_nanoseconds(&m.time_source, nanoseconds)
+	if master_ticks == 0 {return}
+	now := master_timeline_now(m.timeline)
+	target := now + min(master_ticks, ~u64(0) - now)
+	for now < target {
+		machine_advance_devices_to(m, machine_master_deadline(m, target))
+		now = master_timeline_now(m.timeline)
+	}
+}
+
+machine_sync_time :: proc(m: ^Machine) {
+	if m == nil || !m.clock_running || m.io_string_depth > 0 {return}
 	now := time.tick_now()
-	ns := u64(time.tick_diff(m.last_tick, now))
-	m.last_tick = now
-	for _ in 0 ..< pit_advance(&m.pit, ns) {pic_raise(&m.pic, 0)}
-	for _ in 0 ..< cmos_advance(&m.cmos, ns) {pic_raise(&m.pic, 8)}
+	elapsed := max(time.Duration(0), time.tick_diff(m.active_tick, now))
+	m.active_tick = now
+	machine_advance_time_ns(m, u64(elapsed))
+}
+
+step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
+	machine_sync_time(m)
+	injected := false
 	if pic_has_pending(&m.pic) {
-		if hv.can_inject(&m.vm) {
-			if v, ok := pic_ack(&m.pic); ok {
-				m.inj_count[v] += 1
-				hv.inject_irq(&m.vm, v)
-			}
-			// more IRQs queued behind this one: exit as soon as the guest
-			// can take the next one, or a no-exit guest starves them
-			if pic_has_pending(&m.pic) {
+		if offer, offered := pic_interrupt_preview(&m.pic); offered {
+			switch hv.try_inject_irq(&m.vm, offer.vector) {
+			case .Injected:
+				if !pic_interrupt_commit(&m.pic, offer) {
+					bus_freeze(&m.bus, "PIC offer changed after interrupt injection")
+					return false
+				}
+				m.inj_count[offer.vector] += 1
+				injected = true
+				if pic_has_pending(&m.pic) {hv.request_irq_window(&m.vm, true)}
+			case .Deferred:
 				hv.request_irq_window(&m.vm, true)
+			case .Failed:
+				bus_freeze(&m.bus, "WHPX interrupt injection failed")
+				return false
 			}
 		} else {
 			hv.request_irq_window(&m.vm, true)
 		}
 	}
-	m.video_run_start = time.tick_now()
-	m.video_running = true
+	if m.cpu_halted {
+		if injected {
+			m.cpu_halted = false
+		} else {
+			machine_rearm_wake(m)
+			delay_ns := machine_next_wake_ns(m)
+			hosttime.waiter_sleep(&m.idle_waiter, time.Duration(max(delay_ns, u64(1))))
+			machine_sync_time(m)
+			return !m.bus.frozen
+		}
+	}
+	machine_rearm_wake(m)
 	ex := hv.run(&m.vm)
-	run_end := time.tick_now()
-	m.video_ns += u64(max(time.Duration(0), time.tick_diff(m.video_run_start, run_end)))
-	m.video_running = false
-	video.vga_sync_to(&m.vga, m.video_ns)
+	machine_sync_time(m)
 	governor_ok := ex.kind != .Canceled || hv.governor_on_cancel(&m.governor, &m.vm)
 	m.exit_hist[m.exit_count % EXIT_HISTORY] = ex.kind
 	m.exit_count += 1
@@ -400,8 +733,11 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 machine_handle_exit :: proc(m: ^Machine, ex: hv.Exit) -> bool {
 	#partial switch ex.kind {
 	case .Halt:
-		hosttime.waiter_sleep(&m.idle_waiter, 200 * time.Microsecond)
+		m.cpu_halted = true
 	case .Reset:
+		source :=
+			m.cmos.ram[0x0F] == 0x0A ? Reset_Provenance.Dos_Extender_Warm_Resume : Reset_Provenance.Triple_Fault
+		machine_record_reset(m, source)
 		m.cpu_reset_pending = true
 		m.cpu_reset_reason = ex.detail
 		m.cpu_reset_cmos_0f = m.cmos.ram[0x0F]
@@ -423,6 +759,7 @@ machine_whitelist_range :: proc(b: ^Bus, first, last: u16) {
 @(private = "file")
 machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
 	v := bus_io_read(&m.bus, port, size)
 	t := Io_Trace {
 		port  = port,
@@ -436,12 +773,14 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 		m.ide_hist[m.ide_count % IDE_HISTORY] = t
 		m.ide_count += 1
 	}
+	machine_rearm_wake(m)
 	return v, !m.bus.frozen
 }
 
 @(private = "file")
 machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
 	t := Io_Trace {
 		port  = port,
 		write = true,
@@ -469,30 +808,33 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 		m.cmd_count += 1
 	}
 	bus_io_write(&m.bus, port, size, val)
+	machine_rearm_wake(m)
 	return !m.bus.frozen
 }
 
 // VGA owns the legacy aperture; known probe zones read FF / swallow writes.
-@(private = "file")
 machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 	m := (^Machine)(ctx)
-	machine_vga_sync(m)
-	if gpa >= video.LEGACY_APERTURE_BASE && gpa + u64(len(data)) <= video.LEGACY_APERTURE_END {
+	machine_sync_time(m)
+	decoded_gpa := hv.cpu_physical_address(&m.vm, gpa)
+	if decoded_gpa >= video.LEGACY_APERTURE_BASE &&
+	   decoded_gpa + u64(len(data)) <= video.LEGACY_APERTURE_END {
 		for byte, i in data {
 			if write {
-				_ = video.vga_mmio_write(&m.vga, gpa + u64(i), 1, u32(byte))
-			} else if value, ok := video.vga_mmio_read(&m.vga, gpa + u64(i), 1); ok {
+				_ = video.vga_mmio_write(&m.vga, decoded_gpa + u64(i), 1, u32(byte))
+			} else if value, ok := video.vga_mmio_read(&m.vga, decoded_gpa + u64(i), 1); ok {
 				data[i] = u8(value)
 			} else {
 				data[i] = 0xFF
 			}
 		}
+		machine_rearm_wake(m)
 		return
 	}
 	if !write {
 		for i in 0 ..< len(data) {data[i] = 0xFF}
 	}
-	zone, tolerated := machine_mmio_zone(gpa)
+	zone, tolerated := machine_mmio_zone(decoded_gpa)
 	if tolerated {
 		if !m.mmio_seen[zone] {
 			m.mmio_seen[zone] = true
@@ -506,10 +848,21 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 		}
 		return
 	}
-	bus_freeze(
+	bus_record_unclassified_mmio(
 		&m.bus,
-		fmt.tprintf("unknown MMIO %s gpa=0x%x size=%d", write ? "write" : "read", gpa, len(data)),
+		Unclassified_Mmio{gpa = decoded_gpa, write = write, size = u32(len(data))},
 	)
+	if m.bus.strict_io {
+		bus_freeze(
+			&m.bus,
+			fmt.tprintf(
+				"unclassified MMIO %s gpa=0x%x size=%d",
+				write ? "write" : "read",
+				gpa,
+				len(data),
+			),
+		)
+	}
 }
 
 @(private = "file")
@@ -532,13 +885,38 @@ machine_mmio_zone :: proc(gpa: u64) -> (Mmio_Zone, bool) {
 @(private = "file")
 machine_irq1 :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
-	pic_raise(&m.pic, 1)
+	pic_set_irq_level(&m.pic, 1, true)
+}
+
+@(private = "file")
+machine_test_device_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
+	m := (^Machine)(ctx)
+	value, handled := test_device_read(&m.test_device, port)
+	return handled ? u32(value) : u32(0xFF)
+}
+
+@(private = "file")
+machine_test_device_write :: proc(ctx: rawptr, port: u16, size: u8, value: u32) {
+	m := (^Machine)(ctx)
+	_ = test_device_write(&m.test_device, port, u8(value))
+}
+
+@(private = "file")
+machine_irq1_lower :: proc(ctx: rawptr) {
+	m := (^Machine)(ctx)
+	pic_set_irq_level(&m.pic, 1, false)
 }
 
 @(private)
 machine_irq12 :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
-	pic_raise(&m.pic, 12)
+	pic_set_irq_level(&m.pic, 12, true)
+}
+
+@(private = "file")
+machine_irq12_lower :: proc(ctx: rawptr) {
+	m := (^Machine)(ctx)
+	pic_set_irq_level(&m.pic, 12, false)
 }
 
 @(private = "file")
@@ -547,32 +925,161 @@ machine_irq6 :: proc(ctx: rawptr) {
 	pic_raise(&m.pic, 6)
 }
 
+machine_bmide_memory_read :: proc(ctx: rawptr, address: u64, data: []u8) -> bool {
+	m := (^Machine)(ctx)
+	return hv.physical_ram_read(&m.vm, address, data)
+}
+
+machine_bmide_memory_write :: proc(ctx: rawptr, address: u64, data: []u8) -> bool {
+	m := (^Machine)(ctx)
+	return hv.physical_ram_write(&m.vm, address, data)
+}
+
+machine_bmide_memory :: proc(m: ^Machine) -> disk.Bmide_Memory_Adapter {
+	return {
+		ctx = m,
+		size = hv.physical_ram_size(&m.vm),
+		read = machine_bmide_memory_read,
+		write = machine_bmide_memory_write,
+	}
+}
+
+machine_bmide_poll_irqs :: proc(m: ^Machine) {
+	if disk.bmide_take_irq(&m.bmide, 0) && disk.ide_irq_enabled(&m.ide) {
+		pic_raise(&m.pic, 14)
+	}
+	if disk.bmide_take_irq(&m.bmide, 1) && disk.atapi_irq_enabled(&m.atapi) {
+		pic_raise(&m.pic, 15)
+	}
+}
+
+machine_bmide_synchronize :: proc(m: ^Machine) {
+	disk.bmide_synchronize(&m.bmide, pci_ide_bus_master_enabled(&m.pci), machine_bmide_memory(m))
+	machine_bmide_poll_irqs(m)
+}
+
+machine_bmide_submit_ide :: proc(m: ^Machine) {
+	if request, pending := disk.ide_bmide_request(&m.ide); pending {
+		if disk.bmide_submit_request(&m.bmide, 0, request) {
+			disk.ide_bmide_mark_submitted(&m.ide)
+		}
+	}
+	machine_bmide_synchronize(m)
+}
+
+machine_bmide_submit_atapi :: proc(m: ^Machine) {
+	if request, pending := disk.atapi_bmide_request(&m.atapi); pending {
+		if disk.bmide_submit_request(&m.bmide, 1, request) {
+			disk.atapi_bmide_mark_submitted(&m.atapi)
+		}
+	}
+	machine_bmide_synchronize(m)
+}
+
+@(private = "file")
+machine_audio_reset_cdda :: proc(m: ^Machine) {
+	if m == nil {return}
+	m.cdda_pending_count = 0
+	sound.audio_mixer_reset_cdda(&m.audio)
+}
+
+@(private = "file")
+machine_audio_drain_cdda :: proc(m: ^Machine) {
+	if m.cdda_pending_count == 0 {return}
+	consumed := sound.audio_mixer_queue_cdda(&m.audio, m.cdda_pending[:m.cdda_pending_count])
+	if consumed <= 0 {return}
+	remaining := m.cdda_pending_count - consumed
+	copy(m.cdda_pending[:remaining], m.cdda_pending[consumed:m.cdda_pending_count])
+	m.cdda_pending_count = remaining
+}
+
+@(private = "file")
+machine_cdda_frame :: proc(ctx: rawptr, pcm: []u8) {
+	m := (^Machine)(ctx)
+	if m == nil || len(pcm) != disk.DISC_RAW_SECTOR_SIZE {return}
+	machine_audio_drain_cdda(m)
+	frames: [disk.DISC_RAW_SECTOR_SIZE / 4]sound.Audio_Frame
+	for i in 0 ..< len(frames) {
+		offset := i * 4
+		frames[i] = {
+			left  = i16(u16(pcm[offset]) | u16(pcm[offset + 1]) << 8),
+			right = i16(u16(pcm[offset + 2]) | u16(pcm[offset + 3]) << 8),
+		}
+	}
+	consumed := sound.audio_mixer_queue_cdda(&m.audio, frames[:])
+	remaining := len(frames) - consumed
+	if remaining == 0 {return}
+	if m.cdda_pending_count + remaining > len(m.cdda_pending) {
+		bus_freeze(&m.bus, "CDDA source queue overflow")
+		return
+	}
+	copy(m.cdda_pending[m.cdda_pending_count:m.cdda_pending_count + remaining], frames[consumed:])
+	m.cdda_pending_count += remaining
+}
+
+@(private = "file")
+machine_audio_apply_pit_transitions :: proc(m: ^Machine) {
+	enabled := m.pit.port61_low & 0x02 != 0
+	for transition in pit_channel2_transition_slice(&m.pit) {
+		_ = sound.audio_mixer_set_speaker_state(
+			&m.audio,
+			transition.master_tick,
+			enabled,
+			transition.level,
+		)
+	}
+	pit_clear_channel2_transitions(&m.pit)
+}
+
+@(private = "file")
+machine_audio_advance_to :: proc(m: ^Machine, tick: u64) {
+	machine_audio_apply_pit_transitions(m)
+	machine_audio_drain_cdda(m)
+	_ = sound.audio_mixer_advance_to(&m.audio, tick)
+}
+
 @(private = "file")
 machine_irq14 :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
+	disk.bmide_note_ide_irq(&m.bmide, 0)
 	pic_raise(&m.pic, 14)
 }
 
 @(private = "file")
 machine_irq15 :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
+	disk.bmide_note_ide_irq(&m.bmide, 1)
 	pic_raise(&m.pic, 15)
 }
 
 // --- FDC / DMA channel 2 glue ---
 
 @(private = "file")
-machine_fdc_dma_to_mem :: proc(ctx: rawptr, data: []u8) {
+machine_fdc_dma_to_mem :: proc(ctx: rawptr, data: []u8) -> int {
 	m := (^Machine)(ctx)
-	dma_write_mem(&m.dma, 2, m.vm.ram, data)
+	written := 0
+	dma_set_hardware_request(&m.dma, 2, true)
+	defer dma_set_hardware_request(&m.dma, 2, false)
+	for value in data {
+		if _, ok := dma_transfer_to_memory_byte(&m.dma, 2, m.vm.ram, value); !ok {break}
+		written += 1
+	}
+	return written
 }
 
 @(private = "file")
 machine_fdc_dma_from_mem :: proc(ctx: rawptr, buf: []u8) -> int {
 	m := (^Machine)(ctx)
-	tmp := dma_read_mem(&m.dma, 2, m.vm.ram, len(buf))
-	defer delete(tmp)
-	return copy(buf, tmp)
+	read := 0
+	dma_set_hardware_request(&m.dma, 2, true)
+	defer dma_set_hardware_request(&m.dma, 2, false)
+	for &value in buf {
+		byte, ok := dma_transfer_from_memory_byte(&m.dma, 2, m.vm.ram)
+		if !ok {break}
+		value = byte
+		read += 1
+	}
+	return read
 }
 
 // channel 2 TC for the transfer in flight: the status bit is sticky until
@@ -586,8 +1093,62 @@ machine_fdc_dma_tc :: proc(ctx: rawptr) -> bool {
 @(private)
 machine_guest_reset :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
+	source: Reset_Provenance
+	switch m.kbd.reset_source {
+	case .Controller_Pulse:
+		source = .Kbc_Controller_Pulse
+	case .Output_Port:
+		source = .Kbc_Output_Port
+	case .Fast_A20:
+		source = .Port_92
+	case .None:
+		source = .Kbc_Controller_Pulse
+	}
+	machine_request_reset(m, source)
+}
+
+@(private = "file")
+machine_reset_name :: proc(source: Reset_Provenance) -> string {
+	switch source {
+	case .Kbc_Controller_Pulse:
+		return "i8042 pulse"
+	case .Kbc_Output_Port:
+		return "i8042 output port"
+	case .Port_92:
+		return "port 92"
+	case .Pci_Cf9:
+		return "PCI reset control"
+	case .Triple_Fault:
+		return "triple fault"
+	case .Dos_Extender_Warm_Resume:
+		return "DOS extender warm resume"
+	case .None:
+		return "unspecified"
+	}
+	return "unspecified"
+}
+
+@(private = "file")
+machine_record_reset :: proc(m: ^Machine, source: Reset_Provenance) {
+	index := m.reset_count % PC_AT_RESET_HISTORY
+	m.reset_history[index] = {
+		source        = source,
+		master_tick   = master_timeline_now(m.timeline),
+		cmos_shutdown = m.cmos.ram[0x0F],
+	}
+	m.reset_count += 1
+	m.reset_source = source
+}
+
+@(private = "file")
+machine_request_reset :: proc(m: ^Machine, source: Reset_Provenance) {
+	if m == nil || m.reset_requested {return}
+	machine_record_reset(m, source)
 	m.reset_requested = true
-	bus_freeze(&m.bus, "guest requested hardware reset")
+	bus_freeze(
+		&m.bus,
+		fmt.tprintf("guest requested hardware reset (%s)", machine_reset_name(source)),
+	)
 }
 
 @(private = "file")
@@ -632,6 +1193,13 @@ machine_pit_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_pit_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	for i in 0 ..< int(size) {pit_out(&m.pit, port + u16(i), u8(val >> (8 * uint(i))))}
+	machine_audio_apply_pit_transitions(m)
+	_ = sound.audio_mixer_set_speaker_state(
+		&m.audio,
+		master_timeline_now(m.timeline),
+		m.pit.port61_low & 0x02 != 0,
+		pit_channel_out(&m.pit, 2),
+	)
 }
 
 @(private = "file")
@@ -644,6 +1212,54 @@ machine_port61_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_port61_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	pit_port61_write(&m.pit, u8(val))
+	machine_audio_apply_pit_transitions(m)
+	_ = sound.audio_mixer_set_speaker_state(
+		&m.audio,
+		master_timeline_now(m.timeline),
+		m.pit.port61_low & 0x02 != 0,
+		pit_channel_out(&m.pit, 2),
+	)
+}
+
+@(private = "file")
+machine_uart_for_port :: proc(m: ^Machine, port: u16) -> ^Uart_16450 {
+	return port >= UART_COM1_BASE && port <= UART_COM1_BASE + 7 ? &m.serial1 : &m.serial2
+}
+
+@(private = "file")
+machine_uart_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
+	m := (^Machine)(ctx)
+	u := machine_uart_for_port(m, port)
+	value, _ := uart_in(u, port)
+	return u32(value)
+}
+
+@(private = "file")
+machine_uart_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
+	m := (^Machine)(ctx)
+	u := machine_uart_for_port(m, port)
+	_ = uart_out(u, port, u8(val))
+	if uart_take_irq(u) {pic_raise(&m.pic, uart_irq_number(u))}
+}
+
+@(private = "file")
+machine_lpt_for_port :: proc(m: ^Machine, port: u16) -> ^Lpt {
+	return port >= LPT1_BASE && port <= LPT1_BASE + 2 ? &m.parallel1 : &m.parallel2
+}
+
+@(private = "file")
+machine_lpt_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
+	m := (^Machine)(ctx)
+	lpt := machine_lpt_for_port(m, port)
+	value, _ := lpt_in(lpt, port)
+	return u32(value)
+}
+
+@(private = "file")
+machine_lpt_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
+	m := (^Machine)(ctx)
+	lpt := machine_lpt_for_port(m, port)
+	_ = lpt_out(lpt, port, u8(val))
 }
 
 @(private = "file")
@@ -658,6 +1274,7 @@ machine_cmos_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_cmos_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	for i in 0 ..< int(size) {cmos_out(&m.cmos, port + u16(i), u8(val >> (8 * uint(i))))}
+	for _ in 0 ..< cmos_advance(&m.cmos, 0) {pic_raise(&m.pic, 8)}
 }
 
 @(private = "file")
@@ -687,15 +1304,43 @@ machine_dma_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 }
 
 @(private = "file")
+machine_isa_delay_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
+	m := (^Machine)(ctx)
+	value, elapsed_ns := isa_delay_read(&m.isa_delay)
+	machine_advance_time_ns(m, elapsed_ns)
+	return u32(value)
+}
+
+@(private = "file")
+machine_isa_delay_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
+	m := (^Machine)(ctx)
+	elapsed_ns := isa_delay_write(&m.isa_delay, u8(val))
+	machine_advance_time_ns(m, elapsed_ns)
+}
+
+@(private = "file")
 machine_pci_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
+	if offset, claimed := pci_ide_bus_master_decode(&m.pci, port, size); claimed {
+		return disk.bmide_io_read(&m.bmide, offset, size)
+	}
 	return pci_in(&m.pci, port, size)
 }
 
 @(private = "file")
 machine_pci_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
+	if offset, claimed := pci_ide_bus_master_decode(&m.pci, port, size); claimed {
+		disk.bmide_io_write(&m.bmide, offset, size, val)
+		machine_bmide_synchronize(m)
+		machine_rearm_wake(m)
+		return
+	}
 	pci_out(&m.pci, port, size, val)
+	machine_bmide_synchronize(m)
+	machine_rearm_wake(m)
 }
 
 machine_reset_control_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
@@ -707,7 +1352,7 @@ machine_reset_control_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) 
 	if size != 1 {return}
 	m := (^Machine)(ctx)
 	m.reset_control = u8(val) & 0x02
-	if val & 0x04 != 0 {machine_guest_reset(m)}
+	if val & 0x04 != 0 {machine_request_reset(m, .Pci_Cf9)}
 }
 
 @(private = "file")
@@ -738,12 +1383,7 @@ machine_vga_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 
 @(private = "file")
 machine_vga_sync :: proc(m: ^Machine) {
-	target := m.video_ns
-	if m.video_running {
-		now := time.tick_now()
-		target += u64(max(time.Duration(0), time.tick_diff(m.video_run_start, now)))
-	}
-	video.vga_sync_to(&m.vga, target)
+	machine_sync_time(m)
 }
 
 machine_display_frame :: proc(m: ^Machine) -> ^video.Display_Frame {
@@ -773,25 +1413,41 @@ machine_fdc_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 @(private = "file")
 machine_ide_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
 	return disk.ide_io_read(&m.ide, port, size)
 }
 
 @(private = "file")
 machine_ide_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
+	if port == 0x1F7 || port == 0x3F6 && val & 0x04 != 0 {
+		disk.bmide_cancel_request(&m.bmide, 0)
+	}
 	disk.ide_io_write(&m.ide, port, size, val)
+	machine_bmide_submit_ide(m)
+	machine_rearm_wake(m)
 }
 
 @(private = "file")
 machine_atapi_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
 	return disk.atapi_io_read(&m.atapi, port, size)
 }
 
 @(private = "file")
 machine_atapi_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
+	machine_sync_time(m)
+	cdda_generation := disk.atapi_cdda_generation(&m.atapi)
+	if port == 0x177 || port == 0x376 && val & 0x04 != 0 {
+		disk.bmide_cancel_request(&m.bmide, 1)
+	}
 	disk.atapi_io_write(&m.atapi, port, size, val)
+	if disk.atapi_cdda_generation(&m.atapi) != cdda_generation {machine_audio_reset_cdda(m)}
+	machine_bmide_submit_atapi(m)
+	machine_rearm_wake(m)
 }
 
 // SeaBIOS debug console: reads must return 0xE9 or SeaBIOS disables it

@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "workloads": [
+    {
+      "id": "doom-shareware-demo3",
+      "executable": "doom.exe",
+      "arguments": ["-config", "MAX.CFG", "-timedemo", "demo3"],
+      "executable_sha256": "",
+      "metric": "gametics",
+      "expected": 2134,
+      "repetitions": 3,
+      "semantic_exit": "test_device"
+    },
+    {
+      "id": "quake-shareware-demo1",
+      "executable": "quake.exe",
+      "arguments": ["-nosound", "+timedemo", "demo1"],
+      "executable_sha256": "",
+      "metric": "frames",
+      "expected": 969,
+      "repetitions": 3,
+      "semantic_exit": "test_device"
+    }
+  ]
+}

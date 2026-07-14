@@ -11,6 +11,7 @@ frame_mailbox_test_frame :: proc(pixels: []u32, width, height: int, generation: 
 		aspect_width = 4,
 		aspect_height = 3,
 		generation = generation,
+		content_generation = generation,
 		pixels = pixels,
 	}
 }

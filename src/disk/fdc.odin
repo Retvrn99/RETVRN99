@@ -3,8 +3,9 @@ package disk
 
 // Subset of the 82077AA used by SeaBIOS (upstream src/hw/floppy.c,
 // https://github.com/coreboot/seabios).
-// Ports 0x3F0-0x3F5 and 0x3F7; READ/WRITE execution is synchronous via
-// DMA channel 2 callbacks installed by machine.
+// Ports 0x3F0-0x3F5 and 0x3F7; READ/WRITE execution uses timed DMA units.
+
+FDC_MASTER_CLOCK_HZ :: u64(6_600_000_000)
 
 FDC_MSR_RQM :: 0x80
 FDC_MSR_DIO :: 0x40
@@ -47,11 +48,21 @@ Fdc :: struct {
 	int_pending:  bool,
 	int_st0:      u8,
 	reset_sense:  int, // SENSE INTERRUPTs pending after reset (4-drive poll)
+	now_tick:          u64,
+	next_tick:         u64,
+	deadline_pending:  bool,
+	rw_write:          bool,
+	rw_mt:             bool,
+	rw_unit:           u8,
+	rw_c, rw_h, rw_s:  int,
+	rw_eot:            int,
+	rw_pos:            int,
+	rw_buf:            [FLOPPY_SECTOR]u8,
 	// IRQ6 toward the PIC
 	irq:          proc(ctx: rawptr),
 	irq_ctx:      rawptr,
 	// DMA channel 2: installed by machine to avoid importing that package
-	dma_to_mem:   proc(ctx: rawptr, data: []u8),
+	dma_to_mem:   proc(ctx: rawptr, data: []u8) -> int,
 	dma_from_mem: proc(ctx: rawptr, buf: []u8) -> int,
 	dma_tc:       proc(ctx: rawptr) -> bool,
 	dma_ctx:      rawptr,
@@ -71,6 +82,8 @@ fdc_set_media :: proc(f: ^Fdc, raw: []u8) -> bool {
 
 fdc_eject_media :: proc(f: ^Fdc) {
 	if !f.has_media { return }
+	f.deadline_pending = false
+	if f.phase == .Exec {f.phase = .Idle}
 	floppy_img_eject(&f.img)
 	f.has_media = false
 	f.dskchg = true
@@ -84,6 +97,7 @@ fdc_raise_irq :: proc(f: ^Fdc) {
 
 @(private = "file")
 fdc_reset :: proc(f: ^Fdc) {
+	f.deadline_pending = false
 	f.phase = .Idle
 	f.int_pending = false
 	f.reset_sense = 4
@@ -96,6 +110,7 @@ fdc_out :: proc(f: ^Fdc, port: u16, v: u8) {
 		old := f.dor
 		f.dor = v
 		if v & FDC_DOR_RESET == 0 {
+			f.deadline_pending = false
 			f.phase = .Idle
 		} else if old & FDC_DOR_RESET == 0 {
 			fdc_reset(f)
@@ -272,14 +287,16 @@ fdc_read_id :: proc(f: ^Fdc) {
 
 @(private = "file")
 fdc_rw :: proc(f: ^Fdc, is_write: bool) {
-	unit := f.params[0] & 3
-	mt := f.cmd & 0x80 != 0
-	c := int(f.params[1])
-	h := int(f.params[2])
-	s := int(f.params[3])
-	eot := int(f.params[5])
+	f.rw_unit = f.params[0] & 3
+	f.rw_mt = f.cmd & 0x80 != 0
+	f.rw_c = int(f.params[1])
+	f.rw_h = int(f.params[2])
+	f.rw_s = int(f.params[3])
+	f.rw_eot = int(f.params[5])
+	f.rw_write = is_write
+	f.rw_pos = 0
 
-	_, chs_ok := floppy_img_offset(c, h, s)
+	_, chs_ok := floppy_img_offset(f.rw_c, f.rw_h, f.rw_s)
 	if !f.has_media || !chs_ok {
 		fdc_finish_result(f, []u8{
 			FDC_ST0_ABNORMAL | (f.params[0] & 7), FDC_ST1_NO_DATA, 0,
@@ -287,52 +304,127 @@ fdc_rw :: proc(f: ^Fdc, is_write: bool) {
 		}, true)
 		return
 	}
+	if !fdc_prepare_sector(f) {return}
+	fdc_schedule_unit(f)
+}
 
-	// sector loop until DMA terminal count; the last sector of a track (EOT
-	// parameter or physical end) continues on head 1 with MT, otherwise the
-	// command ends the cylinder (82077AA: EN in ST1, abnormal termination)
-	buf: [FLOPPY_SECTOR]u8
-	st0: u8 = 0
-	st1: u8 = 0
-	for {
-		sec, ok := floppy_img_sector(&f.img, c, h, s)
-		if !ok {
-			st0 = FDC_ST0_ABNORMAL
-			st1 = FDC_ST1_NO_DATA
-			break
-		}
-		if is_write {
-			buf = {}
-			if f.dma_from_mem != nil { _ = f.dma_from_mem(f.dma_ctx, buf[:]) }
-			copy(sec, buf[:])
-			f.img.dirty = true
-		} else {
-			if f.dma_to_mem != nil { f.dma_to_mem(f.dma_ctx, sec) }
-		}
-		tc := f.dma_tc != nil && f.dma_tc(f.dma_ctx)
-		// advance to the next sector address (also the result-frame C/H/R)
-		end_of_cyl := false
-		if s == eot || s >= FLOPPY_SPT {
-			s = 1
-			if mt && h == 0 {
-				h = 1
-			} else {
-				if mt { h = 0 }
-				c += 1
-				end_of_cyl = true
-			}
-		} else {
-			s += 1
-		}
-		if tc { break }
-		if end_of_cyl {
-			st0 = FDC_ST0_ABNORMAL
-			st1 = FDC_ST1_EOC
-			break
-		}
+@(private = "file")
+fdc_data_rate :: proc(f: ^Fdc) -> u64 {
+	switch f.ccr & 3 {
+	case 0: return 500_000
+	case 1: return 300_000
+	case 2: return 250_000
+	case: return 1_000_000
 	}
+}
 
+@(private = "file")
+fdc_unit_ticks :: proc(f: ^Fdc) -> u64 {
+	rate := fdc_data_rate(f)
+	return u64((u128(8) * u128(FDC_MASTER_CLOCK_HZ) + u128(rate - 1)) / u128(rate))
+}
+
+@(private = "file")
+fdc_schedule_unit :: proc(f: ^Fdc) {
+	f.deadline_pending = true
+	f.next_tick = f.now_tick + min(fdc_unit_ticks(f), ~u64(0) - f.now_tick)
+}
+
+@(private = "file")
+fdc_prepare_sector :: proc(f: ^Fdc) -> bool {
+	sec, ok := floppy_img_sector(&f.img, f.rw_c, f.rw_h, f.rw_s)
+	if !ok {
+		fdc_finish_result(f, []u8{
+			FDC_ST0_ABNORMAL | u8(f.rw_h) << 2 | f.rw_unit,
+			FDC_ST1_NO_DATA,
+			0,
+			u8(f.rw_c),
+			u8(f.rw_h),
+			u8(f.rw_s),
+			f.params[4],
+		}, true)
+		return false
+	}
+	f.rw_pos = 0
+	if f.rw_write {f.rw_buf = {}} else {copy(f.rw_buf[:], sec)}
+	return true
+}
+
+@(private = "file")
+fdc_finish_rw :: proc(f: ^Fdc, st0, st1: u8) {
+	f.deadline_pending = false
 	fdc_finish_result(f, []u8{
-		st0 | u8(h) << 2 | unit, st1, 0, u8(c), u8(h), u8(s), f.params[4],
+		st0 | u8(f.rw_h) << 2 | f.rw_unit,
+		st1,
+		0,
+		u8(f.rw_c),
+		u8(f.rw_h),
+		u8(f.rw_s),
+		f.params[4],
 	}, true)
+}
+
+@(private = "file")
+fdc_advance_chs :: proc(f: ^Fdc) -> (end_of_cylinder: bool) {
+	if f.rw_s == f.rw_eot || f.rw_s >= FLOPPY_SPT {
+		f.rw_s = 1
+		if f.rw_mt && f.rw_h == 0 {
+			f.rw_h = 1
+		} else {
+			if f.rw_mt {f.rw_h = 0}
+			f.rw_c += 1
+			return true
+		}
+	} else {
+		f.rw_s += 1
+	}
+	return false
+}
+
+@(private = "file")
+fdc_transfer_unit :: proc(f: ^Fdc) {
+	transferred := 0
+	if f.rw_write {
+		if f.dma_from_mem != nil {
+			transferred = f.dma_from_mem(f.dma_ctx, f.rw_buf[f.rw_pos:f.rw_pos + 1])
+		}
+	} else if f.dma_to_mem != nil {
+		transferred = f.dma_to_mem(f.dma_ctx, f.rw_buf[f.rw_pos:f.rw_pos + 1])
+	}
+	if transferred != 1 {
+		fdc_schedule_unit(f)
+		return
+	}
+	f.rw_pos += 1
+	if f.rw_pos < FLOPPY_SECTOR {
+		fdc_schedule_unit(f)
+		return
+	}
+	if f.rw_write {
+		sec, ok := floppy_img_sector(&f.img, f.rw_c, f.rw_h, f.rw_s)
+		if !ok {fdc_finish_rw(f, FDC_ST0_ABNORMAL, FDC_ST1_NO_DATA); return}
+		copy(sec, f.rw_buf[:])
+		f.img.dirty = true
+	}
+	tc := f.dma_tc != nil && f.dma_tc(f.dma_ctx)
+	end_of_cylinder := fdc_advance_chs(f)
+	if tc {fdc_finish_rw(f, 0, 0); return}
+	if end_of_cylinder {fdc_finish_rw(f, FDC_ST0_ABNORMAL, FDC_ST1_EOC); return}
+	if !fdc_prepare_sector(f) {return}
+	fdc_schedule_unit(f)
+}
+
+fdc_next_deadline :: proc(f: ^Fdc) -> (u64, bool) {
+	if f == nil || !f.deadline_pending {return 0, false}
+	return f.next_tick, true
+}
+
+fdc_advance_to :: proc(f: ^Fdc, tick: u64) {
+	if f == nil || tick < f.now_tick {return}
+	for f.deadline_pending && f.next_tick <= tick {
+		f.now_tick = f.next_tick
+		f.deadline_pending = false
+		fdc_transfer_unit(f)
+	}
+	f.now_tick = tick
 }

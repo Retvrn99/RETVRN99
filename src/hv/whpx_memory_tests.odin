@@ -133,3 +133,42 @@ test_whpx_memory_splits_a20_hma_wrap_read :: proc(t: ^testing.T) {
 	testing.expect_value(t, access.Data[2], u8(0x33))
 	testing.expect_value(t, access.Data[3], u8(0x44))
 }
+
+@(test)
+test_whpx_memory_open_bus_splits_from_ram_and_ignores_writes :: proc(t: ^testing.T) {
+	ram := make([]u8, 0xE0000)
+	defer delete(ram)
+	vm := Vm{ram = ram}
+	append(
+		&vm.mmio_reservations,
+		Mmio_Reservation{gpa = 0xC8000, size = 0x18000, kind = .Open_Bus},
+	)
+	defer delete(vm.mmio_reservations)
+	probe: Whpx_Memory_Test_Probe
+	vm.io_ctx = &probe
+	vm.mmio = whpx_memory_test_mmio
+	vm.ram[0xC7FFE] = 0x11
+	vm.ram[0xC7FFF] = 0x22
+	vm.ram[0xC8000] = 0x33
+	vm.ram[0xD0000] = 0x44
+
+	read := WHV_EMULATOR_MEMORY_ACCESS_INFO {
+		GpaAddress = 0xC7FFE,
+		AccessSize = 4,
+	}
+	testing.expect(t, whpx_emulate_memory_access(&vm, &read) >= 0)
+	testing.expect_value(t, read.Data[0], u8(0x11))
+	testing.expect_value(t, read.Data[1], u8(0x22))
+	testing.expect_value(t, read.Data[2], u8(0xFF))
+	testing.expect_value(t, read.Data[3], u8(0xFF))
+
+	write := WHV_EMULATOR_MEMORY_ACCESS_INFO {
+		GpaAddress = 0xD0000,
+		Direction  = 1,
+		AccessSize = 1,
+	}
+	write.Data[0] = 0xA5
+	testing.expect(t, whpx_emulate_memory_access(&vm, &write) >= 0)
+	testing.expect_value(t, vm.ram[0xD0000], u8(0x44))
+	testing.expect_value(t, probe.calls, 0)
+}
