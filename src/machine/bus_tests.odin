@@ -19,6 +19,8 @@ test_bus_dispatch :: proc(t: ^testing.T) {
 	testing.expect_value(t, bus_io_read(&bus, 0x60, 1), 0xAB)
 	bus_io_write(&bus, 0x60, 1, 0xCD)
 	testing.expect_value(t, val, 0xCD)
+	testing.expect_value(t, bus.modeled_count, u64(2))
+	testing.expect_value(t, bus.passive_count, u64(0))
 }
 
 @(test)
@@ -33,6 +35,7 @@ test_bus_unknown_port :: proc(t: ^testing.T) {
 	bus_io_write(&bus, 0x1234, 2, 0xABCD)
 	testing.expect(t, !bus.frozen)
 	testing.expect_value(t, bus.unclassified_count, u64(2))
+	testing.expect_value(t, bus.passive_count, u64(1))
 }
 
 @(test)
@@ -65,4 +68,24 @@ test_bus_byte_decomposes_declared_handler :: proc(t: ^testing.T) {
 	testing.expect_value(t, bus_io_read(&bus, 0x200, 2), u32(0x3412))
 	bus_io_write(&bus, 0x200, 2, 0xBBAA)
 	testing.expect_value(t, bytes, [2]u8{0xAA, 0xBB})
+	testing.expect_value(t, bus.modeled_count, u64(2))
+}
+
+@(test)
+test_machine_unknown_mmio_is_open_bus_unless_strict :: proc(t: ^testing.T) {
+	m: Machine
+	bus_init(&m.bus)
+	defer bus_destroy(&m.bus)
+	m.vm.a20_enabled = true
+	data := [4]u8{}
+	machine_mmio(&m, 0x4000_0000, false, data[:])
+	testing.expect_value(t, data, [4]u8{0xFF, 0xFF, 0xFF, 0xFF})
+	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(1))
+	testing.expect(t, !m.bus.frozen)
+
+	bus_set_strict_io(&m.bus, true)
+	context.logger = log.nil_logger()
+	machine_mmio(&m, 0x4000_1000, true, data[:2])
+	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(2))
+	testing.expect(t, m.bus.frozen)
 }

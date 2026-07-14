@@ -7,6 +7,7 @@ import config "../vmconfig"
 Menu_Action :: enum {
 	None,
 	Reset,
+	Toggle_Pause,
 	Power_Off,
 	Mount_Floppy,
 	Eject_Floppy,
@@ -20,6 +21,7 @@ Menu_Action :: enum {
 Menu_State :: struct {
 	show_debug:            bool, // vCPU / exit-stats panel
 	show_log:              bool, // device-log panel
+	user_paused:           bool,
 	cpu_mode:              config.Cpu_Mode,
 	cdrom_mounted:         bool,
 	installing_windows_98: bool,
@@ -51,6 +53,7 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 	action := Menu_Action.None
 	if imgui.BeginMainMenuBar() {
 		if imgui.BeginMenu("Machine") {
+			if imgui.MenuItem("Pause", nil, st.user_paused) {action = .Toggle_Pause}
 			if imgui.MenuItem("Reset") {action = .Reset}
 			if imgui.BeginMenu("CPU Speed") {
 				if imgui.MenuItem("GSW-886", nil, st.cpu_mode == .GSW_886) {
@@ -93,14 +96,14 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 			if imgui.MenuItem("Eject Floppy") {action = .Eject_Floppy}
 			imgui.Separator()
 			if imgui.MenuItem(
-				"Mount CD-ROM...",
+				"Mount DVD/CD-ROM...",
 				nil,
 				false,
 				menu_action_enabled(st, .Mount_Cdrom),
 			) {
 				action = .Mount_Cdrom
 			}
-			if imgui.MenuItem("Eject CD-ROM", nil, false, menu_action_enabled(st, .Eject_Cdrom)) {
+			if imgui.MenuItem("Eject DVD/CD-ROM", nil, false, menu_action_enabled(st, .Eject_Cdrom)) {
 				action = .Eject_Cdrom
 			}
 			imgui.EndMenu()

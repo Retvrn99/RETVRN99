@@ -98,3 +98,18 @@ firmware_log_test_device_log_owns_and_bounds_lines :: proc(t: ^testing.T) {
 		fmt.tprintf("line-%d", MAX_LOG_LINES + 4),
 	)
 }
+
+@(test)
+firmware_log_test_diagnostics_history_is_owned_and_bounded :: proc(t: ^testing.T) {
+	log: Firmware_Log
+	defer firmware_log_destroy(&log)
+	emit := Firmware_Emit_Context{log = &log}
+	for i in 0 ..< FIRMWARE_HISTORY_LINES + 3 {
+		firmware_log_host_emit(&emit, fmt.tprintf("firmware-%d", i))
+	}
+	recent := firmware_log_recent(&log, 2)
+	defer delete(recent)
+	testing.expect(t, !strings.contains(recent, "firmware-2\n"))
+	testing.expect(t, strings.contains(recent, fmt.tprintf("firmware-%d\n", FIRMWARE_HISTORY_LINES + 1)))
+	testing.expect(t, strings.contains(recent, fmt.tprintf("firmware-%d\n", FIRMWARE_HISTORY_LINES + 2)))
+}

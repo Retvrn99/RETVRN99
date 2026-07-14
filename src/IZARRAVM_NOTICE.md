@@ -11,6 +11,7 @@ The relevant upstream areas are:
 - `izarravm-machine/src/timeline.rs`, `unittester.rs`, and PC device modules
 - `izarravm-machine/src/cdimage.rs`, `atapi.rs`, and `bmide.rs`
 - `izarravm-audio/src/` and `izarravm-input/src/`
+- `izarravm-video/src/vga/{datapath,scanout,legacy,timing}.rs`
 
 IzarraVM source is not vendored into RETVRN99. Its software CPU, HLE BIOS,
 Margo/Distira devices, and host backend are not used.

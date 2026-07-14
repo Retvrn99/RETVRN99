@@ -195,9 +195,15 @@ test_pic_special_mask_mode :: proc(t: ^testing.T) {
 	pic_raise(&p, 4)
 	testing.expect(t, !pic_has_pending(&p))
 	pic_out(&p, 0x20, 0x68)
+	testing.expect(t, !pic_has_pending(&p))
 	pic_out(&p, 0x21, 0x04)
 	testing.expect(t, pic_has_pending(&p))
 	pic_out(&p, 0x20, 0x48)
+	token, ok := pic_offer(&p)
+	testing.expect(t, ok)
+	testing.expect_value(t, token.kind, Pic_Interrupt_Kind.Spurious_Master)
+	testing.expect_value(t, token.vector, u8(0x0F))
+	testing.expect(t, pic_commit(&p, token))
 	testing.expect(t, !pic_has_pending(&p))
 }
 
@@ -288,7 +294,9 @@ test_pic_elcr_level_line_reasserts :: proc(t: ^testing.T) {
 	pic_out(&p, 0x20, 0x20)
 	testing.expect(t, pic_has_pending(&p))
 	pic_set_irq_level(&p, 5, false)
-	testing.expect(t, !pic_has_pending(&p))
+	token, ok := pic_offer(&p)
+	testing.expect(t, ok)
+	testing.expect_value(t, token.kind, Pic_Interrupt_Kind.Spurious_Master)
 }
 
 @(test)
@@ -297,7 +305,6 @@ test_pic_spurious_master_irq7 :: proc(t: ^testing.T) {
 	pic_setup(&p)
 	pic_out(&p, 0x4D0, 1 << 3)
 	pic_set_irq_level(&p, 3, true)
-	testing.expect(t, pic_latch_interrupt(&p))
 	pic_set_irq_level(&p, 3, false)
 	token, ok := pic_offer(&p)
 	testing.expect(t, ok)

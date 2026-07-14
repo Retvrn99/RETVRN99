@@ -28,6 +28,8 @@ Diagnostic :: enum {
 	Guest_Copy_Failed,
 	Commit_Failed,
 	Launcher_Failed,
+	Bootstrap_Failed,
+	Recovery_Failed,
 	Existing_Windows,
 	Retry_Cleanup_Failed,
 	Rollback_Failed,
@@ -49,14 +51,16 @@ Preparation_Transaction :: struct {
 	retry_archived:     bool,
 	payload_committed:  bool,
 	launcher_committed: bool,
+	bootstrap:          Bootstrap_Transaction,
 }
 
 Report :: struct {
-	media_info:       media.Media_Info,
-	diagnostic:       Diagnostic,
-	media_diagnostic: media.Diagnostic,
-	retry_cleanup:    Retry_Cleanup_Report,
-	transaction:      Preparation_Transaction,
+	media_info:           media.Media_Info,
+	diagnostic:           Diagnostic,
+	media_diagnostic:     media.Diagnostic,
+	bootstrap_diagnostic: Bootstrap_Diagnostic,
+	retry_cleanup:        Retry_Cleanup_Report,
+	transaction:          Preparation_Transaction,
 }
 
 report_destroy :: proc(report: ^Report) {
@@ -152,11 +156,15 @@ prepare_finish :: proc(report: ^Report) -> bool {
 	if report == nil {return false}
 	if report.transaction.state == .Finalized {return true}
 	if report.transaction.state != .Pending {return false}
-	report.transaction.state = .Finalized
 	paths, paths_ok := preparation_paths(&report.transaction)
 	if !paths_ok {return false}
-
+	report.transaction.state = .Finalized
 	ok := true
+	if report.transaction.bootstrap.state == .Pending &&
+	   !bootstrap_finish(&report.transaction.bootstrap, report.transaction.c_drive) {
+		ok = false
+	}
+
 	if report.transaction.launcher_committed {
 		transaction := owned_commit_from_paths(
 			paths.launcher_next,
@@ -203,6 +211,16 @@ prepare_rollback_with_rename :: proc(report: ^Report, rename_path: Owned_Rename_
 
 	launcher: Owned_Commit
 	launcher_restored := false
+	if report.transaction.bootstrap.state == .Pending &&
+	   !bootstrap_rollback_with_rename(
+			   &report.transaction.bootstrap,
+			   report.transaction.c_drive,
+			   bootstrap_rename_with_retry,
+		   ) {
+		report.transaction.state = .Rollback_Failed
+		report.diagnostic = .Rollback_Failed
+		return false
+	}
 	if report.transaction.launcher_committed {
 		launcher = owned_commit_from_paths(
 			paths.launcher_next,
@@ -283,7 +301,7 @@ EBD=0
 ShowEula=0
 ChangeDir=0
 Uninstall=0
-NoPrompt2Boot=0
+NoPrompt2Boot=1
 OptionalComponents=0
 PenWinWarning=0
 
@@ -302,16 +320,19 @@ ValidateNetCardResources=0
 	)
 }
 
-prepare :: proc(iso_path, install_root, c_drive: string) -> Report {
+prepare :: proc(iso_path, install_root, c_drive: string, boot_image_path := "") -> Report {
 	report: Report
+	if os.make_directory_all(install_root) != nil || os.make_directory_all(c_drive) != nil {
+		report.diagnostic = .Profile_Directory_Failed
+		return report
+	}
+	if !prepare_recover(install_root, c_drive) {
+		report.diagnostic = .Recovery_Failed
+		return report
+	}
 	report.media_info, report.media_diagnostic = media.inspect(iso_path)
 	if report.media_diagnostic != .None {
 		report.diagnostic = .Media_Rejected
-		return report
-	}
-
-	if os.make_directory_all(install_root) != nil || os.make_directory_all(c_drive) != nil {
-		report.diagnostic = .Profile_Directory_Failed
 		return report
 	}
 	preparation_transaction_init(&report.transaction, install_root, c_drive)
@@ -322,6 +343,22 @@ prepare :: proc(iso_path, install_root, c_drive: string) -> Report {
 		return report
 	}
 	defer preparation_failure_finalize(&report, &paths)
+	bootstrap, bootstrap_diagnostic := bootstrap_install_with_rename(
+		c_drive,
+		boot_image_path,
+		bootstrap_rename_with_retry,
+	)
+	report.bootstrap_diagnostic = bootstrap_diagnostic
+	report.transaction.bootstrap = bootstrap
+	if bootstrap_diagnostic == .Rollback_Failed {
+		report.transaction.state = .Rollback_Failed
+		report.diagnostic = .Rollback_Failed
+		return report
+	}
+	if bootstrap_diagnostic != .None && bootstrap_diagnostic != .Existing_DOS {
+		report.diagnostic = .Bootstrap_Failed
+		return report
+	}
 
 	_ = os.remove_all(paths.scratch_next)
 
@@ -387,7 +424,7 @@ prepare :: proc(iso_path, install_root, c_drive: string) -> Report {
 		report.diagnostic = .Guest_Copy_Failed
 		return report
 	}
-	if os.copy_directory_all(paths.payload_next, paths.scratch_final) != nil {
+	if !copy_directory_tree(paths.payload_next, paths.scratch_final) {
 		report.diagnostic = .Guest_Copy_Failed
 		return report
 	}
@@ -398,6 +435,7 @@ prepare :: proc(iso_path, install_root, c_drive: string) -> Report {
 	command := launcher_text(
 		report.media_info.setup_executable,
 		profile.dos_seed_is_managed(c_drive),
+		true,
 	)
 	if !write_owned_launcher_staging(paths.launcher_next, command) {
 		report.diagnostic = .Launcher_Failed
@@ -421,6 +459,12 @@ prepare :: proc(iso_path, install_root, c_drive: string) -> Report {
 		return report
 	}
 	return report
+}
+
+@(private)
+bootstrap_rename_with_retry :: proc(old_path, new_path: string) -> os.Error {
+	if rename_with_retry(old_path, new_path) {return nil}
+	return os.General_Error.Invalid_Path
 }
 
 @(private)
@@ -483,14 +527,38 @@ preparation_apply_owned_commit_result :: proc(
 }
 
 @(private)
-launcher_text :: proc(setup_executable: string, enable_boot_gui: bool) -> string {
+launcher_text :: proc(
+	setup_executable: string,
+	enable_boot_gui: bool,
+	restore_autoexec := false,
+) -> string {
 	boot_options := ""
 	if enable_boot_gui {
 		boot_options = "ECHO [Options]>C:\\MSDOS.SYS\r\nECHO Logo=0>>C:\\MSDOS.SYS\r\nECHO BootGUI=1>>C:\\MSDOS.SYS\r\n"
 	}
+	autoexec_restore := ""
+	if restore_autoexec {
+		autoexec_restore =
+			"IF EXIST C:\\GSWAUTO.PRV GOTO GSWAR\r\n" +
+			"DEL C:\\AUTOEXEC.BAT >NUL\r\n" +
+			"IF EXIST C:\\AUTOEXEC.BAT GOTO GSWAE\r\n" +
+			"GOTO GSWAGO\r\n" +
+			":GSWAR\r\n" +
+			"DEL C:\\AUTOEXEC.BAT >NUL\r\n" +
+			"IF EXIST C:\\AUTOEXEC.BAT GOTO GSWAE\r\n" +
+			"REN C:\\GSWAUTO.PRV AUTOEXEC.BAT\r\n" +
+			"IF EXIST C:\\GSWAUTO.PRV GOTO GSWAE\r\n" +
+			"IF NOT EXIST C:\\AUTOEXEC.BAT GOTO GSWAE\r\n" +
+			"GOTO GSWAGO\r\n" +
+			":GSWAE\r\n" +
+			"ECHO Cannot restore C:\\AUTOEXEC.BAT; Setup was not started.\r\n" +
+			"GOTO GSWEND\r\n" +
+			":GSWAGO\r\n"
+	}
 	return fmt.tprintf(
-		"%s@ECHO OFF\r\n%sC:\r\nCD \\GSWSETUP\r\n%s MSBATCH.INF /IS /IQ /IM /IV\r\n",
+		"%s@ECHO OFF\r\n%s%sC:\r\nCD \\GSWSETUP\r\n%s MSBATCH.INF /IS /IQ /IM /IV\r\n:GSWEND\r\n",
 		LAUNCHER_MARKER,
+		autoexec_restore,
 		boot_options,
 		setup_executable,
 	)

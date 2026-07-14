@@ -24,6 +24,22 @@ Interrupt_Injection_Result :: enum {
 	Failed,
 }
 
+Vm_Create_Options :: struct {
+	trace_ud_gp_exits: bool,
+}
+
+Exception_Trace_Record :: struct {
+	vector:                 u8,
+	error_code_valid:       bool,
+	software_exception:     bool,
+	instruction_byte_count: u8,
+	error_code:             u32,
+	exception_parameter:    u64,
+	rip:                    u64,
+	rflags:                 u64,
+	instruction_bytes:      [16]u8,
+}
+
 Rom_Mapping :: struct {
 	gpa:  u64,
 	host: rawptr,
@@ -33,6 +49,12 @@ Rom_Mapping :: struct {
 Mmio_Reservation :: struct {
 	gpa:  u64,
 	size: u64,
+	kind: Memory_Reservation_Kind,
+}
+
+Memory_Reservation_Kind :: enum {
+	Mmio,
+	Open_Bus,
 }
 
 Device_Mapping :: struct {
@@ -42,21 +64,28 @@ Device_Mapping :: struct {
 }
 
 Vm :: struct {
-	part:              rawptr, // WHV_PARTITION_HANDLE
-	ram:               []u8, // 64MB, mapped at GPA 0
-	emu:               rawptr, // WHV_EMULATOR_HANDLE
-	roms:              [dynamic]Rom_Mapping, // host copies backing map_rom regions
-	mmio_reservations: [dynamic]Mmio_Reservation,
-	device_mappings:   [dynamic]Device_Mapping,
-	a20_enabled:       bool,
-	a20_requested:     bool,
-	a20_request_count: u64,
-	a20_apply_count:   u64,
-	time_suspended:    bool,
-	io_ctx:            rawptr,
-	io_read:           proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool),
-	io_write:          proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool,
-	mmio:              proc(ctx: rawptr, gpa: u64, write: bool, data: []u8),
+	part:                   rawptr, // WHV_PARTITION_HANDLE
+	ram:                    []u8, // contiguous guest RAM mapped at GPA 0
+	emu:                    rawptr, // WHV_EMULATOR_HANDLE
+	roms:                   [dynamic]Rom_Mapping, // host copies backing map_rom regions
+	mmio_reservations:      [dynamic]Mmio_Reservation,
+	device_mappings:        [dynamic]Device_Mapping,
+	a20_enabled:            bool,
+	a20_requested:          bool,
+	a20_request_count:      u64,
+	a20_apply_count:        u64,
+	time_suspended:         bool,
+	io_ctx:                 rawptr,
+	io_read:                proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool),
+	io_write:               proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool,
+	io_string_budget:       proc(ctx: rawptr) -> u64,
+	io_string_begin:        proc(ctx: rawptr),
+	io_string_end:          proc(ctx: rawptr),
+	io_string_translations: u64,
+	mmio:                   proc(ctx: rawptr, gpa: u64, write: bool, data: []u8),
+	trace_ud_gp_exits:      bool,
+	exception_trace:        [dynamic]Exception_Trace_Record,
+	exception_count:        u64,
 }
 
 // snapshot of the registers a freeze dump needs
@@ -89,7 +118,11 @@ set_time_running :: proc(vm: ^Vm, running: bool) -> bool {
 }
 
 create :: proc(vm: ^Vm, ram_size: int) -> bool {
-	return whpx_create(vm, ram_size)
+	return whpx_create(vm, ram_size, {})
+}
+
+create_with_options :: proc(vm: ^Vm, ram_size: int, options: Vm_Create_Options) -> bool {
+	return whpx_create(vm, ram_size, options)
 }
 
 destroy :: proc(vm: ^Vm) {
@@ -148,6 +181,11 @@ reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
 	return whpx_reserve_mmio(vm, gpa, size)
 }
 
+// Removes a page-aligned RAM range and returns all-ones while ignoring writes.
+reserve_open_bus :: proc(vm: ^Vm, gpa, size: u64) -> bool {
+	return whpx_reserve_open_bus(vm, gpa, size)
+}
+
 // Allocates stable page-aligned storage and maps it Read|Write at gpa.
 map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 	return whpx_map_device_memory(vm, gpa, size)
@@ -165,4 +203,24 @@ get_regs :: proc(vm: ^Vm) -> Regs {
 cpu_physical_address :: proc(vm: ^Vm, gpa: u64) -> u64 {
 	if vm != nil && !vm.a20_enabled {return gpa &~ WHPX_A20_BIT}
 	return gpa
+}
+
+physical_ram_size :: proc(vm: ^Vm) -> u64 {
+	return vm == nil ? 0 : u64(len(vm.ram))
+}
+
+physical_ram_read :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
+	return whpx_physical_ram_read(vm, gpa, data)
+}
+
+physical_ram_write :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
+	return whpx_physical_ram_write(vm, gpa, data)
+}
+
+exception_trace_count :: proc(vm: ^Vm) -> int {
+	return whpx_exception_trace_count(vm)
+}
+
+exception_trace_record :: proc(vm: ^Vm, index: int) -> (Exception_Trace_Record, bool) {
+	return whpx_exception_trace_record(vm, index)
 }

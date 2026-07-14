@@ -37,6 +37,8 @@ Display_Frame :: struct {
 	aspect_width:  int,
 	aspect_height: int,
 	generation:    u64,
+	content_generation: u64,
+	guest_activity_generation: u64,
 	pixels:        []u32,
 	text:          Text_Snapshot,
 }
@@ -68,6 +70,8 @@ Vga :: struct {
 	raster_valid:     bool,
 	frame_valid:      bool,
 	present_generation: u64,
+	content_generation: u64,
+	guest_activity_generation: u64,
 
 	crtc:       [32]u8,
 	crtc_ix:    u8,
@@ -171,7 +175,23 @@ vga_reset :: proc(v: ^Vga) {
 	v.latched_start = 0
 	v.pending_start = 0
 	v.timing = {}
+	v.content_generation = 1
+	v.guest_activity_generation = 1
 	vga_recalculate_timing(v)
+}
+
+vga_note_content_change :: proc(v: ^Vga) {
+	if v == nil {return}
+	v.content_generation += 1
+	if v.content_generation == 0 {v.content_generation = 1}
+	v.guest_activity_generation += 1
+	if v.guest_activity_generation == 0 {v.guest_activity_generation = 1}
+}
+
+vga_note_animation_change :: proc(v: ^Vga) {
+	if v == nil {return}
+	v.content_generation += 1
+	if v.content_generation == 0 {v.content_generation = 1}
 }
 
 @(private = "package")

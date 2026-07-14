@@ -18,6 +18,7 @@ WHV_CAPABILITY_CODE :: enum u32 {
 
 WHV_PARTITION_PROPERTY_CODE :: enum u32 {
 	ExtendedVmExits         = 0x00000001,
+	ExceptionExitBitmap     = 0x00000002,
 	ProcessorClockFrequency = 0x00001007,
 	ProcessorCount          = 0x00001FFF,
 }
@@ -206,6 +207,45 @@ WHV_X64_MSR_ACCESS_CONTEXT :: struct {
 
 #assert(size_of(WHV_X64_MSR_ACCESS_CONTEXT) == 24)
 
+WHV_EXCEPTION_TYPE :: enum u8 {
+	DivideError             = 0x00,
+	Debug                   = 0x01,
+	Breakpoint              = 0x03,
+	Overflow                = 0x04,
+	BoundRange              = 0x05,
+	InvalidOpcode           = 0x06,
+	DeviceNotAvailable      = 0x07,
+	DoubleFault             = 0x08,
+	InvalidTaskStateSegment = 0x0A,
+	SegmentNotPresent       = 0x0B,
+	StackFault              = 0x0C,
+	GeneralProtection       = 0x0D,
+	PageFault               = 0x0E,
+	FloatingPointError      = 0x10,
+	AlignmentCheck          = 0x11,
+	MachineCheck            = 0x12,
+	SimdFloatingPoint       = 0x13,
+}
+
+WHV_VP_EXCEPTION_INFO :: struct #raw_union {
+	AsUINT32: u32,
+}
+
+#assert(size_of(WHV_VP_EXCEPTION_INFO) == 4)
+
+WHV_VP_EXCEPTION_CONTEXT :: struct {
+	InstructionByteCount: u8,
+	Reserved:             [3]u8,
+	InstructionBytes:     [16]u8,
+	ExceptionInfo:        WHV_VP_EXCEPTION_INFO,
+	ExceptionType:        WHV_EXCEPTION_TYPE,
+	Reserved2:            [3]u8,
+	ErrorCode:            u32,
+	ExceptionParameter:   u64,
+}
+
+#assert(size_of(WHV_VP_EXCEPTION_CONTEXT) == 40)
+
 // padding covers the union members we do not use (SDK: 224 total)
 WHV_RUN_VP_EXIT_CONTEXT :: struct {
 	ExitReason: WHV_RUN_VP_EXIT_REASON,
@@ -216,6 +256,7 @@ WHV_RUN_VP_EXIT_CONTEXT :: struct {
 		IoPortAccess: WHV_X64_IO_PORT_ACCESS_CONTEXT,
 		CpuidAccess:  WHV_X64_CPUID_ACCESS_CONTEXT,
 		MsrAccess:    WHV_X64_MSR_ACCESS_CONTEXT,
+		VpException:  WHV_VP_EXCEPTION_CONTEXT,
 		_pad:         [176]u8,
 	},
 }

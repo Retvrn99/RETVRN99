@@ -997,6 +997,34 @@ test_whpx_can_inject_interrupt_shadow :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_whpx_a20_aliases_high_product_memory :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 256 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+	low := 0x0800_0500
+	high := low | int(WHPX_A20_BIT)
+	vm.ram[low] = 0x31
+	vm.ram[high] = 0x72
+	copy(vm.ram[0x7C00:], []u8{0xA0, u8(high), u8(high >> 8), u8(high >> 16), u8(high >> 24), 0xF4})
+
+	vp: WHV_VP_EXIT_CONTEXT
+	io: WHV_X64_IO_PORT_ACCESS_CONTEXT
+	if !whpx_test_manual_io_context(t, &vm, &vp, &io, 0, 0, 0, 0, 0x7C00, 0x2) {return}
+	testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt)
+	testing.expect_value(t, u8(reg_rax(&vm)), u8(0x72))
+
+	testing.expect(t, set_a20(&vm, false))
+	if !whpx_test_manual_io_context(t, &vm, &vp, &io, 0, 0, 0, 0, 0x7C00, 0x2) {return}
+	testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt)
+	testing.expect(t, !vm.a20_enabled)
+	testing.expect_value(t, u8(reg_rax(&vm)), u8(0x31))
+}
+
+@(test)
 test_whpx_a20_aliases_every_odd_megabyte :: proc(t: ^testing.T) {
 	if !available() {
 		log.warn("WHPX not available")

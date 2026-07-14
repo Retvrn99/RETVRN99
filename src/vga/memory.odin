@@ -26,9 +26,15 @@ vga_mmio_read :: proc(v: ^Vga, gpa: u64, size: u8) -> (u32, bool) {
 
 vga_mmio_write :: proc(v: ^Vga, gpa: u64, size: u8, value: u32) -> bool {
 	if !vga_mmio_contains(gpa, size) || v.vram == nil { return false }
+	wrote := false
 	for i in 0 ..< int(max(size, 1)) {
-		if !vga_memory_write_byte(v, gpa + u64(i), u8(value >> uint(i * 8))) { return false }
+		if !vga_memory_write_byte(v, gpa + u64(i), u8(value >> uint(i * 8))) {
+			if wrote {vga_note_content_change(v)}
+			return false
+		}
+		wrote = true
 	}
+	if wrote {vga_note_content_change(v)}
 	return true
 }
 

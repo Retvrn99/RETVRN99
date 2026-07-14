@@ -53,6 +53,176 @@ test_launcher_restores_gui_boot_only_for_managed_dos_seed :: proc(t: ^testing.T)
 }
 
 @(test)
+test_launcher_restores_one_shot_autoexec_before_setup :: proc(t: ^testing.T) {
+	launcher := launcher_text("INSTALAR.EXE", true, true)
+	testing.expect(t, contains(launcher, "IF EXIST C:\\GSWAUTO.PRV GOTO GSWAR"))
+	testing.expect(t, contains(launcher, "DEL C:\\AUTOEXEC.BAT >NUL"))
+	testing.expect(t, contains(launcher, "REN C:\\GSWAUTO.PRV AUTOEXEC.BAT"))
+	testing.expect(t, contains(launcher, "IF EXIST C:\\GSWAUTO.PRV GOTO GSWAE"))
+	testing.expect(t, contains(launcher, "IF NOT EXIST C:\\AUTOEXEC.BAT GOTO GSWAE"))
+	restore := strings.index(launcher, "REN C:\\GSWAUTO.PRV AUTOEXEC.BAT")
+	setup := strings.index(launcher, "INSTALAR.EXE MSBATCH.INF")
+	testing.expect(t, restore >= 0 && setup > restore)
+}
+
+@(test)
+test_payload_copy_releases_source_directory_handles :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	root := install_test_directory(t)
+	defer os.remove_all(root)
+	source, _ := filepath.join({root, "source"})
+	destination, _ := filepath.join({root, "destination"})
+	nested, _ := filepath.join({source, "nested"})
+	leaf, _ := filepath.join({nested, "SETUP.CAB"})
+	copy, _ := filepath.join({destination, "nested", "SETUP.CAB"})
+	moved, _ := filepath.join({root, "source.moved"})
+	testing.expect(t, os.make_directory_all(nested) == nil)
+	testing.expect(t, os.make_directory(destination) == nil)
+	testing.expect(t, os.write_entire_file(leaf, "cab payload") == nil)
+
+	testing.expect(t, copy_directory_tree(destination, source))
+	testing.expect(t, os.exists(copy))
+	testing.expect(t, os.rename(source, moved) == nil)
+	testing.expect(t, os.remove_all(moved) == nil)
+}
+
+@(test)
+test_prepare_recover_restores_interrupted_generations :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	root := install_test_directory(t)
+	defer os.remove_all(root)
+	install_root, _ := filepath.join({root, "install"})
+	c_drive, _ := filepath.join({root, "c_drive"})
+	testing.expect(t, os.make_directory(install_root) == nil)
+	testing.expect(t, os.make_directory(c_drive) == nil)
+	transaction := Preparation_Transaction {
+		install_root = install_root,
+		c_drive      = c_drive,
+	}
+	paths, paths_ok := preparation_paths(&transaction)
+	testing.expect(t, paths_ok)
+
+	testing.expect(t, os.make_directory(paths.scratch_final) == nil)
+	testing.expect(t, os.make_directory(paths.scratch_next) == nil)
+	old_scratch, _ := filepath.join({paths.scratch_final, "OLD.CAB"})
+	new_scratch, _ := filepath.join({paths.scratch_next, "NEW.CAB"})
+	testing.expect(t, os.write_entire_file(old_scratch, "old") == nil)
+	testing.expect(t, os.write_entire_file(new_scratch, "new") == nil)
+	_, scratch_ok := path_commit_start(
+		paths.scratch_next,
+		paths.scratch_final,
+		paths.scratch_backup,
+		rename_with_retry,
+	)
+	testing.expect(t, scratch_ok)
+
+	owned_test_payload(t, paths.payload_final, "old.txt")
+	owned_test_payload(t, paths.payload_next, "new.txt")
+	owned_test_launcher(t, paths.launcher_final, "OLD.EXE")
+	owned_test_launcher(t, paths.launcher_next, "NEW.EXE")
+	_, _, result := owned_install_commit_start(
+		paths.payload_next,
+		paths.payload_final,
+		paths.payload_backup,
+		paths.launcher_next,
+		paths.launcher_final,
+		paths.launcher_backup,
+		rename_with_retry,
+	)
+	testing.expect_value(t, result, Owned_Install_Result.Success)
+
+	testing.expect(t, prepare_recover(install_root, c_drive))
+	old_payload, _ := filepath.join({paths.payload_final, "old.txt"})
+	new_payload, _ := filepath.join({paths.payload_final, "new.txt"})
+	testing.expect(t, os.exists(old_payload))
+	testing.expect(t, !os.exists(new_payload))
+	launcher := owned_test_read(t, paths.launcher_final)
+	defer delete(launcher)
+	testing.expect(t, contains(launcher, "OLD.EXE"))
+	testing.expect(t, os.exists(old_scratch))
+	testing.expect(t, !os.exists(new_scratch))
+	testing.expect(t, !os.exists(paths.payload_next))
+	testing.expect(t, !os.exists(paths.payload_backup))
+	testing.expect(t, !os.exists(paths.launcher_next))
+	testing.expect(t, !os.exists(paths.launcher_backup))
+	testing.expect(t, !os.exists(paths.scratch_next))
+	testing.expect(t, !os.exists(paths.scratch_backup))
+}
+
+@(test)
+test_prepare_recover_removes_only_owned_partial_staging :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	root := install_test_directory(t)
+	defer os.remove_all(root)
+	install_root, _ := filepath.join({root, "install"})
+	c_drive, _ := filepath.join({root, "c_drive"})
+	testing.expect(t, os.make_directory(install_root) == nil)
+	testing.expect(t, os.make_directory(c_drive) == nil)
+	transaction := Preparation_Transaction {
+		install_root = install_root,
+		c_drive      = c_drive,
+	}
+	paths, paths_ok := preparation_paths(&transaction)
+	testing.expect(t, paths_ok)
+
+	testing.expect(t, os.make_directory(paths.scratch_next) == nil)
+	owned_test_payload(t, paths.payload_next, "partial.txt")
+	owned_test_launcher(t, paths.launcher_next, "SETUP.EXE")
+	testing.expect(t, prepare_recover(install_root, c_drive))
+	testing.expect(t, !os.exists(paths.scratch_next))
+	testing.expect(t, !os.exists(paths.payload_next))
+	testing.expect(t, !os.exists(paths.launcher_next))
+}
+
+@(test)
+test_prepare_recover_preserves_unmarked_collision :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	root := install_test_directory(t)
+	defer os.remove_all(root)
+	install_root, _ := filepath.join({root, "install"})
+	c_drive, _ := filepath.join({root, "c_drive"})
+	testing.expect(t, os.make_directory(install_root) == nil)
+	testing.expect(t, os.make_directory(c_drive) == nil)
+	transaction := Preparation_Transaction {
+		install_root = install_root,
+		c_drive      = c_drive,
+	}
+	paths, paths_ok := preparation_paths(&transaction)
+	testing.expect(t, paths_ok)
+	testing.expect(t, os.make_directory(paths.payload_next) == nil)
+	sentinel, _ := filepath.join({paths.payload_next, "USER.TXT"})
+	testing.expect(t, os.write_entire_file(sentinel, "preserve") == nil)
+
+	testing.expect(t, !prepare_recover(install_root, c_drive))
+	contents := owned_test_read(t, sentinel)
+	defer delete(contents)
+	testing.expect_value(t, contents, "preserve")
+}
+
+@(test)
+test_prepare_retry_recovers_prior_staging_before_media_validation :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	root := install_test_directory(t)
+	defer os.remove_all(root)
+	install_root, _ := filepath.join({root, "install"})
+	c_drive, _ := filepath.join({root, "c_drive"})
+	testing.expect(t, os.make_directory(install_root) == nil)
+	testing.expect(t, os.make_directory(c_drive) == nil)
+	transaction := Preparation_Transaction {
+		install_root = install_root,
+		c_drive      = c_drive,
+	}
+	paths, paths_ok := preparation_paths(&transaction)
+	testing.expect(t, paths_ok)
+	owned_test_payload(t, paths.payload_next, "partial.txt")
+
+	report := prepare("missing.iso", install_root, c_drive)
+	defer report_destroy(&report)
+	testing.expect_value(t, report.diagnostic, Diagnostic.Media_Rejected)
+	testing.expect(t, !os.exists(paths.payload_next))
+}
+
+@(test)
 test_owned_payload_staging_refuses_unmarked_collision :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	root := install_test_directory(t)

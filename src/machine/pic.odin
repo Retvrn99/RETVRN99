@@ -39,14 +39,20 @@ Pic_Interrupt_Offer :: struct {
 	epoch:                 u64,
 }
 
+Pic_Irq_Source :: enum u8 {
+	Pci_Pirq,
+}
+
 Pic_Pair :: struct {
 	master, slave:    Pic,
 	epoch:            u64,
 	master_int_latch: bool,
+	direct_asserted:  u16,
+	source_asserted:  [16]u8,
 }
 
 PIC_ELCR_MASTER_MASK :: u8(0xF8)
-PIC_ELCR_SLAVE_MASK  :: u8(0xDE)
+PIC_ELCR_SLAVE_MASK :: u8(0xDE)
 
 @(private = "file")
 pic_chip_level_mode :: proc(p: ^Pic, irq: u8) -> bool {
@@ -215,6 +221,7 @@ pic_master_pending :: proc(pp: ^Pic_Pair) -> (u8, bool) {
 @(private = "file")
 pic_after_mutation :: proc(pp: ^Pic_Pair) {
 	pic_sync_cascade(pp)
+	if _, pending := pic_master_pending(pp); pending {pp.master_int_latch = true}
 	pp.epoch += 1
 }
 
@@ -291,9 +298,30 @@ pic_raise :: proc(pp: ^Pic_Pair, irq: u8) {
 	pic_after_mutation(pp)
 }
 
+@(private = "file")
+pic_refresh_external_line :: proc(pp: ^Pic_Pair, irq: u8) {
+	bit := u16(1) << irq
+	asserted := pp.direct_asserted & bit != 0 || pp.source_asserted[irq] != 0
+	if irq < 8 {
+		pic_chip_set_input(&pp.master, irq, asserted)
+	} else {
+		pic_chip_set_input(&pp.slave, irq - 8, asserted)
+	}
+}
+
 pic_set_irq_level :: proc(pp: ^Pic_Pair, irq: u8, asserted: bool) {
 	if irq >= 16 {return}
-	if irq < 8 {pic_chip_set_input(&pp.master, irq, asserted)} else {pic_chip_set_input(&pp.slave, irq - 8, asserted)}
+	bit := u16(1) << irq
+	if asserted {pp.direct_asserted |= bit} else {pp.direct_asserted &~= bit}
+	pic_refresh_external_line(pp, irq)
+	pic_after_mutation(pp)
+}
+
+pic_set_irq_source_level :: proc(pp: ^Pic_Pair, irq: u8, source: Pic_Irq_Source, asserted: bool) {
+	if irq >= 16 {return}
+	source_bit := u8(1) << u8(source)
+	if asserted {pp.source_asserted[irq] |= source_bit} else {pp.source_asserted[irq] &~= source_bit}
+	pic_refresh_external_line(pp, irq)
 	pic_after_mutation(pp)
 }
 
@@ -327,11 +355,21 @@ pic_offer :: proc(pp: ^Pic_Pair) -> (Pic_Interrupt_Offer, bool) {
 	master_irq, master_ok := pic_master_pending(pp)
 	if !master_ok {
 		if pp.master_int_latch {
-			return Pic_Interrupt_Offer{vector = pp.master.base | 7, master_irq = 7, kind = .Spurious_Master, epoch = pp.epoch}, true
+			return Pic_Interrupt_Offer {
+					vector = pp.master.base | 7,
+					master_irq = 7,
+					kind = .Spurious_Master,
+					epoch = pp.epoch,
+				},
+				true
 		}
 		return {}, false
 	}
-	offer := Pic_Interrupt_Offer{vector = pp.master.base | master_irq, master_irq = master_irq, epoch = pp.epoch}
+	offer := Pic_Interrupt_Offer {
+		vector     = pp.master.base | master_irq,
+		master_irq = master_irq,
+		epoch      = pp.epoch,
+	}
 	pin := pp.slave.icw3 & 7
 	if pp.master.icw3 & (u8(1) << master_irq) == 0 || master_irq != pin {
 		offer.kind = .Master

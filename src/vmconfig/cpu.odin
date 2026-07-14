@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package vmconfig
 
+GSW_RAM_BYTES :: 256 * 1024 * 1024
+
 Cpu_Mode :: enum {
 	GSW_886,
 	Turbo,

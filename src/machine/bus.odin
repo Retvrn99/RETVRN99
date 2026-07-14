@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:log"
 
 BUS_UNCLASSIFIED_HISTORY :: 64
+BUS_UNCLASSIFIED_MMIO_HISTORY :: 32
 
 Io_Width_Policy :: enum {
 	Native,
@@ -25,12 +26,23 @@ Unclassified_Io :: struct {
 	value: u32,
 }
 
+Unclassified_Mmio :: struct {
+	gpa:   u64,
+	write: bool,
+	size:  u32,
+}
+
 Bus :: struct {
 	io:                   map[u16]Io_Handler,
 	passive:              map[u16]u8,
 	unclassified_seen:    map[u64]bool,
+	unclassified_mmio_seen: map[u64]bool,
 	unclassified_history: [BUS_UNCLASSIFIED_HISTORY]Unclassified_Io,
+	unclassified_mmio_history: [BUS_UNCLASSIFIED_MMIO_HISTORY]Unclassified_Mmio,
+	modeled_count:        u64,
+	passive_count:        u64,
 	unclassified_count:   u64,
+	unclassified_mmio_count: u64,
 	strict_io:            bool,
 	log_unclassified:     bool,
 	frozen:               bool,
@@ -41,12 +53,14 @@ bus_init :: proc(b: ^Bus) {
 	b.io = {}
 	b.passive = {}
 	b.unclassified_seen = {}
+	b.unclassified_mmio_seen = {}
 }
 
 bus_destroy :: proc(b: ^Bus) {
 	delete(b.io)
 	delete(b.passive)
 	delete(b.unclassified_seen)
+	delete(b.unclassified_mmio_seen)
 }
 
 bus_set_strict_io :: proc(b: ^Bus, strict: bool) {
@@ -112,6 +126,22 @@ bus_record_unclassified :: proc(b: ^Bus, access: Unclassified_Io) {
 	}
 }
 
+bus_record_unclassified_mmio :: proc(b: ^Bus, access: Unclassified_Mmio) {
+	b.unclassified_mmio_history[b.unclassified_mmio_count % BUS_UNCLASSIFIED_MMIO_HISTORY] = access
+	b.unclassified_mmio_count += 1
+	key := access.gpa &~ u64(0xFFF) | u64(access.write ? 1 : 0)
+	if b.unclassified_mmio_seen[key] {return}
+	b.unclassified_mmio_seen[key] = true
+	if b.log_unclassified {
+		log.warnf(
+			"open-bus MMIO %s gpa=0x%x size=%d",
+			access.write ? "write" : "read",
+			access.gpa,
+			access.size,
+		)
+	}
+}
+
 @(private = "file")
 bus_decomposed_read :: proc(b: ^Bus, port: u16, size: u8) -> (u32, bool) {
 	value: u32
@@ -137,6 +167,7 @@ bus_decomposed_write :: proc(b: ^Bus, port: u16, size: u8, value: u32) -> bool {
 
 bus_io_read :: proc(b: ^Bus, port: u16, size: u8) -> u32 {
 	if h, ok := b.io[port]; ok {
+		b.modeled_count += 1
 		if h.width == .Byte_Decomposed && size > 1 {
 			if value, decomposed := bus_decomposed_read(b, port, size); decomposed {return value}
 		}
@@ -149,7 +180,10 @@ bus_io_read :: proc(b: ^Bus, port: u16, size: u8) -> u32 {
 		if !ok {passive = false; break}
 		value |= u32(byte) << (8 * u32(i))
 	}
-	if passive {return value}
+	if passive {
+		b.passive_count += 1
+		return value
+	}
 	access := Unclassified_Io{port = port, size = size, value = bus_open_value(size)}
 	bus_record_unclassified(b, access)
 	if b.strict_io {bus_freeze(b, fmt.tprintf("unclassified port read 0x%04x size %d", port, size))}
@@ -158,6 +192,7 @@ bus_io_read :: proc(b: ^Bus, port: u16, size: u8) -> u32 {
 
 bus_io_write :: proc(b: ^Bus, port: u16, size: u8, val: u32) {
 	if h, ok := b.io[port]; ok {
+		b.modeled_count += 1
 		if h.width == .Byte_Decomposed && size > 1 && bus_decomposed_write(b, port, size, val) {return}
 		h.write(h.ctx, port, size, val)
 		return
@@ -166,7 +201,10 @@ bus_io_write :: proc(b: ^Bus, port: u16, size: u8, val: u32) {
 	for i in 0 ..< int(size) {
 		if _, ok := b.passive[port + u16(i)]; !ok {passive = false; break}
 	}
-	if passive {return}
+	if passive {
+		b.passive_count += 1
+		return
+	}
 	access := Unclassified_Io{port = port, write = true, size = size, value = val}
 	bus_record_unclassified(b, access)
 	if b.strict_io {

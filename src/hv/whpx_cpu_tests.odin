@@ -8,25 +8,31 @@ import "core:time"
 @(test)
 test_gsw_886_cpuid_table :: proc(t: ^testing.T) {
 	vendor := gsw_886_cpuid(0, 0)
-	testing.expect_value(t, vendor.eax, u32(2))
-	testing.expect_value(t, vendor.ebx, u32(0x756E6547))
-	testing.expect_value(t, vendor.ecx, u32(0x6C65746E))
-	testing.expect_value(t, vendor.edx, u32(0x49656E69))
+	testing.expect_value(t, vendor.eax, u32(1))
+	testing.expect_value(t, vendor.ebx, u32(0x2D57_5347))
+	testing.expect_value(t, vendor.ecx, u32(0x2020_2020))
+	testing.expect_value(t, vendor.edx, u32(0x2036_3838))
 
 	features := gsw_886_cpuid(1, 0)
-	testing.expect_value(t, features.eax, u32(0x0000068A))
-	testing.expect_value(t, features.ebx, u32(0x00000002))
+	testing.expect_value(t, features.eax, u32(0x0000_0622))
+	testing.expect_value(t, features.ebx, u32(0))
 	testing.expect_value(t, features.ecx, u32(0))
-	testing.expect_value(t, features.edx, u32(0x0383A17F))
+	testing.expect_value(t, features.edx, u32(0x0383A17B))
 	mmx_fxsr_sse: u32 = 1 << 23 | 1 << 24 | 1 << 25
 	testing.expect_value(t, features.edx & mmx_fxsr_sse, mmx_fxsr_sse)
-	absent: u32 = 1 << 7 | 1 << 9 | 1 << 11 | 1 << 12 | 1 << 14 | 1 << 18 | 1 << 19 | 1 << 26
+	absent: u32 = 1 << 2 | 1 << 7 | 1 << 9 | 1 << 11 | 1 << 12 | 1 << 14 | 1 << 18 | 1 << 19 | 1 << 26
 	testing.expect_value(t, features.edx & absent, u32(0))
 
-	cache := gsw_886_cpuid(2, 0)
-	testing.expect_value(t, cache.eax, u32(0x03020101))
-	testing.expect_value(t, cache.edx, u32(0x0C040882))
-	leaves := [?]u32{3, 7, 0xD, 0x40000000, 0x80000000, 0x80000002, 0xFFFFFFFF}
+	extended := gsw_886_cpuid(0x8000_0000, 0)
+	testing.expect_value(t, extended.eax, u32(0x8000_0008))
+	extended_features := gsw_886_cpuid(0x8000_0001, 0).edx
+	testing.expect_value(t, extended_features, GSW_886_EXTENDED_FEATURES_EDX)
+	testing.expect_value(t, extended_features & u32(1 << 25), u32(0))
+	testing.expect_value(t, gsw_886_cpuid(0x8000_0008, 0).eax, u32(0x0000_2024))
+	brand0 := gsw_886_cpuid(0x8000_0002, 0)
+	testing.expect_value(t, brand0.eax, u32(0x2D57_5347))
+	testing.expect_value(t, brand0.ebx, u32(0x2036_3838))
+	leaves := [?]u32{2, 3, 7, 0xD, 0x4000_0000, 0x8000_0009, 0xFFFF_FFFF}
 	for leaf in leaves {
 		testing.expect_value(t, gsw_886_cpuid(leaf, 7), Cpuid_Result{})
 	}
@@ -56,9 +62,9 @@ test_whpx_gsw_886_profile :: proc(t: ^testing.T) {
 	} {
 		{0, 0, gsw_886_cpuid(0, 0)},
 		{1, 0, gsw_886_cpuid(1, 0)},
-		{2, 0, gsw_886_cpuid(2, 0)},
+		{0x80000000, 0, gsw_886_cpuid(0x80000000, 0)},
+		{0x80000002, 0, gsw_886_cpuid(0x80000002, 0)},
 		{7, 0, {}},
-		{0x80000002, 0, {}},
 	}
 	for c in cases {
 		code: [15]u8

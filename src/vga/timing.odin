@@ -51,6 +51,9 @@ vga_recalculate_timing :: proc(v: ^Vga) {
 // backwards timestamp is ignored, so callers may synchronize at every exit.
 vga_sync_to :: proc(v: ^Vga, now_ns: u64) {
 	if now_ns <= v.timing.elapsed_ns { return }
+	if now_ns / 500_000_000 != v.timing.elapsed_ns / 500_000_000 {
+		vga_note_animation_change(v)
+	}
 	period := max(v.timing.frame_period_ns, u64(1))
 	old_frame := v.timing.elapsed_ns / period
 	new_frame := now_ns / period

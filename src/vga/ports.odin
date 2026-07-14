@@ -30,12 +30,14 @@ vga_in :: proc(v: ^Vga, port: u16) -> u8 {
 
 vga_io_write :: proc(v: ^Vga, port: u16, size: u8, value: u32) {
 	if port == DISPI_PORT_INDEX || port == DISPI_PORT_DATA {
-		dispi_io_write(v, port, size, value)
+		if dispi_io_write(v, port, size, value) {vga_note_content_change(v)}
 		return
 	}
+	changed := false
 	for i in 0 ..< int(max(size, 1)) {
-		standard_port_write(v, port + u16(i), u8(value >> uint(i * 8)))
+		changed = standard_port_write(v, port + u16(i), u8(value >> uint(i * 8))) || changed
 	}
+	if changed {vga_note_content_change(v)}
 }
 
 vga_io_read :: proc(v: ^Vga, port: u16, size: u8) -> u32 {
@@ -50,34 +52,48 @@ vga_io_read :: proc(v: ^Vga, port: u16, size: u8) -> u32 {
 }
 
 @(private = "file")
-standard_port_write :: proc(v: ^Vga, port: u16, value: u8) {
+standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 	crtc_port := active_crtc_index_port(v)
 	switch port {
 	case 0x3B4, 0x3D4:
 		if port == crtc_port { v.crtc_ix = value & 0x1F }
 	case 0x3B5, 0x3D5:
-		if port == crtc_port + 1 { crtc_write(v, v.crtc_ix, value) }
+		if port == crtc_port + 1 {return crtc_write(v, v.crtc_ix, value)}
 	case 0x3C0:
 		if !v.attr_flip {
+			old_video_on := v.video_on
 			v.attr_ix = value & 0x1F
 			v.video_on = value & 0x20 != 0
+			v.attr_flip = true
+			return old_video_on != v.video_on
 		} else if int(v.attr_ix) < len(v.attr) {
-			v.attr[v.attr_ix] = value & ATTR_MASKS[v.attr_ix]
+			masked := value & ATTR_MASKS[v.attr_ix]
+			changed := v.attr[v.attr_ix] != masked
+			v.attr[v.attr_ix] = masked
 			vga_recalculate_timing(v)
+			v.attr_flip = false
+			return changed
 		}
 		v.attr_flip = !v.attr_flip
 	case 0x3C2:
+		changed := v.misc != value
 		v.misc = value
 		vga_recalculate_timing(v)
+		return changed
 	case 0x3C4:
 		v.seq_ix = value & 7
 	case 0x3C5:
 		if int(v.seq_ix) < len(v.seq) {
-			v.seq[v.seq_ix] = value & SEQ_MASKS[v.seq_ix]
+			masked := value & SEQ_MASKS[v.seq_ix]
+			changed := v.seq[v.seq_ix] != masked
+			v.seq[v.seq_ix] = masked
 			vga_recalculate_timing(v)
+			return changed
 		}
 	case 0x3C6:
+		changed := v.pel_mask != value
 		v.pel_mask = value
+		return changed
 	case 0x3C7:
 		v.dac_read = value
 		v.dac_sub = 0
@@ -89,22 +105,29 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) {
 	case 0x3C9:
 		dac_value := value
 		if v.dispi[DISPI_INDEX_ENABLE] & DISPI_8BIT_DAC == 0 { dac_value &= 0x3F }
-		v.dac[int(v.dac_write) * 3 + int(v.dac_sub)] = dac_value
+		index := int(v.dac_write) * 3 + int(v.dac_sub)
+		changed := v.dac[index] != dac_value
+		v.dac[index] = dac_value
 		v.dac_sub += 1
 		if v.dac_sub == 3 {
 			v.dac_sub = 0
 			v.dac_write += 1
 		}
+		return changed
 	case 0x3CE:
 		v.gfx_ix = value & 0x0F
 	case 0x3CF:
 		if int(v.gfx_ix) < len(v.gfx) {
-			v.gfx[v.gfx_ix] = value & GFX_MASKS[v.gfx_ix]
+			masked := value & GFX_MASKS[v.gfx_ix]
+			changed := v.gfx[v.gfx_ix] != masked
+			v.gfx[v.gfx_ix] = masked
 			vga_recalculate_timing(v)
+			return changed
 		}
 	case 0x3DA, 0x3BA:
 		v.feature = value & 3
 	}
+	return false
 }
 
 @(private = "file")
@@ -157,16 +180,23 @@ standard_port_read :: proc(v: ^Vga, port: u16) -> u8 {
 }
 
 @(private = "file")
-crtc_write :: proc(v: ^Vga, index, value: u8) {
-	if int(index) >= len(v.crtc) { return }
+crtc_write :: proc(v: ^Vga, index, value: u8) -> bool {
+	if int(index) >= len(v.crtc) {return false}
 	if index <= 7 && v.crtc[0x11] & 0x80 != 0 {
-		if index == 7 { v.crtc[7] = (v.crtc[7] & ~u8(0x10)) | (value & 0x10) }
-		return
+		if index == 7 {
+			updated := (v.crtc[7] & ~u8(0x10)) | (value & 0x10)
+			changed := v.crtc[7] != updated
+			v.crtc[7] = updated
+			return changed
+		}
+		return false
 	}
+	changed := v.crtc[index] != value
 	v.crtc[index] = value
 	if index == 0x0C || index == 0x0D {
 		v.pending_start = u16(v.crtc[0x0C]) << 8 | u16(v.crtc[0x0D])
 		v.start_pending = true
 	}
 	vga_recalculate_timing(v)
+	return changed
 }

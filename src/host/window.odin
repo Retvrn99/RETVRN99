@@ -22,7 +22,7 @@ Host :: struct {
 
 host_init :: proc(h: ^Host) -> bool {
 	sdl3.SetHint(sdl3.HINT_RENDER_DRIVER, "vulkan")
-	if !sdl3.Init({.VIDEO}) {
+	if !sdl3.Init({.VIDEO, .AUDIO}) {
 		return false
 	}
 	// no RESIZABLE flag: fixed-size window

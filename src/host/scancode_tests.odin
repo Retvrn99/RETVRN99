@@ -64,3 +64,16 @@ host_test_set1_unmapped :: proc(t: ^testing.T) {
 	_, ok = scancode_to_set1(.UNKNOWN)
 	testing.expect(t, !ok)
 }
+
+@(test)
+host_test_set1_special_events :: proc(t: ^testing.T) {
+	print_make, n, _, _, _, ok := scancode_set1_event(.PRINTSCREEN, true)
+	testing.expect(t, ok)
+	testing.expect_value(t, n, 4)
+	testing.expect_value(t, print_make, [HOST_INPUT_KEY_BYTES]u8{0xE0, 0x2A, 0xE0, 0x37, 0, 0})
+	pause, pause_n, _, _, tracks_hold, pause_ok := scancode_set1_event(.PAUSE, true)
+	testing.expect(t, pause_ok)
+	testing.expect(t, !tracks_hold)
+	testing.expect_value(t, pause_n, 6)
+	testing.expect_value(t, pause, [HOST_INPUT_KEY_BYTES]u8{0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5})
+}

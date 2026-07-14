@@ -9,9 +9,12 @@ import hv "../hv"
 @(rodata) VGABIOS_IMAGE := #load("../../assets/vgabios/vgabios.bin")
 
 BIOS_SIZE :: 128 * 1024
+VGABIOS_SPAN_SIZE :: 32 * 1024
 VGABIOS_GPA :: 0xC0000
 BIOS_SHADOW_GPA :: 0x100000 - BIOS_SIZE // top of the first MB
 BIOS_HIGH_GPA :: 0x1_0000_0000 - BIOS_SIZE // reset vector alias below 4GB
+OPTION_ROM_HOLE_GPA :: VGABIOS_GPA + VGABIOS_SPAN_SIZE
+OPTION_ROM_HOLE_SIZE :: BIOS_SHADOW_GPA - OPTION_ROM_HOLE_GPA
 
 // copies both images into low guest RAM; pure, unit-testable
 rom_place :: proc(ram: []u8) -> bool {
@@ -31,6 +34,9 @@ rom_place :: proc(ram: []u8) -> bool {
 // (code32flat_start + 0xfff00000) both resolve
 load_roms :: proc(vm: ^hv.Vm) -> bool {
 	if !rom_place(vm.ram) {
+		return false
+	}
+	if !hv.reserve_open_bus(vm, OPTION_ROM_HOLE_GPA, OPTION_ROM_HOLE_SIZE) {
 		return false
 	}
 	return hv.map_rom(vm, BIOS_HIGH_GPA, BIOS_IMAGE)

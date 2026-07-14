@@ -103,7 +103,7 @@ reset_test_watchdog_stop :: proc(w: ^Reset_Test_Watchdog, th: ^thread.Thread) {
 	sync.lock(&w.mu)
 	w.stop = true
 	sync.unlock(&w.mu)
-	thread.join(th)
+	thread.destroy(th)
 }
 
 @(test)
@@ -143,6 +143,11 @@ test_machine_seabios_resumes_after_dosx_triple_fault :: proc(t: ^testing.T) {
 	testing.expect_value(t, m.bus.freeze_msg, "")
 	testing.expect_value(t, m.cpu_reset_count, u64(1))
 	testing.expect_value(t, m.cpu_reset_cmos_0f, u8(0x0A))
+	testing.expect_value(t, machine_reset_provenance(&m), Reset_Provenance.Dos_Extender_Warm_Resume)
+	reset_record, reset_recorded := machine_reset_record(&m, 0)
+	testing.expect(t, reset_recorded)
+	testing.expect_value(t, reset_record.source, Reset_Provenance.Dos_Extender_Warm_Resume)
+	testing.expect_value(t, reset_record.cmos_shutdown, u8(0x0A))
 	testing.expect_value(t, m.cmos.ram[0x0F], u8(0))
 	testing.expect_value(t, m.vm.ram[0x0467], u8(0x40))
 	testing.expect_value(t, m.vm.ram[0x0468], u8(0x7C))

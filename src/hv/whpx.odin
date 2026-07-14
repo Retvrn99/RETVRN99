@@ -25,7 +25,7 @@ whpx_available :: proc() -> bool {
 	return hr >= 0 && bool(present)
 }
 
-whpx_create :: proc(vm: ^Vm, ram_size: int) -> bool {
+whpx_create :: proc(vm: ^Vm, ram_size: int, options: Vm_Create_Options) -> bool {
 	if !whpx_available() {
 		return false
 	}
@@ -44,9 +44,16 @@ whpx_create :: proc(vm: ^Vm, ram_size: int) -> bool {
 		return false
 	}
 	ext_exits: u64 = 0x3 // CPUID and MSR exits keep the GSW-886 profile independent of the host
+	if options.trace_ud_gp_exits {ext_exits |= 1 << 2}
 	if WHvSetPartitionProperty(part, .ExtendedVmExits, &ext_exits, size_of(ext_exits)) < 0 {
 		whpx_destroy(vm)
 		return false
+	}
+	if options.trace_ud_gp_exits {
+		if !whpx_configure_exception_tracing(vm) {
+			whpx_destroy(vm)
+			return false
+		}
 	}
 	if !whpx_apply_cpu_profile(part) {
 		whpx_destroy(vm)
@@ -130,6 +137,10 @@ whpx_destroy :: proc(vm: ^Vm) {
 	}
 	delete(vm.device_mappings)
 	vm.device_mappings = nil
+	delete(vm.exception_trace)
+	vm.exception_trace = nil
+	vm.exception_count = 0
+	vm.trace_ud_gp_exits = false
 	if held_gate {
 		sync.unlock(&whpx_vm_gate)
 	}
@@ -145,13 +156,14 @@ whpx_ranges_overlap :: proc(a_gpa, a_size, b_gpa, b_size: u64) -> bool {
 	return a_gpa < b_gpa + b_size && b_gpa < a_gpa + a_size
 }
 
-whpx_reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
+@(private = "file")
+whpx_reserve_memory :: proc(vm: ^Vm, gpa, size: u64, kind: Memory_Reservation_Kind) -> bool {
 	if vm.part == nil || !whpx_page_range_valid(gpa, size) || gpa + size > u64(len(vm.ram)) {
 		return false
 	}
 	for reservation in vm.mmio_reservations {
 		if reservation.gpa == gpa && reservation.size == size {
-			return true
+			return reservation.kind == kind
 		}
 		if whpx_ranges_overlap(gpa, size, reservation.gpa, reservation.size) {
 			return false
@@ -170,8 +182,16 @@ whpx_reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
 	if WHvUnmapGpaRange(vm.part, gpa, size) < 0 {
 		return false
 	}
-	append(&vm.mmio_reservations, Mmio_Reservation{gpa = gpa, size = size})
+	append(&vm.mmio_reservations, Mmio_Reservation{gpa = gpa, size = size, kind = kind})
 	return true
+}
+
+whpx_reserve_mmio :: proc(vm: ^Vm, gpa, size: u64) -> bool {
+	return whpx_reserve_memory(vm, gpa, size, .Mmio)
+}
+
+whpx_reserve_open_bus :: proc(vm: ^Vm, gpa, size: u64) -> bool {
+	return whpx_reserve_memory(vm, gpa, size, .Open_Bus)
 }
 
 whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
@@ -450,11 +470,15 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			return Exit{kind = .Canceled}
 		case .UnrecoverableException:
 			return Exit{kind = .Reset, detail = "unrecoverable exception (triple fault)"}
-		case .None,
-		     .InvalidVpRegisterValue,
-		     .UnsupportedFeature,
-		     .X64ApicEoi,
-		     .Exception:
+		case .Exception:
+			if ok, detail := whpx_trace_and_reinject_exception(
+				vm,
+				&exit_ctx.VpContext,
+				&exit_ctx.u.VpException,
+			); !ok {
+				return Exit{kind = .Failed, detail = detail}
+			}
+		case .None, .InvalidVpRegisterValue, .UnsupportedFeature, .X64ApicEoi:
 			return Exit {
 				kind = .Failed,
 				detail = fmt.tprintf("unhandled exit: %v", exit_ctx.ExitReason),

@@ -91,6 +91,23 @@ vga_test_attribute_flip_flop_and_dac :: proc(t: ^testing.T) {
 }
 
 @(test)
+vga_test_guest_activity_ignores_index_and_unchanged_register_writes :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	initial := v.guest_activity_generation
+	vga_out(&v, 0x3C4, 1)
+	testing.expect_value(t, v.guest_activity_generation, initial)
+	vga_out(&v, 0x3C5, v.seq[1])
+	testing.expect_value(t, v.guest_activity_generation, initial)
+	vga_out(&v, 0x3C5, v.seq[1] ~ 1)
+	testing.expect_value(t, v.guest_activity_generation, initial + 1)
+	vga_io_write(&v, DISPI_PORT_INDEX, 2, DISPI_INDEX_XRES)
+	testing.expect_value(t, v.guest_activity_generation, initial + 1)
+}
+
+@(test)
 vga_test_absolute_timing_and_status :: proc(t: ^testing.T) {
 	v: Vga
 	backing := test_vga_init(t, &v)

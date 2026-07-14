@@ -12,6 +12,7 @@ import "../hv"
 import "../machine"
 import "../profile"
 import "../vga"
+import "../vmconfig"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
@@ -63,7 +64,7 @@ run_smoke :: proc() -> (result: int) {
 
 	vol: ^fat32.Volume
 	m := new(machine.Machine)
-	if !machine.machine_init(m, 64 * 1024 * 1024) {
+	if !machine.machine_init(m, vmconfig.GSW_RAM_BYTES) {
 		free(m)
 		return smoke_fail("machine_init")
 	}
@@ -105,7 +106,7 @@ run_smoke :: proc() -> (result: int) {
 		sync.lock(&wd.mu)
 		wd.stop = true
 		sync.unlock(&wd.mu)
-		thread.join(wd_thr)
+		thread.destroy(wd_thr)
 	}
 
 	if !run_until(m, BOOT_DEADLINE, "C:\\>") {return smoke_fail("no C:\\> prompt within deadline")}

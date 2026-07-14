@@ -28,6 +28,7 @@ host_test_existing_menu_actions_remain_enabled :: proc(t: ^testing.T) {
 	}
 	actions := []Menu_Action {
 		Menu_Action.Reset,
+		Menu_Action.Toggle_Pause,
 		Menu_Action.Power_Off,
 		Menu_Action.Mount_Floppy,
 		Menu_Action.Eject_Floppy,
