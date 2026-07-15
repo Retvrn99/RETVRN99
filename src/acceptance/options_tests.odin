@@ -12,6 +12,7 @@ acceptance_options_test_all_headless_flags :: proc(t: ^testing.T) {
 		"--artifacts=out/artifacts",
 		"--install-windows:WIN98SE.ISO",
 		"--accept-until:hardware-detection",
+		"--setup-diagnostics=hardware",
 		"--mouse-stress",
 		"--input-script:setup.input",
 		"--firmware-log:all",
@@ -25,6 +26,7 @@ acceptance_options_test_all_headless_flags :: proc(t: ^testing.T) {
 	testing.expect(t, options.install_windows)
 	testing.expect_value(t, options.install_windows_path, "WIN98SE.ISO")
 	testing.expect_value(t, options.accept_until, Accept_Until.Hardware_Detection)
+	testing.expect_value(t, options.setup_diagnostics, Setup_Diagnostics.Hardware)
 	testing.expect(t, options.mouse_stress)
 	testing.expect_value(t, options.input_script, "setup.input")
 	testing.expect(t, options.firmware_log_all)
@@ -43,18 +45,31 @@ acceptance_options_test_bare_output_flags_have_bounded_defaults :: proc(t: ^test
 
 @(test)
 acceptance_options_test_rejects_invalid_values :: proc(t: ^testing.T) {
-	_, diagnostic := options_parse({"--accept-until:desktop"})
-	testing.expect_value(t, diagnostic, Options_Diagnostic.Invalid_Accept_Until)
+	options, diagnostic := options_parse({"--accept-until:desktop"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.None)
+	testing.expect_value(t, options.accept_until, Accept_Until.Desktop)
 	_, diagnostic = options_parse({"--result-json:"})
 	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
 	_, diagnostic = options_parse({"--firmware-log:verbose"})
 	testing.expect_value(t, diagnostic, Options_Diagnostic.Invalid_Firmware_Log)
+	_, diagnostic = options_parse({"--setup-diagnostics:verbose"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Invalid_Setup_Diagnostics)
 	_, diagnostic = options_parse({"--accept-until"})
 	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
 	_, diagnostic = options_parse({"--firmware-log"})
 	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
+	_, diagnostic = options_parse({"--setup-diagnostics"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
 	_, diagnostic = options_parse({"--input-script:"})
 	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
+}
+
+@(test)
+acceptance_options_test_hardware_diagnostics_default_artifacts :: proc(t: ^testing.T) {
+	options, diagnostic := options_parse({"--setup-diagnostics=hardware"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.None)
+	testing.expect_value(t, options.setup_diagnostics, Setup_Diagnostics.Hardware)
+	testing.expect_value(t, options.artifacts, DEFAULT_ARTIFACTS_DIRECTORY)
 }
 
 @(test)
