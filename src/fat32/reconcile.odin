@@ -474,6 +474,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 				action.new_path,
 			)
 			host_failed = true
+			blocked_keys[action.new_key] = true
 			delete_key(&handled, action.new_key)
 			continue
 		}
@@ -505,6 +506,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 	deleting := make(map[Mirror_Key]bool, ta)
 	blocked_deletes := make(map[Mirror_Key]bool, ta)
 	delete_roots := make([dynamic]Reconcile_Delete, ta)
+	held_delete_roots := make([dynamic]^Node, ta)
 	forced_retirement_roots := make([dynamic]^Node, ta)
 	for action in deletes {
 		deleting[action.key] = true
@@ -536,6 +538,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			)
 			host_failed = true
 			blocked_deletes[root.key] = true
+			append(&held_delete_roots, root.entry.base_node)
 			continue
 		}
 		for key, entry in v.journal.mirrored {
@@ -714,6 +717,13 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		reconcile_mirror_store(v, live.key, entry, live.host_path)
 	}
 
+	donor_targets := make(map[Mirror_Key]bool, ta)
+	donor_target_owners := make(map[Mirror_Key]^Node, ta)
+	for donor in donors {
+		donor_targets[donor.target_key] = true
+		donor_target_owners[donor.target_key] = donor.entry.base_node
+	}
+	donor_target_updates := make(map[Mirror_Key]Mirror_Entry, ta)
 	materialized := make(map[Mirror_Key]bool, ta)
 	for &live in scan.entries {
 		if v.frozen {return false}
@@ -793,6 +803,51 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		if !metadata_changed && !live.data_touched {
 			continue
 		}
+		ownership_valid := false
+		if donor_targets[live.key] {
+			ownership_valid = reconcile_transfer_chain_owners_valid(
+				v,
+				chain[:],
+				entry.base_node,
+				donor_target_owners[live.key],
+			)
+		} else if replacing {
+			ownership_valid = reconcile_transfer_chain_owners_valid(
+				v,
+				chain[:],
+				nil,
+				replacement.entry.base_node,
+			)
+		} else {
+			preflight_owner := entry.base_node
+			if preflight_owner == nil {
+				candidate := reconcile_node_for_cluster(v, live.first_cluster)
+				if reconcile_node_blocked(candidate, held_delete_roots[:]) {
+					host_failed = true
+					continue
+				}
+				if candidate != nil &&
+				   candidate != parent &&
+				   !candidate.is_dir &&
+				   managed_node_attached(v.alloc.root, candidate) &&
+				   candidate.host_path == live.host_path {
+					preflight_owner = candidate
+				}
+			}
+			ownership_valid = claim_chain_owners_valid(
+				v,
+				preflight_owner,
+				live.name,
+				chain[:],
+			)
+		}
+		if !ownership_valid {
+			if !v.frozen {
+				volume_fail(v, "FAT32 file chain overlaps a live owner")
+			}
+			host_failed = true
+			continue
+		}
 		prepared := replacement.prepared
 		fingerprint := replacement.fingerprint
 		if !replacing {
@@ -817,6 +872,11 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			entry.size = live.size
 			entry.chain_identity = chain_identity
 			entry.has_chain_identity = true
+			if donor_targets[live.key] {
+				donor_target_updates[live.key] = entry
+				materialized[live.key] = true
+				continue
+			}
 			if !reconcile_bind_live_node(v, &entry, &live, parent, chain[:]) {
 				volume_fail(v, "FAT32 unchanged file ownership update failed")
 				host_failed = true
@@ -864,6 +924,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 					continue
 				}
 			}
+			reconcile_shadow_chain(v, chain[:])
 			if old_entry.base_node != nil {
 				if !managed_node_destroy(v, old_entry.base_node) {
 					volume_fail(v, "FAT32 reused file ownership teardown failed")
@@ -883,6 +944,11 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		entry.has_chain_identity = true
 		entry.fingerprint = fingerprint
 		entry.has_fingerprint = true
+		if donor_targets[live.key] {
+			donor_target_updates[live.key] = entry
+			materialized[live.key] = true
+			continue
+		}
 		if !reconcile_bind_live_node(v, &entry, &live, parent, chain[:]) {
 			volume_fail(v, "FAT32 file ownership update failed")
 			host_failed = true
@@ -901,9 +967,10 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			continue
 		}
 		donor_entry, donor_ok := v.journal.mirrored[donor.key]
-		target, target_ok := v.journal.mirrored[donor.target_key]
+		current_target, target_ok := v.journal.mirrored[donor.target_key]
+		target, update_ok := donor_target_updates[donor.target_key]
 		live_info := by_key[donor.target_key]
-		if !donor_ok || !target_ok || live_info.count != 1 {
+		if !donor_ok || !target_ok || !update_ok || live_info.count != 1 {
 			volume_fail(v, "FAT32 replacement target lost its mirror ownership")
 			host_failed = true
 			continue
@@ -916,7 +983,8 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			continue
 		}
 		donor_node := donor_entry.base_node
-		target_node := target.base_node
+		target_node := current_target.base_node
+		target.base_node = target_node
 		donor_invalid :=
 			donor_node != nil &&
 			(donor_node == v.alloc.root ||
@@ -932,16 +1000,18 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			host_failed = true
 			continue
 		}
+		if !reconcile_transfer_chain_owners_valid(v, chain[:], target_node, donor_node) {
+			volume_fail(v, "FAT32 replacement target chain overlaps a live owner")
+			host_failed = true
+			continue
+		}
 		owner := target_node
 		if owner == nil {owner = donor_node}
-		parent: ^Node
-		if owner != nil {
-			parent = reconcile_node_for_cluster(v, live.key.parent_cluster)
-			if parent == nil || !parent.is_dir {
-				volume_fail(v, "FAT32 replacement parent ownership is unavailable")
-				host_failed = true
-				continue
-			}
+		parent := reconcile_node_for_cluster(v, live.key.parent_cluster)
+		if parent == nil || !parent.is_dir {
+			volume_fail(v, "FAT32 replacement parent ownership is unavailable")
+			host_failed = true
+			continue
 		}
 		donor_path := reconcile_entry_backing_path(donor_entry)
 		target_path := reconcile_entry_backing_path(target)
@@ -953,6 +1023,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 				continue
 			}
 		}
+		reconcile_shadow_chain(v, chain[:])
 		if donor_node != nil && donor_node != owner {
 			if !managed_node_destroy(v, donor_node) {
 				volume_fail(v, "FAT32 replacement donor teardown failed")
@@ -962,31 +1033,80 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		} else {
 			reconcile_mirror_remove(v, donor.key)
 		}
-		if owner != nil {
-			if !managed_node_rebind(
+		created_owner := false
+		if owner == nil {
+			owner = managed_node_create(
 				v,
-				owner,
 				parent,
 				live.name,
 				live.host_path,
 				live.key.short,
-				live.first_cluster,
+				0,
 				live.size,
 				false,
-				chain[:],
-			) {
-				volume_fail(v, "FAT32 replacement target ownership update failed")
-				host_failed = true
-				continue
-			}
-			target.base_node = owner
-			target.first_cluster = live.first_cluster
-			target.size = live.size
-			v.journal.mirrored[donor.target_key] = target
+				nil,
+			)
+			created_owner = owner != nil
 		}
+		if owner == nil ||
+		   !managed_node_update_identity(
+				   v,
+				   owner,
+				   parent,
+				   live.name,
+				   live.host_path,
+				   live.key.short,
+				   false,
+			   ) ||
+			   !managed_node_adopt_chain(
+				   v,
+				   owner,
+				   live.first_cluster,
+				   live.size,
+				   chain[:],
+			   ) {
+			if created_owner {_ = managed_node_destroy(v, owner)}
+			volume_fail(v, "FAT32 replacement target ownership update failed")
+			host_failed = true
+			continue
+		}
+		target.base_node = owner
+		reconcile_mirror_store(v, donor.target_key, target, live.host_path)
+		overlay_clear_chain_dirty(v, chain[:])
 	}
 	if !host_failed {overlay_clear_all_dirty(v)}
 	return !host_failed
+}
+
+@(private = "file")
+reconcile_shadow_chain :: proc(v: ^Volume, chain: []u32) {
+	for cluster, index in chain {
+		next := index + 1 < len(chain) ? chain[index + 1] : u32(0x0FFF_FFFF)
+		v.journal.shadow_fat[cluster] = next
+	}
+}
+
+@(private = "file")
+reconcile_transfer_chain_owners_valid :: proc(
+	v: ^Volume,
+	chain: []u32,
+	target, donor: ^Node,
+) -> bool {
+	for cluster in chain {
+		if claim, ok := v.journal.claimed[cluster]; ok &&
+		   claim.node != target && claim.node != donor {
+			reclaimable, _ := owner_cluster_reclaimable(v, claim.node, cluster)
+			if !reclaimable {return false}
+		}
+		if cluster < u32(len(v.alloc.by_cluster)) {
+			owner := v.alloc.by_cluster[cluster]
+			if owner != nil && owner != target && owner != donor {
+				reclaimable, _ := owner_cluster_reclaimable(v, owner, cluster)
+				if !reclaimable {return false}
+			}
+		}
+	}
+	return true
 }
 
 @(private = "file")
@@ -1117,7 +1237,8 @@ reconcile_bind_live_node :: proc(
 	   !owner.is_dir &&
 	   owner.first_cluster == live.first_cluster &&
 	   owner.size == u64(live.size) &&
-	   owner.host_path == live.host_path {
+	   owner.host_path == live.host_path &&
+	   !chain_adoption_needed(v, owner, chain) {
 		return true
 	}
 	if owner == nil {
@@ -1128,9 +1249,9 @@ reconcile_bind_live_node :: proc(
 		   managed_node_attached(v.alloc.root, candidate) &&
 		   candidate.host_path == live.host_path {
 			owner = candidate
-		} else {
-			owner = managed_node_create(
+			if !managed_node_rebind(
 				v,
+				owner,
 				parent,
 				live.name,
 				live.host_path,
@@ -1139,7 +1260,26 @@ reconcile_bind_live_node :: proc(
 				live.size,
 				false,
 				chain,
+			) {
+				return false
+			}
+		} else {
+			owner = managed_node_create(
+				v,
+				parent,
+				live.name,
+				live.host_path,
+				live.key.short,
+				0,
+				live.size,
+				false,
+				nil,
 			)
+			if owner != nil &&
+			   !managed_node_adopt_chain(v, owner, live.first_cluster, live.size, chain) {
+				_ = managed_node_destroy(v, owner)
+				return false
+			}
 		}
 	} else if !managed_node_rebind(
 		v,

@@ -528,6 +528,48 @@ protection_test_staged_root_tail_can_be_reused_after_complete_shrink :: proc(t: 
 }
 
 @(test)
+protection_test_nonroot_handoff_checks_nonempty_root_tail :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	v := volume_open(dir, 2048)
+	if !testing.expect(t, v != nil) {return}
+	defer volume_discard(v)
+
+	root := v.alloc.root
+	dos := root.children[1]
+	dos_chain := volume_chain(v, dos.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(dos_chain) > 0) {return}
+	first_tail := v.alloc.next_free
+	nonempty_tail := first_tail + 1
+	testing.expect(t, protection_test_stage_fat_set(t, v, nonempty_tail, 0x0FFF_FFFF))
+	testing.expect(t, protection_test_stage_fat_set(t, v, first_tail, nonempty_tail))
+	testing.expect(t, protection_test_stage_fat_set(t, v, root.first_cluster, first_tail))
+	if v.frozen {return}
+	tail_sector: [SECTOR]u8
+	tail_sector[0] = 0x41
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, nonempty_tail), tail_sector[:]))
+	fired := false
+	journal_test_arm_on_fail(v, &fired)
+
+	testing.expect(
+		t,
+		!protection_test_stage_fat_pair(
+			t,
+			v,
+			dos_chain[len(dos_chain) - 1],
+			nonempty_tail,
+			first_tail,
+			0x0FFF_FFFF,
+		),
+	)
+	testing.expect(t, v.frozen && fired)
+	root_claim, root_claimed := v.journal.claimed[nonempty_tail]
+	testing.expect(t, root_claimed)
+	if root_claimed {testing.expect(t, root_claim.node == root)}
+}
+
+@(test)
 protection_test_staged_synthesized_root_truncation_preserves_tail_file :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := fat32_test_fixture(t)

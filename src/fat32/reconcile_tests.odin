@@ -678,24 +678,64 @@ reconcile_test_same_cluster_reuse_is_not_a_rename :: proc(t: ^testing.T) {
 	dir, v := decode_test_open(t)
 	defer os.remove_all(dir)
 	if v == nil {return}
-	defer volume_discard(v)
+	closed := false
+	defer if !closed {volume_discard(v)}
 
 	old_node := reconcile_test_child_named(v.alloc.root, "COMMAND.COM")
 	if !testing.expect(t, old_node != nil) {return}
 	old_cluster := old_node.first_cluster
 	old_path := strings.clone(old_node.host_path, context.temp_allocator)
 	new_path, _ := filepath.join({dir, "REUSED.TXT"})
-	replacement := make([]u8, int(old_node.size), context.temp_allocator)
+	stale_head := v.alloc.next_free
+	reused_tail := stale_head + 1
+	v.journal.shadow_fat[stale_head] = reused_tail
+	v.journal.shadow_fat[reused_tail] = 0x0FFF_FFFF
+	stale_path, _ := filepath.join({dir, "DETACH2.BIN"})
+	testing.expect(t, os.write_entire_file(stale_path, "stale") == nil)
+	stale_short: [11]u8
+	copy(stale_short[:], "DETACH2 BIN")
+	stale_chain := [2]u32{stale_head, reused_tail}
+	stale := managed_node_create(
+		v,
+		v.alloc.root,
+		"DETACH2.BIN",
+		stale_path,
+		stale_short,
+		stale_head,
+		5,
+		false,
+		stale_chain[:],
+	)
+	if !testing.expect(t, stale != nil) {return}
+	v.alloc.by_cluster[stale_head] = stale
+	v.alloc.by_cluster[reused_tail] = stale
+	stale_key := Mirror_Key{v.alloc.root.first_cluster, stale_short}
+	v.journal.mirrored[stale_key] = Mirror_Entry {
+		host_path     = strings.clone(stale_path, v.allocator),
+		first_cluster = stale_head,
+		size          = 5,
+		base_node     = stale,
+	}
+
+	replacement := make([]u8, CLUSTER_BYTES + 100, context.temp_allocator)
 	for &byte, index in replacement {byte = u8(index * 29 + 17)}
 	// A prior retry may already have installed the new file while retaining the
 	// old mirror. Reconciliation must adopt it, not attempt an impossible move.
 	testing.expect(t, os.write_entire_file(new_path, replacement) == nil)
 
+	reconcile_test_stage_fat_set(t, v, stale_head, 0x0FFF_FFFF)
+	if v.frozen {return}
+	reconcile_test_stage_fat_set(t, v, old_cluster, reused_tail)
+	if v.frozen {return}
 	cluster: [CLUSTER_BYTES]u8
-	copy(cluster[:], replacement)
+	copy(cluster[:], replacement[:CLUSTER_BYTES])
 	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, old_cluster), cluster[:]))
+	tail: [CLUSTER_BYTES]u8
+	copy(tail[:], replacement[CLUSTER_BYTES:])
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, reused_tail), tail[:]))
 	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
 	root_sector := read_test_sector(t, v, root_lba)
+	copy(root_sector[128:160], root_sector[96:128])
 	root_sector[0] = 0xE5
 	decode_test_put_entry(
 		root_sector[:],
@@ -718,6 +758,15 @@ reconcile_test_same_cluster_reuse_is_not_a_rename :: proc(t: ^testing.T) {
 	if !testing.expect(t, new_node != nil) {return}
 	testing.expect(t, new_node != old_node)
 	testing.expect_value(t, new_node.first_cluster, old_cluster)
+	new_chain := volume_chain(v, new_node.first_cluster, context.temp_allocator)
+	if testing.expect(t, len(new_chain) == 2) {
+		testing.expect_value(t, new_chain[1], reused_tail)
+	}
+	tail_claim, tail_claimed := v.journal.claimed[reused_tail]
+	testing.expect(t, tail_claimed)
+	if tail_claimed {testing.expect(t, tail_claim.node == new_node)}
+	testing.expect(t, v.alloc.by_cluster[reused_tail] == nil)
+	testing.expect_value(t, stale.cluster_len, u32(1))
 	new_key := Mirror_Key{v.alloc.root.first_cluster, new_node.short}
 	stored, mirrored := v.journal.mirrored[new_key]
 	testing.expect(t, mirrored)
@@ -728,6 +777,18 @@ reconcile_test_same_cluster_reuse_is_not_a_rename :: proc(t: ^testing.T) {
 	after := volume_journal_storage_stats(v)
 	testing.expect_value(t, after.streamed_guest_files, before.streamed_guest_files)
 	testing.expect_value(t, after.dirty_sectors, u32(0))
+
+	if !volume_close(v) {
+		testing.expect(t, false)
+		return
+	}
+	closed = true
+	v2 := volume_open(dir, 2048)
+	if !testing.expect(t, v2 != nil) {return}
+	defer volume_discard(v2)
+	reopened := reconcile_test_child_named(v2.alloc.root, "REUSED.TXT")
+	if !testing.expect(t, reopened != nil) {return}
+	testing.expect_value(t, reopened.size, u64(len(replacement)))
 }
 
 @(test)
@@ -1083,6 +1144,184 @@ reconcile_test_donor_replacement_transfers_cluster_ownership :: proc(t: ^testing
 }
 
 @(test)
+reconcile_test_donor_removal_failure_retries_before_target_commit :: proc(t: ^testing.T) {
+	when ODIN_OS == .Windows {
+		context.allocator = context.temp_allocator
+		dir, v := decode_test_open(t)
+		defer os.remove_all(dir)
+		if v == nil {return}
+		defer volume_discard(v)
+
+		command := v.alloc.root.children[0]
+		dos := v.alloc.root.children[1]
+		donor := dos.children[0]
+		old_command_cluster := command.first_cluster
+		donor_cluster := donor.first_cluster
+		command_key := Mirror_Key{v.alloc.root.first_cluster, command.short}
+		donor_key := Mirror_Key{dos.first_cluster, donor.short}
+		donor_path := strings.clone(donor.host_path, context.temp_allocator)
+		want, read_error := os.read_entire_file(donor_path, context.temp_allocator)
+		if !testing.expect(t, read_error == nil) {return}
+		root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+		root_sector := read_test_sector(t, v, root_lba)
+		decode_test_put_entry(
+			root_sector[:],
+			0,
+			"COMMAND COM",
+			ATTR_FILE,
+			donor_cluster,
+			u32(len(want)),
+		)
+		testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+		dos_lba := journal_test_data_lba(v, dos.first_cluster)
+		dos_sector := read_test_sector(t, v, dos_lba)
+		dos_sector[64] = 0xE5
+		testing.expect(t, volume_stage_write(v, dos_lba, dos_sector[:]))
+
+		held, open_error := os.open(donor_path)
+		if !testing.expect(t, open_error == nil) {return}
+		defer if held != nil {_ = os.close(held)}
+		testing.expect(t, !volume_reconcile(v))
+		testing.expect(t, !v.frozen)
+		target, target_ok := v.journal.mirrored[command_key]
+		_, donor_ok := v.journal.mirrored[donor_key]
+		testing.expect(t, target_ok && donor_ok)
+		if target_ok {testing.expect_value(t, target.first_cluster, old_command_cluster)}
+		testing.expect(t, volume_journal_storage_stats(v).dirty_sectors > 0)
+		testing.expect(t, os.close(held) == nil)
+		held = nil
+
+		testing.expect(t, volume_reconcile(v))
+		testing.expect(t, !v.frozen)
+		testing.expect_value(t, command.first_cluster, donor_cluster)
+		_, donor_ok = v.journal.mirrored[donor_key]
+		testing.expect(t, !donor_ok)
+		target, target_ok = v.journal.mirrored[command_key]
+		testing.expect(t, target_ok)
+		if target_ok {testing.expect(t, target.base_node == command)}
+	}
+}
+
+@(test)
+reconcile_test_donor_replacement_reclaims_detached_tail :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	closed := false
+	defer if !closed {volume_discard(v)}
+
+	command := reconcile_test_child_named(v.alloc.root, "COMMAND.COM")
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	donor := reconcile_test_child_named(dos, "EDIT.HLP")
+	if !testing.expect(t, command != nil && dos != nil && donor != nil) {return}
+	donor_path := strings.clone(donor.host_path, context.temp_allocator)
+	donor_bytes, donor_error := os.read_entire_file(donor_path, context.temp_allocator)
+	if !testing.expect(t, donor_error == nil) {return}
+	donor_chain := volume_chain(v, donor.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(donor_chain) > 0) {return}
+
+	stale_head := v.alloc.next_free
+	reused_tail := stale_head + 1
+	v.journal.shadow_fat[stale_head] = reused_tail
+	v.journal.shadow_fat[reused_tail] = 0x0FFF_FFFF
+	stale_path, _ := filepath.join({dir, "DETACHED.BIN"})
+	testing.expect(t, os.write_entire_file(stale_path, "stale") == nil)
+	stale_short: [11]u8
+	copy(stale_short[:], "DETACHEDBIN")
+	stale_chain := [2]u32{stale_head, reused_tail}
+	stale := managed_node_create(
+		v,
+		v.alloc.root,
+		"DETACHED.BIN",
+		stale_path,
+		stale_short,
+		stale_head,
+		5,
+		false,
+		stale_chain[:],
+	)
+	if !testing.expect(t, stale != nil) {return}
+	v.alloc.by_cluster[stale_head] = stale
+	v.alloc.by_cluster[reused_tail] = stale
+	stale_key := Mirror_Key{v.alloc.root.first_cluster, stale_short}
+	v.journal.mirrored[stale_key] = Mirror_Entry {
+		host_path     = strings.clone(stale_path, v.allocator),
+		first_cluster = stale_head,
+		size          = 5,
+		base_node     = stale,
+	}
+
+	reconcile_test_stage_fat_set(t, v, stale_head, 0x0FFF_FFFF)
+	if v.frozen {return}
+	reconcile_test_stage_fat_set(t, v, donor_chain[len(donor_chain) - 1], reused_tail)
+	if v.frozen {return}
+	tail_data: [CLUSTER_BYTES]u8
+	for &byte, index in tail_data {byte = u8(index * 17 + 3)}
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, reused_tail), tail_data[:]))
+	if v.frozen {return}
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	new_size := u32(len(donor_chain) * CLUSTER_BYTES + 100)
+	decode_test_put_entry(
+		root_sector[:],
+		0,
+		"COMMAND COM",
+		ATTR_FILE,
+		donor.first_cluster,
+		new_size,
+	)
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	dos_lba := journal_test_data_lba(v, dos.first_cluster)
+	dos_sector := read_test_sector(t, v, dos_lba)
+	donor_offset := reconcile_test_entry_offset(dos_sector[:], donor.short)
+	if !testing.expect(t, donor_offset >= 0) {return}
+	dos_sector[donor_offset] = 0xE5
+	testing.expect(t, volume_stage_write(v, dos_lba, dos_sector[:]))
+	if v.frozen {return}
+	tail_claim, tail_claimed := v.journal.claimed[reused_tail]
+	testing.expect(t, tail_claimed)
+	if tail_claimed {testing.expect(t, tail_claim.node == stale)}
+	testing.expect(t, v.alloc.by_cluster[reused_tail] == stale)
+
+	testing.expect(t, volume_reconcile(v))
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, command.first_cluster, donor.first_cluster)
+	testing.expect_value(t, command.size, u64(new_size))
+	command_chain := volume_chain(v, command.first_cluster, context.temp_allocator)
+	if testing.expect(t, len(command_chain) == len(donor_chain) + 1) {
+		testing.expect_value(t, command_chain[len(command_chain) - 1], reused_tail)
+	}
+	tail_claim, tail_claimed = v.journal.claimed[reused_tail]
+	testing.expect(t, tail_claimed)
+	if tail_claimed {testing.expect(t, tail_claim.node == command)}
+	testing.expect(t, v.alloc.by_cluster[reused_tail] == nil)
+	testing.expect_value(t, stale.cluster_len, u32(1))
+	testing.expect(t, !os.exists(donor_path))
+	want := make([]u8, int(new_size), context.temp_allocator)
+	copy(want, donor_bytes)
+	copy(want[len(donor_chain) * CLUSTER_BYTES:], tail_data[:100])
+	contents, read_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	testing.expect(t, read_error == nil)
+	if read_error == nil {testing.expect(t, string(contents) == string(want))}
+	testing.expect(t, volume_reconcile(v))
+
+	if !volume_close(v) {
+		testing.expect(t, false)
+		return
+	}
+	closed = true
+	v2 := volume_open(dir, 2048)
+	if !testing.expect(t, v2 != nil) {return}
+	defer volume_discard(v2)
+	reopened := reconcile_test_child_named(v2.alloc.root, "COMMAND.COM")
+	if !testing.expect(t, reopened != nil) {return}
+	reopened_chain := volume_chain(v2, reopened.first_cluster, context.temp_allocator)
+	testing.expect(t, len(reopened_chain) == len(donor_chain) + 1)
+	testing.expect_value(t, reopened.size, u64(new_size))
+}
+
+@(test)
 reconcile_test_wininst_directory_owner_adopts_chain :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir, v := decode_test_open(t)
@@ -1167,6 +1406,264 @@ reconcile_test_wininst_directory_owner_adopts_chain :: proc(t: ^testing.T) {
 }
 
 @(test)
+reconcile_test_directory_growth_reclaims_fat_freed_owner :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	if !testing.expect(t, dos != nil) {return}
+	dos_chain := volume_chain(v, dos.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(dos_chain) > 0) {return}
+	stale_head := v.alloc.next_free
+	reused_tail := stale_head + 1
+	v.journal.shadow_fat[stale_head] = reused_tail
+	v.journal.shadow_fat[reused_tail] = 0x0FFF_FFFF
+	stale_path, _ := filepath.join({dir, "STALE.BIN"})
+	testing.expect(t, os.write_entire_file(stale_path, "stale") == nil)
+	stale_short: [11]u8
+	copy(stale_short[:], "STALE   BIN")
+	stale_chain := [2]u32{stale_head, reused_tail}
+	stale := managed_node_create(
+		v,
+		v.alloc.root,
+		"STALE.BIN",
+		stale_path,
+		stale_short,
+		stale_head,
+		5,
+		false,
+		stale_chain[:],
+	)
+	if !testing.expect(t, stale != nil) {return}
+	stale_key := Mirror_Key{v.alloc.root.first_cluster, stale_short}
+	v.journal.mirrored[stale_key] = Mirror_Entry {
+		host_path     = strings.clone(stale_path, v.allocator),
+		first_cluster = stale_head,
+		size          = 5,
+		base_node     = stale,
+	}
+
+	reconcile_test_stage_fat_set(t, v, stale_head, 0)
+	testing.expect(t, !v.frozen)
+	reconcile_test_stage_fat_set(t, v, dos_chain[len(dos_chain) - 1], reused_tail)
+	testing.expect(t, !v.frozen)
+	tail_claim, tail_claimed := v.journal.claimed[reused_tail]
+	testing.expect(t, tail_claimed)
+	if tail_claimed {testing.expect(t, tail_claim.node == dos)}
+	_, stale_head_claimed := v.journal.claimed[stale_head]
+	testing.expect(t, !stale_head_claimed)
+	testing.expect(t, managed_node_attached(v.alloc.root, stale))
+	testing.expect(t, os.exists(stale_path))
+	stored, mirrored := v.journal.mirrored[stale_key]
+	testing.expect(t, mirrored)
+	if mirrored {testing.expect(t, stored.base_node == stale)}
+}
+
+@(test)
+reconcile_test_directory_growth_reclaims_detached_tail :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	if !testing.expect(t, dos != nil) {return}
+	dos_chain := volume_chain(v, dos.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(dos_chain) > 0) {return}
+	stale_head := v.alloc.next_free
+	reused_tail := stale_head + 1
+	v.journal.shadow_fat[stale_head] = reused_tail
+	v.journal.shadow_fat[reused_tail] = 0x0FFF_FFFF
+	stale_path, _ := filepath.join({dir, "DETACHED.BIN"})
+	testing.expect(t, os.write_entire_file(stale_path, "stale") == nil)
+	stale_short: [11]u8
+	copy(stale_short[:], "DETACHEDBIN")
+	stale_chain := [2]u32{stale_head, reused_tail}
+	stale := managed_node_create(
+		v,
+		v.alloc.root,
+		"DETACHED.BIN",
+		stale_path,
+		stale_short,
+		stale_head,
+		5,
+		false,
+		stale_chain[:],
+	)
+	if !testing.expect(t, stale != nil) {return}
+	stale_key := Mirror_Key{v.alloc.root.first_cluster, stale_short}
+	v.journal.mirrored[stale_key] = Mirror_Entry {
+		host_path     = strings.clone(stale_path, v.allocator),
+		first_cluster = stale_head,
+		size          = 5,
+		base_node     = stale,
+	}
+
+	reconcile_test_stage_fat_set(t, v, stale_head, 0x0FFF_FFFF)
+	testing.expect(t, !v.frozen)
+	reconcile_test_stage_fat_set(t, v, dos_chain[len(dos_chain) - 1], reused_tail)
+	testing.expect(t, !v.frozen)
+	head_claim, head_claimed := v.journal.claimed[stale_head]
+	tail_claim, tail_claimed := v.journal.claimed[reused_tail]
+	testing.expect(t, head_claimed && tail_claimed)
+	if head_claimed {testing.expect(t, head_claim.node == stale)}
+	if tail_claimed {testing.expect(t, tail_claim.node == dos)}
+	testing.expect(t, volume_reconcile(v))
+	testing.expect(t, !v.frozen)
+	stored, mirrored := v.journal.mirrored[stale_key]
+	testing.expect(t, mirrored)
+	if mirrored {testing.expect(t, stored.base_node == stale)}
+	testing.expect_value(t, stale.cluster_len, u32(1))
+}
+
+@(test)
+reconcile_test_live_owner_blocks_directory_growth_transactionally :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	if !testing.expect(t, dos != nil) {return}
+	dos_chain := volume_chain(v, dos.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(dos_chain) > 0) {return}
+	freed_head := v.alloc.next_free
+	freed_tail := freed_head + 1
+	live_head := freed_head + 2
+	live_tail := freed_head + 3
+	v.journal.shadow_fat[freed_head] = freed_tail
+	v.journal.shadow_fat[freed_tail] = 0x0FFF_FFFF
+	v.journal.shadow_fat[live_head] = live_tail
+	v.journal.shadow_fat[live_tail] = 0x0FFF_FFFF
+	freed_path, _ := filepath.join({dir, "FREED.BIN"})
+	live_path, _ := filepath.join({dir, "LIVE.BIN"})
+	testing.expect(t, os.write_entire_file(freed_path, "freed") == nil)
+	testing.expect(t, os.write_entire_file(live_path, "live") == nil)
+	freed_short: [11]u8
+	live_short: [11]u8
+	copy(freed_short[:], "FREED   BIN")
+	copy(live_short[:], "LIVE    BIN")
+	freed_chain := [2]u32{freed_head, freed_tail}
+	live_chain := [2]u32{live_head, live_tail}
+	freed := managed_node_create(
+		v,
+		v.alloc.root,
+		"FREED.BIN",
+		freed_path,
+		freed_short,
+		freed_head,
+		5,
+		false,
+		freed_chain[:],
+	)
+	live := managed_node_create(
+		v,
+		v.alloc.root,
+		"LIVE.BIN",
+		live_path,
+		live_short,
+		live_head,
+		4,
+		false,
+		live_chain[:],
+	)
+	if !testing.expect(t, freed != nil && live != nil) {return}
+	reconcile_test_stage_fat_set(t, v, freed_head, 0)
+	if v.frozen {return}
+	reconcile_test_stage_fat_set(t, v, freed_tail, live_tail)
+	if v.frozen {return}
+
+	last := dos_chain[len(dos_chain) - 1]
+	lba := journal_test_fat_lba(v, last)
+	sector := read_test_sector(t, v, lba)
+	reconcile_test_fat_sector_set(sector[:], last, freed_tail)
+	testing.expect(t, !volume_stage_write(v, lba, sector[:]))
+	testing.expect(t, v.frozen)
+	freed_claim, freed_claimed := v.journal.claimed[freed_tail]
+	live_claim, live_claimed := v.journal.claimed[live_tail]
+	testing.expect(t, freed_claimed && live_claimed)
+	if freed_claimed {testing.expect(t, freed_claim.node == freed)}
+	if live_claimed {testing.expect(t, live_claim.node == live)}
+}
+
+@(test)
+reconcile_test_same_sector_reclaims_detached_synthesized_tail :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	io := reconcile_test_child_named(v.alloc.root, "IO.SYS")
+	if !testing.expect(t, dos != nil && io != nil) {return}
+	dos_chain := volume_chain(v, dos.first_cluster, context.temp_allocator)
+	io_chain := volume_chain(v, io.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(dos_chain) > 0 && len(io_chain) == 2) {return}
+	dos_last := dos_chain[len(dos_chain) - 1]
+	reused_tail := io_chain[1]
+	lba := journal_test_fat_lba(v, dos_last)
+	if !testing.expect_value(t, journal_test_fat_lba(v, io.first_cluster), lba) {return}
+	sector := read_test_sector(t, v, lba)
+	reconcile_test_fat_sector_set(sector[:], dos_last, reused_tail)
+	reconcile_test_fat_sector_set(sector[:], io.first_cluster, 0x0FFF_FFFF)
+
+	testing.expect(t, volume_stage_write(v, lba, sector[:]))
+	testing.expect(t, !v.frozen)
+	tail_claim, tail_claimed := v.journal.claimed[reused_tail]
+	testing.expect(t, tail_claimed)
+	if tail_claimed {testing.expect(t, tail_claim.node == dos)}
+	testing.expect(t, v.alloc.by_cluster[reused_tail] == nil)
+	testing.expect(t, v.alloc.by_cluster[io.first_cluster] == io)
+	testing.expect(t, managed_node_attached(v.alloc.root, io))
+}
+
+@(test)
+reconcile_test_live_tail_overlap_cannot_be_stolen_during_reconcile :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	command := reconcile_test_child_named(v.alloc.root, "COMMAND.COM")
+	io := reconcile_test_child_named(v.alloc.root, "IO.SYS")
+	if !testing.expect(t, command != nil && io != nil) {return}
+	want, read_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	if !testing.expect(t, read_error == nil) {return}
+	command_chain := volume_chain(v, command.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(command_chain) > 0) {return}
+	reconcile_test_stage_fat_set(t, v, command_chain[len(command_chain) - 1], io.first_cluster)
+	if v.frozen {return}
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	decode_test_put_entry(
+		root_sector[:],
+		0,
+		"COMMAND COM",
+		ATTR_FILE,
+		command.first_cluster,
+		u32(CLUSTER_BYTES + 100),
+	)
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	if v.frozen {return}
+
+	testing.expect(t, !volume_reconcile(v))
+	testing.expect(t, v.frozen)
+	got, got_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	testing.expect(t, got_error == nil)
+	testing.expect(t, string(got) == string(want))
+	_, stolen := v.journal.claimed[io.first_cluster]
+	testing.expect(t, !stolen)
+	testing.expect(t, v.alloc.by_cluster[io.first_cluster] == io)
+}
+
+@(test)
 reconcile_test_seeded_directory_keeps_synthesized_chain :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir, v := decode_test_open(t)
@@ -1194,12 +1691,17 @@ reconcile_test_seeded_directory_keeps_synthesized_chain :: proc(t: ^testing.T) {
 reconcile_test_stage_fat_set :: proc(t: ^testing.T, v: ^Volume, cluster, value: u32) {
 	lba := journal_test_fat_lba(v, cluster)
 	sector := read_test_sector(t, v, lba)
+	reconcile_test_fat_sector_set(sector[:], cluster, value)
+	testing.expect(t, volume_stage_write(v, lba, sector[:]))
+}
+
+@(private)
+reconcile_test_fat_sector_set :: proc(sector: []u8, cluster, value: u32) {
 	offset := int(cluster % 128) * 4
 	sector[offset] = u8(value)
 	sector[offset + 1] = u8(value >> 8)
 	sector[offset + 2] = u8(value >> 16)
 	sector[offset + 3] = u8(value >> 24)
-	testing.expect(t, volume_stage_write(v, lba, sector[:]))
 }
 
 @(private)
