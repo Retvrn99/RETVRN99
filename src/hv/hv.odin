@@ -65,9 +65,13 @@ Memory_Reservation_Kind :: enum {
 }
 
 Device_Mapping :: struct {
-	gpa:  u64,
-	host: rawptr,
-	size: int,
+	gpa:               u64,
+	host:              rawptr,
+	size:              int,
+	mapped:            bool,
+	requested_gpa:     u64,
+	requested_mapped:  bool,
+	request_pending:   bool,
 }
 
 Vm :: struct {
@@ -92,9 +96,36 @@ Vm :: struct {
 	io_string_begin:        proc(ctx: rawptr),
 	io_string_end:          proc(ctx: rawptr),
 	io_should_yield:        proc(ctx: rawptr) -> bool,
+	irq_ctx:                rawptr,
+	irq_delivered:          proc(ctx: rawptr, vector: u8) -> bool,
 	io_string_translations: u64,
 	run_calls:              u64,
 	run_cancellations:      u64,
+	irq_queued:             bool,
+	irq_vector:             u8,
+	irq_queue_count:        u64,
+	irq_delivery_count:     u64,
+	irq_pending_exit_count: u64,
+	irq_delivery_reason:    u32,
+	irq_delivery_state:     u16,
+	irq_delivery_cs:        u16,
+	irq_delivery_cs_base:   u64,
+	irq_delivery_rip:       u64,
+	irq_delivery_rflags:    u64,
+	irq_delivery_io_port:   u16,
+	irq_delivery_io_access: u32,
+	irq_delivery_io_rax:    u64,
+	irq_delivery_ins_len:   u8,
+	irq_delivery_ins:       [16]u8,
+	irq_delivery_pending:   u64,
+	irq_pending_event_deferrals: u64,
+	irq_deferred_pending_event:  bool,
+	irq_pending_event_low:       u64,
+	irq_pending_event_high:      u64,
+	irq_queue_event:        u64,
+	irq_queue_cs:           u16,
+	irq_queue_cs_base:      u64,
+	irq_queue_rip:          u64,
 	mmio:                   proc(ctx: rawptr, gpa: u64, write: bool, data: []u8),
 	trace_ud_gp_exits:      bool,
 	exception_trace:        [dynamic]Exception_Trace_Record,
@@ -185,7 +216,7 @@ reg_rax :: proc(vm: ^Vm) -> u64 {
 	return whpx_reg_rax(vm)
 }
 
-// maps a Read|Execute copy of data at gpa (reset-vector alias, option ROMs)
+// maps a private Read|Write|Execute copy at gpa (reset-vector alias, option ROMs)
 map_rom :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
 	return whpx_map_rom(vm, gpa, data)
 }
@@ -208,6 +239,12 @@ set_open_bus_shadow :: proc(vm: ^Vm, gpa, size: u64, readable, writable: bool) -
 // Allocates stable page-aligned storage and maps it Read|Write at gpa.
 map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 	return whpx_map_device_memory(vm, gpa, size)
+}
+
+// Requests a page-aligned device mapping state change. The backing allocation
+// remains stable; WHPX applies the request at the next safe vCPU run boundary.
+set_device_memory_mapping :: proc(vm: ^Vm, backing: []u8, gpa: u64, enabled: bool) -> bool {
+	return whpx_set_device_memory_mapping(vm, backing, gpa, enabled)
 }
 
 // Requests an HMA mapping change at the next safe vCPU run boundary.

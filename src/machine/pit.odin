@@ -16,8 +16,10 @@ Pit_Counter_State :: enum u8 {
 }
 
 Pit_Channel :: struct {
-	reload: u16,
-	count:  u32,
+	reload:        u16,
+	active_reload: u16,
+	count:         u32,
+	write_latch:   u16,
 
 	count_latch:         u16,
 	count_latched:       bool,
@@ -64,6 +66,18 @@ pit_saturating_add :: proc(a, b: u64) -> u64 {
 @(private = "file")
 pit_effective_reload :: proc(c: ^Pit_Channel) -> u32 {
 	return c.reload == 0 ? 0x10000 : u32(c.reload)
+}
+
+@(private = "file")
+pit_effective_active_reload :: proc(c: ^Pit_Channel) -> u32 {
+	return c.active_reload == 0 ? 0x10000 : u32(c.active_reload)
+}
+
+@(private = "file")
+pit_counter_load :: proc(c: ^Pit_Channel) {
+	c.active_reload = c.reload
+	c.count = pit_effective_active_reload(c)
+	c.null_count = false
 }
 
 @(private = "file")
@@ -163,6 +177,7 @@ pit_counter_control :: proc(c: ^Pit_Channel, value: u8) {
 	c.state = .Inactive
 	c.null_count = true
 	c.write_msb_next = false
+	c.write_latch = 0
 	c.read_msb_next = false
 	c.count_latched = false
 	c.status_latched = false
@@ -170,7 +185,6 @@ pit_counter_control :: proc(c: ^Pit_Channel, value: u8) {
 
 @(private = "file")
 pit_counter_arm :: proc(c: ^Pit_Channel) {
-	c.null_count = true
 	switch c.mode {
 	case 1, 5:
 		if c.state != .Counting {
@@ -186,29 +200,28 @@ pit_counter_arm :: proc(c: ^Pit_Channel) {
 }
 
 @(private = "file")
-pit_counter_write :: proc(c: ^Pit_Channel, value: u8) {
+pit_counter_commit :: proc(c: ^Pit_Channel, reload: u16) {
+	c.reload = reload
 	c.null_count = true
+	if c.mode == 0 {c.out = false}
+	pit_counter_arm(c)
+}
+
+@(private = "file")
+pit_counter_write :: proc(c: ^Pit_Channel, value: u8) {
 	switch c.rw_mode {
 	case 1:
-		c.reload = (c.reload & 0xFF00) | u16(value)
-		if c.mode == 0 { c.out = false }
-		pit_counter_arm(c)
+		pit_counter_commit(c, u16(value))
 	case 2:
-		c.reload = (c.reload & 0x00FF) | u16(value) << 8
-		if c.mode == 0 { c.out = false }
-		pit_counter_arm(c)
+		pit_counter_commit(c, u16(value) << 8)
 	case 3:
 		if !c.write_msb_next {
-			c.reload = (c.reload & 0xFF00) | u16(value)
+			c.write_latch = u16(value)
 			c.write_msb_next = true
-			if c.mode == 0 {
-				c.out = false
-				c.state = .Inactive
-			}
 		} else {
-			c.reload = (c.reload & 0x00FF) | u16(value) << 8
+			c.write_latch = c.write_latch & 0x00FF | u16(value) << 8
 			c.write_msb_next = false
-			pit_counter_arm(c)
+			pit_counter_commit(c, c.write_latch)
 		}
 	case:
 		c.rw_mode = 1
@@ -250,14 +263,12 @@ pit_counter_set_gate :: proc(c: ^Pit_Channel, level: bool) {
 	if rising {
 		switch c.mode {
 		case 1:
-			c.count = pit_effective_reload(c)
+			pit_counter_load(c)
 			c.out = false
-			c.null_count = false
 			c.state = .Counting
 		case 5:
-			c.count = pit_effective_reload(c)
+			pit_counter_load(c)
 			c.out = true
-			c.null_count = false
 			c.state = .Counting
 		case 2, 3:
 			c.state = .Load_Delay
@@ -273,10 +284,11 @@ pit_counter_step :: proc(c: ^Pit_Channel) -> bool {
 	case .Inactive, .Wait_Gate:
 		return false
 	case .Load_Delay:
-		c.count = pit_effective_reload(c)
-		c.null_count = false
+		rose := c.mode == 4 && !c.out
+		pit_counter_load(c)
+		if c.mode == 4 {c.out = true}
 		c.state = .Counting
-		return false
+		return rose
 	case .Counting:
 	}
 	if !c.gate && c.mode != 1 && c.mode != 5 {
@@ -295,8 +307,7 @@ pit_counter_step :: proc(c: ^Pit_Channel) -> bool {
 		}
 	case 2:
 		if pit_count_value(c, c.count) <= 1 {
-			c.count = pit_effective_reload(c)
-			c.null_count = false
+			pit_counter_load(c)
 			rose := !c.out
 			c.out = true
 			return rose
@@ -310,8 +321,7 @@ pit_counter_step :: proc(c: ^Pit_Channel) -> bool {
 			amount = c.out ? 1 : 3
 		}
 		if pit_count_value(c, c.count) <= u64(amount) {
-			c.count = pit_effective_reload(c)
-			c.null_count = false
+			pit_counter_load(c)
 			c.out = !c.out
 			return c.out
 		}
@@ -330,9 +340,13 @@ pit_counter_step :: proc(c: ^Pit_Channel) -> bool {
 }
 
 @(private = "file")
-pit_counter_rise_from :: proc(c: ^Pit_Channel, count: u32) -> (u64, bool) {
+pit_counter_rise_from :: proc(
+	c: ^Pit_Channel,
+	count: u32,
+	reload_count: u32,
+) -> (u64, bool) {
 	value := pit_count_value(c, count)
-	reload := pit_count_value(c, pit_effective_reload(c))
+	reload := pit_count_value(c, reload_count)
 	switch c.mode {
 	case 0, 1:
 		if c.out || value == 0 { return 0, false }
@@ -343,6 +357,7 @@ pit_counter_rise_from :: proc(c: ^Pit_Channel, count: u32) -> (u64, bool) {
 		if reload >= 2 { return 1 + reload, true }
 	case 3:
 		if c.out {
+			if c.null_count {reload = pit_count_value(c, pit_effective_reload(c))}
 			return pit_mode3_half(value, true) + pit_mode3_half(reload, false), true
 		}
 		return pit_mode3_half(value, false), true
@@ -360,19 +375,25 @@ pit_counter_clocks_until_rise :: proc(c: ^Pit_Channel) -> (u64, bool) {
 		return 0, false
 	case .Load_Delay:
 		if !c.gate { return 0, false }
-		clocks, pending := pit_counter_rise_from(c, pit_effective_reload(c))
+		if c.mode == 4 && !c.out {return 1, true}
+		reload := pit_effective_reload(c)
+		clocks, pending := pit_counter_rise_from(c, reload, reload)
 		return pending ? clocks + 1 : 0, pending
 	case .Counting:
 		if !c.gate && c.mode != 1 && c.mode != 5 { return 0, false }
-		return pit_counter_rise_from(c, c.count)
+		return pit_counter_rise_from(c, c.count, pit_effective_active_reload(c))
 	}
 	return 0, false
 }
 
 @(private = "file")
-pit_counter_edge_from :: proc(c: ^Pit_Channel, count: u32) -> (u64, bool) {
+pit_counter_edge_from :: proc(
+	c: ^Pit_Channel,
+	count: u32,
+	reload_count: u32,
+) -> (u64, bool) {
 	value := pit_count_value(c, count)
-	reload := pit_count_value(c, pit_effective_reload(c))
+	reload := pit_count_value(c, reload_count)
 	switch c.mode {
 	case 0, 1:
 		if !c.out && value != 0 { return value, true }
@@ -396,11 +417,13 @@ pit_counter_clocks_until_edge :: proc(c: ^Pit_Channel) -> (u64, bool) {
 		return 0, false
 	case .Load_Delay:
 		if !c.gate { return 0, false }
-		clocks, pending := pit_counter_edge_from(c, pit_effective_reload(c))
+		if c.mode == 4 && !c.out {return 1, true}
+		reload := pit_effective_reload(c)
+		clocks, pending := pit_counter_edge_from(c, reload, reload)
 		return pending ? clocks + 1 : 0, pending
 	case .Counting:
 		if !c.gate && c.mode != 1 && c.mode != 5 { return 0, false }
-		return pit_counter_edge_from(c, c.count)
+		return pit_counter_edge_from(c, c.count, pit_effective_active_reload(c))
 	}
 	return 0, false
 }
@@ -518,7 +541,7 @@ pit_tick :: proc(p: ^Pit, clocks: u64) -> int {
 
 @(private = "file")
 pit_counter_advance_mode2 :: proc(c: ^Pit_Channel, clocks: u64) -> u64 {
-	reload := u64(pit_effective_reload(c))
+	reload := u64(pit_effective_active_reload(c))
 	value := u64(c.count)
 	if reload < 2 || value == 0 {return 0}
 	remaining := clocks
@@ -565,7 +588,7 @@ pit_counter_mode3_phase :: proc(c: ^Pit_Channel, reload: u64) -> u64 {
 
 @(private = "file")
 pit_counter_advance_mode3 :: proc(c: ^Pit_Channel, clocks: u64) -> u64 {
-	reload := u64(pit_effective_reload(c))
+	reload := u64(pit_effective_active_reload(c))
 	value := u64(c.count)
 	if reload < 2 || value == 0 {return 0}
 	remaining := clocks
@@ -622,6 +645,13 @@ pit_counter_advance_bulk :: proc(c: ^Pit_Channel, clocks: u64) -> u64 {
 	if !c.gate && c.mode != 1 && c.mode != 5 {
 		if c.mode == 2 || c.mode == 3 {c.out = true}
 		return rises
+	}
+	if c.null_count && (c.mode == 2 || c.mode == 3) {
+		for remaining > 0 && c.null_count {
+			if pit_counter_step(c) {rises += 1}
+			remaining -= 1
+		}
+		if remaining == 0 || c.state != .Counting {return rises}
 	}
 	if !c.bcd {
 		switch c.mode {

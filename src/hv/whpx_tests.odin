@@ -29,6 +29,17 @@ Whpx_A20_Probe :: struct {
 	requested:       bool,
 }
 
+Whpx_Irq_Order_Probe :: struct {
+	irq_called:         bool,
+	irq_vector:         u8,
+	io_called:          bool,
+	irq_before_io:      bool,
+	first_io_write:     bool,
+	io_port:            u16,
+	io_value:           u32,
+	io_count:           int,
+}
+
 whpx_test_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 	probe := (^Whpx_Test_Probe)(ctx)
 	probe.mmio_gpa = gpa
@@ -78,6 +89,38 @@ whpx_test_a20_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool 
 	probe.applied_in_call = probe.vm.a20_enabled
 	probe.requested = probe.vm.a20_requested
 	return true
+}
+
+whpx_test_irq_delivered :: proc(ctx: rawptr, vector: u8) -> bool {
+	probe := (^Whpx_Irq_Order_Probe)(ctx)
+	probe.irq_called = true
+	probe.irq_vector = vector
+	return true
+}
+
+whpx_test_irq_order_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
+	probe := (^Whpx_Irq_Order_Probe)(ctx)
+	if probe.io_count == 0 {
+		probe.io_called = true
+		probe.irq_before_io = probe.irq_called
+		probe.first_io_write = true
+		probe.io_port = port
+		probe.io_value = val
+	}
+	probe.io_count += 1
+	return size == 1
+}
+
+whpx_test_irq_order_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
+	probe := (^Whpx_Irq_Order_Probe)(ctx)
+	if probe.io_count == 0 {
+		probe.io_called = true
+		probe.irq_before_io = probe.irq_called
+		probe.first_io_write = false
+		probe.io_port = port
+	}
+	probe.io_count += 1
+	return 0x5A, size == 1
 }
 
 whpx_test_write_u32 :: proc(data: []u8, offset: int, value: u32) {
@@ -1092,10 +1135,207 @@ test_whpx_transactional_interrupt_injection :: proc(t: ^testing.T) {
 
 	value.Reg64 = 0x202
 	if !testing.expect(t, WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) >= 0) {return}
+
+	name = .PendingEvent
+	value = {}
+	value.Reg128[0] = 0x1
+	if !testing.expect(t, WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) >= 0) {return}
+	testing.expect_value(t, try_inject_irq(&vm, 0x21), Interrupt_Injection_Result.Deferred)
+	testing.expect_value(t, vm.irq_pending_event_deferrals, u64(1))
+	testing.expect(t, vm.irq_deferred_pending_event)
+	testing.expect_value(t, vm.irq_pending_event_low, u64(1))
+	testing.expect_value(t, vm.irq_pending_event_high, u64(0))
+
+	name = .PendingInterruption
+	if !testing.expect(t, WHvGetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) >= 0) {return}
+	testing.expect_value(t, value.Reg64 & 0x1, u64(0))
+
+	name = .PendingEvent
+	value = {}
+	if !testing.expect(t, WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) >= 0) {return}
 	testing.expect_value(t, try_inject_irq(&vm, 0x21), Interrupt_Injection_Result.Injected)
+	testing.expect(t, !vm.irq_deferred_pending_event)
 
 	name = .PendingInterruption
 	if !testing.expect(t, WHvGetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) >= 0) {return}
 	testing.expect_value(t, value.Reg64 & 0xFFFF_0001, u64(0x0021_0001))
 	testing.expect_value(t, try_inject_irq(&vm, 0x22), Interrupt_Injection_Result.Deferred)
+}
+
+@(test)
+test_whpx_canceled_run_retains_pending_interrupt :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	testing.set_fail_timeout(t, 5 * time.Second)
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	// Vector 21h enters a marker-writing handler; the interrupted code spins.
+	copy(vm.ram[0x84:], []u8{0x00, 0x05, 0x00, 0x00})
+	copy(vm.ram[0x500:], []u8{0xC6, 0x06, 0x00, 0x06, 0xA5, 0xF4})
+	copy(vm.ram[0x7C00:], []u8{0xEB, 0xFE})
+	set_realmode_entry(&vm, 0, 0x7C00)
+
+	names := [?]WHV_REGISTER_NAME{.Rflags, .Rsp}
+	values: [len(names)]WHV_REGISTER_VALUE
+	values[0].Reg64 = 0x202
+	values[1].Reg64 = 0x7000
+	if !testing.expect(
+		t,
+		WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0,
+	) {return}
+	if !testing.expect_value(
+		t,
+		try_inject_irq(&vm, 0x21),
+		Interrupt_Injection_Result.Injected,
+	) {return}
+
+	// WHPX keeps a pre-run cancellation sticky on this host. It must not consume
+	// an interruption that no guest instruction had a chance to accept.
+	if !testing.expect(
+		t,
+		WHvCancelRunVirtualProcessor(vm.part, 0, 0) >= 0,
+	) {return}
+	exit_ctx: WHV_RUN_VP_EXIT_CONTEXT
+	if !testing.expect(
+		t,
+		WHvRunVirtualProcessor(vm.part, 0, &exit_ctx, size_of(exit_ctx)) >= 0,
+	) {return}
+	if !testing.expect_value(t, exit_ctx.ExitReason, WHV_RUN_VP_EXIT_REASON.Canceled) {return}
+
+	pending_name := WHV_REGISTER_NAME.PendingInterruption
+	pending: WHV_REGISTER_VALUE
+	if !testing.expect(
+		t,
+		WHvGetVirtualProcessorRegisters(vm.part, 0, &pending_name, 1, &pending) >= 0,
+	) {return}
+	testing.expect_value(t, exit_ctx.VpContext.ExecutionState & 0x40, u16(0x40))
+	testing.expect_value(t, pending.Reg64 & 0xFFFF_000F, u64(0x0021_0001))
+	testing.expect_value(t, vm.ram[0x600], u8(0))
+
+	exit_ctx = {}
+	if !testing.expect(
+		t,
+		WHvRunVirtualProcessor(vm.part, 0, &exit_ctx, size_of(exit_ctx)) >= 0,
+	) {return}
+	if !testing.expect_value(t, exit_ctx.ExitReason, WHV_RUN_VP_EXIT_REASON.X64Halt) {return}
+	if !testing.expect(
+		t,
+		WHvGetVirtualProcessorRegisters(vm.part, 0, &pending_name, 1, &pending) >= 0,
+	) {return}
+	testing.expect_value(t, exit_ctx.VpContext.ExecutionState & 0x40, u16(0))
+	testing.expect_value(t, pending.Reg64 & 1, u64(0))
+	testing.expect_value(t, vm.ram[0x600], u8(0xA5))
+}
+
+@(test)
+test_whpx_interrupt_delivery_callback_precedes_handler_io :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	testing.set_fail_timeout(t, 5 * time.Second)
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	// Vector 21h writes A5h to probe port 80h, then halts.
+	copy(vm.ram[0x84:], []u8{0x00, 0x05, 0x00, 0x00})
+	copy(vm.ram[0x500:], []u8{0xB0, 0xA5, 0xE6, 0x80, 0xF4})
+	copy(vm.ram[0x7C00:], []u8{0xEB, 0xFE})
+	set_realmode_entry(&vm, 0, 0x7C00)
+
+	names := [?]WHV_REGISTER_NAME{.Rflags, .Rsp}
+	values: [len(names)]WHV_REGISTER_VALUE
+	values[0].Reg64 = 0x202
+	values[1].Reg64 = 0x7000
+	if !testing.expect(
+		t,
+		WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0,
+	) {return}
+
+	probe: Whpx_Irq_Order_Probe
+	vm.io_ctx = &probe
+	vm.io_write = whpx_test_irq_order_write
+	vm.irq_ctx = &probe
+	vm.irq_delivered = whpx_test_irq_delivered
+	if !testing.expect_value(
+		t,
+		try_inject_irq(&vm, 0x21),
+		Interrupt_Injection_Result.Injected,
+	) {return}
+	if !testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt) {return}
+
+	testing.expect(t, probe.irq_called)
+	testing.expect_value(t, probe.irq_vector, u8(0x21))
+	testing.expect(t, probe.io_called)
+	testing.expect(t, probe.irq_before_io)
+	testing.expect_value(t, probe.io_port, u16(0x80))
+	testing.expect_value(t, probe.io_value, u32(0xA5))
+	testing.expect(t, !vm.irq_queued)
+	testing.expect_value(t, vm.irq_queue_count, u64(1))
+	testing.expect_value(t, vm.irq_delivery_count, u64(1))
+	testing.expect_value(t, vm.irq_pending_exit_count, u64(0))
+}
+
+@(test)
+test_whpx_interrupt_preempts_intercepted_io_instruction :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	testing.set_fail_timeout(t, 5 * time.Second)
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	// Vector 21h reports entry through port 80h, returns, then the mainline IN executes.
+	copy(vm.ram[0x84:], []u8{0x00, 0x05, 0x00, 0x00})
+	copy(vm.ram[0x500:], []u8{0xB0, 0xA5, 0xE6, 0x80, 0xCF})
+	copy(vm.ram[0x7C00:], []u8{0xEC, 0xF4})
+	set_realmode_entry(&vm, 0, 0x7C00)
+
+	names := [?]WHV_REGISTER_NAME{.Rflags, .Rsp, .Rdx}
+	values: [len(names)]WHV_REGISTER_VALUE
+	values[0].Reg64 = 0x202
+	values[1].Reg64 = 0x7000
+	values[2].Reg64 = 0x03CC
+	if !testing.expect(
+		t,
+		WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0,
+	) {return}
+
+	probe: Whpx_Irq_Order_Probe
+	vm.io_ctx = &probe
+	vm.io_read = whpx_test_irq_order_read
+	vm.io_write = whpx_test_irq_order_write
+	vm.irq_ctx = &probe
+	vm.irq_delivered = whpx_test_irq_delivered
+	if !testing.expect_value(
+		t,
+		try_inject_irq(&vm, 0x21),
+		Interrupt_Injection_Result.Injected,
+	) {return}
+	if !testing.expect(t, WHvCancelRunVirtualProcessor(vm.part, 0, 0) >= 0) {return}
+	if !testing.expect_value(t, run(&vm).kind, Exit_Kind.Canceled) {return}
+	testing.expect(t, !probe.irq_called)
+	testing.expect(t, !probe.io_called)
+	testing.expect_value(t, vm.irq_pending_exit_count, u64(1))
+	if !testing.expect_value(t, run(&vm).kind, Exit_Kind.Halt) {return}
+
+	testing.expect(t, probe.irq_called)
+	testing.expect_value(t, probe.irq_vector, u8(0x21))
+	testing.expect(t, probe.io_called)
+	testing.expect(t, probe.irq_before_io)
+	testing.expect(t, probe.first_io_write)
+	testing.expect_value(t, probe.io_port, u16(0x80))
+	testing.expect_value(t, probe.io_value, u32(0xA5))
+	testing.expect_value(t, probe.io_count, 2)
+	testing.expect(t, !vm.irq_queued)
+	testing.expect_value(t, vm.irq_queue_count, u64(1))
+	testing.expect_value(t, vm.irq_delivery_count, u64(1))
+	testing.expect_value(t, vm.irq_pending_exit_count, u64(1))
 }

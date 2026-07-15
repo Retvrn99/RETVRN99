@@ -199,12 +199,12 @@ whpx_reserve_open_bus :: proc(vm: ^Vm, gpa, size: u64) -> bool {
 @(private = "file")
 whpx_shadow_flags :: proc(readable, writable: bool) -> u32 {
 	if !readable && !writable {return 0}
-	// Write faults on an RX GPA are not safely recoverable through WHPX.
-	return(
-		WHV_MAP_GPA_RANGE_FLAG_READ |
-		WHV_MAP_GPA_RANGE_FLAG_WRITE |
-		WHV_MAP_GPA_RANGE_FLAG_EXECUTE \
-	)
+	flags: u32
+	if readable {
+		flags |= WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
+	}
+	if writable {flags |= WHV_MAP_GPA_RANGE_FLAG_WRITE}
+	return flags
 }
 
 @(private = "file")
@@ -305,8 +305,73 @@ whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 		win32.VirtualFree(mem, 0, win32.MEM_RELEASE)
 		return nil, false
 	}
-	append(&vm.device_mappings, Device_Mapping{gpa = gpa, host = mem, size = size})
+	append(
+		&vm.device_mappings,
+		Device_Mapping {
+			gpa = gpa,
+			host = mem,
+			size = size,
+			mapped = true,
+			requested_gpa = gpa,
+			requested_mapped = true,
+		},
+	)
 	return ([^]u8)(mem)[:size], true
+}
+
+@(private = "file")
+whpx_device_mapping_index :: proc(vm: ^Vm, backing: []u8) -> int {
+	if vm == nil || len(backing) <= 0 {return -1}
+	host := raw_data(backing)
+	for mapping, i in vm.device_mappings {
+		if mapping.host == host && mapping.size == len(backing) {return i}
+	}
+	return -1
+}
+
+@(private = "file")
+whpx_device_mapping_target_valid :: proc(vm: ^Vm, index: int, gpa: u64, enabled: bool) -> bool {
+	if vm == nil || index < 0 || index >= len(vm.device_mappings) {return false}
+	size := u64(vm.device_mappings[index].size)
+	if !whpx_page_range_valid(gpa, size) {return false}
+	if !enabled {return true}
+
+	if whpx_ranges_overlap(gpa, size, 0, u64(len(vm.ram))) {return false}
+	for reservation in vm.mmio_reservations {
+		if whpx_ranges_overlap(gpa, size, reservation.gpa, reservation.size) {return false}
+	}
+	for rom in vm.roms {
+		if whpx_ranges_overlap(gpa, size, rom.gpa, u64(rom.size)) {return false}
+	}
+	for mapping, other_index in vm.device_mappings {
+		if other_index == index {continue}
+		if mapping.mapped && whpx_ranges_overlap(gpa, size, mapping.gpa, u64(mapping.size)) {
+			return false
+		}
+		if mapping.request_pending &&
+		   mapping.requested_mapped &&
+		   whpx_ranges_overlap(gpa, size, mapping.requested_gpa, u64(mapping.size)) {
+			return false
+		}
+	}
+
+	current := &vm.device_mappings[index]
+	if current.mapped && current.gpa != gpa && whpx_ranges_overlap(gpa, size, current.gpa, size) {
+		return false
+	}
+	return true
+}
+
+whpx_set_device_memory_mapping :: proc(vm: ^Vm, backing: []u8, gpa: u64, enabled: bool) -> bool {
+	if vm == nil || vm.part == nil {return false}
+	index := whpx_device_mapping_index(vm, backing)
+	if !whpx_device_mapping_target_valid(vm, index, gpa, enabled) {return false}
+
+	mapping := &vm.device_mappings[index]
+	mapping.requested_gpa = gpa
+	mapping.requested_mapped = enabled
+	mapping.request_pending = mapping.gpa != gpa || mapping.mapped != enabled
+	return true
 }
 
 whpx_set_a20 :: proc(vm: ^Vm, enabled: bool) -> bool {
@@ -361,11 +426,70 @@ whpx_map_a20_device_region :: proc(
 }
 
 @(private = "file")
+whpx_map_device_mapping_at :: proc(vm: ^Vm, mapping: ^Device_Mapping, gpa: u64) -> bool {
+	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE
+	if WHvMapGpaRange(vm.part, mapping.host, gpa, u64(mapping.size), flags) < 0 {return false}
+	if vm.a20_enabled {return true}
+
+	temporary := mapping^
+	temporary.gpa = gpa
+	pair_base := gpa &~ (WHPX_A20_PAIR_SIZE - 1)
+	mapping_end := gpa + u64(mapping.size)
+	for odd_base := pair_base + WHPX_A20_BIT;
+	    odd_base < mapping_end;
+	    odd_base += WHPX_A20_PAIR_SIZE {
+		if odd_base < gpa {continue}
+		if !whpx_map_a20_device_region(vm, &temporary, odd_base, false) {
+			_ = WHvUnmapGpaRange(vm.part, gpa, u64(mapping.size))
+			return false
+		}
+	}
+	return true
+}
+
+@(private = "file")
+whpx_apply_device_mapping_request :: proc(
+	vm: ^Vm,
+	mapping: ^Device_Mapping,
+) -> (
+	ok: bool,
+	rollback_ok: bool,
+) {
+	if !mapping.request_pending {return true, true}
+	old_gpa, old_mapped := mapping.gpa, mapping.mapped
+	new_gpa, new_mapped := mapping.requested_gpa, mapping.requested_mapped
+
+	if old_mapped && WHvUnmapGpaRange(vm.part, old_gpa, u64(mapping.size)) < 0 {
+		return false, true
+	}
+	if new_mapped && !whpx_map_device_mapping_at(vm, mapping, new_gpa) {
+		rollback_ok = !old_mapped || whpx_map_device_mapping_at(vm, mapping, old_gpa)
+		return false, rollback_ok
+	}
+
+	mapping.gpa = new_gpa
+	mapping.mapped = new_mapped
+	mapping.request_pending = false
+	return true, true
+}
+
+@(private = "file")
+whpx_apply_device_mapping_requests :: proc(vm: ^Vm) -> (ok: bool, rollback_ok: bool) {
+	for &mapping in vm.device_mappings {
+		if applied, rollback_applied := whpx_apply_device_mapping_request(vm, &mapping); !applied {
+			return false, rollback_applied
+		}
+	}
+	return true, true
+}
+
+@(private = "file")
 whpx_apply_a20_mapping :: proc(vm: ^Vm, enabled: bool) -> bool {
 	for odd_base := WHPX_A20_BIT; odd_base < u64(len(vm.ram)); odd_base += WHPX_A20_PAIR_SIZE {
 		if !whpx_map_a20_region(vm, odd_base, enabled) {return false}
 	}
 	for &mapping in vm.device_mappings {
+		if !mapping.mapped {continue}
 		pair_base := mapping.gpa &~ (WHPX_A20_PAIR_SIZE - 1)
 		mapping_end := mapping.gpa + u64(mapping.size)
 		for odd_base := pair_base + WHPX_A20_BIT;
@@ -394,7 +518,7 @@ whpx_apply_a20_request :: proc(vm: ^Vm) -> (ok: bool, rollback_ok: bool) {
 	return true, true
 }
 
-// page-aligned host copy mapped Read|Execute (no Write): guest ROM
+// page-aligned private host copy mapped Read|Write|Execute: guest ROM safety alias
 whpx_map_rom :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
 	size := uint(len(data) + 0xFFF) & ~uint(0xFFF)
 	mem := win32.VirtualAlloc(
@@ -407,7 +531,9 @@ whpx_map_rom :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
 		return false
 	}
 	copy(([^]u8)(mem)[:len(data)], data)
-	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
+	flags := WHV_MAP_GPA_RANGE_FLAG_READ |
+	         WHV_MAP_GPA_RANGE_FLAG_WRITE |
+	         WHV_MAP_GPA_RANGE_FLAG_EXECUTE
 	if WHvMapGpaRange(vm.part, mem, gpa, u64(size), flags) < 0 {
 		win32.VirtualFree(mem, 0, win32.MEM_RELEASE)
 		return false
@@ -462,6 +588,9 @@ whpx_reset_cpu :: proc(vm: ^Vm) -> bool {
 	if vm == nil || vm.part == nil {return false}
 	if WHvDeleteVirtualProcessor(vm.part, 0) < 0 {return false}
 	if WHvCreateVirtualProcessor(vm.part, 0, 0) < 0 {return false}
+	vm.irq_queued = false
+	vm.irq_vector = 0
+	vm.irq_deferred_pending_event = false
 	return whpx_reset_vcpu(vm)
 }
 
@@ -493,6 +622,11 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			if !rollback_ok {detail = "global A20 remap and rollback failed"}
 			return Exit{kind = .Failed, detail = detail}
 		}
+		if ok, rollback_ok := whpx_apply_device_mapping_requests(vm); !ok {
+			detail := "device memory remap failed"
+			if !rollback_ok {detail = "device memory remap and rollback failed"}
+			return Exit{kind = .Failed, detail = detail}
+		}
 		if handled >= WHPX_EXIT_BUDGET {
 			return Exit{kind = .Io}
 		}
@@ -502,6 +636,56 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			return Exit {
 				kind = .Failed,
 				detail = fmt.tprintf("WHvRunVirtualProcessor hr=0x%08x", u32(hr)),
+			}
+		}
+		if vm.irq_queued {
+			interruption_pending := exit_ctx.VpContext.ExecutionState & (u16(1) << 6) != 0
+			if interruption_pending {
+				vm.irq_pending_exit_count += 1
+			} else {
+				pending_name := WHV_REGISTER_NAME.PendingInterruption
+				pending_value: WHV_REGISTER_VALUE
+				if WHvGetVirtualProcessorRegisters(
+					vm.part,
+					0,
+					&pending_name,
+					1,
+					&pending_value,
+				) < 0 {
+					return Exit{kind = .Failed, detail = "failed to verify PIC interrupt delivery"}
+				}
+				vm.irq_delivery_pending = pending_value.Reg64
+				if pending_value.Reg64 & 0x1 != 0 {
+					vm.irq_pending_exit_count += 1
+				} else {
+					vm.irq_delivery_reason = u32(exit_ctx.ExitReason)
+					vm.irq_delivery_state = exit_ctx.VpContext.ExecutionState
+					vm.irq_delivery_cs = exit_ctx.VpContext.Cs.Selector
+					vm.irq_delivery_cs_base = exit_ctx.VpContext.Cs.Base
+					vm.irq_delivery_rip = exit_ctx.VpContext.Rip
+					vm.irq_delivery_rflags = exit_ctx.VpContext.Rflags
+					vm.irq_delivery_io_port = 0
+					vm.irq_delivery_io_access = 0
+					vm.irq_delivery_io_rax = 0
+					vm.irq_delivery_ins_len = 0
+					vm.irq_delivery_ins = {}
+					if exit_ctx.ExitReason == .X64IoPortAccess {
+						io := &exit_ctx.u.IoPortAccess
+						vm.irq_delivery_io_port = io.PortNumber
+						vm.irq_delivery_io_access = io.AccessInfo
+						vm.irq_delivery_io_rax = io.Rax
+						vm.irq_delivery_ins_len = min(io.InstructionByteCount, u8(len(vm.irq_delivery_ins)))
+						copy(
+							vm.irq_delivery_ins[:vm.irq_delivery_ins_len],
+							io.InstructionBytes[:vm.irq_delivery_ins_len],
+						)
+					}
+					if vm.irq_delivered != nil && !vm.irq_delivered(vm.irq_ctx, vm.irq_vector) {
+						return Exit{kind = .Failed, detail = "PIC interrupt delivery callback failed"}
+					}
+					vm.irq_queued = false
+					vm.irq_delivery_count += 1
+				}
 			}
 		}
 		switch exit_ctx.ExitReason {
@@ -612,7 +796,15 @@ whpx_inject_irq :: proc(vm: ^Vm, vector: u8) {
 
 whpx_try_inject_irq :: proc(vm: ^Vm, vector: u8) -> Interrupt_Injection_Result {
 	if vm == nil || vm.part == nil {return .Failed}
-	names := [?]WHV_REGISTER_NAME{.Rflags, .PendingInterruption, .InterruptState}
+	vm.irq_deferred_pending_event = false
+	names := [?]WHV_REGISTER_NAME {
+		.Rflags,
+		.PendingInterruption,
+		.InterruptState,
+		.PendingEvent,
+		.Cs,
+		.Rip,
+	}
 	values: [len(names)]WHV_REGISTER_VALUE
 	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) < 0 {
 		return .Failed
@@ -620,7 +812,14 @@ whpx_try_inject_irq :: proc(vm: ^Vm, vector: u8) -> Interrupt_Injection_Result {
 	if_set := values[0].Reg64 & 0x200 != 0
 	pending := values[1].Reg64 & 0x1 != 0
 	shadow := values[2].Reg64 & 0x1 != 0
-	if !if_set || pending || shadow {return .Deferred}
+	event_pending := values[3].Reg128[0] & 0x1 != 0
+	if event_pending {
+		vm.irq_pending_event_deferrals += 1
+		vm.irq_deferred_pending_event = true
+		vm.irq_pending_event_low = values[3].Reg128[0]
+		vm.irq_pending_event_high = values[3].Reg128[1]
+	}
+	if !if_set || pending || shadow || event_pending {return .Deferred}
 
 	name := WHV_REGISTER_NAME.PendingInterruption
 	value: WHV_REGISTER_VALUE
@@ -628,6 +827,13 @@ whpx_try_inject_irq :: proc(vm: ^Vm, vector: u8) -> Interrupt_Injection_Result {
 	if WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) < 0 {
 		return .Failed
 	}
+	vm.irq_queued = true
+	vm.irq_vector = vector
+	vm.irq_queue_count += 1
+	vm.irq_queue_event = values[3].Reg128[0]
+	vm.irq_queue_cs = values[4].Segment.Selector
+	vm.irq_queue_cs_base = values[4].Segment.Base
+	vm.irq_queue_rip = values[5].Reg64
 	return .Injected
 }
 
@@ -639,7 +845,12 @@ whpx_request_irq_window :: proc(vm: ^Vm, enable: bool) {
 }
 
 whpx_can_inject :: proc(vm: ^Vm) -> bool {
-	names := [?]WHV_REGISTER_NAME{.Rflags, .PendingInterruption, .InterruptState}
+	names := [?]WHV_REGISTER_NAME {
+		.Rflags,
+		.PendingInterruption,
+		.InterruptState,
+		.PendingEvent,
+	}
 	vals: [len(names)]WHV_REGISTER_VALUE
 	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0]) < 0 {
 		return false
@@ -648,7 +859,8 @@ whpx_can_inject :: proc(vm: ^Vm) -> bool {
 	pending := vals[1].Reg64 & 0x1 != 0
 	// WHV_X64_INTERRUPT_STATE_REGISTER: bit0 InterruptShadow, bit1 NmiMasked
 	shadow := vals[2].Reg64 & 0x1 != 0
-	return if_set && !pending && !shadow
+	event_pending := vals[3].Reg128[0] & 0x1 != 0
+	return if_set && !pending && !shadow && !event_pending
 }
 
 whpx_reg_rax :: proc(vm: ^Vm) -> u64 {

@@ -21,6 +21,7 @@ Pic :: struct {
 	read_isr, poll_pending:  bool,
 	special_mask, sfnm:      bool,
 	lowest:                  u8,
+	poll_result:              u8,
 	auto_rotate:             bool,
 	elcr:                    u8,
 }
@@ -81,7 +82,10 @@ pic_chip_priority_irq :: proc(p: ^Pic, slot: u8) -> u8 {
 pic_chip_highest_isr :: proc(p: ^Pic) -> (u8, bool) {
 	for slot in u8(0) ..< 8 {
 		irq := pic_chip_priority_irq(p, slot)
-		if p.isr & (u8(1) << irq) != 0 {return irq, true}
+		bit := u8(1) << irq
+		if p.isr & bit == 0 {continue}
+		if p.special_mask && p.imr & bit != 0 {continue}
+		return irq, true
 	}
 	return 0, false
 }
@@ -147,13 +151,15 @@ pic_chip_eoi :: proc(p: ^Pic, value: u8) {
 }
 
 @(private = "file")
-pic_chip_command :: proc(p: ^Pic, value: u8) {
+pic_chip_command :: proc(p: ^Pic, value, initial_icw3: u8, cascade_exempt: int) {
 	if value & 0x10 != 0 {
 		p.irr = 0
 		p.isr = 0
 		p.imr = 0
+		p.icw3 = initial_icw3
 		p.read_isr = false
 		p.poll_pending = false
+		p.poll_result = 0
 		p.special_mask = false
 		p.lowest = 7
 		p.auto_rotate = false
@@ -171,8 +177,14 @@ pic_chip_command :: proc(p: ^Pic, value: u8) {
 	}
 	if value & 0x08 != 0 {
 		if value & 0x02 != 0 {p.read_isr = value & 0x01 != 0}
-		if value & 0x04 != 0 {p.poll_pending = true}
 		if value & 0x40 != 0 {p.special_mask = value & 0x20 != 0}
+		if value & 0x04 != 0 {
+			p.poll_pending = true
+			p.poll_result = 0
+			if irq, ok := pic_chip_pending(p, cascade_exempt); ok {
+				p.poll_result = 0x80 | irq
+			}
+		}
 		return
 	}
 	pic_chip_eoi(p, value)
@@ -234,24 +246,26 @@ pic_chip_set_elcr :: proc(p: ^Pic, value, writable: u8) {
 }
 
 @(private = "file")
-pic_chip_poll :: proc(p: ^Pic, cascade_exempt: int = -1) -> u8 {
+pic_chip_poll :: proc(p: ^Pic) -> u8 {
 	p.poll_pending = false
-	if irq, ok := pic_chip_pending(p, cascade_exempt); ok {
-		pic_chip_set_in_service(p, irq)
-		return 0x80 | irq
-	}
-	return 0
+	result := p.poll_result
+	p.poll_result = 0
+	if result & 0x80 != 0 {pic_chip_set_in_service(p, result & 7)}
+	return result
 }
 
 pic_out :: proc(pp: ^Pic_Pair, port: u16, value: u8) {
 	switch port {
 	case 0x20:
 		if value & 0x10 != 0 {pp.master_int_latch = false}
-		pic_chip_command(&pp.master, value)
+		pic_chip_command(&pp.master, value, 0, pic_master_cascade_exempt(pp))
 	case 0x21:
 		pic_chip_data(&pp.master, value)
 	case 0xA0:
-		pic_chip_command(&pp.slave, value)
+		old_pin := pp.slave.icw3 & 7
+		pic_chip_command(&pp.slave, value, 7, -1)
+		new_pin := pp.slave.icw3 & 7
+		if old_pin != new_pin {pic_chip_set_input(&pp.master, old_pin, false)}
 	case 0xA1:
 		old_pin := pp.slave.icw3 & 7
 		pic_chip_data(&pp.slave, value)
@@ -271,7 +285,7 @@ pic_in :: proc(pp: ^Pic_Pair, port: u16) -> u8 {
 	switch port {
 	case 0x20, 0x21:
 		if pp.master.poll_pending {
-			value := pic_chip_poll(&pp.master, pic_master_cascade_exempt(pp))
+			value := pic_chip_poll(&pp.master)
 			pp.master_int_latch = false
 			pic_after_mutation(pp)
 			return value
@@ -393,8 +407,8 @@ pic_interrupt_preview :: proc(pp: ^Pic_Pair) -> (Pic_Interrupt_Token, bool) {
 	return pic_offer(pp)
 }
 
-pic_commit :: proc(pp: ^Pic_Pair, offer: Pic_Interrupt_Offer) -> bool {
-	if offer.epoch != pp.epoch {return false}
+@(private = "file")
+pic_complete_offer :: proc(pp: ^Pic_Pair, offer: Pic_Interrupt_Offer) {
 	pp.master_int_latch = false
 	switch offer.kind {
 	case .Master:
@@ -407,11 +421,21 @@ pic_commit :: proc(pp: ^Pic_Pair, offer: Pic_Interrupt_Offer) -> bool {
 	case .Spurious_Master:
 	}
 	pic_after_mutation(pp)
+
+}
+
+pic_commit :: proc(pp: ^Pic_Pair, offer: Pic_Interrupt_Offer) -> bool {
+	if offer.epoch != pp.epoch {return false}
+	pic_complete_offer(pp, offer)
 	return true
 }
 
 pic_interrupt_commit :: proc(pp: ^Pic_Pair, token: Pic_Interrupt_Token) -> bool {
 	return pic_commit(pp, token)
+}
+
+pic_interrupt_complete_queued :: proc(pp: ^Pic_Pair, token: Pic_Interrupt_Token) {
+	pic_complete_offer(pp, token)
 }
 
 pic_ack :: proc(pp: ^Pic_Pair) -> (u8, bool) {
