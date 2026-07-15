@@ -9,6 +9,11 @@ volume_read :: proc(v: ^Volume, lba: u64, buf: []u8) -> bool {
 	if v == nil || len(buf) % SECTOR != 0 {return false}
 	n := len(buf) / SECTOR
 	for i := 0; i < n; {
+		if count, handled, ok := overlay_read_run(v, lba + u64(i), n - i, buf[i * SECTOR:]); handled {
+			if !ok {return false}
+			i += count
+			continue
+		}
 		if count, handled, ok := read_file_run(v, lba + u64(i), n - i, buf[i * SECTOR:]); handled {
 			if !ok {return false}
 			i += count
@@ -30,11 +35,11 @@ read_file_mapping :: proc(v: ^Volume, lba: u64) -> (^Node, u32, u32, u32, bool) 
 	if rel64 >= u64(geo.total_sectors) {return nil, 0, 0, 0, false}
 	rel := u32(rel64)
 	if rel < geo.data_start {return nil, 0, 0, rel, false}
-	if _, overlaid := v.journal.overlay[rel]; overlaid {return nil, 0, 0, rel, false}
+	if overlay_has(v, rel) {return nil, 0, 0, rel, false}
 	di := rel - geo.data_start
 	cluster := di / SECTORS_PER_CLUSTER + 2
 	soff := di % SECTORS_PER_CLUSTER
-	if _, orphaned := v.journal.orphan_data[cluster]; orphaned {return nil, 0, 0, rel, false}
+	if orphan_has(v, cluster) {return nil, 0, 0, rel, false}
 	node: ^Node
 	index: u32
 	if claim, ok := v.journal.claimed[cluster]; ok {
@@ -103,9 +108,11 @@ read_sector :: proc(v: ^Volume, lba: u64, out: []u8) -> bool {
 	}
 	rel := u32(rel64)
 	// guest-written sectors win over synthesis
-	if sec, ok := v.journal.overlay[rel]; ok {
-		copy(out, sec)
+	if present, ok := overlay_get(v, rel, out); present {
+		if !ok {return false}
 		return true
+	} else if !ok {
+		return false
 	}
 	switch rel {
 	case 0, 6:
@@ -137,8 +144,10 @@ read_sector :: proc(v: ^Volume, lba: u64, out: []u8) -> bool {
 		index = cluster - node.first_cluster
 	}
 	if node == nil {
-		if ob, ok := v.journal.orphan_data[cluster]; ok {
-			copy(out, ob[int(soff) * SECTOR:][:SECTOR])
+		if orphan_has(v, cluster) {
+			block: [CLUSTER_BYTES]u8
+			if !orphan_read_cluster(v, cluster, block[:]) {return false}
+			copy(out, block[int(soff) * SECTOR:][:SECTOR])
 		}
 		return true
 	}
@@ -154,12 +163,15 @@ read_sector :: proc(v: ^Volume, lba: u64, out: []u8) -> bool {
 	if !read_file_sector(v, node, index, soff, out) {
 		return false
 	}
-	// bytes past EOF the guest already wrote but the dir entry has not confirmed
-	if ob, ok := v.journal.orphan_data[cluster]; ok {
+	// Bytes beyond the advertised size remain in the separate orphan layer
+	// until a later directory entry confirms the grow.
+	if orphan_has(v, cluster) {
+		block: [CLUSTER_BYTES]u8
+		if !orphan_read_cluster(v, cluster, block[:]) {return false}
 		off := u64(index) * CLUSTER_BYTES + u64(soff) * SECTOR
 		for i in 0 ..< SECTOR {
 			if off + u64(i) >= node.size {
-				out[i] = ob[int(soff) * SECTOR + i]
+				out[i] = block[int(soff) * SECTOR + i]
 			}
 		}
 	}

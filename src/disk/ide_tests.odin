@@ -5,21 +5,29 @@ import "core:testing"
 
 // 1MB RAM backing for tests
 Ide_Test_Ram :: struct {
-	data:       []u8,
-	reads:      int,
-	writes:     int,
-	write_attempts: int,
+	data:             []u8,
+	reads:            int,
+	read_attempts:    int,
+	last_read_bytes:  int,
+	writes:           int,
+	write_attempts:   int,
 	last_write_bytes: int,
-	flushes:    int,
-	irqs:       int,
-	write_fail: bool,
-	flush_fail: bool,
+	flushes:          int,
+	irqs:             int,
+	irq_deasserts:    int,
+	irq_level:        bool,
+	read_fail:        bool,
+	write_fail:       bool,
+	flush_fail:       bool,
 }
 
 ide_test_ram_read :: proc(ctx: rawptr, lba: u64, buf: []u8) -> bool {
 	r := (^Ide_Test_Ram)(ctx)
 	off := int(lba) * 512
 	if off + len(buf) > len(r.data) {return false}
+	r.read_attempts += 1
+	r.last_read_bytes = len(buf)
+	if r.read_fail {return false}
 	copy(buf, r.data[off:off + len(buf)])
 	r.reads += 1
 	return true
@@ -54,8 +62,14 @@ ide_test_setup :: proc(ram: ^Ide_Test_Ram, ide: ^Ide) {
 	}
 	ide_init(ide, bd)
 	ide.irq_ctx = ram
-	ide.irq = proc(ctx: rawptr) {
-		(^Ide_Test_Ram)(ctx).irqs += 1
+	ide.irq = proc(ctx: rawptr, asserted: bool) {
+		ram := (^Ide_Test_Ram)(ctx)
+		ram.irq_level = asserted
+		if asserted {
+			ram.irqs += 1
+		} else {
+			ram.irq_deasserts += 1
+		}
 	}
 }
 
@@ -102,14 +116,25 @@ ide_test_identify :: proc(t: ^testing.T) {
 	for i in 0 ..< 256 {words[i] = ide_test_inw(&ide, 0x1F0)}
 
 	testing.expect_value(t, words[0], 0x0040)
-	testing.expect_value(t, words[1], 16383)
-	testing.expect_value(t, words[3], 16)
-	testing.expect_value(t, words[6], 63)
+	testing.expect_value(t, words[1], u16(2))
+	testing.expect_value(t, words[3], u16(IDE_CHS_HEADS))
+	testing.expect_value(t, words[6], u16(IDE_CHS_SECTORS_PER_TRACK))
 	testing.expect_value(t, words[47], 0x8000)
+	testing.expect(t, words[49] & 0x0100 != 0) // DMA supported
 	testing.expect(t, words[49] & 0x0200 != 0) // LBA supported
+	testing.expect(t, words[49] & 0x0800 != 0) // IORDY supported for PIO3/4
 	testing.expect_value(t, words[53] & 0x0007, u16(0x0007))
+	testing.expect_value(t, words[54], words[1])
+	testing.expect_value(t, words[55], words[3])
+	testing.expect_value(t, words[56], words[6])
+	chs_sectors := u32(words[57]) | u32(words[58]) << 16
+	testing.expect_value(t, chs_sectors, u32(2 * IDE_CHS_HEADS * IDE_CHS_SECTORS_PER_TRACK))
 	testing.expect_value(t, words[63], u16(0x0007))
 	testing.expect_value(t, words[64] & 0x0003, u16(0x0003))
+	testing.expect_value(t, words[65], u16(120))
+	testing.expect_value(t, words[66], u16(120))
+	testing.expect_value(t, words[67], u16(120))
+	testing.expect_value(t, words[68], u16(120))
 	testing.expect_value(t, words[88], u16(0x101F))
 	sectors := u32(words[60]) | (u32(words[61]) << 16)
 	testing.expect_value(t, sectors, u32(2048))
@@ -119,6 +144,31 @@ ide_test_identify :: proc(t: ^testing.T) {
 
 	st = ide_test_inb(&ide, 0x1F7)
 	testing.expect(t, st & 0x08 == 0) // DRQ clear after 256 words
+}
+
+@(test)
+ide_test_identify_2gib_capacity_has_truthful_chs_and_exact_lba :: proc(t: ^testing.T) {
+	ide: Ide
+	sector_count := u64(4_194_367)
+	ide_init(&ide, Block_Device{sector_count = sector_count})
+	ide_test_command(&ide, 0xEC)
+	words: [256]u16
+	for i in 0 ..< 256 {words[i] = ide_test_inw(&ide, 0x1F0)}
+
+	cylinders := u16(sector_count / (IDE_CHS_HEADS * IDE_CHS_SECTORS_PER_TRACK))
+	testing.expect_value(t, cylinders, u16(4161))
+	testing.expect_value(t, words[1], cylinders)
+	testing.expect_value(t, words[54], cylinders)
+	testing.expect_value(t, words[55], u16(IDE_CHS_HEADS))
+	testing.expect_value(t, words[56], u16(IDE_CHS_SECTORS_PER_TRACK))
+	chs_sectors := u32(words[57]) | u32(words[58]) << 16
+	testing.expect_value(
+		t,
+		chs_sectors,
+		u32(cylinders) * IDE_CHS_HEADS * IDE_CHS_SECTORS_PER_TRACK,
+	)
+	lba_sectors := u32(words[60]) | u32(words[61]) << 16
+	testing.expect_value(t, lba_sectors, u32(sector_count))
 }
 
 @(test)
@@ -157,7 +207,9 @@ ide_test_pio_roundtrip :: proc(t: ^testing.T) {
 
 	irq_count := 0
 	ide.irq_ctx = &irq_count
-	ide.irq = proc(ctx: rawptr) {(^int)(ctx)^ += 1}
+	ide.irq = proc(ctx: rawptr, asserted: bool) {
+		if asserted {(^int)(ctx)^ += 1}
+	}
 
 	// WRITE SECTORS to LBA 3
 	ide_test_set_lba28(&ide, 3, 1)
@@ -232,7 +284,7 @@ ide_test_multisector_write_checkpoints_on_flush_cache :: proc(t: ^testing.T) {
 }
 
 @(test)
-ide_test_idle_writeback_failure_blocks_further_writes :: proc(t: ^testing.T) {
+ide_test_idle_writeback_failure_retries_without_poisoning_writes :: proc(t: ^testing.T) {
 	ram: Ide_Test_Ram
 	ide: Ide
 	ide_test_setup(&ram, &ide)
@@ -255,13 +307,30 @@ ide_test_idle_writeback_failure_blocks_further_writes :: proc(t: ^testing.T) {
 	testing.expect_value(t, ram.flushes, 1)
 	testing.expect_value(t, ram.irqs, 1)
 	testing.expect_value(t, ide.state, Ide_State.Idle)
-	testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(IDE_ERROR_ABRT))
 	status := ide_test_inb(&ide, 0x1F7)
-	testing.expect(t, status & IDE_STATUS_ERR != 0)
+	testing.expect(t, status & IDE_STATUS_ERR == 0)
 	testing.expect(t, status & IDE_STATUS_DRQ == 0)
+	testing.expect(t, ide.writeback_pending)
+	testing.expect(t, !ide.writeback_failed)
+	retry_deadline, retry_pending := ide_next_deadline(&ide)
+	testing.expect(t, retry_pending)
+	testing.expect_value(t, retry_deadline - ide.now_tick, IDE_WRITEBACK_IDLE_TICKS)
+
 	ide_test_set_lba28(&ide, 10, 1)
 	ide_test_outb(&ide, 0x1F7, 0x30)
-	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR != 0)
+	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_BSY != 0)
+	testing.expect(t, ide_test_advance_deadline(&ide))
+	for word in 0 ..< 256 {ide_test_outw(&ide, 0x1F0, u16(word + 1))}
+	testing.expect(t, ide_test_advance_deadline(&ide))
+	testing.expect_value(t, ram.writes, 2)
+	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR == 0)
+
+	ram.flush_fail = false
+	retry_deadline, retry_pending = ide_next_deadline(&ide)
+	testing.expect(t, retry_pending)
+	ide_advance_to(&ide, retry_deadline)
+	testing.expect_value(t, ram.flushes, 2)
+	testing.expect(t, !ide.writeback_pending)
 }
 
 @(test)
@@ -381,6 +450,77 @@ ide_test_slave_not_present :: proc(t: ^testing.T) {
 }
 
 @(test)
+ide_test_software_reset_reselects_master_and_publishes_signature :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	ide_test_outb(&ide, 0x1F6, 0xB0)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(0))
+	ide_test_outb(&ide, 0x1F6, 0xA0)
+	ide_test_outb(&ide, 0x1F7, 0xEC)
+	testing.expect(t, ide_test_advance_deadline(&ide))
+	testing.expect_value(t, ram.irqs, 1)
+	testing.expect(t, ram.irq_level)
+	ide_test_outb(&ide, 0x3F6, 0x04)
+	testing.expect_value(t, ide.reg_status, u8(IDE_STATUS_BSY))
+	testing.expect_value(t, ram.irq_deasserts, 1)
+	testing.expect(t, !ram.irq_level)
+	testing.expect(t, !ide_interrupt_pending(&ide))
+	ide_test_outb(&ide, 0x3F6, 0x04)
+	testing.expect_value(t, ram.irq_deasserts, 1)
+
+	ide_test_outb(&ide, 0x3F6, 0)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F6), u8(0xA0))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(1))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F2), u8(1))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F3), u8(1))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F4), u8(0))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F5), u8(0))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(IDE_STATUS_DRDY))
+	testing.expect(t, !ide_interrupt_pending(&ide))
+	testing.expect_value(t, ram.irqs, 1)
+	testing.expect_value(t, ram.irq_deasserts, 1)
+}
+
+@(test)
+ide_test_execute_device_diagnostic_is_broadcast_from_slave_selection :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	ide_test_outb(&ide, 0x1F6, 0xB0)
+	ide_test_outb(&ide, 0x1F7, 0x90)
+	testing.expect_value(t, ide.reg_status, u8(IDE_STATUS_BSY))
+	testing.expect(t, ide_test_advance_deadline(&ide))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F6), u8(0xA0))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(1))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(IDE_STATUS_DRDY))
+	testing.expect_value(t, ram.irqs, 1)
+}
+
+@(test)
+ide_test_initialize_device_parameters_accepts_advertised_geometry :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	ide_test_outb(&ide, 0x1F2, IDE_CHS_SECTORS_PER_TRACK)
+	ide_test_outb(&ide, 0x1F6, 0xA0 | IDE_CHS_HEADS - 1)
+	ide_test_outb(&ide, 0x1F7, 0x91)
+	testing.expect_value(t, ide.reg_status, u8(IDE_STATUS_BSY))
+	testing.expect(t, ide_test_advance_deadline(&ide))
+	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR == 0)
+
+	ide_test_outb(&ide, 0x1F2, IDE_CHS_SECTORS_PER_TRACK - 1)
+	ide_test_outb(&ide, 0x1F7, 0x91)
+	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR != 0)
+}
+
+@(test)
 ide_test_dma_request_uses_udma_66_rate :: proc(t: ^testing.T) {
 	ram: Ide_Test_Ram
 	ide: Ide
@@ -425,8 +565,87 @@ ide_test_pio_read_phases_obey_deadlines :: proc(t: ^testing.T) {
 	ide_advance_to(&ide, second - 1)
 	testing.expect_value(t, ram.reads, 1)
 	ide_advance_to(&ide, second)
-	testing.expect_value(t, ram.reads, 2)
+	testing.expect_value(t, ram.reads, 1)
 	testing.expect_value(t, u8(ide_test_inw(&ide, 0x1F0)), u8(0x55))
+}
+
+@(test)
+ide_test_pio_256_sector_read_batches_backing_and_preserves_phases :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+	start_lba := 32
+	for sector in 0 ..< IDE_DMA_MAX_SECTORS {
+		offset := (start_lba + sector) * IDE_SECTOR_SIZE
+		for word in 0 ..< IDE_SECTOR_SIZE / 2 {
+			value := u16(sector) << 8 | u16(word & 0xFF)
+			ram.data[offset + word * 2] = u8(value)
+			ram.data[offset + word * 2 + 1] = u8(value >> 8)
+		}
+	}
+
+	ide_test_set_lba28(&ide, u32(start_lba), 0)
+	ide_test_outb(&ide, 0x1F7, 0x20)
+	deadline, pending := ide_next_deadline(&ide)
+	if !testing.expect(t, pending) {return}
+	testing.expect_value(t, deadline, IDE_COMMAND_LATENCY_TICKS)
+	testing.expect_value(t, ram.read_attempts, 0)
+	ide_advance_to(&ide, deadline)
+	testing.expect_value(t, ram.read_attempts, 1)
+	testing.expect_value(t, ram.reads, 1)
+	testing.expect_value(t, ram.last_read_bytes, IDE_DMA_MAX_BYTES)
+
+	for sector in 0 ..< IDE_DMA_MAX_SECTORS {
+		status := ide_test_inb(&ide, 0x1F7)
+		testing.expect(t, status & IDE_STATUS_DRQ != 0)
+		for word in 0 ..< IDE_SECTOR_SIZE / 2 {
+			expected := u16(sector) << 8 | u16(word & 0xFF)
+			testing.expect_value(t, ide_test_inw(&ide, 0x1F0), expected)
+		}
+		if sector + 1 < IDE_DMA_MAX_SECTORS {
+			next, next_pending := ide_next_deadline(&ide)
+			if !testing.expect(t, next_pending) {return}
+			testing.expect_value(t, next - deadline, IDE_PIO_SECTOR_TICKS)
+			ide_advance_to(&ide, next - 1)
+			testing.expect_value(t, ram.read_attempts, 1)
+			testing.expect(t, ide_test_inb(&ide, 0x3F6) & IDE_STATUS_DRQ == 0)
+			ide_advance_to(&ide, next)
+			deadline = next
+		}
+	}
+	testing.expect_value(t, ram.read_attempts, 1)
+	testing.expect_value(t, ram.irqs, IDE_DMA_MAX_SECTORS)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F2), u8(0))
+	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_DRQ == 0)
+}
+
+@(test)
+ide_test_pio_batched_read_failure_aborts_at_first_ready_deadline :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+	ram.read_fail = true
+
+	ide_test_set_lba28(&ide, 17, 3)
+	ide_test_outb(&ide, 0x1F7, 0x20)
+	deadline, pending := ide_next_deadline(&ide)
+	if !testing.expect(t, pending) {return}
+	testing.expect_value(t, ram.read_attempts, 0)
+	testing.expect_value(t, ide_test_inb(&ide, 0x3F6), u8(IDE_STATUS_BSY))
+	ide_advance_to(&ide, deadline - 1)
+	testing.expect_value(t, ram.read_attempts, 0)
+	ide_advance_to(&ide, deadline)
+	testing.expect_value(t, ram.read_attempts, 1)
+	testing.expect_value(t, ram.last_read_bytes, 3 * IDE_SECTOR_SIZE)
+	testing.expect_value(t, ram.reads, 0)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(IDE_ERROR_ABRT))
+	status := ide_test_inb(&ide, 0x1F7)
+	testing.expect(t, status & IDE_STATUS_ERR != 0)
+	testing.expect(t, status & (IDE_STATUS_BSY | IDE_STATUS_DRQ) == 0)
+	_, still_pending := ide_next_deadline(&ide)
+	testing.expect(t, !still_pending)
 }
 
 @(test)
@@ -452,4 +671,140 @@ ide_test_multisector_write_rejection_has_no_partial_commit :: proc(t: ^testing.T
 	testing.expect_value(t, ram.data[start], u8(0xA5))
 	testing.expect_value(t, ram.data[start + 2 * IDE_SECTOR_SIZE], u8(0xA5))
 	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR != 0)
+}
+
+@(test)
+ide_test_pci_decode_gates_taskfile_and_channel :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+	initial_sector_count := ide.reg_seccount
+
+	ide_set_pci_decode(&ide, false, true)
+	testing.expect_value(t, ide_io_read(&ide, 0x1F7, 1), u32(0xFF))
+	ide_io_write(&ide, 0x1F2, 1, 0x55)
+	testing.expect_value(t, ide.reg_seccount, initial_sector_count)
+
+	ide_set_pci_decode(&ide, true, false)
+	testing.expect_value(t, ide_io_read(&ide, 0x1F7, 1), u32(0xFF))
+	ide_set_pci_decode(&ide, true, true)
+	testing.expect_value(t, ide_io_read(&ide, 0x1F7, 1), u32(IDE_STATUS_DRDY))
+}
+
+@(test)
+ide_test_irq_callback_tracks_nien_and_pci_decode_levels :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	ide_test_outb(&ide, 0x1F7, 0xEC)
+	testing.expect(t, ide_test_advance_deadline(&ide))
+	testing.expect_value(t, ram.irqs, 1)
+	testing.expect_value(t, ram.irq_deasserts, 0)
+	testing.expect(t, ram.irq_level)
+	testing.expect(t, ide_interrupt_pending(&ide))
+
+	ide_test_outb(&ide, 0x3F6, 0x02)
+	ide_test_outb(&ide, 0x3F6, 0x02)
+	testing.expect_value(t, ram.irqs, 1)
+	testing.expect_value(t, ram.irq_deasserts, 1)
+	testing.expect(t, !ram.irq_level)
+	testing.expect(t, ide_interrupt_pending(&ide))
+	ide_test_outb(&ide, 0x3F6, 0)
+	ide_test_outb(&ide, 0x3F6, 0)
+	testing.expect_value(t, ram.irqs, 2)
+	testing.expect_value(t, ram.irq_deasserts, 1)
+	testing.expect(t, ram.irq_level)
+
+	ide_set_pci_decode(&ide, false, true)
+	ide_set_pci_decode(&ide, false, true)
+	testing.expect_value(t, ram.irq_deasserts, 1)
+	testing.expect(t, ram.irq_level)
+	ide_set_pci_decode(&ide, true, false)
+	testing.expect_value(t, ram.irqs, 2)
+	testing.expect_value(t, ram.irq_deasserts, 2)
+	ide_set_pci_decode(&ide, true, true)
+	testing.expect_value(t, ram.irqs, 3)
+	testing.expect(t, ram.irq_level)
+	ide_set_pci_decode(&ide, true, false)
+	testing.expect_value(t, ram.irq_deasserts, 3)
+	ide_set_pci_decode(&ide, true, true)
+	testing.expect_value(t, ram.irqs, 4)
+
+	_ = ide_test_inb(&ide, 0x3F6)
+	testing.expect_value(t, ram.irq_deasserts, 3)
+	testing.expect(t, ide_interrupt_pending(&ide))
+	_ = ide_test_inb(&ide, 0x1F7)
+	testing.expect_value(t, ram.irq_deasserts, 4)
+	testing.expect(t, !ram.irq_level)
+	testing.expect(t, !ide_interrupt_pending(&ide))
+	_ = ide_test_inb(&ide, 0x1F7)
+	testing.expect_value(t, ram.irq_deasserts, 4)
+}
+
+@(test)
+ide_test_dma_abort_reasserts_after_nien_clears :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	ide.dma_pending = true
+	ide_test_outb(&ide, 0x3F6, 0x02)
+	request, pending := ide_bmide_request(&ide)
+	if !testing.expect(t, pending && request.device.abort != nil) {return}
+	request.device.abort(request.device.ctx, 0)
+	testing.expect(t, ide_interrupt_pending(&ide))
+	testing.expect_value(t, ram.irqs, 0)
+	testing.expect_value(t, ram.irq_deasserts, 0)
+	ide_test_outb(&ide, 0x3F6, 0)
+	testing.expect_value(t, ram.irqs, 1)
+	testing.expect(t, ram.irq_level)
+	testing.expect(t, ide_interrupt_pending(&ide))
+	_ = ide_test_inb(&ide, 0x1F7)
+	testing.expect(t, !ide_interrupt_pending(&ide))
+	testing.expect_value(t, ram.irq_deasserts, 1)
+	testing.expect(t, !ram.irq_level)
+}
+
+@(test)
+ide_test_status_acknowledges_irq_but_alt_status_does_not :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	ide_test_outb(&ide, 0x1F6, 0xA0)
+	ide_test_outb(&ide, 0x1F7, 0xEC)
+	_ = ide_test_advance_deadline(&ide)
+	testing.expect(t, ide_interrupt_pending(&ide))
+	testing.expect_value(t, ram.irqs, 1)
+	testing.expect(t, ram.irq_level)
+	_ = ide_test_inb(&ide, 0x3F6)
+	testing.expect(t, ide_interrupt_pending(&ide))
+	testing.expect_value(t, ram.irq_deasserts, 0)
+	_ = ide_test_inb(&ide, 0x1F7)
+	testing.expect(t, !ide_interrupt_pending(&ide))
+	testing.expect_value(t, ram.irq_deasserts, 1)
+	testing.expect(t, !ram.irq_level)
+}
+
+@(test)
+ide_test_pending_irq_is_reasserted_when_nien_clears :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	ide_test_outb(&ide, 0x3F6, 0x02)
+	ide_test_outb(&ide, 0x1F7, 0xEC)
+	_ = ide_test_advance_deadline(&ide)
+	testing.expect(t, ide_interrupt_pending(&ide))
+	testing.expect_value(t, ram.irqs, 0)
+	ide_test_outb(&ide, 0x3F6, 0x00)
+	testing.expect_value(t, ram.irqs, 1)
+	_ = ide_test_inb(&ide, 0x1F7)
+	testing.expect(t, !ide_interrupt_pending(&ide))
 }

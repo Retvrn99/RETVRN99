@@ -11,13 +11,16 @@ Mirror_Key :: struct {
 }
 
 Mirror_Entry :: struct {
-	host_path:       string,
-	first_cluster:   u32,
-	size:            u32,
-	is_dir:          bool,
-	fingerprint:     u64,
-	has_fingerprint: bool,
-	base_node:       ^Node,
+	host_path:          string,
+	first_cluster:      u32,
+	size:               u32,
+	is_dir:             bool,
+	chain_identity:     u64,
+	has_chain_identity: bool,
+	fingerprint:        u64,
+	has_fingerprint:    bool,
+	base_node:          ^Node,
+	guest_deleted:      bool,
 }
 
 Guest_Entry :: struct {
@@ -38,10 +41,10 @@ Guest_Dir_Work :: struct {
 }
 
 Guest_Scan :: struct {
-	entries:      [dynamic]Guest_Entry,
-	scanned_dirs: map[u32]bool,
-	error:        Guest_Scan_Error,
-	error_parent: string,
+	entries:         [dynamic]Guest_Entry,
+	scanned_dirs:    map[u32]bool,
+	error:           Guest_Scan_Error,
+	error_parent:    string,
 	error_component: string,
 }
 
@@ -91,8 +94,10 @@ guest_scan_tree :: proc(v: ^Volume, allocator := context.allocator) -> Guest_Sca
 		if !ok {
 			continue
 		}
-		unsafe_component, short_entries_safe :=
-			guest_directory_short_entries_safe(bytes, allocator)
+		unsafe_component, short_entries_safe := guest_directory_short_entries_safe(
+			bytes,
+			allocator,
+		)
 		if !short_entries_safe {
 			scan.error = .Invalid_Component
 			scan.error_parent = strings.clone(item.path, allocator)
@@ -175,31 +180,6 @@ guest_entry_chain_state :: proc(
 	return true, guest_chain_touched(v, chain[:])
 }
 
-guest_read_file :: proc(
-	v: ^Volume,
-	first, size: u32,
-	allocator := context.allocator,
-) -> (
-	[]u8,
-	bool,
-) {
-	if size == 0 {
-		return make([]u8, 0, allocator), true
-	}
-	if first < 2 {
-		return nil, false
-	}
-	chain, state := volume_chain_inspect(v, first, allocator)
-	if state != .Complete || u64(size) > u64(len(chain)) * u64(CLUSTER_BYTES) {
-		return nil, false
-	}
-	all, ok := guest_read_chain(v, chain[:], allocator)
-	if !ok {
-		return nil, false
-	}
-	return all[:size], true
-}
-
 @(private = "file")
 guest_read_chain :: proc(
 	v: ^Volume,
@@ -225,7 +205,7 @@ guest_chain_touched :: proc(v: ^Volume, chain: []u32) -> bool {
 	for cluster in chain {
 		first := v.alloc.geo.data_start + (cluster - 2) * SECTORS_PER_CLUSTER
 		for sector in u32(0) ..< SECTORS_PER_CLUSTER {
-			if _, ok := v.journal.overlay[first + sector]; ok {
+			if overlay_dirty_has(v, first + sector) {
 				return true
 			}
 		}

@@ -97,11 +97,12 @@ pending_chain_freed :: proc(v: ^Volume, node: ^Node) -> bool {
 @(private = "file")
 DECODE_LFN_OFFS :: [13]int{1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30}
 
-// LFN accumulation that survives a sector boundary
+// directory parse state that survives a sector boundary
 Lfn_State :: struct {
 	units: [20 * 13]u16,
 	max:   int,
 	csum:  u8,
+	ended: bool,
 }
 
 parse_dir_sector :: proc(
@@ -110,10 +111,14 @@ parse_dir_sector :: proc(
 	allocator := context.allocator,
 ) -> [dynamic]Dir_Entry {
 	entries := make([dynamic]Dir_Entry, allocator)
+	if st.ended {
+		return entries
+	}
 	for off := 0; off + 32 <= len(sec); off += 32 {
 		e := sec[off:][:32]
 		if e[0] == 0 {
-			st.max = 0 // directory ends here: no carry past the terminator
+			st.max = 0
+			st.ended = true
 			break
 		}
 		if e[0] == 0xE5 {
@@ -301,16 +306,16 @@ claim_chain :: proc(v: ^Volume, node: ^Node, first: u32) -> bool {
 		delete_key(&v.journal.stale_clusters, c)
 		v.journal.claimed[c] = Claim{node, u32(idx)}
 		if node.is_dir {
-			if ob, ok := v.journal.orphan_data[c]; ok {
-				delete_key(&v.journal.orphan_data, c)
+			if orphan_has(v, c) {
+				block: [CLUSTER_BYTES]u8
+				if !orphan_read_cluster(v, c, block[:]) {return false}
 				rel0 := geo.data_start + (c - 2) * SECTORS_PER_CLUSTER
 				for s in u32(0) ..< SECTORS_PER_CLUSTER {
-					if !write_dir_sector(v, node, rel0 + s, ob[int(s) * SECTOR:][:SECTOR]) {
-						delete(ob, v.allocator)
+					if !write_dir_sector(v, node, rel0 + s, block[int(s) * SECTOR:][:SECTOR]) {
 						return false
 					}
 				}
-				delete(ob, v.allocator)
+				orphan_unmark(v, c)
 			}
 		}
 	}
@@ -437,33 +442,37 @@ apply_create :: proc(
 		node := decode_new_node(v, dir, name, path, e, true)
 		return claim_chain(v, node, e.cluster)
 	}
-	// new file: content comes from guest-written orphan clusters
-	data := make([]u8, int(e.size), ta)
+	// New files stream from orphan sectors; unwritten sectors are zero.
 	node := decode_new_node(v, dir, name, path, e, false)
+	chain := make([dynamic]u32, ta)
 	if e.cluster != 0 {
 		if !claim_chain(v, node, e.cluster) {
 			return false
 		}
-		chain := volume_chain(v, e.cluster, ta)
-		for c, idx in chain {
-			ob, ok := v.journal.orphan_data[c]
-			if !ok {
-				continue
-			}
-			base := idx * CLUSTER_BYTES
-			if base < int(e.size) {
-				copy(data[base:], ob[:min(CLUSTER_BYTES, int(e.size) - base)])
-			}
-			// buffer fully covered by the host file now: release it
-			if base + CLUSTER_BYTES <= int(e.size) {
-				delete_key(&v.journal.orphan_data, c)
-				delete(ob, v.allocator)
-			}
-		}
+		chain = volume_chain(v, e.cluster, ta)
 	}
-	if werr := os.write_entire_file(path, data); werr != nil {
+	prepared, _, stream_error := guest_prepare_file(
+		v,
+		path,
+		chain[:],
+		e.size,
+		.Orphan_Clusters,
+		ta,
+	)
+	if stream_error != .None {
+		volume_fail(v, fmt.tprintf("cannot stream new file %s (%v)", path, stream_error))
+		return false
+	}
+	if !guest_prepared_install(prepared, path) {
+		guest_prepared_discard(prepared, ta)
 		volume_fail(v, fmt.tprintf("cannot create %s", path))
 		return false
+	}
+	delete(prepared, ta)
+	for cluster, index in chain {
+		if u64(index + 1) * CLUSTER_BYTES <= u64(e.size) && orphan_has(v, cluster) {
+			orphan_clear(v, cluster)
+		}
 	}
 	return true
 }
@@ -524,12 +533,6 @@ apply_change :: proc(
 		return apply_resize(v, node, n.size)
 	}
 	return true
-}
-
-@(private = "file")
-Replacement_Slack :: struct {
-	cluster: u32,
-	data:    []u8,
 }
 
 // Windows Setup may replace a file before or after freeing its old chain.
@@ -652,29 +655,26 @@ apply_file_chain_replacement :: proc(
 		}
 	}
 
-	temporary := fmt.tprintf("%s.retvrn99-%d-%d.tmp", node.host_path, os.get_pid(), new_first)
-	defer _ = os.remove(temporary)
-	f, oerr := os.open(temporary, {.Write, .Create, .Trunc})
-	if oerr != nil {
-		volume_fail(v, fmt.tprintf("cannot create replacement for %s", node.host_path))
+	temporary, _, stream_error := guest_prepare_file(
+		v,
+		node.host_path,
+		chain[:],
+		new_size,
+		.Guest_View,
+		context.temp_allocator,
+	)
+	if stream_error != .None {
+		volume_fail(
+			v,
+			fmt.tprintf("cannot stream replacement for %s (%v)", node.host_path, stream_error),
+		)
 		return false
 	}
-	file_open := true
-	defer if file_open {_ = os.close(f)}
+	prepared := true
+	defer if prepared {guest_prepared_discard(temporary, context.temp_allocator)}
 
-	slack := make([dynamic]Replacement_Slack, context.temp_allocator)
-	stale_data := make([dynamic]Replacement_Slack, context.temp_allocator)
-	committed := false
-	defer if !committed {
-		for s in slack {
-			delete(s.data, v.allocator)
-		}
-		for s in stale_data {
-			delete(s.data, v.allocator)
-		}
-	}
-
-	written: i64
+	slack := make([dynamic]u32, context.temp_allocator)
+	stale_data := make([dynamic]u32, context.temp_allocator)
 	block: [CLUSTER_BYTES]u8
 	for c, index in chain {
 		lba := u64(PART_START_LBA) + u64(cluster_to_lba(&v.alloc.geo, c))
@@ -683,25 +683,9 @@ apply_file_chain_replacement :: proc(
 		}
 		base := u64(index) * u64(CLUSTER_BYTES)
 		in_size := min(u64(CLUSTER_BYTES), u64(new_size) - min(base, u64(new_size)))
-		if in_size > 0 {
-			total := 0
-			for total < int(in_size) {
-				n, werr := os.write_at(f, block[total:int(in_size)], written + i64(total))
-				if werr != nil || n == 0 {
-					volume_fail(
-						v,
-						fmt.tprintf("cannot materialize replacement for %s", node.host_path),
-					)
-					return false
-				}
-				total += n
-			}
-			written += i64(in_size)
-		}
 		if in_size < u64(CLUSTER_BYTES) && replacement_has_data(block[int(in_size):]) {
-			data := make([]u8, CLUSTER_BYTES, v.allocator)
-			copy(data, block[:])
-			append(&slack, Replacement_Slack{c, data})
+			if !orphan_store_cluster(v, c, block[:]) {return false}
+			append(&slack, c)
 		}
 	}
 	for c in old_chain {
@@ -709,37 +693,26 @@ apply_file_chain_replacement :: proc(
 		lba := u64(PART_START_LBA) + u64(cluster_to_lba(&v.alloc.geo, c))
 		if !volume_read(v, lba, block[:]) {return false}
 		if replacement_has_data(block[:]) {
-			data := make([]u8, CLUSTER_BYTES, v.allocator)
-			copy(data, block[:])
-			append(&stale_data, Replacement_Slack{c, data})
+			if !orphan_store_cluster(v, c, block[:]) {return false}
+			append(&stale_data, c)
 		}
 	}
-	if cerr := os.close(f); cerr != nil {
-		file_open = false
-		volume_fail(v, fmt.tprintf("cannot close replacement for %s", node.host_path))
-		return false
-	}
-	file_open = false
-	if rerr := os.rename(temporary, node.host_path); rerr != nil {
+	if !guest_prepared_install(temporary, node.host_path) {
 		volume_fail(v, fmt.tprintf("cannot install replacement for %s", node.host_path))
 		return false
 	}
+	delete(temporary, context.temp_allocator)
+	prepared = false
 	if donor != nil && !consume_replacement_donor(v, round_deletes, donor) {
 		return false
 	}
 
 	for c in old_clusters {
-		if data, ok := v.journal.orphan_data[c]; ok {
-			delete(data, v.allocator)
-			delete_key(&v.journal.orphan_data, c)
-		}
+		if orphan_has(v, c) {orphan_clear(v, c)}
 		delete_key(&v.journal.stale_clusters, c)
 	}
 	for c in new_clusters {
-		if data, ok := v.journal.orphan_data[c]; ok {
-			delete(data, v.allocator)
-			delete_key(&v.journal.orphan_data, c)
-		}
+		if orphan_has(v, c) {orphan_clear(v, c)}
 		delete_key(&v.journal.stale_clusters, c)
 	}
 	for c in old_chain {
@@ -755,16 +728,15 @@ apply_file_chain_replacement :: proc(
 	for c, index in chain {
 		v.journal.claimed[c] = Claim{node, u32(index)}
 	}
-	for s in slack {
-		v.journal.orphan_data[s.cluster] = s.data
+	for cluster in slack {
+		orphan_republish_cluster(v, cluster)
 	}
 	for c in old_chain {
 		if !new_clusters[c] {v.journal.stale_clusters[c] = true}
 	}
-	for s in stale_data {
-		v.journal.orphan_data[s.cluster] = s.data
+	for cluster in stale_data {
+		orphan_republish_cluster(v, cluster)
 	}
-	committed = true
 	return true
 }
 
@@ -804,28 +776,28 @@ apply_resize :: proc(v: ^Volume, node: ^Node, new_size: u32) -> bool {
 	for c, idx in chain {
 		v.journal.claimed[c] = Claim{node, u32(idx)}
 		base := i64(idx) * CLUSTER_BYTES
-		ob, ok := v.journal.orphan_data[c]
-		if !ok {
+		if !orphan_has(v, c) {
 			continue // truncate already zero-filled the gap
 		}
+		block: [CLUSTER_BYTES]u8
+		if !orphan_read_cluster(v, c, block[:]) {return false}
 		lo := max(base, old)
 		hi := min(base + CLUSTER_BYTES, ns)
 		if lo < hi {
-			if !host_write_at(v, node, ob[lo - base:hi - base], lo) {
+			if !host_write_at(v, node, block[lo - base:hi - base], lo) {
 				return false
 			}
 		}
 		// buffer fully covered by the host file now: release it
 		if base + CLUSTER_BYTES <= ns {
-			delete_key(&v.journal.orphan_data, c)
-			delete(ob, v.allocator)
+			orphan_clear(v, c)
 		}
 	}
 	return true
 }
 
 // forget every cluster the node owned (the guest freed its chain)
-@(private = "file")
+@(private)
 release_node_clusters :: proc(v: ^Volume, node: ^Node) {
 	for c in node.first_cluster ..< node.first_cluster + node.cluster_len {
 		if int(c) < len(v.alloc.by_cluster) && v.alloc.by_cluster[c] == node {

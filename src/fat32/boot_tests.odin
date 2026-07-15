@@ -59,8 +59,9 @@ boot_test_vbr_patched :: proc(t: ^testing.T) {
 @(test)
 boot_test_vbr_msload_handoff_fields :: proc(t: ^testing.T) {
 	g := geometry_make(2048)
-	lba := u64(10464)
 	cluster := u32(26)
+	lba := u64(PART_START_LBA) + u64(g.data_start) +
+		u64(cluster - 2) * SECTORS_PER_CLUSTER
 	vbr := make_vbr(&g, g.total_sectors, lba, cluster)
 	testing.expect_value(t, fat32_rd32le(vbr[:], VBR_DATA_LBA_OFFSET),
 		u32(PART_START_LBA) + g.data_start)

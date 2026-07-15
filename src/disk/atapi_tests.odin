@@ -7,6 +7,22 @@ import "core:fmt"
 import "core:path/filepath"
 import "core:testing"
 
+Atapi_Test_Irq :: struct {
+	asserts:   int,
+	deasserts: int,
+	level:     bool,
+}
+
+atapi_test_irq :: proc(ctx: rawptr, asserted: bool) {
+	irq := (^Atapi_Test_Irq)(ctx)
+	irq.level = asserted
+	if asserted {
+		irq.asserts += 1
+	} else {
+		irq.deasserts += 1
+	}
+}
+
 atapi_test_outb :: proc(a: ^Atapi, port: u16, value: u8) {
 	atapi_io_write(a, port, 1, u32(value))
 }
@@ -82,8 +98,9 @@ atapi_test_reset_signature_and_identify_packet :: proc(t: ^testing.T) {
 	words: [256]u16
 	for i in 0 ..< len(words) {words[i] = atapi_test_inw(&a)}
 	testing.expect_value(t, words[0], u16(0x85C0))
-	testing.expect(t, words[49] & 0x0100 == 0)
+	testing.expect(t, words[49] & 0x0100 != 0)
 	testing.expect(t, words[49] & 0x0200 != 0)
+	testing.expect_value(t, words[63], u16(0x0407))
 	model_bytes: [40]u8
 	for i in 0 ..< 20 {
 		model_bytes[2 * i] = u8(words[27 + i] >> 8)
@@ -181,9 +198,9 @@ atapi_test_read_capacity_and_multiblock_read_10 :: proc(t: ^testing.T) {
 atapi_test_mode_select_data_out_advances_phases_and_irqs :: proc(t: ^testing.T) {
 	a: Atapi
 	atapi_init(&a)
-	irq_count := 0
-	a.irq_ctx = &irq_count
-	a.irq = proc(ctx: rawptr) {(^int)(ctx)^ += 1}
+	irq: Atapi_Test_Irq
+	a.irq_ctx = &irq
+	a.irq = atapi_test_irq
 
 	select: [ATAPI_PACKET_BYTES]u8
 	select[0], select[4] = 0x15, 10
@@ -192,26 +209,134 @@ atapi_test_mode_select_data_out_advances_phases_and_irqs :: proc(t: ^testing.T) 
 	testing.expect_value(t, a.data_out_remaining, 10)
 	testing.expect_value(t, a.data_out_phase_remaining, 4)
 	testing.expect_value(t, atapi_test_inb(&a, 0x174), u8(4))
-	testing.expect_value(t, irq_count, 1)
+	testing.expect_value(t, irq.asserts, 1)
+	_ = atapi_test_inb(&a, 0x177)
 
 	atapi_test_outw(&a, 0)
 	atapi_test_outw(&a, 0)
 	testing.expect_value(t, a.data_out_remaining, 6)
 	testing.expect_value(t, a.data_out_phase_remaining, 4)
 	testing.expect_value(t, atapi_test_inb(&a, 0x174), u8(4))
-	testing.expect_value(t, irq_count, 2)
+	testing.expect_value(t, irq.asserts, 2)
+	_ = atapi_test_inb(&a, 0x177)
 
 	atapi_test_outw(&a, 0)
 	atapi_test_outw(&a, 0)
 	testing.expect_value(t, a.data_out_remaining, 2)
 	testing.expect_value(t, a.data_out_phase_remaining, 2)
 	testing.expect_value(t, atapi_test_inb(&a, 0x174), u8(2))
-	testing.expect_value(t, irq_count, 3)
+	testing.expect_value(t, irq.asserts, 3)
+	_ = atapi_test_inb(&a, 0x177)
 
 	atapi_test_outw(&a, 0)
 	testing.expect_value(t, a.state, Atapi_State.Idle)
 	testing.expect_value(t, atapi_test_inb(&a, 0x177), u8(ATAPI_STATUS_DRDY))
-	testing.expect_value(t, irq_count, 4)
+	testing.expect_value(t, irq.asserts, 4)
+}
+
+@(test)
+atapi_test_pci_decode_and_status_irq_acknowledgement :: proc(t: ^testing.T) {
+	a: Atapi
+	atapi_init(&a)
+	irq: Atapi_Test_Irq
+	a.irq_ctx = &irq
+	a.irq = atapi_test_irq
+
+	atapi_set_pci_decode(&a, false, true)
+	testing.expect_value(t, atapi_io_read(&a, 0x177, 1), u32(0xFF))
+	atapi_set_pci_decode(&a, true, false)
+	testing.expect_value(t, atapi_io_read(&a, 0x177, 1), u32(0xFF))
+	atapi_set_pci_decode(&a, true, true)
+	atapi_test_outb(&a, 0x177, 0xA1)
+	testing.expect(t, atapi_interrupt_pending(&a))
+	testing.expect_value(t, irq.asserts, 1)
+	testing.expect_value(t, irq.deasserts, 0)
+	testing.expect(t, irq.level)
+
+	atapi_set_pci_decode(&a, false, true)
+	atapi_set_pci_decode(&a, false, true)
+	testing.expect(t, atapi_interrupt_pending(&a))
+	testing.expect_value(t, irq.deasserts, 0)
+	testing.expect(t, irq.level)
+	atapi_set_pci_decode(&a, true, false)
+	testing.expect_value(t, irq.asserts, 1)
+	atapi_set_pci_decode(&a, true, true)
+	testing.expect_value(t, irq.asserts, 2)
+	testing.expect(t, irq.level)
+
+	atapi_test_outb(&a, 0x376, 0x02)
+	atapi_test_outb(&a, 0x376, 0x02)
+	testing.expect_value(t, irq.deasserts, 2)
+	testing.expect(t, atapi_interrupt_pending(&a))
+	atapi_test_outb(&a, 0x376, 0)
+	atapi_test_outb(&a, 0x376, 0)
+	testing.expect_value(t, irq.asserts, 3)
+	testing.expect(t, irq.level)
+	_ = atapi_test_inb(&a, 0x376)
+	testing.expect(t, atapi_interrupt_pending(&a))
+	testing.expect_value(t, irq.deasserts, 2)
+	_ = atapi_test_inb(&a, 0x177)
+	testing.expect(t, !atapi_interrupt_pending(&a))
+	testing.expect_value(t, irq.deasserts, 3)
+	testing.expect(t, !irq.level)
+	_ = atapi_test_inb(&a, 0x177)
+	testing.expect_value(t, irq.deasserts, 3)
+}
+
+@(test)
+atapi_test_dma_abort_reasserts_after_nien_clears :: proc(t: ^testing.T) {
+	a: Atapi
+	atapi_init(&a)
+	irq: Atapi_Test_Irq
+	a.irq_ctx = &irq
+	a.irq = atapi_test_irq
+	a.dma_pending = true
+
+	atapi_test_outb(&a, 0x376, 0x02)
+	request, pending := atapi_bmide_request(&a)
+	if !testing.expect(t, pending && request.device.abort != nil) {return}
+	request.device.abort(request.device.ctx, 1)
+	testing.expect(t, atapi_interrupt_pending(&a))
+	testing.expect_value(t, irq.asserts, 0)
+	testing.expect_value(t, irq.deasserts, 0)
+	atapi_test_outb(&a, 0x376, 0)
+	testing.expect_value(t, irq.asserts, 1)
+	testing.expect(t, irq.level)
+	testing.expect(t, atapi_interrupt_pending(&a))
+	_ = atapi_test_inb(&a, 0x177)
+	testing.expect(t, !atapi_interrupt_pending(&a))
+	testing.expect_value(t, irq.deasserts, 1)
+	testing.expect(t, !irq.level)
+}
+
+@(test)
+atapi_test_dma_commit_and_software_reset_drive_irq_levels :: proc(t: ^testing.T) {
+	a: Atapi
+	atapi_init(&a)
+	irq: Atapi_Test_Irq
+	a.irq_ctx = &irq
+	a.irq = atapi_test_irq
+	a.dma_pending = true
+
+	request, pending := atapi_bmide_request(&a)
+	if !testing.expect(t, pending && request.device.commit != nil) {return}
+	testing.expect(t, request.device.commit(request.device.ctx, 1))
+	testing.expect(t, atapi_interrupt_pending(&a))
+	testing.expect_value(t, irq.asserts, 1)
+	testing.expect_value(t, irq.deasserts, 0)
+	testing.expect(t, irq.level)
+
+	atapi_test_outb(&a, 0x376, 0x04)
+	testing.expect(t, !atapi_interrupt_pending(&a))
+	testing.expect_value(t, irq.deasserts, 1)
+	testing.expect(t, !irq.level)
+	atapi_test_outb(&a, 0x376, 0x04)
+	testing.expect_value(t, irq.deasserts, 1)
+	atapi_test_outb(&a, 0x376, 0)
+	testing.expect_value(t, atapi_test_inb(&a, 0x174), u8(0x14))
+	testing.expect_value(t, atapi_test_inb(&a, 0x175), u8(0xEB))
+	testing.expect_value(t, irq.asserts, 1)
+	testing.expect_value(t, irq.deasserts, 1)
 }
 
 @(test)

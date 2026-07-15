@@ -8,7 +8,7 @@ BMIDE_MASTER_CLOCK_HZ :: u64(6_600_000_000)
 BMIDE_COMMAND_LATENCY_TICKS :: BMIDE_MASTER_CLOCK_HZ / 10_000
 BMIDE_CHANNEL_COUNT :: 2
 BMIDE_IO_SIZE :: 16
-BMIDE_MAX_PRDS :: 512
+BMIDE_MAX_PRDS :: 8192
 
 BMIDE_COMMAND_START :: u8(0x01)
 BMIDE_COMMAND_READ_FROM_DISK :: u8(0x08)
@@ -26,10 +26,10 @@ Bmide_Direction :: enum u8 {
 }
 
 Bmide_Memory_Adapter :: struct {
-	ctx:   rawptr,
-	size:  u64,
-	read:  proc(ctx: rawptr, address: u64, data: []u8) -> bool,
-	write: proc(ctx: rawptr, address: u64, data: []u8) -> bool,
+	ctx:    rawptr,
+	size:   u64,
+	read:   proc(ctx: rawptr, address: u64, data: []u8) -> bool,
+	write:  proc(ctx: rawptr, address: u64, data: []u8) -> bool,
 	direct: proc(ctx: rawptr, address: u64, length: int, write: bool) -> ([]u8, bool),
 }
 
@@ -48,9 +48,9 @@ Bmide_Device_Adapter :: struct {
 }
 
 Bmide_Request :: struct {
-	direction:        Bmide_Direction,
-	byte_count:       u32,
-	device:           Bmide_Device_Adapter,
+	direction:  Bmide_Direction,
+	byte_count: u32,
+	device:     Bmide_Device_Adapter,
 }
 
 Bmide_Prd_Span :: struct {
@@ -59,13 +59,13 @@ Bmide_Prd_Span :: struct {
 }
 
 Bmide_Transfer :: struct {
-	active:        bool,
-	direction:     Bmide_Direction,
-	spans:         [BMIDE_MAX_PRDS]Bmide_Prd_Span,
-	span_count:    int,
-	completed:     u32,
-	byte_count:    u32,
-	retires_eot:   bool,
+	active:      bool,
+	direction:   Bmide_Direction,
+	spans:       [BMIDE_MAX_PRDS]Bmide_Prd_Span,
+	span_count:  int,
+	completed:   u32,
+	byte_count:  u32,
+	retires_eot: bool,
 }
 
 Bmide_Channel :: struct {
@@ -80,13 +80,15 @@ Bmide_Channel :: struct {
 }
 
 Bmide :: struct {
-	now_tick:      u64,
-	channels:      [BMIDE_CHANNEL_COUNT]Bmide_Channel,
-	transactions:  u64,
-	bytes_moved:   u64,
-	prd_spans:     u64,
-	memory_copies: u64,
-	host_calls:    u64,
+	now_tick:             u64,
+	channels:             [BMIDE_CHANNEL_COUNT]Bmide_Channel,
+	transactions:         u64,
+	bytes_moved:          u64,
+	channel_transactions: [BMIDE_CHANNEL_COUNT]u64,
+	channel_bytes_moved:  [BMIDE_CHANNEL_COUNT]u64,
+	prd_spans:            u64,
+	memory_copies:        u64,
+	host_calls:           u64,
 }
 
 bmide_init :: proc(bm: ^Bmide) {
@@ -275,8 +277,13 @@ bmide_memory_map :: proc(
 	address: u64,
 	length: int,
 	write: bool,
-) -> ([]u8, bool) {
-	if memory.direct == nil || length < 0 || !bmide_memory_range_valid(memory, address, u64(length)) {
+) -> (
+	[]u8,
+	bool,
+) {
+	if memory.direct == nil ||
+	   length < 0 ||
+	   !bmide_memory_range_valid(memory, address, u64(length)) {
 		return nil, false
 	}
 	return memory.direct(memory.ctx, address, length, write)
@@ -304,8 +311,8 @@ bmide_parse_prds :: proc(
 ) -> bool {
 	if table & 3 != 0 {return false}
 	table_address := u64(table)
-	page_end := (table_address & ~u64(0xFFF)) + 0x1000
-	max_entries := min(int((page_end - table_address) / 8), BMIDE_MAX_PRDS)
+	table_end := (table_address & ~u64(0xFFFF)) + 0x1_0000
+	max_entries := min(int((table_end - table_address) / 8), BMIDE_MAX_PRDS)
 	covered: u64
 	for index in 0 ..< max_entries {
 		entry := table_address + u64(index * 8)
@@ -320,9 +327,6 @@ bmide_parse_prds :: proc(
 		encoded_count := u16(descriptor)
 		count := encoded_count == 0 ? u32(65_536) : u32(encoded_count)
 		effective_address := address
-		if request.direction == .Memory_To_Device {
-			effective_address &~= 2
-		}
 		if count & 1 != 0 || u64(effective_address & 0xFFFF) + u64(count) > 0x1_0000 {
 			return false
 		}
@@ -336,11 +340,17 @@ bmide_parse_prds :: proc(
 			   u64(previous.length) + u64(used) <= u64(max(u32)) {
 				previous.length += used
 			} else {
-				transfer.spans[span_index] = {address = effective_address, length = used}
+				transfer.spans[span_index] = {
+					address = effective_address,
+					length  = used,
+				}
 				transfer.span_count += 1
 			}
 		} else {
-			transfer.spans[0] = {address = effective_address, length = used}
+			transfer.spans[0] = {
+				address = effective_address,
+				length  = used,
+			}
 			transfer.span_count = 1
 		}
 		covered += u64(used)
@@ -432,7 +442,7 @@ bmide_complete_channel :: proc(channel: ^Bmide_Channel, channel_index: u8) -> bo
 	adapter := channel.request.device
 	if adapter.commit != nil && !adapter.commit(adapter.ctx, channel_index) {
 		bmide_fail_channel(channel, channel_index)
-		return true
+		return false
 	}
 	retired := channel.transfer.retires_eot
 	channel.request = {}
@@ -450,7 +460,11 @@ bmide_complete_channel :: proc(channel: ^Bmide_Channel, channel_index: u8) -> bo
 }
 
 @(private = "file")
-bmide_transfer_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Adapter) -> bool {
+bmide_transfer_channel :: proc(
+	bm: ^Bmide,
+	channel_index: u8,
+	memory: Bmide_Memory_Adapter,
+) -> bool {
 	bm.host_calls += 1
 	channel := &bm.channels[channel_index]
 	transfer := &channel.transfer
@@ -478,10 +492,15 @@ bmide_transfer_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memo
 		transfer.completed += span.length
 	}
 	if transfer.completed != transfer.byte_count {return false}
-	bm.transactions += 1
-	bm.bytes_moved += u64(transfer.completed)
-	bm.prd_spans += u64(transfer.span_count)
-	_ = bmide_complete_channel(channel, channel_index)
+	completed := transfer.completed
+	span_count := transfer.span_count
+	if bmide_complete_channel(channel, channel_index) {
+		bm.transactions += 1
+		bm.bytes_moved += u64(completed)
+		bm.channel_transactions[channel_index] += 1
+		bm.channel_bytes_moved[channel_index] += u64(completed)
+		bm.prd_spans += u64(span_count)
+	}
 	return true
 }
 

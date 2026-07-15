@@ -13,8 +13,17 @@ provides legacy VGA plus unaccelerated Bochs VBE 2.0 graphics through a
 vendored Bochs VGABIOS.
 
 The fixed platform currently exposes 256 MiB of PC133-class RAM, UDMA/66,
-and private GSW CPU/chipset identities calibrated to an Athlon K7 700 / AMD-750
-capability envelope. It does not identify itself as AMD hardware.
+an AMD-751 northbridge, an AMD-756 ISA/IDE southbridge, and the private GSW-886
+CPU identity calibrated to an Athlon K7 700-class capability envelope. The GSW
+VGA adapter remains guest-visible; internal emulator capabilities are not
+published as a synthetic PCI chipset function.
+
+AMD-751 has no PAM-style shadow registers. SeaBIOS copies the private high-ROM
+image into the low RAM shadow after enabling the AMD-756 decode for the full
+128 KiB source. AMD-756 ROMW remains clear: it controls writes to the external
+flash ROM, not writes to low shadow RAM. The current GSW-886 profile does not
+advertise MTRRs, so the low shadow remains writable. Private high-ROM aliases
+are isolated from it and are recreated on machine initialization.
 
 ## Requirements
 
@@ -70,8 +79,26 @@ for the root integration tests. Workload-runner self-tests live in
    HDD boot runs the media's localized Setup executable directly with a
    normalized `MSBATCH.INF` answer file; no prompt detection or injected typing is
    involved. The answer file retains the source media's locale and keyboard
-   selection. Licensing details may still be requested, and GSW guest
-   drivers remain a post-install step in this slice.
+   selection and supplies the registration and product-key fields through the
+   Setup/OPK registry path. GSW guest drivers remain a post-install step.
+
+For an isolated end-to-end acceptance run, use a scratch profile and your own
+Second Edition media:
+
+```
+.\retvrn99.exe --install-windows:<iso> --floppy:<boot.img> `
+  --profile-root:<scratch-profile> --accept-until=desktop `
+  --setup-diagnostics=hardware --artifacts:<artifact-directory> `
+  --result-json:<result.json>
+```
+
+`--accept-until=desktop` stages a language-independent RunOnce probe. At first
+Explorer startup it exports `HKLM\Enum` and creates `C:\GSWSETUP\DESKTOP.OK`;
+acceptance then requires ten minutes of continuous nonblack graphical output.
+`--setup-diagnostics=hardware` enables Setup's hardware-detection logs and the
+bounded emulator hardware flight recorder without disabling accelerated
+REP/string I/O. Media, installed disks, registry exports, and traces belong in
+the ignored scratch profile/artifact directories and are never committed.
 
 The boot seed is checked as a structurally valid FAT12 image containing
 `IO.SYS`, `MSDOS.SYS`, and `COMMAND.COM`, and is accepted only while

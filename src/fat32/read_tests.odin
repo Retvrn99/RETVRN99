@@ -171,6 +171,10 @@ read_test_block_device_glue :: proc(t: ^testing.T) {
 	bd: disk.Block_Device = volume_block_device(v)
 	testing.expect(t, bd.ctx == rawptr(v))
 	testing.expect_value(t, bd.sector_count, u64(PART_START_LBA) + u64(v.alloc.geo.total_sectors))
+	mbr := read_test_sector(t, v, 0)
+	partition_start := u64(synth_rd32(mbr[:], 446 + 8))
+	partition_sectors := u64(synth_rd32(mbr[:], 446 + 12))
+	testing.expect_value(t, partition_start + partition_sectors, bd.sector_count)
 
 	// multi-sector read matches two single-sector reads
 	part := u64(PART_START_LBA)

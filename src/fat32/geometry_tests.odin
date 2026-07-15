@@ -27,10 +27,17 @@ fat32_test_geometry_2048mb :: proc(t: ^testing.T) {
 fat32_test_mbr :: proc(t: ^testing.T) {
 	g := geometry_make(2048)
 	mbr := make_mbr(g.total_sectors)
+	testing.expect_value(t, PART_START_LBA, 63)
 	testing.expect(t, mbr[510] == 0x55)
 	testing.expect(t, mbr[511] == 0xAA)
 	testing.expect(t, mbr[446] == 0x80)
+	testing.expect(t, mbr[447] == 1)    // head 1
+	testing.expect(t, mbr[448] == 1)    // sector 1, cylinder high 0
+	testing.expect(t, mbr[449] == 0)    // cylinder low 0
 	testing.expect(t, mbr[450] == 0x0C)
+	testing.expect(t, mbr[451] == DISK_HEADS - 1)
+	testing.expect(t, mbr[452] == 0xFF) // sector 63, cylinder high 3
+	testing.expect(t, mbr[453] == 0xFF) // cylinder low 255
 	testing.expect(t, fat32_rd32le(mbr[:], 454) == PART_START_LBA)
 	testing.expect(t, fat32_rd32le(mbr[:], 458) == g.total_sectors)
 }
@@ -44,6 +51,8 @@ fat32_test_vbr :: proc(t: ^testing.T) {
 	testing.expect(t, fat32_rd16le(vbr[:], 14) == RESERVED_SECTORS)
 	testing.expect(t, vbr[16] == NUM_FATS)
 	testing.expect(t, vbr[21] == 0xF8)                             // media
+	testing.expect(t, fat32_rd16le(vbr[:], 24) == SECTORS_PER_TRACK)
+	testing.expect(t, fat32_rd16le(vbr[:], 26) == DISK_HEADS)
 	testing.expect(t, fat32_rd32le(vbr[:], 28) == PART_START_LBA)  // hidden
 	testing.expect(t, fat32_rd32le(vbr[:], 32) == g.total_sectors)
 	testing.expect(t, fat32_rd32le(vbr[:], 36) == g.sectors_per_fat)

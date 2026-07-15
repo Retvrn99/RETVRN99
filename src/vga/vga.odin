@@ -61,6 +61,9 @@ Video_Timing :: struct {
 Vga :: struct {
 	allocator:    runtime.Allocator,
 	vram:         []u8,
+	pci_io_enabled:     bool,
+	pci_memory_enabled: bool,
+	framebuffer_base:   u64,
 	frame_pixels: []u32,
 	frame:        Display_Frame,
 	raster_pixels:    []u32,
@@ -118,10 +121,28 @@ vga_init :: proc(v: ^Vga, backing: []u8) -> bool {
 	v^ = {}
 	v.allocator = context.allocator
 	v.vram = backing[:VRAM_SIZE]
+	v.pci_io_enabled = true
+	v.pci_memory_enabled = true
+	v.framebuffer_base = VBE_LFB_BASE
 	v.frame_pixels = make([]u32, 0, v.allocator)
 	v.initialized = true
 	vga_reset(v)
 	return true
+}
+
+vga_set_pci_decode :: proc(
+	v: ^Vga,
+	io_space_enabled, memory_space_enabled: bool,
+	framebuffer_base: u64,
+) {
+	if v == nil {return}
+	v.pci_io_enabled = io_space_enabled
+	v.pci_memory_enabled = memory_space_enabled
+	v.framebuffer_base = framebuffer_base
+}
+
+vga_framebuffer_base :: proc(v: ^Vga) -> u64 {
+	return v == nil ? u64(0) : v.framebuffer_base
 }
 
 vga_destroy :: proc(v: ^Vga) {

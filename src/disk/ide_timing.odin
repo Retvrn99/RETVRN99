@@ -11,6 +11,9 @@ ide_cancel_pio :: proc(ide: ^Ide) {
 	ide.deadline_tick = 0
 	ide.pio_start_lba = 0
 	ide.pio_staged_bytes = 0
+	ide.pio_read_start_lba = 0
+	ide.pio_read_sectors = 0
+	ide.pio_read_loaded = false
 }
 
 ide_next_deadline :: proc(ide: ^Ide) -> (u64, bool) {
@@ -65,6 +68,10 @@ ide_service_deadline :: proc(ide: ^Ide, action: Ide_Deadline_Action) {
 		ide.state = .Idle
 		ide.reg_status = IDE_STATUS_DRDY
 		ide_raise_irq(ide)
+	case .Diagnostic_Complete:
+		ide.state = .Idle
+		ide_reset_signature(ide)
+		ide_raise_irq(ide)
 	case .Flush_Complete:
 		if !ide_checkpoint(ide) {ide_abort(ide); return}
 		ide.state = .Idle
@@ -86,7 +93,7 @@ ide_advance_to :: proc(ide: ^Ide, tick: u64) {
 			ide_service_deadline(ide, action)
 		}
 		if ide.writeback_pending && ide.writeback_deadline_tick == deadline {
-			_ = ide_checkpoint(ide)
+			_ = ide_background_checkpoint(ide)
 		}
 	}
 	ide.now_tick = tick

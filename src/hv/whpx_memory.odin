@@ -25,7 +25,7 @@ whpx_memory_effective_gpa :: proc(vm: ^Vm, gpa: u64) -> u64 {
 whpx_memory_region_at :: proc(vm: ^Vm, gpa: u64, write: bool) -> Whpx_Memory_Region {
 	for mapping in vm.shadow_mappings {
 		if gpa >= mapping.gpa && gpa - mapping.gpa < mapping.size {
-			accessible := mapping.readable || mapping.writable
+			accessible := write ? mapping.writable : mapping.readable
 			return Whpx_Memory_Region{kind = accessible ? .Ram : .Open_Bus}
 		}
 	}
@@ -39,7 +39,7 @@ whpx_memory_region_at :: proc(vm: ^Vm, gpa: u64, write: bool) -> Whpx_Memory_Reg
 		return Whpx_Memory_Region{kind = .Ram}
 	}
 	for mapping, i in vm.device_mappings {
-		if gpa >= mapping.gpa && gpa - mapping.gpa < u64(mapping.size) {
+		if mapping.mapped && gpa >= mapping.gpa && gpa - mapping.gpa < u64(mapping.size) {
 			return Whpx_Memory_Region{kind = .Device, index = i}
 		}
 	}

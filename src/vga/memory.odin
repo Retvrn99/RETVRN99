@@ -5,16 +5,19 @@ package vga
 // src/hardware/vga_memory.cpp at commit f3483ce. Copyright 2002-2021 The
 // DOSBox Team, GPL-2.0-or-later. See DOSBOX_X_NOTICE.md in this directory.
 
-vga_mmio_contains :: proc(gpa: u64, size: u8) -> bool {
+vga_mmio_contains :: proc(v: ^Vga, gpa: u64, size: u8) -> bool {
+	if v == nil || !v.pci_memory_enabled {return false}
 	n := u64(max(size, 1))
 	if gpa > max(u64) - n { return false }
 	end := gpa + n
 	return (gpa >= LEGACY_APERTURE_BASE && end <= LEGACY_APERTURE_END) ||
-	       (gpa >= VBE_LFB_BASE && end <= VBE_LFB_END)
+	       (gpa >= v.framebuffer_base &&
+	        v.framebuffer_base <= max(u64) - u64(VRAM_SIZE) &&
+	        end <= v.framebuffer_base + u64(VRAM_SIZE))
 }
 
 vga_mmio_read :: proc(v: ^Vga, gpa: u64, size: u8) -> (u32, bool) {
-	if !vga_mmio_contains(gpa, size) || v.vram == nil { return 0, false }
+	if !vga_mmio_contains(v, gpa, size) || v.vram == nil { return 0, false }
 	value: u32
 	for i in 0 ..< int(max(size, 1)) {
 		byte, ok := vga_memory_read_byte(v, gpa + u64(i))
@@ -25,7 +28,7 @@ vga_mmio_read :: proc(v: ^Vga, gpa: u64, size: u8) -> (u32, bool) {
 }
 
 vga_mmio_write :: proc(v: ^Vga, gpa: u64, size: u8, value: u32) -> bool {
-	if !vga_mmio_contains(gpa, size) || v.vram == nil { return false }
+	if !vga_mmio_contains(v, gpa, size) || v.vram == nil { return false }
 	wrote := false
 	for i in 0 ..< int(max(size, 1)) {
 		if !vga_memory_write_byte(v, gpa + u64(i), u8(value >> uint(i * 8))) {
@@ -40,8 +43,8 @@ vga_mmio_write :: proc(v: ^Vga, gpa: u64, size: u8, value: u32) -> bool {
 
 @(private = "package")
 vga_memory_read_byte :: proc(v: ^Vga, gpa: u64) -> (u8, bool) {
-	if gpa >= VBE_LFB_BASE && gpa < VBE_LFB_END {
-		return v.vram[int(gpa - VBE_LFB_BASE)], true
+	if gpa >= v.framebuffer_base && gpa - v.framebuffer_base < u64(VRAM_SIZE) {
+		return v.vram[int(gpa - v.framebuffer_base)], true
 	}
 	if vga_vbe_enabled(v) && gpa >= 0xA0000 && gpa < 0xB0000 {
 		offset := int(v.bank_read) * dispi_bank_granularity(v) + int(gpa - 0xA0000)
@@ -56,8 +59,8 @@ vga_memory_read_byte :: proc(v: ^Vga, gpa: u64) -> (u8, bool) {
 
 @(private = "package")
 vga_memory_write_byte :: proc(v: ^Vga, gpa: u64, value: u8) -> bool {
-	if gpa >= VBE_LFB_BASE && gpa < VBE_LFB_END {
-		v.vram[int(gpa - VBE_LFB_BASE)] = value
+	if gpa >= v.framebuffer_base && gpa - v.framebuffer_base < u64(VRAM_SIZE) {
+		v.vram[int(gpa - v.framebuffer_base)] = value
 		return true
 	}
 	if vga_vbe_enabled(v) && gpa >= 0xA0000 && gpa < 0xB0000 {

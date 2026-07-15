@@ -99,7 +99,11 @@ Atapi :: struct {
 	reg_drive: u8,
 	reg_status: u8,
 	reg_ctrl: u8,
-	irq: proc(ctx: rawptr),
+	io_space_enabled: bool,
+	channel_enabled:  bool,
+	irq_pending:      bool,
+	irq_signaled:     bool,
+	irq: proc(ctx: rawptr, asserted: bool),
 	irq_ctx: rawptr,
 	dma_pending: bool,
 	dma_submitted: bool,
@@ -115,7 +119,29 @@ Atapi :: struct {
 }
 
 atapi_init :: proc(a: ^Atapi) {
+	a.io_space_enabled = true
+	a.channel_enabled = true
 	atapi_reset_signature(a)
+}
+
+atapi_set_pci_decode :: proc(a: ^Atapi, io_space_enabled, channel_enabled: bool) {
+	if a == nil {return}
+	a.io_space_enabled = io_space_enabled
+	a.channel_enabled = channel_enabled
+	atapi_update_irq(a)
+}
+
+atapi_io_decoded :: proc(a: ^Atapi) -> bool {
+	return a != nil && a.io_space_enabled && a.channel_enabled
+}
+
+@(private = "file")
+atapi_open_bus :: proc(size: u8) -> u32 {
+	switch size {
+	case 1: return 0xFF
+	case 2: return 0xFFFF
+	}
+	return 0xFFFF_FFFF
 }
 
 atapi_set_cdda_output :: proc(a: ^Atapi, ctx: rawptr, frame: Atapi_Cdda_Frame_Proc) {
@@ -213,6 +239,7 @@ atapi_slave_selected :: proc(a: ^Atapi) -> bool {
 }
 
 atapi_io_read :: proc(a: ^Atapi, port: u16, size: u8) -> u32 {
+	if !atapi_io_decoded(a) {return atapi_open_bus(size)}
 	if atapi_slave_selected(a) {
 		return 0
 	}
@@ -231,13 +258,18 @@ atapi_io_read :: proc(a: ^Atapi, port: u16, size: u8) -> u32 {
 		return u32(a.reg_lba_hi)
 	case 0x176:
 		return u32(a.reg_drive)
-	case 0x177, 0x376:
+	case 0x177:
+		status := a.reg_status
+		atapi_acknowledge_irq(a)
+		return u32(status)
+	case 0x376:
 		return u32(a.reg_status)
 	}
 	return 0xFF
 }
 
 atapi_io_write :: proc(a: ^Atapi, port: u16, size: u8, val: u32) {
+	if !atapi_io_decoded(a) {return}
 	switch port {
 	case 0x170:
 		if !atapi_slave_selected(a) {
@@ -263,23 +295,49 @@ atapi_io_write :: proc(a: ^Atapi, port: u16, size: u8, val: u32) {
 		old := a.reg_ctrl
 		a.reg_ctrl = u8(val)
 		if a.reg_ctrl & 0x04 != 0 {
+			atapi_acknowledge_irq(a)
 			atapi_cancel_transfer(a)
 			a.reg_status = ATAPI_STATUS_BSY
 		} else if old & 0x04 != 0 {
 			atapi_reset_signature(a)
 		}
+		atapi_update_irq(a)
 	}
 }
 
 @(private = "file")
 atapi_raise_irq :: proc(a: ^Atapi) {
-	if a.reg_ctrl & 0x02 == 0 && a.irq != nil {
-		a.irq(a.irq_ctx)
-	}
+	if a == nil {return}
+	a.irq_pending = true
+	atapi_update_irq(a)
+}
+
+@(private = "file")
+atapi_set_irq_signal :: proc(a: ^Atapi, asserted: bool) {
+	if a == nil || a.irq_signaled == asserted {return}
+	a.irq_signaled = asserted
+	if a.irq != nil {a.irq(a.irq_ctx, asserted)}
+}
+
+@(private = "file")
+atapi_update_irq :: proc(a: ^Atapi) {
+	if a == nil {return}
+	atapi_set_irq_signal(a, a.irq_pending && atapi_irq_enabled(a))
+}
+
+atapi_acknowledge_irq :: proc(a: ^Atapi) {
+	if a == nil {return}
+	a.irq_pending = false
+	atapi_update_irq(a)
+}
+
+atapi_interrupt_pending :: proc(a: ^Atapi) -> bool {
+	return a != nil && a.irq_pending
 }
 
 @(private = "file")
 atapi_reset_signature :: proc(a: ^Atapi) {
+	atapi_acknowledge_irq(a)
 	atapi_cancel_transfer(a)
 	atapi_stop_audio(a, .Stopped)
 	a.reg_error = 1
@@ -323,6 +381,7 @@ atapi_cancel_transfer :: proc(a: ^Atapi) {
 
 @(private = "file")
 atapi_command :: proc(a: ^Atapi, cmd: u8) {
+	atapi_acknowledge_irq(a)
 	a.reg_error = 0
 	switch cmd {
 	case 0xA0:
@@ -989,6 +1048,7 @@ atapi_dma_commit_adapter :: proc(ctx: rawptr, channel: u8) -> bool {
 	a := (^Atapi)(ctx)
 	if channel != 1 || !a.dma_pending {return false}
 	atapi_set_complete_state(a)
+	atapi_raise_irq(a)
 	return true
 }
 
@@ -997,6 +1057,7 @@ atapi_dma_abort_adapter :: proc(ctx: rawptr, channel: u8) {
 	if channel != 1 {return}
 	a := (^Atapi)(ctx)
 	atapi_set_check_condition_state(a, 0x03, 0x11, 0)
+	atapi_raise_irq(a)
 }
 
 atapi_bmide_request :: proc(a: ^Atapi) -> (Bmide_Request, bool) {
@@ -1023,7 +1084,11 @@ atapi_bmide_pending :: proc(a: ^Atapi) -> bool {
 }
 
 atapi_irq_enabled :: proc(a: ^Atapi) -> bool {
-	return a != nil && a.reg_ctrl & 0x02 == 0
+	return(
+		a != nil &&
+		a.channel_enabled &&
+		a.reg_ctrl & 0x02 == 0 \
+	)
 }
 
 @(private = "file")
@@ -1437,8 +1502,9 @@ atapi_mode_sense_10 :: proc(a: ^Atapi) {
 atapi_fill_identify :: proc(a: ^Atapi) {
 	a.buf = {}
 	atapi_put_word(a.buf[:], 0, 0x85C0)
-	atapi_put_word(a.buf[:], 49, 0x0A00)
+	atapi_put_word(a.buf[:], 49, 0x0B00)
 	atapi_put_word(a.buf[:], 53, 0x0003)
+	atapi_put_word(a.buf[:], 63, 0x0407)
 	atapi_put_word(a.buf[:], 64, 0x0003)
 	atapi_put_word(a.buf[:], 80, 0x0010)
 	model := "GSW DVD/CD 10X/52X"

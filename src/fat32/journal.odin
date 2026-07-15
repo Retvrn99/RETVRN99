@@ -6,17 +6,17 @@ import "core:fmt"
 import "core:os"
 
 Journal :: struct {
-	overlay:         map[u32][]u8, // relative LBA -> written sector (512B)
+	overlay:         Sector_Overlay,
 	shadow_fat:      map[u32]u32, // FAT entries modified by the guest
 	mirrored:        map[Mirror_Key]Mirror_Entry,
 	snapshotted:     map[^Node]bool,
-	// clusters written by the guest that belong to no node yet
-	orphan_data:     map[u32][]u8, // cluster -> 4096B
 	stale_clusters:  map[u32]bool, // detached live file chains awaiting FAT free
 	// guest-allocated clusters adopted by decode (may be non-contiguous)
 	claimed:         map[u32]Claim,
 	pending_deletes: [dynamic]Pending_Delete, // deferred until the chain is freed
 	pending_extends: [dynamic]^Node, // dirs with new or changed chains mid-update
+	streamed_guest_files: u64,
+	streamed_guest_bytes: u64,
 }
 
 Claim :: struct {
@@ -34,36 +34,36 @@ Chain_State :: enum {
 	Invalid,
 }
 
-journal_init :: proc(j: ^Journal, allocator := context.allocator) {
-	j.overlay = make(map[u32][]u8, allocator)
+journal_init :: proc(
+	j: ^Journal,
+	total_sectors, cluster_count: u32,
+	root_path: string,
+	allocator := context.allocator,
+) -> bool {
+	if !overlay_init(&j.overlay, total_sectors, cluster_count, root_path, allocator) {
+		return false
+	}
 	j.shadow_fat = make(map[u32]u32, allocator)
 	j.mirrored = make(map[Mirror_Key]Mirror_Entry, allocator)
 	j.snapshotted = make(map[^Node]bool, allocator)
-	j.orphan_data = make(map[u32][]u8, allocator)
 	j.stale_clusters = make(map[u32]bool, allocator)
 	j.claimed = make(map[u32]Claim, allocator)
 	j.pending_deletes = make([dynamic]Pending_Delete, allocator)
 	j.pending_extends = make([dynamic]^Node, allocator)
+	return true
 }
 
 journal_destroy :: proc(j: ^Journal, allocator: runtime.Allocator) {
 	if j == nil {
 		return
 	}
-	for _, sector in j.overlay {
-		delete(sector, allocator)
-	}
-	for _, cluster in j.orphan_data {
-		delete(cluster, allocator)
-	}
+	overlay_destroy(&j.overlay, allocator)
 	for _, entry in j.mirrored {
 		delete(entry.host_path, allocator)
 	}
-	delete(j.overlay)
 	delete(j.shadow_fat)
 	delete(j.mirrored)
 	delete(j.snapshotted)
-	delete(j.orphan_data)
 	delete(j.stale_clusters)
 	delete(j.claimed)
 	delete(j.pending_deletes)
@@ -177,32 +177,27 @@ volume_stage_write :: proc(v: ^Volume, lba: u64, buf: []u8) -> bool {
 			return false
 		}
 	}
-	for i in 0 ..< n {
-		if decisions[i] == .Ignore {continue}
-		if !stage_sector(v, lba + u64(i), buf[i * SECTOR:][:SECTOR]) {
-			return false
+	// Persist each uninterrupted span before publishing its FAT side effects.
+	// IDE transfers commonly contain 64-128 sectors, so one pwrite still covers
+	// the normal path without exposing metadata that the backing rejected.
+	for i := 0; i < n; {
+		if decisions[i] == .Ignore {
+			i += 1
+			continue
+		}
+		start := i
+		for i < n && decisions[i] == .Allow {i += 1}
+		rel := u32(lba + u64(start) - PART_START_LBA)
+		if !overlay_put_run(v, rel, buf[start * SECTOR:i * SECTOR]) {return false}
+		for sector in start ..< i {
+			sector_rel := u32(lba + u64(sector) - PART_START_LBA)
+			if sector_rel >= v.alloc.geo.fat_start && sector_rel < v.alloc.geo.data_start {
+				if !stage_fat_sector(v, sector_rel, buf[sector * SECTOR:][:SECTOR]) {
+					return false
+				}
+			}
 		}
 	}
-	return true
-}
-
-@(private = "file")
-stage_sector :: proc(v: ^Volume, lba: u64, sec: []u8) -> bool {
-	geo := &v.alloc.geo
-	if lba < PART_START_LBA {
-		return false
-	}
-	rel64 := lba - PART_START_LBA
-	if rel64 >= u64(geo.total_sectors) {
-		return false
-	}
-	rel := u32(rel64)
-	if rel >= geo.fat_start && rel < geo.data_start {
-		if !stage_fat_sector(v, rel, sec) {
-			return false
-		}
-	}
-	overlay_put(v, rel, sec)
 	return true
 }
 
@@ -221,9 +216,10 @@ stage_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) -> bool {
 			u32(sec[i * 4 + 1]) << 8 |
 			u32(sec[i * 4 + 2]) << 16 |
 			u32(sec[i * 4 + 3]) << 24
+		next := raw & 0x0FFFFFFF
 		v.journal.shadow_fat[cluster] = raw
-		if raw & 0x0FFFFFFF != old {
-			fat_note_dir_change(v, cluster)
+		if next != old {
+			fat_note_dir_change(v, cluster, old, next)
 		}
 	}
 	return extend_pending_dirs(v)
@@ -247,8 +243,7 @@ write_sector :: proc(v: ^Volume, lba: u64, sec: []u8) -> bool {
 		return false
 	}
 	if rel < geo.fat_start {
-		overlay_put(v, rel, sec) // validated FSInfo counters
-		return true
+		return overlay_put(v, rel, sec) // validated FSInfo counters
 	}
 	if rel < geo.data_start {
 		return write_fat_sector(v, rel, sec)
@@ -264,31 +259,20 @@ write_sector :: proc(v: ^Volume, lba: u64, sec: []u8) -> bool {
 	}
 	node := cluster < u32(len(v.alloc.by_cluster)) ? v.alloc.by_cluster[cluster] : nil
 	if node == nil {
-		ob := orphan_ensure(v, cluster)
-		copy(ob[int(soff) * SECTOR:][:SECTOR], sec)
-		return true
+		return orphan_write_sector(v, cluster, soff, sec)
 	}
 	if node.is_dir {
-		snapshot_dir(v, node)
+		if !snapshot_dir(v, node) {return false}
 		return write_dir_sector(v, node, rel, sec)
 	}
 	return write_file_sector(v, node, cluster, cluster - node.first_cluster, soff, sec)
-}
-
-overlay_put :: proc(v: ^Volume, rel: u32, sec: []u8) {
-	dst, ok := v.journal.overlay[rel]
-	if !ok {
-		dst = make([]u8, SECTOR, v.allocator)
-		v.journal.overlay[rel] = dst
-	}
-	copy(dst, sec)
 }
 
 // record every entry whose guest value differs from the synthesized one
 @(private = "file")
 write_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) -> bool {
 	geo := &v.alloc.geo
-	overlay_put(v, rel, sec)
+	if !overlay_put(v, rel, sec) {return false}
 	base := ((rel - geo.fat_start) % geo.sectors_per_fat) * 128
 	for i in u32(0) ..< 128 {
 		cluster := base + i
@@ -297,10 +281,12 @@ write_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) -> bool {
 			u32(sec[i * 4 + 1]) << 8 |
 			u32(sec[i * 4 + 2]) << 16 |
 			u32(sec[i * 4 + 3]) << 24
-		if raw & 0x0FFFFFFF != volume_fat_entry(v, cluster) & 0x0FFFFFFF {
+		previous := volume_fat_entry(v, cluster) & 0x0FFFFFFF
+		next := raw & 0x0FFFFFFF
+		if next != previous {
 			v.journal.shadow_fat[cluster] = raw
-			orphan_note_fat_change(v, cluster, raw & 0x0FFFFFFF)
-			fat_note_dir_change(v, cluster)
+			orphan_note_fat_change(v, cluster, next)
+			fat_note_dir_change(v, cluster, previous, next)
 		}
 	}
 	if !extend_pending_dirs(v) {
@@ -314,15 +300,17 @@ write_fat_sector :: proc(v: ^Volume, rel: u32, sec: []u8) -> bool {
 orphan_note_fat_change :: proc(v: ^Volume, cluster, next: u32) {
 	delete_key(&v.journal.stale_clusters, cluster)
 	if next != 0 {return}
-	if data, ok := v.journal.orphan_data[cluster]; ok {
-		delete(data, v.allocator)
-		delete_key(&v.journal.orphan_data, cluster)
-	}
+	if orphan_has(v, cluster) {orphan_clear(v, cluster)}
 }
 
 // a FAT entry inside a directory's chain changed: the dir may have grown
 @(private = "file")
-fat_note_dir_change :: proc(v: ^Volume, cluster: u32) {
+fat_note_dir_change :: proc(v: ^Volume, cluster, previous, next: u32) {
+	// A free cluster becoming allocated is a new owner, not growth of the
+	// directory that synthesized this cluster before the guest freed it.
+	if previous == 0 && next != 0 {
+		return
+	}
 	node: ^Node
 	if claim, ok := v.journal.claimed[cluster]; ok {
 		node = claim.node
@@ -369,7 +357,7 @@ extend_pending_dirs :: proc(v: ^Volume) -> bool {
 		}
 		if chain_adoption_needed(v, node, chain[:]) {
 			if _, claimed := v.journal.claimed[node.first_cluster]; !claimed {
-				snapshot_dir(v, node) // synthesized content must be diffable first
+				if !snapshot_dir(v, node) {return false} // synthesized content must be diffable first
 			}
 			if !claim_chain(v, node, node.first_cluster) {
 				return false
@@ -414,16 +402,6 @@ chain_adoption_needed :: proc(v: ^Volume, node: ^Node, chain: []u32) -> bool {
 	return false
 }
 
-@(private = "file")
-orphan_ensure :: proc(v: ^Volume, cluster: u32) -> []u8 {
-	ob, ok := v.journal.orphan_data[cluster]
-	if !ok {
-		ob = make([]u8, CLUSTER_BYTES, v.allocator)
-		v.journal.orphan_data[cluster] = ob
-	}
-	return ob
-}
-
 // in-size bytes land in the host file; the tail waits in orphan_data
 // until a directory entry confirms the grown size
 @(private = "file")
@@ -446,15 +424,14 @@ write_file_sector :: proc(
 		}
 	}
 	if in_size < SECTOR {
-		ob := orphan_ensure(v, cluster)
-		copy(ob[int(soff) * SECTOR:][:SECTOR], sec)
+		if !orphan_write_sector(v, cluster, soff, sec) {return false}
 	}
 	return true
 }
 
 // freeze the synthesized content of a dir before its tree mutates
 @(private = "file")
-snapshot_dir :: proc(v: ^Volume, dir: ^Node) {
+snapshot_dir :: proc(v: ^Volume, dir: ^Node) -> bool {
 	geo := &v.alloc.geo
 	shorts := dir_short_names(dir, context.temp_allocator)
 	for child, i in dir.children {
@@ -468,7 +445,7 @@ snapshot_dir :: proc(v: ^Volume, dir: ^Node) {
 		rel0 := geo.data_start + (c - 2) * SECTORS_PER_CLUSTER
 		missing := false
 		for s in u32(0) ..< SECTORS_PER_CLUSTER {
-			if _, ok := v.journal.overlay[rel0 + s]; !ok {
+			if !overlay_has(v, rel0 + s) {
 				missing = true
 			}
 		}
@@ -477,11 +454,12 @@ snapshot_dir :: proc(v: ^Volume, dir: ^Node) {
 		}
 		dir_cluster_data(&v.alloc, dir, ci, tmp[:])
 		for s in u32(0) ..< SECTORS_PER_CLUSTER {
-			if _, ok := v.journal.overlay[rel0 + s]; !ok {
-				overlay_put(v, rel0 + s, tmp[int(s) * SECTOR:][:SECTOR])
+			if !overlay_has(v, rel0 + s) {
+				if !overlay_put(v, rel0 + s, tmp[int(s) * SECTOR:][:SECTOR]) {return false}
 			}
 		}
 	}
+	return true
 }
 
 @(private)
@@ -491,15 +469,17 @@ write_dir_sector :: proc(v: ^Volume, dir: ^Node, rel: u32, sec: []u8) -> bool {
 	soff := int((rel - v.alloc.geo.data_start) % SECTORS_PER_CLUSTER)
 	prefix := make([]u8, soff * SECTOR, context.temp_allocator)
 	for s in 0 ..< soff {
-		if psec, ok := v.journal.overlay[rel - u32(soff - s)]; ok {
-			copy(prefix[s * SECTOR:][:SECTOR], psec)
-		}
+		_, ok := overlay_get(
+			v,
+			rel - u32(soff - s),
+			prefix[s * SECTOR:][:SECTOR],
+		)
+		if !ok {return false}
 	}
 	old: [SECTOR]u8
-	if prev, ok := v.journal.overlay[rel]; ok {
-		copy(old[:], prev)
-	}
-	overlay_put(v, rel, sec)
+	_, ok := overlay_get(v, rel, old[:])
+	if !ok {return false}
+	if !overlay_put(v, rel, sec) {return false}
 	return decode_dir_write(v, dir, prefix, old[:], sec)
 }
 

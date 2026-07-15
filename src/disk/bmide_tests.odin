@@ -228,11 +228,7 @@ bmide_test_start :: proc(
 	byte_count: u32,
 	ignored_rate: ..u64,
 ) -> bool {
-	if !bmide_submit_request(
-		bm,
-		channel,
-		bmide_test_request(device, direction, byte_count),
-	) {
+	if !bmide_submit_request(bm, channel, bmide_test_request(device, direction, byte_count)) {
 		return false
 	}
 	command := BMIDE_COMMAND_START
@@ -323,6 +319,10 @@ bmide_test_device_to_memory_completes_one_bulk_transaction :: proc(t: ^testing.T
 	testing.expect_value(t, bm.transactions, u64(1))
 	testing.expect_value(t, bm.prd_spans, u64(1))
 	testing.expect_value(t, bm.bytes_moved, u64(1024))
+	testing.expect_value(t, bm.channel_transactions[0], u64(1))
+	testing.expect_value(t, bm.channel_bytes_moved[0], u64(1024))
+	testing.expect_value(t, bm.channel_transactions[1], u64(0))
+	testing.expect_value(t, bm.channel_bytes_moved[1], u64(0))
 	testing.expect_value(t, device.aborts, 0)
 	testing.expect(t, !bmide_channel_active(&bm, 0))
 	testing.expect(t, bmide_interrupt_latched(&bm, 0))
@@ -355,7 +355,7 @@ bmide_test_128k_request_coalesces_to_one_host_transaction :: proc(t: ^testing.T)
 }
 
 @(test)
-bmide_test_piix_a1_direction_semantics :: proc(t: ^testing.T) {
+bmide_test_amd756_preserves_prd_address_bit1_both_directions :: proc(t: ^testing.T) {
 	memory: Bmide_Test_Memory
 	read_device, write_device: Bmide_Test_Device
 	bmide_test_memory_init(&memory, 1024 * 1024)
@@ -383,9 +383,9 @@ bmide_test_piix_a1_direction_semantics :: proc(t: ^testing.T) {
 
 	expected: [512]u8
 	for index in 0 ..< 512 {expected[index] = u8(index * 23 + 4)}
-	copy(memory.data[BMIDE_TEST_BUFFER:BMIDE_TEST_BUFFER + 512], expected[:])
-	memory.data[BMIDE_TEST_BUFFER + 512] = 0xCC
-	memory.data[BMIDE_TEST_BUFFER + 513] = 0xDD
+	memory.data[BMIDE_TEST_BUFFER] = 0xCC
+	memory.data[BMIDE_TEST_BUFFER + 1] = 0xDD
+	copy(memory.data[BMIDE_TEST_BUFFER + 2:BMIDE_TEST_BUFFER + 514], expected[:])
 	bmide_test_write_prd(&memory, 0x1100, 0, BMIDE_TEST_BUFFER + 2, 512, true)
 	write_bm: Bmide
 	bmide_init(&write_bm)
@@ -396,7 +396,55 @@ bmide_test_piix_a1_direction_semantics :: proc(t: ^testing.T) {
 	)
 	_ = bmide_test_run_until_idle(&write_bm, adapter)
 	testing.expect(t, bmide_test_bytes_equal(write_device.committed, expected[:]))
-	testing.expect_value(t, write_device.committed[0], memory.data[BMIDE_TEST_BUFFER])
+	testing.expect_value(t, write_device.committed[0], memory.data[BMIDE_TEST_BUFFER + 2])
+}
+
+@(test)
+bmide_test_accepts_full_64k_prd_table_entry_count :: proc(t: ^testing.T) {
+	memory: Bmide_Test_Memory
+	device: Bmide_Test_Device
+	entry_count := BMIDE_MAX_PRDS
+	byte_count := entry_count * 2
+	bmide_test_memory_init(&memory, 1024 * 1024)
+	bmide_test_device_init(&device, byte_count)
+	defer bmide_test_memory_destroy(&memory)
+	defer bmide_test_device_destroy(&device)
+	for index in 0 ..< byte_count {device.source[index] = u8(index * 13 + 5)}
+
+	table := u32(0)
+	buffer := u32(0x2_0000)
+	for index in 0 ..< entry_count {
+		bmide_test_write_prd(
+			&memory,
+			table,
+			index,
+			buffer + u32(index * 2),
+			2,
+			index == entry_count - 1,
+		)
+	}
+	bm: Bmide
+	bmide_init(&bm)
+	bmide_test_program_prd(&bm, 0, table)
+	adapter := bmide_test_memory_adapter(&memory)
+	testing.expect(
+		t,
+		bmide_test_start(
+			&bm,
+			adapter,
+			&device,
+			0,
+			.Device_To_Memory,
+			u32(byte_count),
+			u64(byte_count) * 1000,
+		),
+	)
+	_ = bmide_test_run_until_idle(&bm, adapter)
+	testing.expect(
+		t,
+		bmide_test_bytes_equal(memory.data[int(buffer):int(buffer) + byte_count], device.source),
+	)
+	testing.expect_value(t, device.commits, 1)
 }
 
 @(test)
@@ -449,6 +497,11 @@ bmide_test_rejected_commit_aborts_transaction :: proc(t: ^testing.T) {
 	testing.expect_value(t, device.commits, 0)
 	testing.expect_value(t, device.aborts, 1)
 	testing.expect_value(t, device.committed[0], u8(0))
+	testing.expect_value(t, bm.transactions, u64(0))
+	testing.expect_value(t, bm.bytes_moved, u64(0))
+	testing.expect_value(t, bm.channel_transactions[0], u64(0))
+	testing.expect_value(t, bm.channel_bytes_moved[0], u64(0))
+	testing.expect_value(t, bm.prd_spans, u64(0))
 	status := u8(bmide_io_read(&bm, 2, 1))
 	testing.expect_value(t, status & (BMIDE_STATUS_ERROR | BMIDE_STATUS_INTERRUPT), u8(0x06))
 }
@@ -495,7 +548,7 @@ bmide_test_invalid_prds_abort_before_data_moves :: proc(t: ^testing.T) {
 		{BMIDE_TEST_TABLE, 0x2_FF00, BMIDE_PRD_EOT | 512},
 		{BMIDE_TEST_TABLE, BMIDE_TEST_BUFFER, BMIDE_PRD_EOT | 0x0001_0000 | 512},
 		{BMIDE_TEST_TABLE, BMIDE_TEST_BUFFER, BMIDE_PRD_EOT | 256},
-		{0x1FF8, BMIDE_TEST_BUFFER, 256},
+		{0xFFF8, BMIDE_TEST_BUFFER, 256},
 		{BMIDE_TEST_TABLE, u32(len(memory.data)), BMIDE_PRD_EOT | 512},
 	}
 	for invalid in cases {
@@ -550,6 +603,35 @@ bmide_test_zero_prd_count_transfers_64k :: proc(t: ^testing.T) {
 	testing.expect_value(t, memory.data[0x1_0000], device.source[0])
 	testing.expect_value(t, memory.data[0x1_FFFF], device.source[65_535])
 	testing.expect_value(t, device.reads, 1)
+}
+
+@(test)
+bmide_test_prd_table_may_cross_4k_within_64k_boundary :: proc(t: ^testing.T) {
+	memory: Bmide_Test_Memory
+	device: Bmide_Test_Device
+	bmide_test_memory_init(&memory, 1024 * 1024)
+	bmide_test_device_init(&device, 1024)
+	defer bmide_test_memory_destroy(&memory)
+	defer bmide_test_device_destroy(&device)
+	for index in 0 ..< len(device.source) {device.source[index] = u8(index * 11 + 7)}
+
+	table := u32(0x1FF8)
+	bmide_test_write_prd(&memory, table, 0, BMIDE_TEST_BUFFER, 512, false)
+	bmide_test_write_prd(&memory, table, 1, BMIDE_TEST_BUFFER + 512, 512, true)
+	bm: Bmide
+	bmide_init(&bm)
+	bmide_test_program_prd(&bm, 0, table)
+	adapter := bmide_test_memory_adapter(&memory)
+	testing.expect(t, bmide_test_start(&bm, adapter, &device, 0, .Device_To_Memory, 1024))
+	testing.expect(
+		t,
+		bmide_test_bytes_equal(
+			memory.data[BMIDE_TEST_BUFFER:BMIDE_TEST_BUFFER + 1024],
+			device.source,
+		),
+	)
+	testing.expect_value(t, device.commits, 1)
+	testing.expect_value(t, device.aborts, 0)
 }
 
 @(test)
@@ -641,6 +723,71 @@ bmide_test_partial_final_prd_waits_for_stop :: proc(t: ^testing.T) {
 	bmide_io_write(&bm, 0, 1, 0)
 	testing.expect(t, !bmide_channel_active(&bm, 0))
 	testing.expect_value(t, u8(bmide_io_read(&bm, 2, 1)) & BMIDE_STATUS_ERROR, u8(0))
+}
+
+@(test)
+bmide_test_ide_dma_commit_and_abort_drive_one_irq_level_transition :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+	ram.data[4 * IDE_SECTOR_SIZE] = 0x5A
+
+	memory: Bmide_Test_Memory
+	bmide_test_memory_init(&memory, 1024 * 1024)
+	defer bmide_test_memory_destroy(&memory)
+	bmide_test_write_prd(
+		&memory,
+		BMIDE_TEST_TABLE,
+		0,
+		BMIDE_TEST_BUFFER,
+		IDE_SECTOR_SIZE,
+		true,
+	)
+	adapter := bmide_test_memory_adapter(&memory)
+	bm: Bmide
+	bmide_init(&bm)
+	bmide_test_program_prd(&bm, 0, BMIDE_TEST_TABLE)
+
+	ide_test_set_lba28(&ide, 4, 1)
+	ide_test_outb(&ide, 0x1F7, 0xC8)
+	request, pending := ide_bmide_request(&ide)
+	if !testing.expect(t, pending) {return}
+	testing.expect(t, bmide_submit_request(&bm, 0, request))
+	ide_bmide_mark_submitted(&ide)
+	bmide_io_write(
+		&bm,
+		0,
+		1,
+		u32(BMIDE_COMMAND_START | BMIDE_COMMAND_READ_FROM_DISK),
+	)
+	bmide_synchronize(&bm, true, adapter)
+	testing.expect_value(t, memory.data[BMIDE_TEST_BUFFER], u8(0x5A))
+	testing.expect(t, ide_interrupt_pending(&ide))
+	testing.expect_value(t, ram.irqs, 1)
+	testing.expect_value(t, ram.irq_deasserts, 0)
+	testing.expect(t, ram.irq_level)
+	_ = ide_test_inb(&ide, 0x1F7)
+	testing.expect_value(t, ram.irq_deasserts, 1)
+	testing.expect(t, !ram.irq_level)
+
+	bmide_reset_channel(&bm, 0)
+	ide_test_set_lba28(&ide, 5, 1)
+	ide_test_outb(&ide, 0x1F7, 0xC8)
+	request, pending = ide_bmide_request(&ide)
+	if !testing.expect(t, pending) {return}
+	testing.expect(t, bmide_submit_request(&bm, 0, request))
+	ide_bmide_mark_submitted(&ide)
+	bmide_cancel_request(&bm, 0)
+	testing.expect(t, ide_interrupt_pending(&ide))
+	testing.expect_value(t, ram.irqs, 2)
+	testing.expect_value(t, ram.irq_deasserts, 1)
+	testing.expect(t, ram.irq_level)
+	bmide_cancel_request(&bm, 0)
+	testing.expect_value(t, ram.irqs, 2)
+	_ = ide_test_inb(&ide, 0x1F7)
+	testing.expect_value(t, ram.irq_deasserts, 2)
+	testing.expect(t, !ram.irq_level)
 }
 
 @(test)
