@@ -35,7 +35,11 @@ Journal_Storage_Stats :: struct {
 	present_sectors:        u32,
 	dirty_sectors:          u32,
 	orphan_clusters:        u32,
+	// Fixed bitmap storage only. Dynamic map usage is reported as entry counts
+	// because Odin does not expose the maps' allocated capacity in bytes.
 	resident_metadata_bytes: u64,
+	shadow_fat_entries:     u32,
+	claimed_entries:        u32,
 	backing_logical_bytes:  u64,
 	backing_allocated_bytes: u64,
 	backing_allocation_known: bool,
@@ -412,6 +416,8 @@ volume_journal_storage_stats :: proc(v: ^Volume) -> Journal_Storage_Stats {
 		orphan_clusters         = bitmap_count(o.orphan_clusters),
 		resident_metadata_bytes =
 			u64(len(o.present) + len(o.dirty) + len(o.orphan_clusters)) * size_of(u64),
+		shadow_fat_entries      = u32(len(v.journal.shadow_fat)),
+		claimed_entries         = u32(len(v.journal.claimed)),
 		backing_logical_bytes   = o.logical_bytes,
 		backing_allocated_bytes = allocated,
 		backing_allocation_known = allocation_known,
