@@ -130,7 +130,34 @@ hardware_trace_test_classifies_transition_ports_without_data_flooding :: proc(t:
 	testing.expect_value(t, hardware_trace_io_kind(0x42, false), Hardware_Event_Kind.Pit_Access)
 	testing.expect_value(t, hardware_trace_io_kind(0x40, true), Hardware_Event_Kind.Pit_Program)
 	testing.expect_value(t, hardware_trace_io_kind(0x61, true), Hardware_Event_Kind.Pit_Program)
-	testing.expect_value(t, hardware_trace_io_kind(0xCF9, true), Hardware_Event_Kind.Reset_Request)
+	testing.expect_value(t, hardware_trace_io_kind(0x92, true, nil, 0x00), Hardware_Event_Kind.None)
+	testing.expect_value(t, hardware_trace_io_kind(0x92, true, nil, 0x02), Hardware_Event_Kind.None)
+	testing.expect_value(
+		t,
+		hardware_trace_io_kind(0x92, true, nil, 0x01),
+		Hardware_Event_Kind.Reset_Request,
+	)
+	testing.expect_value(
+		t,
+		hardware_trace_io_kind(0x92, true, nil, 0x03),
+		Hardware_Event_Kind.Reset_Request,
+	)
+	testing.expect_value(t, hardware_trace_io_kind(0x92, false, nil, 0x03), Hardware_Event_Kind.None)
+	testing.expect_value(
+		t,
+		hardware_trace_io_kind(0xCF9, true, nil, 0x00),
+		Hardware_Event_Kind.Pci_Config,
+	)
+	testing.expect_value(
+		t,
+		hardware_trace_io_kind(0xCF9, true, nil, 0x02),
+		Hardware_Event_Kind.Pci_Config,
+	)
+	testing.expect_value(
+		t,
+		hardware_trace_io_kind(0xCF9, true, nil, 0x06),
+		Hardware_Event_Kind.Reset_Request,
+	)
 	testing.expect_value(t, hardware_trace_io_kind(0xCF9, false), Hardware_Event_Kind.None)
 	testing.expect_value(t, hardware_trace_io_kind(0xCF8, false), Hardware_Event_Kind.None)
 	testing.expect_value(t, hardware_trace_io_kind(0x1F7, true), Hardware_Event_Kind.Ide_Access)

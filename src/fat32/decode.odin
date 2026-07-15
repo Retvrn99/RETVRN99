@@ -255,6 +255,58 @@ consume_replacement_donor :: proc(v: ^Volume, round: ^[dynamic]^Node, donor: ^No
 // joined the chain are promoted from orphan_data AND decoded, so entries
 // in a grown directory cluster reach the host
 @(private)
+owner_cluster_reclaimable :: proc(v: ^Volume, owner: ^Node, cluster: u32) -> (
+	reclaimable, retired: bool,
+) {
+	if owner == nil {return false, false}
+	if owner != v.alloc.root && pending_chain_freed(v, owner) {return true, true}
+	chain, state := volume_chain_inspect(v, owner.first_cluster, context.temp_allocator)
+	if state != .Complete {return false, false}
+	for current in chain {
+		if current == cluster {return false, false}
+	}
+	if owner == v.alloc.root {
+		return root_chain_detach_safe(v, owner, chain[:]), false
+	}
+	return true, false
+}
+
+@(private)
+claim_chain_owners_valid :: proc(v: ^Volume, node: ^Node, name: string, chain: []u32) -> bool {
+	for cluster in chain {
+		if claim, ok := v.journal.claimed[cluster]; ok && claim.node != node {
+			reclaimable, _ := owner_cluster_reclaimable(v, claim.node, cluster)
+			if !reclaimable {
+				volume_fail(
+					v,
+					fmt.tprintf("FAT chain cluster %d for %s is already claimed", cluster, name),
+				)
+				return false
+			}
+		}
+		if cluster < u32(len(v.alloc.by_cluster)) {
+			owner := v.alloc.by_cluster[cluster]
+			if owner != nil && owner != node {
+				reclaimable, _ := owner_cluster_reclaimable(v, owner, cluster)
+				if !reclaimable {
+					volume_fail(
+						v,
+						fmt.tprintf(
+							"FAT chain cluster %d for %s belongs to %s",
+							cluster,
+							name,
+							owner.name,
+						),
+					)
+					return false
+				}
+			}
+		}
+	}
+	return node != v.alloc.root || root_chain_detach_safe(v, node, chain)
+}
+
+@(private)
 claim_chain :: proc(v: ^Volume, node: ^Node, first: u32) -> bool {
 	if first == 0 {
 		return true
@@ -271,32 +323,41 @@ claim_chain :: proc(v: ^Volume, node: ^Node, first: u32) -> bool {
 		volume_fail(v, fmt.tprintf("bad FAT chain at cluster %d for %s", first, node.name))
 		return false
 	}
+	if !claim_chain_owners_valid(v, node, node.name, chain[:]) {return false}
+	retired_owners := make(map[^Node]bool, context.temp_allocator)
+	detached_claims := make(map[u32]bool, context.temp_allocator)
+	detached_allocations := make(map[u32]bool, context.temp_allocator)
 	for c in chain {
 		if claim, ok := v.journal.claimed[c]; ok && claim.node != node {
-			volume_fail(
-				v,
-				fmt.tprintf("FAT chain cluster %d for %s is already claimed", c, node.name),
-			)
-			return false
+			reclaimable, retired := owner_cluster_reclaimable(v, claim.node, c)
+			if !reclaimable {return false}
+			if retired {
+				retired_owners[claim.node] = true
+			} else {
+				detached_claims[c] = true
+			}
 		}
 		if c < u32(len(v.alloc.by_cluster)) {
 			owner := v.alloc.by_cluster[c]
 			if owner != nil && owner != node {
-				volume_fail(
-					v,
-					fmt.tprintf(
-						"FAT chain cluster %d for %s belongs to %s",
-						c,
-						node.name,
-						owner.name,
-					),
-				)
-				return false
+				reclaimable, retired := owner_cluster_reclaimable(v, owner, c)
+				if !reclaimable {return false}
+				if retired {
+					retired_owners[owner] = true
+				} else {
+					detached_allocations[c] = true
+				}
 			}
 		}
 	}
-	if node == v.alloc.root && !root_chain_detach_safe(v, node, chain[:]) {
-		return false
+	for owner in retired_owners {
+		release_node_clusters(v, owner)
+	}
+	for cluster in detached_claims {
+		delete_key(&v.journal.claimed, cluster)
+	}
+	for cluster in detached_allocations {
+		v.alloc.by_cluster[cluster] = nil
 	}
 	geo := &v.alloc.geo
 	release_node_clusters(v, node)
@@ -877,15 +938,16 @@ managed_node_destroy :: proc(v: ^Volume, node: ^Node) -> bool {
 }
 
 @(private)
-managed_node_adopt_chain :: proc(v: ^Volume, node: ^Node, first, size: u32, chain: []u32) {
-	release_node_clusters(v, node)
-	node.first_cluster = first
-	node.cluster_len = u32(len(chain))
-	node.size = u64(size)
-	for cluster, index in chain {
-		delete_key(&v.journal.stale_clusters, cluster)
-		v.journal.claimed[cluster] = Claim{node, u32(index)}
+managed_node_adopt_chain :: proc(v: ^Volume, node: ^Node, first, size: u32, chain: []u32) -> bool {
+	if first == 0 {
+		release_node_clusters(v, node)
+		node.first_cluster = 0
+		node.cluster_len = 0
+	} else if !claim_chain(v, node, first) {
+		return false
 	}
+	node.size = u64(size)
+	return node.cluster_len == u32(len(chain))
 }
 
 @(private)
@@ -944,8 +1006,7 @@ managed_node_rebind :: proc(
 	if !managed_node_update_identity(v, node, parent, name, host_path, short, is_dir) {
 		return false
 	}
-	managed_node_adopt_chain(v, node, first, size, chain)
-	return true
+	return managed_node_adopt_chain(v, node, first, size, chain)
 }
 
 @(private)

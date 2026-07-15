@@ -572,7 +572,7 @@ launcher_text :: proc(
 	}
 	detection_options := hardware_diagnostics ? " /P G=3;L=3;P" : ""
 	return fmt.tprintf(
-		"%s@ECHO OFF\r\n%s%sC:\r\nCD \\GSWSETUP\r\n%s MSBATCH.INF /IS /IQ /IM /IV%s\r\n:GSWEND\r\n",
+		"%s@ECHO OFF\r\n%s%sC:\r\nCD \\GSWSETUP\r\n%s MSBATCH.INF /C /IS /IQ /IM /IV%s\r\n:GSWEND\r\n",
 		LAUNCHER_MARKER,
 		autoexec_restore,
 		boot_options,

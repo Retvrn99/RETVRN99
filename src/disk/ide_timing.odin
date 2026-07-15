@@ -14,6 +14,15 @@ ide_cancel_pio :: proc(ide: ^Ide) {
 	ide.pio_read_start_lba = 0
 	ide.pio_read_sectors = 0
 	ide.pio_read_loaded = false
+	ide.pio_block_remaining = 0
+}
+
+@(private = "file")
+ide_pio_block_sector_count :: proc(ide: ^Ide) -> int {
+	if ide.cmd == 0xC4 || ide.cmd == 0xC5 {
+		return min(ide.pending, int(ide.multiple_sector_count))
+	}
+	return min(ide.pending, 1)
 }
 
 ide_next_deadline :: proc(ide: ^Ide) -> (u64, bool) {
@@ -56,8 +65,10 @@ ide_service_deadline :: proc(ide: ^Ide, action: Ide_Deadline_Action) {
 	case .Identify_Ready:
 		ide_publish_data_in(ide)
 	case .Read_Ready:
+		ide.pio_block_remaining = ide_pio_block_sector_count(ide)
 		if ide_load_sector(ide) {ide_publish_data_in(ide)}
 	case .Write_Ready:
+		ide.pio_block_remaining = ide_pio_block_sector_count(ide)
 		ide.buf_pos = 0
 		ide.state = .Data_Out
 		ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ

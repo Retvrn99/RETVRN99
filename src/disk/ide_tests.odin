@@ -98,6 +98,21 @@ ide_test_set_lba28 :: proc(ide: ^Ide, lba: u32, count: u8) {
 	ide_test_outb(ide, 0x1F6, 0xE0 | u8(lba >> 24) & 0x0F)
 }
 
+ide_test_set_multiple_mode :: proc(ide: ^Ide, count: u8) {
+	ide_test_outb(ide, 0x1F2, count)
+	ide_test_command(ide, 0xC6)
+	_ = ide_test_inb(ide, 0x1F7)
+}
+
+ide_test_current_lba28 :: proc(ide: ^Ide) -> u32 {
+	return(
+		u32(ide.reg_lba_lo) |
+		u32(ide.reg_lba_mid) << 8 |
+		u32(ide.reg_lba_hi) << 16 |
+		u32(ide.reg_drive & 0x0F) << 24 \
+	)
+}
+
 @(test)
 ide_test_identify :: proc(t: ^testing.T) {
 	ram: Ide_Test_Ram
@@ -119,11 +134,12 @@ ide_test_identify :: proc(t: ^testing.T) {
 	testing.expect_value(t, words[1], u16(2))
 	testing.expect_value(t, words[3], u16(IDE_CHS_HEADS))
 	testing.expect_value(t, words[6], u16(IDE_CHS_SECTORS_PER_TRACK))
-	testing.expect_value(t, words[47], 0x8000)
+	testing.expect_value(t, words[47], u16(0x8010))
 	testing.expect(t, words[49] & 0x0100 != 0) // DMA supported
 	testing.expect(t, words[49] & 0x0200 != 0) // LBA supported
 	testing.expect(t, words[49] & 0x0800 != 0) // IORDY supported for PIO3/4
 	testing.expect_value(t, words[53] & 0x0007, u16(0x0007))
+	testing.expect_value(t, words[59], u16(0x0110))
 	testing.expect_value(t, words[54], words[1])
 	testing.expect_value(t, words[55], words[3])
 	testing.expect_value(t, words[56], words[6])
@@ -196,6 +212,159 @@ ide_test_set_features_selects_only_supported_dma_mode :: proc(t: ^testing.T) {
 	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR != 0)
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(IDE_ERROR_ABRT))
 	testing.expect_value(t, ide.transfer_mode, u8(0x42))
+}
+
+@(test)
+ide_test_set_multiple_mode_validates_identify_and_resets :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	ide_test_set_multiple_mode(&ide, IDE_MULTIPLE_MAX_SECTORS)
+	testing.expect_value(t, ide.multiple_sector_count, u8(IDE_MULTIPLE_MAX_SECTORS))
+
+	ide_test_command(&ide, 0xEC)
+	words: [256]u16
+	for i in 0 ..< 256 {words[i] = ide_test_inw(&ide, 0x1F0)}
+	testing.expect_value(t, words[47], u16(0x8010))
+	testing.expect_value(t, words[59], u16(0x0110))
+
+	ide_test_outb(&ide, 0x1F2, 3)
+	ide_test_outb(&ide, 0x1F7, 0xC6)
+	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR != 0)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(IDE_ERROR_ABRT))
+	testing.expect_value(t, ide.multiple_sector_count, u8(IDE_MULTIPLE_MAX_SECTORS))
+
+	ide_test_set_multiple_mode(&ide, 0)
+	testing.expect_value(t, ide.multiple_sector_count, u8(0))
+	ide_test_command(&ide, 0xEC)
+	for i in 0 ..< 256 {words[i] = ide_test_inw(&ide, 0x1F0)}
+	testing.expect_value(t, words[59], u16(0))
+	ide_test_set_lba28(&ide, 4, 1)
+	ide_test_outb(&ide, 0x1F7, 0xC4)
+	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR != 0)
+
+	ide_test_set_multiple_mode(&ide, IDE_MULTIPLE_MAX_SECTORS)
+	ide_test_outb(&ide, 0x3F6, 0x04)
+	ide_test_outb(&ide, 0x3F6, 0x00)
+	testing.expect_value(t, ide.multiple_sector_count, u8(IDE_MULTIPLE_MAX_SECTORS))
+	testing.expect_value(t, ide.reg_seccount, u8(1))
+	ide_test_command(&ide, 0xEC)
+	for i in 0 ..< 256 {words[i] = ide_test_inw(&ide, 0x1F0)}
+	testing.expect_value(t, words[59], u16(0x0110))
+}
+
+@(test)
+ide_test_read_multiple_uses_16_sector_irq_blocks :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+	start_lba := 32
+	sector_count := 18
+	for sector in 0 ..< sector_count {
+		for word in 0 ..< IDE_SECTOR_SIZE / 2 {
+			value := u16(sector << 8 | word & 0xFF)
+			offset := (start_lba + sector) * IDE_SECTOR_SIZE + word * 2
+			ram.data[offset] = u8(value)
+			ram.data[offset + 1] = u8(value >> 8)
+		}
+	}
+
+	ide_test_set_multiple_mode(&ide, IDE_MULTIPLE_MAX_SECTORS)
+	ram.irqs = 0
+	ram.irq_deasserts = 0
+	ide_test_set_lba28(&ide, u32(start_lba), u8(sector_count))
+	ide_test_outb(&ide, 0x1F7, 0xC4)
+	first, pending := ide_next_deadline(&ide)
+	if !testing.expect(t, pending) {return}
+	ide_advance_to(&ide, first)
+	testing.expect_value(t, ram.read_attempts, 1)
+	testing.expect_value(t, ram.last_read_bytes, sector_count * IDE_SECTOR_SIZE)
+	testing.expect_value(t, ram.irqs, 1)
+	_ = ide_test_inb(&ide, 0x1F7)
+
+	for sector in 0 ..< sector_count {
+		for word in 0 ..< IDE_SECTOR_SIZE / 2 {
+			expected := u16(sector << 8 | word & 0xFF)
+			testing.expect_value(t, ide_test_inw(&ide, 0x1F0), expected)
+		}
+		if sector < IDE_MULTIPLE_MAX_SECTORS - 1 {
+			_, block_pending := ide_next_deadline(&ide)
+			testing.expect(t, !block_pending)
+			testing.expect(t, ide_test_inb(&ide, 0x3F6) & IDE_STATUS_DRQ != 0)
+		} else if sector == IDE_MULTIPLE_MAX_SECTORS - 1 {
+			next, block_pending := ide_next_deadline(&ide)
+			if !testing.expect(t, block_pending) {return}
+			testing.expect_value(t, next - first, IDE_PIO_SECTOR_TICKS)
+			testing.expect_value(t, ide_test_inb(&ide, 0x3F6), u8(IDE_STATUS_BSY))
+			ide_advance_to(&ide, next)
+			testing.expect_value(t, ram.irqs, 2)
+			_ = ide_test_inb(&ide, 0x1F7)
+		}
+	}
+
+	testing.expect_value(t, ram.read_attempts, 1)
+	testing.expect_value(t, ram.irqs, 2)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F2), u8(0))
+	testing.expect_value(t, ide_test_current_lba28(&ide), u32(start_lba + sector_count))
+	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_DRQ == 0)
+}
+
+@(test)
+ide_test_write_multiple_stages_blocks_and_commits_once :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+	start_lba := 64
+	sector_count := 18
+
+	ide_test_set_multiple_mode(&ide, IDE_MULTIPLE_MAX_SECTORS)
+	ram.irqs = 0
+	ram.irq_deasserts = 0
+	ide_test_set_lba28(&ide, u32(start_lba), u8(sector_count))
+	ide_test_outb(&ide, 0x1F7, 0xC5)
+	first, pending := ide_next_deadline(&ide)
+	if !testing.expect(t, pending) {return}
+	ide_advance_to(&ide, first)
+	testing.expect_value(t, ram.irqs, 0)
+	testing.expect(t, ide_test_inb(&ide, 0x3F6) & IDE_STATUS_DRQ != 0)
+
+	for sector in 0 ..< sector_count {
+		for word in 0 ..< IDE_SECTOR_SIZE / 2 {
+			ide_test_outw(&ide, 0x1F0, u16(sector << 8 | word & 0xFF))
+		}
+		testing.expect_value(t, ram.write_attempts, 0)
+		if sector < IDE_MULTIPLE_MAX_SECTORS - 1 {
+			_, block_pending := ide_next_deadline(&ide)
+			testing.expect(t, !block_pending)
+			testing.expect(t, ide_test_inb(&ide, 0x3F6) & IDE_STATUS_DRQ != 0)
+		} else if sector == IDE_MULTIPLE_MAX_SECTORS - 1 {
+			next, block_pending := ide_next_deadline(&ide)
+			if !testing.expect(t, block_pending) {return}
+			testing.expect_value(t, next - first, IDE_PIO_SECTOR_TICKS)
+			ide_advance_to(&ide, next)
+			testing.expect_value(t, ram.irqs, 1)
+			_ = ide_test_inb(&ide, 0x1F7)
+		}
+	}
+
+	commit, commit_pending := ide_next_deadline(&ide)
+	if !testing.expect(t, commit_pending) {return}
+	ide_advance_to(&ide, commit)
+	testing.expect_value(t, ram.write_attempts, 1)
+	testing.expect_value(t, ram.writes, 1)
+	testing.expect_value(t, ram.last_write_bytes, sector_count * IDE_SECTOR_SIZE)
+	testing.expect_value(t, ram.irqs, 2)
+	for sector in 0 ..< sector_count {
+		offset := (start_lba + sector) * IDE_SECTOR_SIZE
+		testing.expect_value(t, ram.data[offset], u8(0))
+		testing.expect_value(t, ram.data[offset + 1], u8(sector))
+	}
+	testing.expect_value(t, ide_test_current_lba28(&ide), u32(start_lba + sector_count))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F2), u8(0))
 }
 
 @(test)

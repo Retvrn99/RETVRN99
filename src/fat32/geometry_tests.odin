@@ -35,11 +35,12 @@ fat32_test_mbr :: proc(t: ^testing.T) {
 	testing.expect(t, mbr[448] == 1)    // sector 1, cylinder high 0
 	testing.expect(t, mbr[449] == 0)    // cylinder low 0
 	testing.expect(t, mbr[450] == 0x0C)
-	testing.expect(t, mbr[451] == DISK_HEADS - 1)
-	testing.expect(t, mbr[452] == 0xFF) // sector 63, cylinder high 3
-	testing.expect(t, mbr[453] == 0xFF) // cylinder low 255
+	testing.expect(t, mbr[451] == 0x7F) // saturated head 127
+	testing.expect(t, mbr[452] == 0xBF) // sector 63, cylinder high 2
+	testing.expect(t, mbr[453] == 0x07) // cylinder low 7
 	testing.expect(t, fat32_rd32le(mbr[:], 454) == PART_START_LBA)
 	testing.expect(t, fat32_rd32le(mbr[:], 458) == g.total_sectors)
+	testing.expect_value(t, bios_logical_cylinder_count(g.total_sectors), u64(520))
 }
 
 @(test)
@@ -52,7 +53,7 @@ fat32_test_vbr :: proc(t: ^testing.T) {
 	testing.expect(t, vbr[16] == NUM_FATS)
 	testing.expect(t, vbr[21] == 0xF8)                             // media
 	testing.expect(t, fat32_rd16le(vbr[:], 24) == SECTORS_PER_TRACK)
-	testing.expect(t, fat32_rd16le(vbr[:], 26) == DISK_HEADS)
+	testing.expect(t, fat32_rd16le(vbr[:], 26) == BIOS_LOGICAL_HEADS)
 	testing.expect(t, fat32_rd32le(vbr[:], 28) == PART_START_LBA)  // hidden
 	testing.expect(t, fat32_rd32le(vbr[:], 32) == g.total_sectors)
 	testing.expect(t, fat32_rd32le(vbr[:], 36) == g.sectors_per_fat)
@@ -64,6 +65,30 @@ fat32_test_vbr :: proc(t: ^testing.T) {
 	testing.expect(t, string(vbr[82:90]) == "FAT32   ")
 	testing.expect(t, vbr[510] == 0x55)
 	testing.expect(t, vbr[511] == 0xAA)
+}
+
+@(test)
+fat32_test_large_translation_io_sys_chs_roundtrip :: proc(t: ^testing.T) {
+	io_sys_lba := u64(0x406B7)
+	g := geometry_make(2048)
+	vbr := make_vbr(&g, g.total_sectors)
+	bpb_heads := u64(fat32_rd16le(vbr[:], 26))
+	bpb_sectors_per_track := u64(fat32_rd16le(vbr[:], 24))
+	cylinder := io_sys_lba / (bpb_heads * bpb_sectors_per_track)
+	remainder := io_sys_lba % (bpb_heads * bpb_sectors_per_track)
+	head := remainder / bpb_sectors_per_track
+	sector := remainder % bpb_sectors_per_track + 1
+	decoded :=
+		(cylinder * 128 + head) * SECTORS_PER_TRACK + sector - 1
+	testing.expect_value(t, decoded, io_sys_lba)
+
+	old_cylinder := io_sys_lba / (16 * SECTORS_PER_TRACK)
+	old_remainder := io_sys_lba % (16 * SECTORS_PER_TRACK)
+	old_head := old_remainder / SECTORS_PER_TRACK
+	old_sector := old_remainder % SECTORS_PER_TRACK + 1
+	old_decoded :=
+		(old_cylinder * 128 + old_head) * SECTORS_PER_TRACK + old_sector - 1
+	testing.expect_value(t, old_decoded, u64(0x202087))
 }
 
 @(test)

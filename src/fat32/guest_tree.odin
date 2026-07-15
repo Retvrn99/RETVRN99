@@ -33,6 +33,8 @@ Guest_Entry :: struct {
 	valid:             bool,
 	directory_touched: bool,
 	data_touched:      bool,
+	chain:             []u32,
+	chain_complete:    bool,
 }
 
 Guest_Dir_Work :: struct {
@@ -131,7 +133,7 @@ guest_scan_tree :: proc(v: ^Volume, allocator := context.allocator) -> Guest_Sca
 				return scan
 			}
 			is_dir := parsed_entry.attr & ATTR_DIR != 0
-			valid, data_touched := guest_entry_chain_state(
+			valid, data_touched, entry_chain, chain_complete := guest_entry_chain_state(
 				v,
 				parsed_entry.cluster,
 				parsed_entry.size,
@@ -148,6 +150,8 @@ guest_scan_tree :: proc(v: ^Volume, allocator := context.allocator) -> Guest_Sca
 				valid             = valid,
 				directory_touched = dir_touched,
 				data_touched      = data_touched,
+				chain             = entry_chain,
+				chain_complete    = chain_complete,
 			}
 			append(&scan.entries, entry)
 			if is_dir && valid && parsed_entry.cluster >= 2 {
@@ -166,18 +170,20 @@ guest_entry_chain_state :: proc(
 	allocator := context.allocator,
 ) -> (
 	valid, touched: bool,
+	chain: []u32,
+	complete: bool,
 ) {
 	if first < 2 {
-		return !is_dir && size == 0, false
+		return !is_dir && size == 0, false, nil, false
 	}
-	chain, state := volume_chain_inspect(v, first, allocator)
+	inspected, state := volume_chain_inspect(v, first, allocator)
 	if state != .Complete {
-		return false, guest_chain_touched(v, chain[:])
+		return false, guest_chain_touched(v, inspected[:]), inspected[:], false
 	}
-	if !is_dir && u64(size) > u64(len(chain)) * u64(CLUSTER_BYTES) {
-		return false, guest_chain_touched(v, chain[:])
+	if !is_dir && u64(size) > u64(len(inspected)) * u64(CLUSTER_BYTES) {
+		return false, guest_chain_touched(v, inspected[:]), inspected[:], true
 	}
-	return true, guest_chain_touched(v, chain[:])
+	return true, guest_chain_touched(v, inspected[:]), inspected[:], true
 }
 
 @(private = "file")

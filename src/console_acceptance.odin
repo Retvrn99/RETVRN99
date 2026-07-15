@@ -49,6 +49,30 @@ console_evidence_poll_due :: proc(last: ^time.Tick, now: time.Tick) -> bool {
 	return true
 }
 
+console_acceptance_profile_ready :: proc(
+	accept_until: acceptance.Accept_Until,
+	state: ^profile.Install_State,
+	diagnostic: profile.Install_State_Diagnostic,
+) -> bool {
+	if accept_until == .None {return true}
+	if state == nil || diagnostic != .None {return false}
+	if accept_until == .Desktop {return true}
+	return profile.install_state_active(state)
+}
+
+console_desktop_profile_probe_ready :: proc(state: ^profile.Install_State) -> bool {
+	if state == nil {return false}
+	return !profile.install_state_active(state) || state.reset_count > 0
+}
+
+console_acceptance_cpu_reset_allowed :: proc(
+	accept_until: acceptance.Accept_Until,
+	source: machine.Reset_Provenance,
+	install_active: bool,
+) -> bool {
+	return accept_until == .None || install_active && source == .Dos_Extender_Warm_Resume
+}
+
 console_setup_artifact_poll_due :: proc(
 	install_reset_count: u32,
 	detection_pending, desktop_pending: bool,
@@ -56,7 +80,7 @@ console_setup_artifact_poll_due :: proc(
 	last: ^time.Tick,
 	now: time.Tick,
 ) -> bool {
-	if last == nil || armed_reset_count == nil || install_reset_count == 0 {
+	if last == nil || armed_reset_count == nil || (install_reset_count == 0 && !desktop_pending) {
 		return false
 	}
 	if armed_reset_count^ != install_reset_count {
@@ -829,6 +853,49 @@ console_resource_list_irq_evidence :: proc(
 	return irq_seen, mismatch, offset == len(bytes)
 }
 
+console_win98_allocation_irq_evidence :: proc(
+	value: string,
+	expected_irq: u32,
+) -> (
+	irq_seen, mismatch, valid: bool,
+) {
+	bytes, parsed := console_registry_hex_bytes(value)
+	defer delete(bytes)
+	if !parsed || len(bytes) < 12 {return false, false, false}
+	header, header_ok := console_resource_u32(bytes[:], 0)
+	configuration_count, count_ok := console_resource_u32(bytes[:], 4)
+	trailer, trailer_ok := console_resource_u32(bytes[:], len(bytes) - 4)
+	if !header_ok ||
+	   !count_ok ||
+	   !trailer_ok ||
+	   header != 0x0000_0400 ||
+	   configuration_count != 1 ||
+	   trailer != 0 {
+		return false, false, false
+	}
+	offset := 8
+	limit := len(bytes) - 4
+	for offset < limit {
+		descriptor_bytes, length_ok := console_resource_u32(bytes[:], offset)
+		type, type_ok := console_resource_u32(bytes[:], offset + 4)
+		if !length_ok ||
+		   !type_ok ||
+		   descriptor_bytes < 8 ||
+		   u64(descriptor_bytes) > u64(limit - offset) {
+			return false, false, false
+		}
+		if type == 4 {
+			if descriptor_bytes != 16 {return false, false, false}
+			irq, irq_ok := console_resource_u16(bytes[:], offset + 10)
+			if !irq_ok {return false, false, false}
+			irq_seen = true
+			if u32(irq) != expected_irq {mismatch = true}
+		}
+		offset += int(descriptor_bytes)
+	}
+	return irq_seen, mismatch, offset == limit
+}
+
 Console_Enum_Evidence :: struct {
 	header_seen:                bool,
 	dynamic_header_seen:        bool,
@@ -1003,6 +1070,8 @@ console_enum_finish_dynamic_section :: proc(
 	problem: u32,
 	status_present: bool,
 	status: u32,
+	allocation: string,
+	allocation_present, allocation_complete: bool,
 ) {
 	if evidence == nil || hardware_key == "" {return}
 	amd_bdfs := DESKTOP_ENUM_REQUIRED_AMD_BDFS
@@ -1028,6 +1097,20 @@ console_enum_finish_dynamic_section :: proc(
 		   console_ascii_token_contains_fold(hardware_key, DESKTOP_ENUM_GSW_VGA_BDF) {
 			evidence.vga_active = true
 			if !healthy {evidence.vga_health_bad = true}
+			if !allocation_present {
+				evidence.vga_irq_conflict = true
+			} else {
+				if !allocation_complete {
+					evidence.vga_irq_conflict = true
+				} else {
+					seen, mismatch, valid := console_win98_allocation_irq_evidence(
+						allocation,
+						DESKTOP_ENUM_REQUIRED_IRQ,
+					)
+					if !valid || mismatch || !seen {evidence.vga_irq_conflict = true}
+					if seen {evidence.vga_irq11_seen = true}
+				}
+			}
 		}
 		if console_ascii_token_contains_fold(hardware_key, DESKTOP_ENUM_SYNTHETIC_CHIPSET_ID) {
 			evidence.synthetic_chipset_seen = true
@@ -1057,6 +1140,11 @@ console_windows98_dynamic_enum_apply :: proc(contents: string, evidence: ^Consol
 	problem: u32
 	status_present := false
 	status: u32
+	allocation := make([dynamic]u8, context.temp_allocator)
+	allocation_present := false
+	allocation_pending := false
+	allocation_duplicate := false
+	defer delete(allocation)
 	defer delete(hardware_key)
 	rest := contents
 	for raw_line in strings.split_lines_iterator(&rest) {
@@ -1076,6 +1164,9 @@ console_windows98_dynamic_enum_apply :: proc(contents: string, evidence: ^Consol
 					problem,
 					status_present,
 					status,
+					string(allocation[:]),
+					allocation_present,
+					!allocation_pending && !allocation_duplicate,
 				)
 			}
 			delete(hardware_key)
@@ -1084,6 +1175,10 @@ console_windows98_dynamic_enum_apply :: proc(contents: string, evidence: ^Consol
 			problem = 0
 			status_present = false
 			status = 0
+			clear(&allocation)
+			allocation_present = false
+			allocation_pending = false
+			allocation_duplicate = false
 			in_section = console_ascii_contains_fold(
 				line,
 				`HKEY_DYN_DATA\Config Manager\Enum\`,
@@ -1091,6 +1186,11 @@ console_windows98_dynamic_enum_apply :: proc(contents: string, evidence: ^Consol
 			continue
 		}
 		if !in_section {continue}
+		if allocation_pending {
+			append(&allocation, line)
+			allocation_pending = console_registry_line_continues(line)
+			continue
+		}
 		if value, present := console_registry_named_value(line, `"HardWareKey"`); present {
 			decoded, ok := console_registry_string_value(value)
 			if ok {
@@ -1105,6 +1205,13 @@ console_windows98_dynamic_enum_apply :: proc(contents: string, evidence: ^Consol
 		}
 		if value, present := console_registry_named_value(line, `"Status"`); present {
 			status, status_present = console_registry_u32_value(value)
+			continue
+		}
+		if value, present := console_registry_named_value(line, `"Allocation"`); present {
+			if allocation_present {allocation_duplicate = true}
+			allocation_present = true
+			append(&allocation, value)
+			allocation_pending = console_registry_line_continues(line)
 		}
 	}
 	if in_section {
@@ -1115,6 +1222,9 @@ console_windows98_dynamic_enum_apply :: proc(contents: string, evidence: ^Consol
 			problem,
 			status_present,
 			status,
+			string(allocation[:]),
+			allocation_present,
+			!allocation_pending && !allocation_duplicate,
 		)
 	}
 }
@@ -1160,69 +1270,121 @@ console_windows98_enum_valid :: proc(contents, dynamic_contents: string) -> bool
 	)
 }
 
-console_desktop_marker_evidence :: proc(c_drive: string) -> (Console_Enum_Evidence, bool) {
-	if c_drive == "" {return {}, false}
+console_desktop_marker_evidence :: proc(
+	c_drive: string,
+) -> (
+	evidence: Console_Enum_Evidence,
+	marker_seen, enum_valid: bool,
+) {
+	if c_drive == "" {return {}, false, false}
 	marker_path, path_error := filepath.join(
 		{c_drive, "GSWSETUP", win98prep.DESKTOP_MARKER_FILE},
 		context.temp_allocator,
 	)
-	if path_error != nil {return {}, false}
+	if path_error != nil {return {}, false, false}
 	marker_info, stat_error := os.stat(marker_path, context.temp_allocator)
-	if stat_error != nil {return {}, false}
+	if stat_error != nil {return {}, false, false}
 	defer os.file_info_delete(marker_info, context.temp_allocator)
 	if marker_info.type != .Regular || marker_info.size == 0 || marker_info.size > 64 {
-		return {}, false
+		return {}, false, false
 	}
 	marker, marker_error := os.read_entire_file(marker_path, context.temp_allocator)
-	if marker_error != nil || strings.trim_space(string(marker)) != "READY" {return {}, false}
+	if marker_error != nil || strings.trim_space(string(marker)) != "READY" {
+		return {}, false, false
+	}
+	marker_seen = true
 	enum_path, enum_error := filepath.join(
 		{c_drive, "GSWSETUP", win98prep.DESKTOP_ENUM_FILE},
 		context.temp_allocator,
 	)
-	if enum_error != nil {return {}, false}
+	if enum_error != nil {return {}, marker_seen, false}
 	enum_info, enum_stat_error := os.stat(enum_path, context.temp_allocator)
-	if enum_stat_error != nil {return {}, false}
+	if enum_stat_error != nil {return {}, marker_seen, false}
 	defer os.file_info_delete(enum_info, context.temp_allocator)
 	if enum_info.type != .Regular ||
 	   enum_info.size <= 0 ||
 	   enum_info.size > DESKTOP_ENUM_MAX_BYTES {
-		return {}, false
+		return {}, marker_seen, false
 	}
 	enumeration, enumeration_error := os.read_entire_file(enum_path, context.temp_allocator)
-	if enumeration_error != nil {return {}, false}
+	if enumeration_error != nil {return {}, marker_seen, false}
 	defer delete(enumeration, context.temp_allocator)
 	dynamic_enum_path, dynamic_enum_error := filepath.join(
 		{c_drive, "GSWSETUP", win98prep.DESKTOP_DYNAMIC_ENUM_FILE},
 		context.temp_allocator,
 	)
-	if dynamic_enum_error != nil {return {}, false}
+	if dynamic_enum_error != nil {return {}, marker_seen, false}
 	dynamic_enum_info, dynamic_enum_stat_error := os.stat(
 		dynamic_enum_path,
 		context.temp_allocator,
 	)
-	if dynamic_enum_stat_error != nil {return {}, false}
+	if dynamic_enum_stat_error != nil {return {}, marker_seen, false}
 	defer os.file_info_delete(dynamic_enum_info, context.temp_allocator)
 	if dynamic_enum_info.type != .Regular ||
 	   dynamic_enum_info.size <= 0 ||
 	   dynamic_enum_info.size > DESKTOP_ENUM_MAX_BYTES {
-		return {}, false
+		return {}, marker_seen, false
 	}
 	dynamic_enumeration, dynamic_enumeration_error := os.read_entire_file(
 		dynamic_enum_path,
 		context.temp_allocator,
 	)
-	if dynamic_enumeration_error != nil {return {}, false}
+	if dynamic_enumeration_error != nil {return {}, marker_seen, false}
 	defer delete(dynamic_enumeration, context.temp_allocator)
-	evidence := console_windows98_enum_evidence(
+	evidence = console_windows98_enum_evidence(
 		string(enumeration),
 		string(dynamic_enumeration),
 	)
-	return evidence, console_enum_evidence_valid(evidence)
+	enum_valid = console_enum_evidence_valid(evidence)
+	return
 }
 
 console_desktop_marker_exists :: proc(c_drive: string) -> bool {
-	_, valid := console_desktop_marker_evidence(c_drive)
-	return valid
+	_, marker_seen, enum_valid := console_desktop_marker_evidence(c_drive)
+	return marker_seen && enum_valid
+}
+
+console_result_refresh_desktop_evidence :: proc(
+	result: ^acceptance.Result,
+	c_drive: string,
+) {
+	if result == nil {return}
+	evidence, marker_seen, enum_valid := console_desktop_marker_evidence(c_drive)
+	result.desktop_marker_seen = marker_seen
+	result.desktop_enum_valid = enum_valid
+	result.desktop_vga_irq11_seen = evidence.vga_irq11_seen
+}
+
+console_acceptance_enforce_result_invariants :: proc(
+	options: ^acceptance.Options,
+	result: ^acceptance.Result,
+	return_code: ^int,
+) {
+	if options == nil ||
+	   result == nil ||
+	   options.accept_until == .None ||
+	   result.stop_reason != .Acceptance_Reached {
+		return
+	}
+	reset_epochs_valid :=
+		result.boot_epoch > 0 &&
+		result.boot_epoch - 1 == result.guest_requested_resets &&
+		result.reset_count == result.guest_requested_resets
+	if !reset_epochs_valid {
+		result.last_progress_reason = "reset_epoch_mismatch"
+	} else if options.accept_until == .Desktop &&
+	          (!result.desktop_marker_seen ||
+		          !result.desktop_enum_valid ||
+		          !result.desktop_vga_irq11_seen ||
+		          result.execution.primary_ide_dma_transactions == 0 ||
+		          result.execution.primary_ide_dma_bytes == 0) {
+		result.last_progress_reason = "desktop_evidence_lost"
+	} else {
+		return
+	}
+	result.stop_reason = .Fatal_Virtualization_Failure
+	result.exit_code = 2
+	if return_code != nil {return_code^ = 2}
 }
 
 CONSOLE_ARTIFACT_LOG_BYTES :: 32 * 1024
@@ -1683,7 +1845,11 @@ console_acceptance_finalize :: proc(
 			run_result.installation_milestone = console_install_milestone_name(state.milestone)
 		}
 		profile.install_state_destroy(&state)
+		if options.accept_until == .Desktop {
+			console_result_refresh_desktop_evidence(run_result, paths.c_drive)
+		}
 	}
+	console_acceptance_enforce_result_invariants(options, run_result, return_code)
 	trace_count := machine.machine_hardware_trace_count(m)
 	run_result.hardware_trace_path = ""
 	if console_acceptance_should_write_artifacts(options, run_result, trace_count) {

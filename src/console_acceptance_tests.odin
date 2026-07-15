@@ -37,6 +37,52 @@ console_acceptance_test_reset_history_owns_bounded_reasons :: proc(t: ^testing.T
 }
 
 @(test)
+console_acceptance_test_success_requires_one_boot_epoch_per_guest_reset :: proc(t: ^testing.T) {
+	options := acceptance.Options {
+		accept_until = .Desktop,
+	}
+	result := acceptance.Result {
+		stop_reason = .Acceptance_Reached,
+		exit_code = 0,
+		reset_count = 1,
+		boot_epoch = 2,
+		guest_requested_resets = 1,
+		desktop_marker_seen = true,
+		desktop_enum_valid = true,
+		desktop_vga_irq11_seen = true,
+	}
+	result.execution.primary_ide_dma_transactions = 1
+	result.execution.primary_ide_dma_bytes = 512
+	return_code := 0
+	console_acceptance_enforce_result_invariants(&options, &result, &return_code)
+	testing.expect_value(t, result.stop_reason, acceptance.Stop_Reason.Acceptance_Reached)
+	testing.expect_value(t, return_code, 0)
+
+	desktop_lost := result
+	desktop_lost.desktop_marker_seen = false
+	desktop_lost_return_code := 0
+	console_acceptance_enforce_result_invariants(
+		&options,
+		&desktop_lost,
+		&desktop_lost_return_code,
+	)
+	testing.expect_value(
+		t,
+		desktop_lost.stop_reason,
+		acceptance.Stop_Reason.Fatal_Virtualization_Failure,
+	)
+	testing.expect_value(t, desktop_lost.last_progress_reason, "desktop_evidence_lost")
+	testing.expect_value(t, desktop_lost_return_code, 2)
+
+	result.guest_requested_resets = 2
+	console_acceptance_enforce_result_invariants(&options, &result, &return_code)
+	testing.expect_value(t, result.stop_reason, acceptance.Stop_Reason.Fatal_Virtualization_Failure)
+	testing.expect_value(t, result.last_progress_reason, "reset_epoch_mismatch")
+	testing.expect_value(t, result.exit_code, 2)
+	testing.expect_value(t, return_code, 2)
+}
+
+@(test)
 console_acceptance_test_failed_reset_does_not_accumulate_live_segment_twice :: proc(
 	t: ^testing.T,
 ) {
@@ -124,6 +170,53 @@ console_acceptance_test_setup_artifact_poll_is_shared_and_throttled :: proc(t: ^
 		)
 	}
 	testing.expect_value(t, last, start)
+	desktop_last := start
+	desktop_armed_reset_count: u32
+	testing.expect(
+		t,
+		!console_setup_artifact_poll_due(
+			0,
+			false,
+			true,
+			&desktop_armed_reset_count,
+			&desktop_last,
+			time.tick_add(start, CONSOLE_SETUP_ARTIFACT_PERIOD - time.Nanosecond),
+		),
+	)
+	desktop_period := time.tick_add(start, CONSOLE_SETUP_ARTIFACT_PERIOD)
+	testing.expect(
+		t,
+		console_setup_artifact_poll_due(
+			0,
+			false,
+			true,
+			&desktop_armed_reset_count,
+			&desktop_last,
+			desktop_period,
+		),
+	)
+	testing.expect(
+		t,
+		!console_setup_artifact_poll_due(
+			0,
+			false,
+			true,
+			&desktop_armed_reset_count,
+			&desktop_last,
+			desktop_period,
+		),
+	)
+	testing.expect(
+		t,
+		console_setup_artifact_poll_due(
+			0,
+			false,
+			true,
+			&desktop_armed_reset_count,
+			&desktop_last,
+			time.tick_add(desktop_period, CONSOLE_SETUP_ARTIFACT_PERIOD),
+		),
+	)
 	first_phase_two := time.tick_add(start, 60 * time.Second)
 	testing.expect(
 		t,
@@ -681,6 +774,14 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 	testing.expect(t, os.make_directory(setup) == nil)
 	marker, _ := filepath.join({setup, "DESKTOP.OK"})
 	testing.expect(t, os.write_entire_file(marker, "READY\r\n") == nil)
+	_, marker_seen, enum_valid := console_desktop_marker_evidence(dir)
+	testing.expect(t, marker_seen)
+	testing.expect(t, !enum_valid)
+	result: acceptance.Result
+	console_result_refresh_desktop_evidence(&result, dir)
+	testing.expect(t, result.desktop_marker_seen)
+	testing.expect(t, !result.desktop_enum_valid)
+	testing.expect(t, !result.desktop_vga_irq11_seen)
 	testing.expect(t, !console_desktop_marker_exists(dir))
 	enumeration, _ := filepath.join({setup, "ENUM.REG"})
 	dynamic_enumeration, _ := filepath.join({setup, "DYNENUM.REG"})
@@ -698,9 +799,8 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 		"[HKEY_LOCAL_MACHINE\\Enum\\PCI\\VEN_FFFE&DEV_0002&REV_01\\BUS_00&DEV_02&FUNC_00]\r\n" +
 		"\r\n" +
 		"[HKEY_LOCAL_MACHINE\\Enum\\PCI\\VEN_FFFE&DEV_0002&REV_01\\BUS_00&DEV_02&FUNC_00\\LogConfig]\r\n" +
-		`"AllocConfig"=hex(8):01,00,00,00,05,00,00,00,00,00,00,00,01,00,01,00,02,00,00,\` +
-		"\r\n" +
-		"  00,03,00,00,00,00,00,00,e0,00,00,00,00,00,00,00,02,02,03,00,00,0b,00,00,00,0b,00,00,00,ff,ff,ff,ff\r\n"
+		`"0000"=hex:00,04,00,00,00,30,00,00,10,00,00,00,04,00,00,00,03,00,0b,00,00,08,00,00,00,00,00,00` +
+		"\r\n"
 	valid_dynamic_enumeration :=
 		"REGEDIT4\r\n\r\n" +
 		"[HKEY_DYN_DATA\\Config Manager\\Enum\\C0000001]\r\n" +
@@ -718,7 +818,9 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 		"[HKEY_DYN_DATA\\Config Manager\\Enum\\C0000004]\r\n" +
 		`"HardWareKey"="PCI\\VEN_FFFE&DEV_0002&REV_01\\BUS_00&DEV_02&FUNC_00"` + "\r\n" +
 		`"Problem"=hex:00,00,00,00` + "\r\n" +
-		`"Status"=hex:4a,00,00,00` + "\r\n\r\n" +
+		`"Status"=hex:4a,00,00,00` + "\r\n" +
+		`"Allocation"=hex:00,04,00,00,01,00,00,00,10,00,00,00,04,00,00,00,\` + "\r\n" +
+		"  03,00,0b,00,00,08,00,00,00,00,00,00\r\n\r\n" +
 		"[HKEY_DYN_DATA\\Config Manager\\Enum\\C0000005]\r\n" +
 		`"HardWareKey"="MF\\GOODPRIMARY\\PCI&VEN_1022&DEV_7409&REV_07&BUS_00&DEV_07&FUNC_01"` + "\r\n" +
 		`"Problem"=hex:00,00,00,00` + "\r\n" +
@@ -735,23 +837,44 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 	)
 	testing.expect(t, console_desktop_marker_exists(dir))
 	testing.expect(t, console_windows98_enum_valid(valid_enumeration, valid_dynamic_enumeration))
-	zero_version, zero_version_allocated := strings.replace_all(
-		valid_enumeration,
-		"05,00,00,00,00,00,00,00,01,00,01,00,02,00,00",
-		"05,00,00,00,00,00,00,00,00,00,00,00,02,00,00",
+	console_result_refresh_desktop_evidence(&result, dir)
+	testing.expect(t, result.desktop_marker_seen)
+	testing.expect(t, result.desktop_enum_valid)
+	testing.expect(t, result.desktop_vga_irq11_seen)
+	no_dynamic_irq, no_dynamic_irq_allocated := strings.replace_all(
+		valid_dynamic_enumeration,
+		"10,00,00,00,04,00,00,00,\\",
+		"10,00,00,00,01,00,00,00,\\",
 	)
-	testing.expect(t, os.write_entire_file(enumeration, zero_version) == nil)
-	if zero_version_allocated {delete(zero_version)}
-	testing.expect(t, console_desktop_marker_exists(dir))
-	testing.expect(t, os.write_entire_file(enumeration, valid_enumeration) == nil)
+	testing.expect(t, no_dynamic_irq_allocated)
+	testing.expect(t, !console_windows98_enum_valid(valid_enumeration, no_dynamic_irq))
+	if no_dynamic_irq_allocated {delete(no_dynamic_irq)}
+	missing_allocation, missing_allocation_allocated := strings.replace_all(
+		valid_dynamic_enumeration,
+		`"Allocation"=hex:00,04,00,00,01,00,00,00,10,00,00,00,04,00,00,00,\` +
+			"\r\n" +
+			"  03,00,0b,00,00,08,00,00,00,00,00,00\r\n",
+		"",
+	)
+	testing.expect(t, missing_allocation_allocated)
+	testing.expect(t, !console_windows98_enum_valid(valid_enumeration, missing_allocation))
+	if missing_allocation_allocated {delete(missing_allocation)}
+	bad_wrapper, bad_wrapper_allocated := strings.replace_all(
+		valid_dynamic_enumeration,
+		`"Allocation"=hex:00,04,00,00`,
+		`"Allocation"=hex:01,04,00,00`,
+	)
+	testing.expect(t, !console_windows98_enum_valid(valid_enumeration, bad_wrapper))
+	if bad_wrapper_allocated {delete(bad_wrapper)}
 	bad_irq, bad_irq_allocated := strings.replace_all(
-		valid_enumeration,
-		"02,03,00,00,0b,00,00,00,0b,00,00,00",
-		"02,03,00,00,0a,00,00,00,0a,00,00,00",
+		valid_dynamic_enumeration,
+		"03,00,0b,00,00,08,00,00",
+		"03,00,0a,00,00,08,00,00",
 	)
-	testing.expect(t, os.write_entire_file(enumeration, bad_irq) == nil)
+	testing.expect(t, os.write_entire_file(dynamic_enumeration, bad_irq) == nil)
 	if bad_irq_allocated {delete(bad_irq)}
 	testing.expect(t, !console_desktop_marker_exists(dir))
+	testing.expect(t, os.write_entire_file(dynamic_enumeration, valid_dynamic_enumeration) == nil)
 	mixed_irq, mixed_irq_error := strings.concatenate(
 		{
 			valid_enumeration,
@@ -839,6 +962,91 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 	testing.expect(t, console_frame_is_nonblack_graphics(&frame))
 	frame.kind = .Text
 	testing.expect(t, !console_frame_is_nonblack_graphics(&frame))
+}
+
+@(test)
+console_acceptance_test_profile_readiness_preserves_install_gates :: proc(t: ^testing.T) {
+	inactive: profile.Install_State
+	active_pre_reset := profile.Install_State {
+		phase = .Setup_Running,
+	}
+	active_post_reset := profile.Install_State {
+		phase       = .Setup_Running,
+		reset_count = 1,
+	}
+	testing.expect(t, console_acceptance_profile_ready(.None, nil, .Missing))
+	testing.expect(t, !console_acceptance_profile_ready(.Desktop, nil, .None))
+	testing.expect(t, !console_acceptance_profile_ready(.Desktop, &inactive, .Missing))
+	testing.expect(t, console_acceptance_profile_ready(.Desktop, &inactive, .None))
+	testing.expect(
+		t,
+		!console_acceptance_profile_ready(.Hardware_Detection, &inactive, .None),
+	)
+	testing.expect(
+		t,
+		console_acceptance_profile_ready(.Hardware_Detection, &active_pre_reset, .None),
+	)
+	testing.expect(t, console_desktop_profile_probe_ready(&inactive))
+	testing.expect(t, !console_desktop_profile_probe_ready(&active_pre_reset))
+	testing.expect(t, console_desktop_profile_probe_ready(&active_post_reset))
+}
+
+@(test)
+console_acceptance_test_only_dos_extender_cpu_resets_are_allowed_during_gates :: proc(
+	t: ^testing.T,
+) {
+	testing.expect(t, console_acceptance_cpu_reset_allowed(.None, .Triple_Fault, false))
+	testing.expect(
+		t,
+		console_acceptance_cpu_reset_allowed(.Desktop, .Dos_Extender_Warm_Resume, true),
+	)
+	testing.expect(
+		t,
+		!console_acceptance_cpu_reset_allowed(.Desktop, .Dos_Extender_Warm_Resume, false),
+	)
+	testing.expect(t, !console_acceptance_cpu_reset_allowed(.Desktop, .Triple_Fault, true))
+	testing.expect(t, !console_acceptance_cpu_reset_allowed(.Hardware_Detection, .None, true))
+}
+
+@(test)
+console_acceptance_test_win98_dynamic_allocation_irq_is_strict :: proc(t: ^testing.T) {
+	real_irq11 :=
+		"hex:00,04,00,00,01,00,00,00,30,00,00,00,01,00,00,00,01,00,14,00," +
+		"00,00,0a,00,ff,ff,0a,00,01,00,00,00,ff,ff,ff,ff,00,00,01,00,00,00," +
+		"0a,00,ff,ff,0a,00,01,00,00,00,ff,00,00,00,30,00,00,00,01,00,00,00," +
+		"01,00,14,00,00,00,0b,00,ff,ff,0b,00,01,00,00,00,ff,ff,ff,ff,00,00," +
+		"01,00,00,00,0b,00,ff,ff,0b,00,01,00,00,00,ff,00,00,00,24,00,00,00," +
+		"02,00,00,00,01,00,0c,00,b0,03,bb,03,00,00,04,03,ff,ff,0c,00,b0,03," +
+		"bb,03,00,00,04,03,ff,00,00,00,24,00,00,00,02,00,00,00,01,00,0c,00," +
+		"c0,03,df,03,00,00,04,03,ff,ff,20,00,c0,03,df,03,00,00,04,03,ff,00," +
+		"00,00,10,00,00,00,04,00,00,00,03,00,0b,00,00,08,00,00,30,00,00,00," +
+		"01,00,00,00,01,00,14,00,00,00,00,fe,ff,0f,00,fe,01,00,00,00,00,f0," +
+		"ff,ff,00,10,00,00,00,00,00,00,ff,ff,ff,ff,01,00,00,00,10,00,00,00," +
+		"30,00,00,00,01,00,00,00,01,00,14,00,00,00,00,fc,ff,ff,ff,fd,01,00," +
+		"00,00,00,00,00,fe,00,00,00,02,00,00,00,00,ff,ff,ff,ff,01,00,00,00,14," +
+		"00,00,00,00,00,00,00"
+	seen, mismatch, valid := console_win98_allocation_irq_evidence(real_irq11, 11)
+	testing.expect(t, seen)
+	testing.expect(t, !mismatch)
+	testing.expect(t, valid)
+
+	real_irq10, real_irq10_allocated := strings.replace_all(
+		real_irq11,
+		"03,00,0b,00,00,08,00,00",
+		"03,00,0a,00,00,08,00,00",
+	)
+	defer if real_irq10_allocated {delete(real_irq10)}
+	seen, mismatch, valid = console_win98_allocation_irq_evidence(real_irq10, 11)
+	testing.expect(t, seen)
+	testing.expect(t, mismatch)
+	testing.expect(t, valid)
+
+	malformed :=
+		"hex:00,04,00,00,01,00,00,00," +
+		"11,00,00,00,04,00,00,00,03,00,0b,00,00,08,00,00," +
+		"00,00,00,00"
+	_, _, valid = console_win98_allocation_irq_evidence(malformed, 11)
+	testing.expect(t, !valid)
 }
 
 @(test)
