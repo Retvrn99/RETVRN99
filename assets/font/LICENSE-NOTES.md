@@ -7,3 +7,6 @@
   (37 CFR 202.1(e)); the int10h font-pack renditions of the same data are
   published under CC BY-SA 4.0, which is one-way compatible with GPLv3.
   Attribution given here either way.
+- `libre-franklin.ttf` is `LibreFranklin[wght].ttf` from Google Fonts, blob
+  `8cf5549196f5e98dc27be05fc2b3691e77eaa89c`. It is licensed under the SIL
+  Open Font License 1.1; the full license is in `OFL-Libre-Franklin.txt`.

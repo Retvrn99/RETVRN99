@@ -27,6 +27,7 @@ mouse_test_guest_view_hit :: proc(t: ^testing.T) {
 		has_frame     = true,
 		aspect_width  = 4,
 		aspect_height = 3,
+		menu_reveal   = 1,
 	}
 	r := guest_view_rect(4, 3)
 	testing.expect(t, mouse_inside_guest(&h, r.x + r.w * 0.5, r.y + r.h * 0.5))

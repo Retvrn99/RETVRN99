@@ -2,9 +2,15 @@
 package host
 
 import imgui "../../vendor_local/imgui"
+import "core:math"
 
-THEME_FONT_PX :: 13
-THEME_FRAME_PAD_Y :: 3
+THEME_FONT_PX :: 15
+THEME_FRAME_PAD_X :: 7
+THEME_FRAME_PAD_Y :: 2
+THEME_WINDOW_PAD_X :: 8
+THEME_WINDOW_PAD_Y :: 6
+THEME_MENU_INSET_X :: 3
+THEME_MENU_ITEM_INSET_X :: 5
 MENU_BAR_H :: THEME_FONT_PX + THEME_FRAME_PAD_Y * 2
 
 THEME_BLACK :: u32(0xFF000000)
@@ -14,6 +20,7 @@ THEME_DARK :: u32(0xFF808080)
 THEME_SHADOW :: u32(0xFF404040)
 THEME_NAVY :: u32(0xFF000080)
 THEME_HIGHLIGHT :: u32(0xFFA0A0FF)
+THEME_FONT := #load("../../assets/font/libre-franklin.ttf")
 
 theme_color :: proc(argb: u32) -> imgui.Vec4 {
 	return {
@@ -24,14 +31,31 @@ theme_color :: proc(argb: u32) -> imgui.Vec4 {
 	}
 }
 
-// Applies a compact Windows 9x-inspired host UI without external font assets.
+// Applies a compact Windows 9x-inspired host UI with Libre Franklin.
 // Call once after imgui.CreateContext and before the first frame.
 theme_apply :: proc() {
+	io := imgui.GetIO()
+	font_config := imgui.FontConfig {
+		FontDataOwnedByAtlas = false,
+		GlyphMaxAdvanceX     = math.F32_MAX,
+		RasterizerMultiply   = 1,
+		RasterizerDensity    = 1,
+		ExtraSizeScale       = 1,
+	}
+	if font := imgui.FontAtlas_AddFontFromMemoryTTF(
+		io.Fonts,
+		raw_data(THEME_FONT),
+		i32(len(THEME_FONT)),
+		f32(THEME_FONT_PX),
+		&font_config,
+	); font != nil {
+		io.FontDefault = font
+	}
 	style := imgui.GetStyle()
 	style.FontSizeBase = f32(THEME_FONT_PX)
 	style.FontScaleMain = 1
 	style.FontScaleDpi = 1
-	style.WindowPadding = {5, 5}
+	style.WindowPadding = {THEME_WINDOW_PAD_X, THEME_WINDOW_PAD_Y}
 	style.WindowRounding = 0
 	style.WindowBorderSize = 1
 	style.WindowTitleAlign = {0, 0.5}
@@ -39,11 +63,11 @@ theme_apply :: proc() {
 	style.ChildBorderSize = 1
 	style.PopupRounding = 0
 	style.PopupBorderSize = 1
-	style.FramePadding = {5, THEME_FRAME_PAD_Y}
+	style.FramePadding = {THEME_FRAME_PAD_X, THEME_FRAME_PAD_Y}
 	style.FrameRounding = 0
 	style.FrameBorderSize = 1
-	style.ItemSpacing = {6, 3}
-	style.ItemInnerSpacing = {4, 3}
+	style.ItemSpacing = {8, 3}
+	style.ItemInnerSpacing = {6, 2}
 	style.CellPadding = {4, 2}
 	style.IndentSpacing = 16
 	style.ScrollbarSize = 16

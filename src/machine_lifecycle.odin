@@ -169,6 +169,7 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine, clock_running: bool = true) -> 
 	if c.audio_enabled && !host.host_audio_open(&c.audio, machine.machine_audio_output(m)) {
 		vm_log(c.shared, fmt.tprintf("audio: SDL3 output unavailable (%s)", sdl3.GetError()))
 	}
+	_ = host.host_audio_set_gain(&c.audio, c.volume_gain)
 	vm_guard_bind(&c.guard, &m.vm)
 	machine.machine_set_wake_adapter(m, &c.guard, vm_guard_schedule)
 	if m.bus.frozen {

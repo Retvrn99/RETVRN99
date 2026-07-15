@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
-import "core:testing"
 import imgui "../../vendor_local/imgui"
+import "core:testing"
+import sdl3 "vendor:sdl3"
 
 @(test)
 host_test_theme_layout_invariant :: proc(t: ^testing.T) {
@@ -21,6 +22,9 @@ host_test_theme_layout_invariant :: proc(t: ^testing.T) {
 	testing.expect_value(t, int(r.y), MENU_BAR_H)
 	testing.expect_value(t, int(r.w + 0.5), 1067)
 	testing.expect_value(t, int(r.h), TEXT_H * 2)
+
+	r = guest_view_rect(4, 3, 1440, 1080, 0)
+	testing.expect_value(t, r, sdl3.FRect{0, 0, 1440, 1080})
 }
 
 @(test)
@@ -33,6 +37,7 @@ host_test_theme_apply_headless :: proc(t: ^testing.T) {
 
 	theme_apply()
 	io := imgui.GetIO()
+	testing.expect(t, io.FontDefault != nil)
 	io.IniFilename = nil
 	io.DisplaySize = {640, 480}
 	io.DeltaTime = 1.0 / 60.0
@@ -45,6 +50,9 @@ host_test_theme_apply_headless :: proc(t: ^testing.T) {
 	testing.expect_value(t, style.FontScaleDpi, f32(1))
 	testing.expect_value(t, int(imgui.GetFrameHeight()), MENU_BAR_H)
 	testing.expect_value(t, style.FramePadding[1], f32(THEME_FRAME_PAD_Y))
+	testing.expect_value(t, style.FramePadding[0], f32(THEME_FRAME_PAD_X))
+	testing.expect_value(t, style.WindowPadding[0], f32(THEME_WINDOW_PAD_X))
+	testing.expect_value(t, style.WindowPadding[1], f32(THEME_WINDOW_PAD_Y))
 	testing.expect_value(t, style.WindowRounding, f32(0))
 	testing.expect_value(t, style.WindowBorderSize, f32(1))
 	testing.expect_value(t, style.PopupBorderSize, f32(1))

@@ -39,6 +39,8 @@ HOST_SDL_EVENTS_PER_FRAME :: 512
 HOST_INPUTS_PER_VM_STEP :: 256
 
 Command_Kind :: enum {
+	Start,
+	Stop,
 	Reset,
 	Power_Off,
 	Mount_Floppy,
@@ -49,6 +51,7 @@ Command_Kind :: enum {
 	Finish_Windows_98_Installation,
 	Set_Cpu_Mode,
 	Set_Pause,
+	Set_Volume,
 }
 
 Command :: struct {
@@ -57,6 +60,7 @@ Command :: struct {
 	cpu_mode:     vmconfig.Cpu_Mode, // Set_Cpu_Mode: absolute selection
 	pause_reason: host.Pause_Reason,
 	pause_active: bool,
+	volume_gain:  f32,
 }
 
 Shared :: struct {
@@ -66,6 +70,7 @@ Shared :: struct {
 	log_lines:             [dynamic]string,
 	cmds:                  [dynamic]Command,
 	running:               bool,
+	machine_running:       bool,
 	frozen_msg:            string,
 	exit_stats:            [hv.Exit_Kind]u64,
 	regs_text:             string,
@@ -81,6 +86,7 @@ Vm_Ctx :: struct {
 	guard:                   Vm_Guard,
 	audio:                   host.Host_Audio,
 	audio_enabled:           bool,
+	volume_gain:             f32,
 	volume:                  ^fat32.Volume,
 	bd:                      disk.Block_Device,
 	attach:                  bool,
@@ -363,6 +369,7 @@ gui_main :: proc(
 	}
 	shared.guard = &ctx.guard
 	ctx.audio_enabled = true
+	ctx.volume_gain = 1
 	defer {
 		shared.guard = nil
 		if !vm_guard_destroy(&ctx.guard) {
@@ -374,14 +381,26 @@ gui_main :: proc(
 	vm_thr := thread.create_and_start_with_poly_data(ctx, vm_thread_proc)
 
 	st := host.Menu_State {
-			cpu_mode = ctx.cpu_mode,
+			cpu_mode          = ctx.cpu_mode,
+			window_scale      = h.window_scale,
+			fullscreen        = h.fullscreen,
+			menu_reveal       = 1,
+			visual_shader     = h.visual_shader,
+			shaders_available = h.shader_state != nil,
 		}
 	floppy_pending := pending_mount_create()
 	cdrom_pending := pending_mount_create()
 	install_pending := pending_mount_create()
 	release_mouse_key := false
+	host_hotkey_scancode := sdl3.Scancode.UNKNOWN
+	host_lgui_down := false
+	host_rgui_down := false
+	host_lshift_down := false
+	host_rshift_down := false
+	audio_gain := f32(1)
 	keyboard: host.Host_Keyboard
 	start := time.tick_now()
+	menu_animation_tick := start
 
 	for {
 		sync.lock(&shared.mu)
@@ -403,6 +422,59 @@ gui_main :: proc(
 				push_cmd(shared, Command{kind = .Power_Off})
 			case .KEY_DOWN, .KEY_UP:
 				if ev.key.repeat {continue}
+				#partial switch ev.key.scancode {
+				case .LGUI:
+					host_lgui_down = ev.key.down
+				case .RGUI:
+					host_rgui_down = ev.key.down
+				case .LSHIFT:
+					host_lshift_down = ev.key.down
+				case .RSHIFT:
+					host_rshift_down = ev.key.down
+				}
+				if !ev.key.down && ev.key.scancode == host_hotkey_scancode {
+					host_hotkey_scancode = .UNKNOWN
+					continue
+				}
+				host_modifiers := ev.key.mod
+				if host_lgui_down {host_modifiers += {.LGUI}}
+				if host_rgui_down {host_modifiers += {.RGUI}}
+				if host_lshift_down {host_modifiers += {.LSHIFT}}
+				if host_rshift_down {host_modifiers += {.RSHIFT}}
+				hotkey := host.host_hotkey_from_key(
+					ev.key.scancode,
+					host_modifiers,
+					ev.key.down,
+					ev.key.repeat,
+				)
+				if hotkey != .None {
+					host_hotkey_scancode = ev.key.scancode
+					switch hotkey {
+					case .Release_Input:
+						release_mouse_key = false
+						release_held_keys(shared, &keyboard)
+						if h.mouse_captured {
+							_ = host.mouse_capture(&h, false)
+							push_mouse_buttons(shared, 0, true)
+						}
+					case .Toggle_Fullscreen:
+						_ = host.host_toggle_fullscreen(&h)
+						st.fullscreen = h.fullscreen
+					case .Toggle_Turbo:
+						st.cpu_mode = st.cpu_mode == .Turbo ? .GSW_886 : .Turbo
+						push_cmd(shared, Command{kind = .Set_Cpu_Mode, cpu_mode = st.cpu_mode})
+						active_settings.cpu_mode = st.cpu_mode
+						if diag := profile.settings_save(paths.settings, active_settings);
+						   diag != .None {
+							vm_log(shared, fmt.tprintf("settings: save failed (%v)", diag))
+						}
+					case .Volume_Down, .Volume_Up:
+						audio_gain = host.host_volume_adjust(audio_gain, hotkey)
+						push_cmd(shared, Command{kind = .Set_Volume, volume_gain = audio_gain})
+					case .None:
+					}
+					continue
+				}
 				if ev.key.scancode == .RCTRL &&
 				   ((ev.key.down && h.mouse_captured) || release_mouse_key) {
 					if ev.key.down {
@@ -451,6 +523,11 @@ gui_main :: proc(
 				}
 			case .WINDOW_FOCUS_LOST, .WILL_ENTER_BACKGROUND, .DID_ENTER_BACKGROUND:
 				release_mouse_key = false
+				host_hotkey_scancode = .UNKNOWN
+				host_lgui_down = false
+				host_rgui_down = false
+				host_lshift_down = false
+				host_rshift_down = false
 				release_held_keys(shared, &keyboard)
 				if h.mouse_captured {
 					_ = host.mouse_capture(&h, false)
@@ -473,22 +550,24 @@ gui_main :: proc(
 		sync.lock(&shared.mu)
 		frozen := strings.clone(shared.frozen_msg, context.temp_allocator)
 		regs := strings.clone(shared.regs_text, context.temp_allocator)
-		stats := shared.exit_stats
-		st.cdrom_mounted = shared.cdrom_mounted
-		st.installing_windows_98 = shared.installing_windows_98
+		machine_running := shared.machine_running
 		st.user_paused = host.pause_reason_active(&shared.pause_state, .User)
-		nlog := len(shared.log_lines)
-		first := max(0, nlog - 200)
-		logs := make([]string, nlog - first, context.temp_allocator)
-		for line, i in shared.log_lines[first:] {
-			logs[i] = strings.clone(line, context.temp_allocator)
-		}
 		sync.unlock(&shared.mu)
 
-		exit_lines := make([dynamic]string, context.temp_allocator)
-		for kind in hv.Exit_Kind {
-			append(&exit_lines, fmt.tprintf("%v: %d", kind, stats[kind]))
-		}
+		if st.machine_running && !machine_running {host.host_clear_frame(&h)}
+		st.machine_running = machine_running
+		st.window_scale = h.window_scale
+		st.fullscreen = h.fullscreen
+		st.visual_shader = h.visual_shader
+		menu_animation_now := time.tick_now()
+		menu_animation_seconds := f32(
+			time.duration_seconds(time.tick_diff(menu_animation_tick, menu_animation_now)),
+		)
+		menu_animation_tick = menu_animation_now
+		menu_target := f32(1)
+		if h.fullscreen && h.mouse_captured {menu_target = 0}
+		st.menu_reveal = host.menu_reveal_step(st.menu_reveal, menu_target, menu_animation_seconds)
+		h.menu_reveal = st.menu_reveal
 
 		if frame_slot := frame_mailbox_acquire(&shared.frames); frame_slot != nil {
 			if frame := vga.scanout_descriptor_render(&frame_slot.scanout); frame != nil {
@@ -504,10 +583,12 @@ gui_main :: proc(
 		info := host.Menu_Info {
 			frozen_msg = frozen,
 			regs_text  = regs,
-			exit_lines = exit_lines[:],
-			log_lines  = logs,
 		}
 		switch host.menu_draw(&st, info) {
+		case .Start:
+			push_cmd(shared, Command{kind = .Start})
+		case .Stop:
+			push_cmd(shared, Command{kind = .Stop})
 		case .Reset:
 			push_cmd(shared, Command{kind = .Reset})
 		case .Toggle_Pause:
@@ -536,6 +617,19 @@ gui_main :: proc(
 			if diag := profile.settings_save(paths.settings, active_settings); diag != .None {
 				vm_log(shared, fmt.tprintf("settings: save failed (%v)", diag))
 			}
+		case .Set_Window_Scale:
+			_ = host.host_set_window_scale(&h, st.window_scale)
+			st.window_scale = h.window_scale
+		case .Toggle_Fullscreen:
+			_ = host.host_toggle_fullscreen(&h)
+			st.fullscreen = h.fullscreen
+		case .Set_Visual_Shader:
+			_ = host.host_set_visual_shader(&h, st.visual_shader)
+			st.visual_shader = h.visual_shader
+		case .Open_Github:
+			_ = sdl3.OpenURL("https://github.com/vorvek/RETVRN99")
+		case .Open_Third_Party:
+			_ = sdl3.OpenURL("https://github.com/vorvek/RETVRN99/blob/main/THIRDPARTY.md")
 		case .None:
 		}
 		imgui.Render()
@@ -723,6 +817,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 	if launch_state_ready {
 		machine_live = vm_boot(c, m, !host.pause_active(&pause_state))
 	}
+	publish_machine_running(s, machine_live)
 	if preparation_blocked {
 		message := "Windows 98: interrupted preparation is blocked; choose Install Windows 98 to retry"
 		if !c.preparation_recovered {
@@ -788,7 +883,9 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				continue
 			}
 			switch cmd.kind {
-			case .Reset:
+			case .Start, .Reset:
+				starting := cmd.kind == .Start
+				if starting && machine_live {continue}
 				preparation_blocked = !install_state_boot_allowed(&c.install_state)
 				state_ready :=
 					!preparation_blocked &&
@@ -811,7 +908,8 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					vm_log(
 						s,
 						fmt.tprintf(
-							"machine: reset (%s)",
+							"machine: %s (%s)",
+							starting ? "started" : "reset",
 							vmconfig.cpu_mode_name(
 								install_runtime_cpu_mode(c.cpu_mode, &c.install_state),
 							),
@@ -835,7 +933,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					frozen = true
 					publish_freeze(
 						s,
-						"reset blocked: disk reconciliation failed; staged C: writes retained; retry Reset or Power Off",
+						"reset blocked: disk reconciliation failed; staged C: writes retained; retry Reset or Exit",
 						"",
 					)
 				} else if reset_diagnostic == .Volume_Open_Failed {
@@ -845,18 +943,35 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					frozen = true
 					publish_freeze(s, "reset failed: machine init error", "")
 				}
+				publish_machine_running(s, machine_live)
+			case .Stop:
+				if !machine_live {continue}
+				if !vm_close_then_shutdown(c, m, &machine_live) {
+					frozen = true
+					publish_freeze(
+						s,
+						"disk reconciliation failed; staged C: writes retained; retry Stop",
+						"",
+					)
+					continue
+				}
+				frozen = false
+				publish_freeze(s, "", "")
+				publish_machine_running(s, false)
+				vm_log(s, "machine: stopped")
 			case .Power_Off:
 				if !vm_close_then_shutdown(c, m, &machine_live) {
 					frozen = true
 					publish_freeze(
 						s,
-						"disk reconciliation failed; staged C: writes retained; retry Power Off",
+						"disk reconciliation failed; staged C: writes retained; retry Exit",
 						"",
 					)
 					continue
 				}
 				sync.lock(&s.mu)
 				s.running = false
+				s.machine_running = false
 				sync.unlock(&s.mu)
 				quit = true
 			case .Mount_Floppy:
@@ -936,6 +1051,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					)
 					continue
 				}
+				publish_machine_running(s, false)
 
 				launch_ready := false
 				rollback_failed := false
@@ -1110,6 +1226,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					frozen = true
 					publish_freeze(s, "Windows 98: reboot after preparation failed", "")
 				}
+				publish_machine_running(s, machine_live)
 			case .Finish_Windows_98_Installation:
 				_ = install_session_finish(c, m)
 			case .Set_Cpu_Mode:
@@ -1123,6 +1240,9 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					machine.machine_clock_set_running(m, transition == .Resumed)
 				}
 				publish_pause_state(s, pause_state)
+			case .Set_Volume:
+				c.volume_gain = clamp(cmd.volume_gain, 0, 1)
+				_ = host.host_audio_set_gain(&c.audio, c.volume_gain)
 			}
 		}
 		delete(cmds)
@@ -1223,6 +1343,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 							continue loop
 						}
 					}
+					publish_machine_running(s, false)
 					reset_diagnostic := vm_reinitialize_machine(
 						c,
 						m,
@@ -1251,7 +1372,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						frozen = true
 						publish_freeze(
 							s,
-							"guest reset blocked: disk reconciliation failed; staged C: writes retained; retry Reset or Power Off",
+							"guest reset blocked: disk reconciliation failed; staged C: writes retained; retry Reset or Exit",
 							"",
 						)
 					} else if reset_diagnostic == .Install_Cleanup_Failed {
@@ -1268,6 +1389,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						frozen = true
 						publish_freeze(s, "guest reset failed: machine init error", "")
 					}
+					publish_machine_running(s, machine_live)
 					delete(reset_reason)
 				} else {
 					frozen = true
@@ -1303,6 +1425,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 	firmware_log_host_flush(&firmware, s)
 	if machine_live {vm_shutdown(c, m)}
 	machine.machine_destroy(m)
+	publish_machine_running(s, false)
 	delete(c.floppy)
 	delete(c.floppy_path)
 	delete(c.cdrom_path)
@@ -1509,6 +1632,11 @@ publish_pause_state :: proc(s: ^Shared, state: host.Pause_State) {
 	sync.unlock(&s.mu)
 }
 
+publish_machine_running :: proc(s: ^Shared, running: bool) {
+	sync.lock(&s.mu)
+	s.machine_running = running
+	sync.unlock(&s.mu)
+}
 // line to the device-log panel
 vm_log :: proc(s: ^Shared, msg: string) {
 	owned := strings.clone(msg)
