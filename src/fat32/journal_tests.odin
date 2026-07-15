@@ -16,6 +16,22 @@ journal_test_data_lba :: proc(v: ^Volume, cluster: u32) -> u64 {
 	return u64(PART_START_LBA) + u64(cluster_to_lba(&v.alloc.geo, cluster))
 }
 
+@(private = "file")
+journal_test_entry_offset :: proc(bytes: []u8, short: [11]u8) -> int {
+	for offset := 0; offset + 32 <= len(bytes); offset += 32 {
+		if bytes[offset] == 0 {break}
+		matches := true
+		for i in 0 ..< len(short) {
+			if bytes[offset + i] != short[i] {
+				matches = false
+				break
+			}
+		}
+		if matches {return offset}
+	}
+	return -1
+}
+
 journal_test_arm_on_fail :: proc(v: ^Volume, fired: ^bool) {
 	v.fail_ctx = fired
 	v.on_fail = proc(ctx: rawptr, msg: string) {
@@ -297,6 +313,29 @@ journal_test_large_stage_write_has_fixed_resident_state_and_batched_io :: proc(t
 }
 
 @(test)
+journal_test_storage_stats_report_dynamic_map_entries :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	v := volume_open(dir, 2048)
+	if !testing.expect(t, v != nil) {return}
+	defer volume_discard(v)
+
+	before := volume_journal_storage_stats(v)
+	testing.expect_value(t, before.shadow_fat_entries, u32(0))
+	testing.expect_value(t, before.claimed_entries, u32(0))
+
+	cluster := v.alloc.next_free
+	v.journal.shadow_fat[cluster] = 0x0FFF_FFFF
+	v.journal.claimed[cluster] = Claim{v.alloc.root.children[0], 0}
+	after := volume_journal_storage_stats(v)
+	testing.expect_value(t, after.shadow_fat_entries, u32(1))
+	testing.expect_value(t, after.claimed_entries, u32(1))
+	// The byte total intentionally covers only the fixed-size bitmaps.
+	testing.expect_value(t, after.resident_metadata_bytes, before.resident_metadata_bytes)
+}
+
+@(test)
 journal_test_high_lba_write_is_physically_sparse :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := fat32_test_fixture(t)
@@ -369,6 +408,41 @@ journal_test_backing_failure_does_not_publish_fat_side_effects :: proc(t: ^testi
 	testing.expect_value(t, volume_fat_entry(v, cluster), original)
 	_, shadowed := v.journal.shadow_fat[cluster]
 	testing.expect(t, !shadowed)
+}
+
+@(test)
+journal_test_overlay_read_failure_holds_pending_delete :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if !testing.expect(t, v != nil) {return}
+	defer volume_discard(v)
+
+	io := reconcile_test_child_named(v.alloc.root, "IO.SYS")
+	if !testing.expect(t, io != nil) {return}
+	path := strings.clone(io.host_path, context.temp_allocator)
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	sector := read_test_sector(t, v, root_lba)
+	offset := journal_test_entry_offset(sector[:], io.short)
+	if !testing.expect(t, offset >= 0) {return}
+	sector[offset] = 0xE5
+
+	// The still-allocated FAT chain leaves the removal pending as a possible move.
+	testing.expect(t, volume_write(v, root_lba, sector[:]))
+	testing.expect_value(t, len(v.journal.pending_deletes), 1)
+	testing.expect(t, os.exists(path))
+
+	// Losing the overlay while scanning the guest tree must freeze before any
+	// pending delete or other destructive reconcile action can reach the host.
+	testing.expect(t, os.close(v.journal.overlay.file) == nil)
+	v.journal.overlay.file = nil
+	fired := false
+	journal_test_arm_on_fail(v, &fired)
+	testing.expect(t, !volume_reconcile(v))
+	testing.expect(t, fired && v.frozen)
+	testing.expect(t, !volume_journal_storage_stats(v).healthy)
+	testing.expect_value(t, len(v.journal.pending_deletes), 1)
+	testing.expect(t, os.exists(path))
 }
 
 @(test)
