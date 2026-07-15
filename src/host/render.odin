@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
+import "../vga"
 import "core:c"
 import sdl3 "vendor:sdl3"
-import "../vga"
 
 CELL_W :: 9
 CELL_H :: 16
@@ -16,10 +16,22 @@ CURSOR_LINES :: 2
 
 // standard 16-color VGA palette, ARGB8888
 PALETTE :: [16]u32 {
-	0xFF000000, 0xFF0000AA, 0xFF00AA00, 0xFF00AAAA,
-	0xFFAA0000, 0xFFAA00AA, 0xFFAA5500, 0xFFAAAAAA,
-	0xFF555555, 0xFF5555FF, 0xFF55FF55, 0xFF55FFFF,
-	0xFFFF5555, 0xFFFF55FF, 0xFFFFFF55, 0xFFFFFFFF,
+	0xFF000000,
+	0xFF0000AA,
+	0xFF00AA00,
+	0xFF00AAAA,
+	0xFFAA0000,
+	0xFFAA00AA,
+	0xFFAA5500,
+	0xFFAAAAAA,
+	0xFF555555,
+	0xFF5555FF,
+	0xFF55FF55,
+	0xFF55FFFF,
+	0xFFFF5555,
+	0xFFFF55FF,
+	0xFFFFFF55,
+	0xFFFFFFFF,
 }
 
 // blink bit treated as bright background (no blinking in M1)
@@ -49,8 +61,10 @@ render_snapshot :: proc(pixels: []u32, pitch_px: int, snap: ^vga.Text_Snapshot) 
 	}
 	// steady underline cursor
 	if snap.cursor_on &&
-	   snap.cursor_row >= 0 && snap.cursor_row < TEXT_ROWS &&
-	   snap.cursor_col >= 0 && snap.cursor_col < TEXT_COLS {
+	   snap.cursor_row >= 0 &&
+	   snap.cursor_row < TEXT_ROWS &&
+	   snap.cursor_col >= 0 &&
+	   snap.cursor_col < TEXT_COLS {
 		cell := snap.cells[snap.cursor_row * TEXT_COLS + snap.cursor_col]
 		fg, _ := attr_colors(u8(cell >> 8))
 		x, y, w, h := cursor_px_rect(snap.cursor_row, snap.cursor_col)
@@ -62,11 +76,17 @@ render_snapshot :: proc(pixels: []u32, pitch_px: int, snap: ^vga.Text_Snapshot) 
 	}
 }
 
-guest_view_rect :: proc(aspect_width, aspect_height: int) -> sdl3.FRect {
+guest_view_rect :: proc(
+	aspect_width, aspect_height: int,
+	output_width: int = WIN_W,
+	output_height: int = WIN_H,
+	menu_height: f32 = f32(MENU_BAR_H),
+) -> sdl3.FRect {
 	aw := max(1, aspect_width)
 	ah := max(1, aspect_height)
-	area_w := f32(WIN_W)
-	area_h := f32(WIN_H - MENU_BAR_H)
+	area_w := f32(max(1, output_width))
+	menu_h := clamp(menu_height, f32(0), f32(max(0, output_height - 1)))
+	area_h := max(f32(1), f32(output_height) - menu_h)
 	target := f32(aw) / f32(ah)
 	w, h := area_w, area_h
 	if area_w / area_h > target {
@@ -74,7 +94,7 @@ guest_view_rect :: proc(aspect_width, aspect_height: int) -> sdl3.FRect {
 	} else {
 		h = area_w / target
 	}
-	return {(area_w - w) * 0.5, f32(MENU_BAR_H) + (area_h - h) * 0.5, w, h}
+	return {(area_w - w) * 0.5, menu_h + (area_h - h) * 0.5, w, h}
 }
 
 host_ensure_texture :: proc(h: ^Host, width, height: int) -> bool {
@@ -87,7 +107,7 @@ host_ensure_texture :: proc(h: ^Host, width, height: int) -> bool {
 		h.tex_height = 0
 		return false
 	}
-	sdl3.SetTextureScaleMode(h.tex, .NEAREST)
+	sdl3.SetTextureScaleMode(h.tex, h.visual_shader == .None ? .NEAREST : .LINEAR)
 	h.tex_width = width
 	h.tex_height = height
 	return true
@@ -115,9 +135,27 @@ host_render_guest :: proc(h: ^Host) {
 	sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
 	sdl3.RenderClear(h.ren)
 	if h.tex != nil && h.has_frame {
-		dst := guest_view_rect(h.aspect_width, h.aspect_height)
+		output_width, output_height := WIN_W, WIN_H
+		w, hh: c.int
+		if sdl3.GetRenderOutputSize(h.ren, &w, &hh) {
+			output_width = int(w)
+			output_height = int(hh)
+		}
+		dst := guest_view_rect(
+			h.aspect_width,
+			h.aspect_height,
+			output_width,
+			output_height,
+			f32(MENU_BAR_H) * h.menu_reveal,
+		)
+		shader_active := host_shader_begin(h)
 		sdl3.RenderTexture(h.ren, h.tex, nil, &dst)
+		if shader_active {host_shader_end(h)}
 	}
+}
+
+host_clear_frame :: proc(h: ^Host) {
+	if h != nil {h.has_frame = false}
 }
 
 // Upload the rasterized grid at 2x below the menu bar without presenting:
