@@ -36,7 +36,12 @@ volume_open :: proc(path: string, volume_mb: u32) -> ^Volume {
 	v.allocator = allocator
 	v.alloc = a
 	v.root_dir = root.host_path
-	journal_init(&v.journal, allocator)
+	if !journal_init(&v.journal, geo.total_sectors, geo.cluster_count, root.host_path, allocator) {
+		log.errorf("fat32: cannot create bounded journal backing for %s", path)
+		allocation_destroy(&v.alloc, allocator)
+		free(v, allocator)
+		return nil
+	}
 	reconcile_seed(v)
 	for child in root.children {
 		if !child.is_dir && child.first_cluster != 0 && strings.equal_fold(child.name, "IO.SYS") {

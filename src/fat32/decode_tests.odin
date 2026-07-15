@@ -121,6 +121,7 @@ decode_test_grow_file :: proc(t: ^testing.T) {
 	}
 	// data past EOF first, then the dir entry confirms size 2100
 	testing.expect(t, volume_write(v, journal_test_data_lba(v, command.first_cluster) + 3, sec[:]))
+	testing.expect(t, orphan_has(v, command.first_cluster))
 	root_lba := journal_test_data_lba(v, 2)
 	dsec := read_test_sector(t, v, root_lba)
 	testing.expect(t, string(dsec[0:11]) == "COMMAND COM")
@@ -275,9 +276,9 @@ decode_test_setup_replaces_freed_file_chain :: proc(t: ^testing.T) {
 		testing.expect_value(t, host[min(base + CLUSTER_BYTES, len(host)) - 1], u8(0x30 + i))
 	}
 	for i in u32(0) ..< new_clusters - 1 {
-		testing.expect(t, !(new_first + i in v.journal.orphan_data))
+		testing.expect(t, !orphan_has(v, new_first + i))
 	}
-	testing.expect(t, new_first + new_clusters - 1 in v.journal.orphan_data)
+	testing.expect(t, orphan_has(v, new_first + new_clusters - 1))
 	tail := read_test_sector(t, v, journal_test_data_lba(v, new_first + new_clusters - 1) + 7)
 	testing.expect_value(t, tail[511], u8(0x35))
 }
@@ -327,7 +328,7 @@ decode_test_directory_entry_first_file_replacement :: proc(t: ^testing.T) {
 	decode_test_fat_set(t, v, old_first, 0)
 	testing.expect_value(t, volume_fat_entry(v, old_first) & 0x0FFFFFFF, u32(0))
 	testing.expect(t, !v.journal.stale_clusters[old_first])
-	testing.expect(t, !(old_first in v.journal.orphan_data))
+	testing.expect(t, !orphan_has(v, old_first))
 	cleared := read_test_sector(t, v, journal_test_data_lba(v, old_first))
 	testing.expect(t, read_test_all_zero(cleared[:]))
 }
@@ -516,7 +517,7 @@ decode_test_mkdir_waits_for_cross_sector_fat_chain :: proc(t: ^testing.T) {
 	testing.expect_value(t, node.cluster_len, u32(2))
 	testing.expect(t, v.journal.claimed[first].node == node)
 	testing.expect(t, v.journal.claimed[tail].node == node)
-	testing.expect(t, !(first in v.journal.orphan_data))
+	testing.expect(t, !orphan_has(v, first))
 	back := read_test_sector(t, v, journal_test_data_lba(v, first))
 	testing.expect(t, back == dots)
 }
@@ -545,14 +546,14 @@ decode_test_mkdir_waits_for_first_fat_entry :: proc(t: ^testing.T) {
 
 	node := v.alloc.root.children[len(v.alloc.root.children) - 1]
 	testing.expect_value(t, node.cluster_len, u32(0))
-	testing.expect(t, first in v.journal.orphan_data)
+	testing.expect(t, orphan_has(v, first))
 	decode_test_fat_set(t, v, first, 0x0FFFFFFF)
 
 	testing.expect(t, !v.frozen)
 	testing.expect_value(t, len(v.journal.pending_extends), 0)
 	testing.expect_value(t, node.cluster_len, u32(1))
 	testing.expect(t, v.journal.claimed[first].node == node)
-	testing.expect(t, !(first in v.journal.orphan_data))
+	testing.expect(t, !orphan_has(v, first))
 	back := read_test_sector(t, v, journal_test_data_lba(v, first))
 	testing.expect(t, back == dots)
 }
@@ -751,6 +752,7 @@ decode_test_dir_grow_data_first :: proc(t: ^testing.T) {
 	gsec: [SECTOR]u8
 	decode_test_put_entry(gsec[:], 0, "GROWN   TXT", ATTR_FILE, fc, 5)
 	testing.expect(t, volume_write(v, journal_test_data_lba(v, nc), gsec[:]))
+	testing.expect(t, orphan_has(v, nc))
 	p, _ := filepath.join({dir, "GROWN.TXT"})
 	testing.expect(t, !os.exists(p)) // not reachable from any dir yet
 	// FAT link: adopt the cluster and decode its entries
@@ -758,6 +760,8 @@ decode_test_dir_grow_data_first :: proc(t: ^testing.T) {
 	decode_test_fat_set(t, v, 2, nc)
 
 	testing.expect(t, !v.frozen)
+	testing.expect(t, !orphan_has(v, nc))
+	testing.expect(t, overlay_has(v, u32(journal_test_data_lba(v, nc) - PART_START_LBA)))
 	host, herr := os.read_entire_file(p, context.allocator)
 	testing.expect(t, herr == nil)
 	testing.expect(t, string(host) == "GROWN")
@@ -855,13 +859,13 @@ decode_test_orphan_released :: proc(t: ^testing.T) {
 		data[i] = u8(i)
 	}
 	testing.expect(t, volume_write(v, journal_test_data_lba(v, fc), data[:]))
-	testing.expect(t, fc in v.journal.orphan_data)
+	testing.expect(t, orphan_has(v, fc))
 	root_lba := journal_test_data_lba(v, 2)
 	sec := read_test_sector(t, v, root_lba)
 	decode_test_put_entry(sec[:], 96, "BIG     BIN", ATTR_FILE, fc, CLUSTER_BYTES)
 	testing.expect(t, volume_write(v, root_lba, sec[:]))
 
-	testing.expect(t, !(fc in v.journal.orphan_data)) // flushed to the host
+	testing.expect(t, !orphan_has(v, fc)) // flushed to the host
 	p, _ := filepath.join({dir, "BIG.BIN"})
 	host, herr := os.read_entire_file(p, context.allocator)
 	testing.expect(t, herr == nil)

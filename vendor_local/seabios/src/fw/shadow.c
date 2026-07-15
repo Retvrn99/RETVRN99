@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 // Support for enabling/disabling BIOS ram shadowing.
 //
 // Copyright (C) 2008-2010  Kevin O'Connor <kevin@koconnor.net>
@@ -14,6 +15,7 @@
 #include "malloc.h" // rom_get_last
 #include "output.h" // dprintf
 #include "paravirt.h" // runningOnXen
+#include "fw/retvrn99-amd750.h" // RETVRN99_AMD756_*
 #include "string.h" // memset
 #include "util.h" // make_bios_writable
 #include "x86.h" // wbinvd
@@ -113,6 +115,34 @@ make_bios_readonly_intel(u16 bdf, u32 pam0)
 
 static int ShadowBDF = -1;
 
+static void
+make_bios_writable_amd750(void)
+{
+    int bdf = RETVRN99_AMD756_ISA_BDF;
+    u32 vendev = pci_ioconfig_readl(bdf, PCI_VENDOR_ID);
+    if (vendev != ((u32)PCI_DEVICE_ID_AMD_VIPER_7408 << 16
+                   | PCI_VENDOR_ID_AMD)) {
+        dprintf(1, "Unable to prepare AMD-750 BIOS shadow - ISA bridge not found\n");
+        return;
+    }
+    // AMD-751 has no PAM.  The low image is RAM; RD7 exposes the
+    // second 64K of the pristine high-ROM source used for the copy.
+    u8 decode = pci_ioconfig_readb(
+        bdf, RETVRN99_AMD756_ROM_DECODE_CONTROL);
+    pci_ioconfig_writeb(bdf, RETVRN99_AMD756_ROM_DECODE_CONTROL,
+                        decode | RETVRN99_AMD756_HIGH_BIOS_128K_DECODE);
+    memcpy(VSYMBOL(code32flat_start)
+           , VSYMBOL(code32flat_start) + BIOS_SRC_OFFSET
+           , SYMBOL(code32flat_end) - SYMBOL(code32flat_start));
+}
+
+static void
+make_bios_readonly_amd750(void)
+{
+    // GSW-886 does not expose MTRRs, so no low-shadow lock is available.
+    wbinvd();
+}
+
 // Make the 0xc0000-0x100000 area read/writable.
 void
 make_bios_writable(void)
@@ -128,6 +158,13 @@ make_bios_writable(void)
     pci_ioconfig_foreachbdf(bdf, 0) {
         u32 vendev = pci_ioconfig_readl(bdf, PCI_VENDOR_ID);
         u16 vendor = vendev & 0xffff, device = vendev >> 16;
+        if (vendor == PCI_VENDOR_ID_AMD
+            && device == PCI_DEVICE_ID_AMD_FE_GATE_7006) {
+            make_bios_writable_amd750();
+            code_mutable_preinit();
+            ShadowBDF = bdf;
+            return;
+        }
         if (vendor == PCI_VENDOR_ID_INTEL
             && device == PCI_DEVICE_ID_INTEL_82441) {
             make_bios_writable_intel(bdf, I440FX_PAM0);
@@ -159,11 +196,21 @@ make_bios_readonly(void)
         return;
     }
 
-    u16 device = pci_config_readw(ShadowBDF, PCI_DEVICE_ID);
-    if (device == PCI_DEVICE_ID_INTEL_82441)
+    u32 vendev = pci_config_readl(ShadowBDF, PCI_VENDOR_ID);
+    u16 vendor = vendev & 0xffff, device = vendev >> 16;
+    if (vendor == PCI_VENDOR_ID_AMD
+        && device == PCI_DEVICE_ID_AMD_FE_GATE_7006) {
+        make_bios_readonly_amd750();
+        return;
+    }
+    if (vendor == PCI_VENDOR_ID_INTEL
+        && device == PCI_DEVICE_ID_INTEL_82441)
         make_bios_readonly_intel(ShadowBDF, I440FX_PAM0);
-    else
+    else if (vendor == PCI_VENDOR_ID_INTEL
+             && device == PCI_DEVICE_ID_INTEL_Q35_MCH)
         make_bios_readonly_intel(ShadowBDF, Q35_HOST_BRIDGE_PAM0);
+    else
+        dprintf(1, "Unable to lock ram - unsupported bridge\n");
 }
 
 void

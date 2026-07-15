@@ -13,9 +13,10 @@ test_win98_vtd_pit_calibration_reaches_ff_window :: proc(t: ^testing.T) {
 		return
 	}
 	testing.set_fail_timeout(t, 10 * time.Second)
-	m: Machine
-	if !testing.expect(t, machine_init(&m, 64 * 1024 * 1024)) {return}
-	defer machine_destroy(&m)
+	m := new(Machine)
+	defer free(m)
+	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(m)
 
 	// VTD programs mode 2, then waits for a changed count in the FFxx window.
 	copy(
@@ -70,11 +71,11 @@ test_win98_vtd_pit_calibration_reaches_ff_window :: proc(t: ^testing.T) {
 		},
 	)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
-	machine_clock_set_running(&m, true)
+	machine_clock_set_running(m, true)
 
 	start := time.tick_now()
 	for !m.cpu_halted && time.tick_since(start) < time.Second {
-		if !step(&m) {break}
+		if !step(m) {break}
 	}
 	testing.expect(t, m.cpu_halted)
 }

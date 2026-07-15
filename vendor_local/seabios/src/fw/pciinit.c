@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 // Initialize PCI devices (on emulators)
 //
 // Copyright (C) 2008  Kevin O'Connor <kevin@koconnor.net>
@@ -21,6 +22,7 @@
 #include "output.h" // dprintf
 #include "paravirt.h" // RamSize
 #include "romfile.h" // romfile_loadint
+#include "fw/retvrn99-amd750.h" // RETVRN99_AMD750_PIRQ_*
 #include "string.h" // memset
 #include "util.h" // pci_setup
 #include "x86.h" // outb
@@ -131,6 +133,18 @@ static int piix_pci_slot_get_irq(struct pci_device *pci, int pin)
     return pci_irqs[(pin - 1 + slot_addend) & 3];
 }
 
+static int amd750_pci_slot_get_irq(struct pci_device *pci, int pin)
+{
+    int slot_addend = 0;
+
+    while (pci->parent != NULL) {
+        slot_addend += pci_bdf_to_dev(pci->bdf);
+        pci = pci->parent;
+    }
+    slot_addend += pci_bdf_to_dev(pci->bdf) - 1;
+    return RETVRN99_AMD750_PIRQ_IRQ(slot_addend + 1, pin);
+}
+
 static int mch_pci_slot_get_irq(struct pci_device *pci, int pin)
 {
     int pin_addend = 0;
@@ -165,6 +179,16 @@ static void piix_isa_bridge_setup(struct pci_device *pci, void *arg)
     outb(elcr[0], PIIX_PORT_ELCR1);
     outb(elcr[1], PIIX_PORT_ELCR2);
     dprintf(1, "PIIX3/PIIX4 init: elcr=%02x %02x\n", elcr[0], elcr[1]);
+}
+
+static void amd756_isa_bridge_setup(struct pci_device *pci, void *arg)
+{
+    // RETVRN99 uses a fixed PIRQ map: A/C -> IRQ10, B/D -> IRQ11.  The
+    // programmable PIRQ registers reside in the intentionally absent 740B
+    // PM function, so the 7408 ISA bridge must not receive synthetic writes.
+    outb(0x00, PIIX_PORT_ELCR1);
+    outb((1 << 2) | (1 << 3), PIIX_PORT_ELCR2);
+    dprintf(1, "AMD-756 ISA init: fixed PIRQ IRQ10/IRQ11\n");
 }
 
 static void mch_isa_lpc_setup(u16 bdf)
@@ -235,6 +259,13 @@ static void piix_ide_setup(struct pci_device *pci, void *arg)
     u16 bdf = pci->bdf;
     pci_config_writew(bdf, 0x40, 0x8000); // enable IDE0
     pci_config_writew(bdf, 0x42, 0x8000); // enable IDE1
+}
+
+static void amd756_ide_setup(struct pci_device *pci, void *arg)
+{
+    storage_ide_setup(pci, arg);
+    pci_config_writeb(pci->bdf, 0x40,
+                      pci_config_readb(pci->bdf, 0x40) | 0x03);
 }
 
 static void pic_ibm_setup(struct pci_device *pci, void *arg)
@@ -335,6 +366,8 @@ static void intel_igd_setup(struct pci_device *dev, void *arg)
 }
 
 static const struct pci_device_id pci_device_tbl[] = {
+    PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_VIPER_7408,
+               amd756_isa_bridge_setup),
     /* PIIX3/PIIX4 PCI to ISA bridge */
     PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82371SB_0,
                piix_isa_bridge_setup),
@@ -344,6 +377,8 @@ static const struct pci_device_id pci_device_tbl[] = {
                mch_isa_bridge_setup),
 
     /* STORAGE IDE */
+    PCI_DEVICE_CLASS(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_VIPER_7409,
+                     PCI_CLASS_STORAGE_IDE, amd756_ide_setup),
     PCI_DEVICE_CLASS(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82371SB_1,
                      PCI_CLASS_STORAGE_IDE, piix_ide_setup),
     PCI_DEVICE_CLASS(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82371AB,
@@ -477,6 +512,16 @@ static void i440fx_mem_addr_setup(struct pci_device *dev, void *arg)
     pci_slot_get_irq = piix_pci_slot_get_irq;
 }
 
+static void amd750_mem_addr_setup(struct pci_device *dev, void *arg)
+{
+    if (RamSize <= 0x80000000)
+        pcimem_start = 0x80000000;
+    else if (RamSize <= 0xc0000000)
+        pcimem_start = 0xc0000000;
+
+    pci_slot_get_irq = amd750_pci_slot_get_irq;
+}
+
 static void mch_mmconfig_setup(u16 bdf)
 {
     u64 addr = Q35_HOST_BRIDGE_PCIEXBAR_ADDR;
@@ -511,6 +556,8 @@ static void mch_mem_addr_setup(struct pci_device *dev, void *arg)
 }
 
 static const struct pci_device_id pci_platform_tbl[] = {
+    PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_FE_GATE_7006,
+               amd750_mem_addr_setup),
     PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82441,
                i440fx_mem_addr_setup),
     PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_Q35_MCH,

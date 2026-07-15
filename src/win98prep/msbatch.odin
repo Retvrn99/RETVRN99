@@ -2,6 +2,7 @@
 package win98prep
 
 import "core:os"
+import "core:path/filepath"
 import "core:strings"
 import "core:time/timezone"
 
@@ -13,18 +14,24 @@ Msbatch_Setting :: struct {
 	append_csv:  bool,
 }
 
-normalize_msbatch_file :: proc(path: string) -> bool {
+DESKTOP_PROBE_FILE :: "DESKTOP.BAT"
+DESKTOP_MARKER_FILE :: "DESKTOP.OK"
+DESKTOP_ENUM_FILE :: "ENUM.REG"
+DESKTOP_DYNAMIC_ENUM_FILE :: "DYNENUM.REG"
+MSBATCH_BOOT_OPTIONS_SECTION :: "RETVRN99BootOptions"
+
+normalize_msbatch_file :: proc(path: string, desktop_probe := false) -> bool {
 	template, read_error := os.read_entire_file(path, context.allocator)
 	if read_error != nil {return false}
 	defer delete(template)
 
-	normalized, ok := normalize_msbatch(string(template))
+	normalized, ok := normalize_msbatch(string(template), desktop_probe)
 	if !ok {return false}
 	defer delete(normalized)
 	return os.write_entire_file(path, normalized) == nil
 }
 
-normalize_msbatch :: proc(template: string) -> (string, bool) {
+normalize_msbatch :: proc(template: string, desktop_probe := false) -> (string, bool) {
 	settings := [?]Msbatch_Setting {
 		{section = "Setup", key = "Express", value = "1"},
 		{section = "Setup", key = "ProductKey", value = `"RW9MG-QR4G3-2WRR9-TG7BH-33GXB"`},
@@ -47,7 +54,20 @@ normalize_msbatch :: proc(template: string) -> (string, bool) {
 		{section = "Network", key = "Workgroup", value = `"WORKGROUP"`, add_section = true},
 		{section = "Network", key = "Description", value = `"RETVRN99"`, add_section = true},
 		{section = "Network", key = "ValidateNetCardResources", value = "0", add_section = true},
-		{section = "Install", key = "AddReg", value = "OPKInstall", add_section = true, append_csv = true},
+		{
+			section = "Install",
+			key = "AddReg",
+			value = "OPKInstall",
+			add_section = true,
+			append_csv = true,
+		},
+		{
+			section = "Install",
+			key = "UpdateInis",
+			value = MSBATCH_BOOT_OPTIONS_SECTION,
+			add_section = true,
+			append_csv = true,
+		},
 	}
 	current := strings.clone(template)
 	for setting in settings {
@@ -70,11 +90,56 @@ normalize_msbatch :: proc(template: string) -> (string, bool) {
 		if !set_ok {return "", false}
 		current = next
 	}
-	next, opk_ok := msbatch_set_opk_install(current)
+	next, opk_ok := msbatch_set_opk_install(current, desktop_probe)
 	delete(current)
 	if !opk_ok {return "", false}
 	current = next
+	boot_options, boot_options_ok := msbatch_set_boot_options(current)
+	delete(current)
+	if !boot_options_ok {return "", false}
+	current = boot_options
 	return current, true
+}
+
+desktop_probe_write :: proc(directory: string) -> bool {
+	stale_names := [?]string {
+		DESKTOP_MARKER_FILE,
+		DESKTOP_ENUM_FILE,
+		DESKTOP_DYNAMIC_ENUM_FILE,
+	}
+	for name in stale_names {
+		stale, stale_error := filepath.join({directory, name}, context.temp_allocator)
+		if stale_error != nil {return false}
+		if !desktop_probe_remove_stale(stale) {return false}
+	}
+	path, path_error := filepath.join({directory, DESKTOP_PROBE_FILE}, context.temp_allocator)
+	if path_error != nil {return false}
+	defer delete(path, context.temp_allocator)
+	text :=
+		"@ECHO OFF\r\n" +
+		"REGEDIT /E C:\\GSWSETUP\\ENUM.REG HKEY_LOCAL_MACHINE\\Enum\r\n" +
+		"REGEDIT /E C:\\GSWSETUP\\DYNENUM.REG \"HKEY_DYN_DATA\\Config Manager\\Enum\"\r\n" +
+		"IF NOT EXIST C:\\GSWSETUP\\ENUM.REG GOTO GSWEND\r\n" +
+		"IF NOT EXIST C:\\GSWSETUP\\DYNENUM.REG GOTO GSWEND\r\n" +
+		"ECHO READY>C:\\GSWSETUP\\DESKTOP.OK\r\n" +
+		":GSWEND\r\n"
+	return os.write_entire_file(path, text) == nil
+}
+
+@(private)
+desktop_probe_remove_stale :: proc(path: string) -> bool {
+	info, stat_error := os.lstat(path, context.temp_allocator)
+	if stat_error == os.General_Error.Not_Exist {return true}
+	if stat_error != nil {return false}
+	os.file_info_delete(info, context.temp_allocator)
+	if os.remove(path) != nil {return false}
+
+	remaining, remaining_error := os.lstat(path, context.temp_allocator)
+	if remaining_error == nil {
+		os.file_info_delete(remaining, context.temp_allocator)
+		return false
+	}
+	return remaining_error == os.General_Error.Not_Exist
 }
 
 @(private)
@@ -249,7 +314,7 @@ msbatch_csv_contains :: proc(values, wanted: string) -> bool {
 }
 
 @(private)
-msbatch_set_opk_install :: proc(template: string) -> (string, bool) {
+msbatch_set_opk_install :: proc(template: string, desktop_probe := false) -> (string, bool) {
 	b := strings.builder_make(0, len(template) + 320)
 	active_template := template
 	eof_suffix := ""
@@ -283,7 +348,7 @@ msbatch_set_opk_install :: proc(template: string) -> (string, bool) {
 				if !found {
 					strings.write_string(&b, "[OPKInstall]")
 					strings.write_string(&b, ending != "" ? ending : line_ending)
-					msbatch_write_opk_install(&b, line_ending)
+					msbatch_write_opk_install(&b, line_ending, desktop_probe)
 					found = true
 				}
 				skipping = true
@@ -303,20 +368,111 @@ msbatch_set_opk_install :: proc(template: string) -> (string, bool) {
 		}
 		strings.write_string(&b, "[OPKInstall]")
 		strings.write_string(&b, line_ending)
-		msbatch_write_opk_install(&b, line_ending)
+		msbatch_write_opk_install(&b, line_ending, desktop_probe)
 	}
 	strings.write_string(&b, eof_suffix)
 	return strings.to_string(b), true
 }
 
 @(private)
-msbatch_write_opk_install :: proc(b: ^strings.Builder, line_ending: string) {
+msbatch_write_opk_install :: proc(
+	b: ^strings.Builder,
+	line_ending: string,
+	desktop_probe := false,
+) {
 	lines := [?]string {
 		`HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion","ProductId",,"12345-OEM-1234567-12345"`,
 		`HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion","ProductKey",,"RW9MG-QR4G3-2WRR9-TG7BH-33GXB"`,
 		`HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion","RegisteredOwner",,"RETVRN99 User"`,
 		`HKLM,"SOFTWARE\Microsoft\Windows\CurrentVersion","RegisteredOrganization",,"RETVRN99"`,
 	}
+	for line in lines {
+		strings.write_string(b, line)
+		strings.write_string(b, line_ending)
+	}
+	if desktop_probe {
+		strings.write_string(
+			b,
+			`HKLM,"Software\Microsoft\Windows\CurrentVersion\RunOnce","RETVRN99Acceptance",,"COMMAND.COM /C C:\GSWSETUP\DESKTOP.BAT"`,
+		)
+		strings.write_string(b, line_ending)
+	}
+}
+
+@(private)
+msbatch_set_boot_options :: proc(template: string) -> (string, bool) {
+	lines := [?]string{`%30%\MSDOS.SYS,Options,,"BootMenuDefault=1"`}
+	return msbatch_replace_section(template, MSBATCH_BOOT_OPTIONS_SECTION, lines[:])
+}
+
+@(private)
+msbatch_replace_section :: proc(template, section: string, lines: []string) -> (string, bool) {
+	b := strings.builder_make(0, len(template) + 96)
+	active_template := template
+	eof_suffix := ""
+	for index in 0 ..< len(template) {
+		if template[index] == '\x1a' {
+			active_template = template[:index]
+			eof_suffix = template[index:]
+			break
+		}
+	}
+	found := false
+	skipping := false
+	line_ending := "\r\n"
+	cursor := 0
+	for cursor < len(active_template) {
+		line_start := cursor
+		for cursor < len(active_template) &&
+		    active_template[cursor] != '\r' &&
+		    active_template[cursor] != '\n' {
+			cursor += 1
+		}
+		line_end := cursor
+		if cursor < len(active_template) && active_template[cursor] == '\r' {cursor += 1}
+		if cursor < len(active_template) && active_template[cursor] == '\n' {cursor += 1}
+		ending := active_template[line_end:cursor]
+		if ending != "" {line_ending = ending}
+		line := active_template[line_start:line_end]
+		trimmed := ascii_trim(line)
+		if msbatch_section_line(trimmed) {
+			if msbatch_section_matches(trimmed, section) {
+				if !found {
+					msbatch_write_section(&b, section, lines, ending != "" ? ending : line_ending)
+					found = true
+				}
+				skipping = true
+				continue
+			}
+			skipping = false
+		}
+		if skipping {continue}
+		strings.write_string(&b, line)
+		strings.write_string(&b, ending)
+	}
+	if !found {
+		if len(active_template) > 0 &&
+		   active_template[len(active_template) - 1] != '\r' &&
+		   active_template[len(active_template) - 1] != '\n' {
+			strings.write_string(&b, line_ending)
+		}
+		msbatch_write_section(&b, section, lines, line_ending)
+	}
+	strings.write_string(&b, eof_suffix)
+	return strings.to_string(b), true
+}
+
+@(private)
+msbatch_write_section :: proc(
+	b: ^strings.Builder,
+	section: string,
+	lines: []string,
+	line_ending: string,
+) {
+	strings.write_string(b, "[")
+	strings.write_string(b, section)
+	strings.write_string(b, "]")
+	strings.write_string(b, line_ending)
 	for line in lines {
 		strings.write_string(b, line)
 		strings.write_string(b, line_ending)

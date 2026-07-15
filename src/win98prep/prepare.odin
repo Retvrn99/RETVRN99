@@ -19,6 +19,11 @@ PAYLOAD_MARKER_NAME :: "RETVRN99.OWN"
 PAYLOAD_MARKER :: "RETVRN99 WINDOWS 98 SETUP PAYLOAD V1\r\n"
 LAUNCHER_MARKER :: "@REM RETVRN99 WINDOWS 98 SETUP LAUNCHER V1\r\n"
 
+Prepare_Options :: struct {
+	desktop_probe:        bool,
+	hardware_diagnostics: bool,
+}
+
 Diagnostic :: enum {
 	None,
 	Media_Rejected,
@@ -320,7 +325,11 @@ ValidateNetCardResources=0
 	)
 }
 
-prepare :: proc(iso_path, install_root, c_drive: string, boot_image_path := "") -> Report {
+prepare :: proc(
+	iso_path, install_root, c_drive: string,
+	boot_image_path := "",
+	options: Prepare_Options = {},
+) -> Report {
 	report: Report
 	if os.make_directory_all(install_root) != nil || os.make_directory_all(c_drive) != nil {
 		report.diagnostic = .Profile_Directory_Failed
@@ -381,7 +390,11 @@ prepare :: proc(iso_path, install_root, c_drive: string, boot_image_path := "") 
 		report.diagnostic = .Template_Failed
 		return report
 	}
-	if !normalize_msbatch_file(template_path) {
+	if !normalize_msbatch_file(template_path, options.desktop_probe) {
+		report.diagnostic = .Template_Failed
+		return report
+	}
+	if options.desktop_probe && !desktop_probe_write(paths.scratch_next) {
 		report.diagnostic = .Template_Failed
 		return report
 	}
@@ -436,6 +449,7 @@ prepare :: proc(iso_path, install_root, c_drive: string, boot_image_path := "") 
 		report.media_info.setup_executable,
 		profile.dos_seed_is_managed(c_drive),
 		true,
+		options.hardware_diagnostics,
 	)
 	if !write_owned_launcher_staging(paths.launcher_next, command) {
 		report.diagnostic = .Launcher_Failed
@@ -531,6 +545,7 @@ launcher_text :: proc(
 	setup_executable: string,
 	enable_boot_gui: bool,
 	restore_autoexec := false,
+	hardware_diagnostics := false,
 ) -> string {
 	boot_options := ""
 	if enable_boot_gui {
@@ -555,12 +570,14 @@ launcher_text :: proc(
 			"GOTO GSWEND\r\n" +
 			":GSWAGO\r\n"
 	}
+	detection_options := hardware_diagnostics ? " /P G=3;L=3;P" : ""
 	return fmt.tprintf(
-		"%s@ECHO OFF\r\n%s%sC:\r\nCD \\GSWSETUP\r\n%s MSBATCH.INF /IS /IQ /IM /IV\r\n:GSWEND\r\n",
+		"%s@ECHO OFF\r\n%s%sC:\r\nCD \\GSWSETUP\r\n%s MSBATCH.INF /IS /IQ /IM /IV%s\r\n:GSWEND\r\n",
 		LAUNCHER_MARKER,
 		autoexec_restore,
 		boot_options,
 		setup_executable,
+		detection_options,
 	)
 }
 

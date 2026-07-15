@@ -32,6 +32,121 @@ Reconcile_Donor :: struct {
 	target_key: Mirror_Key,
 }
 
+Reconcile_Replacement :: struct {
+	old_key:     Mirror_Key,
+	entry:       Mirror_Entry,
+	prepared:    string,
+	fingerprint: u64,
+}
+
+Reconcile_Identity :: enum {
+	Match,
+	Reused,
+	Unavailable,
+}
+
+@(private = "file")
+reconcile_entry_backing_path :: proc(entry: Mirror_Entry) -> string {
+	if entry.base_node != nil {return entry.base_node.host_path}
+	return entry.host_path
+}
+
+@(private = "file")
+reconcile_same_path :: proc(left, right: string) -> bool {
+	if left == right {return true}
+	when ODIN_OS == .Windows {return strings.equal_fold(left, right)}
+	return false
+}
+
+@(private = "file")
+reconcile_mirror_rebase_tree :: proc(v: ^Volume, root: ^Node) {
+	keys := make([dynamic]Mirror_Key, context.temp_allocator)
+	defer delete(keys)
+	for key, entry in v.journal.mirrored {
+		if entry.base_node != nil && reconcile_node_descends_from(entry.base_node, root) {
+			append(&keys, key)
+		}
+	}
+	for key in keys {
+		entry, ok := v.journal.mirrored[key]
+		if !ok || entry.base_node == nil || !reconcile_node_descends_from(entry.base_node, root) {
+			continue
+		}
+		new_path := strings.clone(entry.base_node.host_path, v.allocator)
+		delete(entry.host_path, v.allocator)
+		entry.host_path = new_path
+		v.journal.mirrored[key] = entry
+	}
+}
+
+@(private = "file")
+reconcile_rebase_backing_nodes :: proc(v: ^Volume, node: ^Node, path: string) -> bool {
+	if node == nil {return true}
+	for child in node.children {
+		child_path, path_error := filepath.join(
+			{path, filepath.base(child.host_path)},
+			context.temp_allocator,
+		)
+		if path_error != nil {return false}
+		child_ok := reconcile_rebase_backing_nodes(v, child, child_path)
+		delete(child_path, context.temp_allocator)
+		if !child_ok {
+			return false
+		}
+	}
+	delete(node.host_path, v.allocator)
+	node.host_path = strings.clone(path, v.allocator)
+	return true
+}
+
+@(private = "file")
+reconcile_rebase_backing_tree :: proc(v: ^Volume, node: ^Node, path: string) -> bool {
+	if node == nil {return true}
+	if !reconcile_rebase_backing_nodes(v, node, path) {return false}
+	reconcile_mirror_rebase_tree(v, node)
+	return true
+}
+
+@(private = "file")
+reconcile_move_backing :: proc(v: ^Volume, entry: ^Mirror_Entry, destination: string) -> bool {
+	source := reconcile_entry_backing_path(entry^)
+	if reconcile_same_path(source, destination) {
+		if !os.exists(source) {return false}
+		if entry.base_node != nil && entry.base_node.host_path != destination {
+			return reconcile_rebase_backing_tree(v, entry.base_node, destination)
+		}
+		return true
+	}
+	if !os.exists(source) || os.exists(destination) {return false}
+	if os.rename(source, destination) != nil {return false}
+	return reconcile_rebase_backing_tree(v, entry.base_node, destination)
+}
+
+@(private = "file")
+reconcile_chain_identity_add :: proc(identity: u64, cluster: u32) -> u64 {
+	result := identity
+	for shift in 0 ..< 4 {
+		result = (result ~ u64(u8(cluster >> u32(shift * 8)))) * FINGERPRINT_PRIME
+	}
+	return result
+}
+
+@(private = "file")
+reconcile_chain_identity :: proc(chain: []u32) -> u64 {
+	identity := FINGERPRINT_OFFSET
+	for cluster in chain {identity = reconcile_chain_identity_add(identity, cluster)}
+	return reconcile_chain_identity_add(identity, u32(len(chain)))
+}
+
+@(private = "file")
+reconcile_contiguous_chain_identity :: proc(first, count: u32) -> u64 {
+	identity := FINGERPRINT_OFFSET
+	for index in u32(0) ..< count {
+		identity = reconcile_chain_identity_add(identity, first + index)
+	}
+	return reconcile_chain_identity_add(identity, count)
+}
+
 @(private = "file")
 reconcile_node_descends_from :: proc(node, ancestor: ^Node) -> bool {
 	for current := node; current != nil; current = current.parent {
@@ -75,6 +190,34 @@ reconcile_seed :: proc(v: ^Volume) {
 }
 
 @(private = "file")
+reconcile_mark_guest_deleted :: proc(
+	v: ^Volume,
+	key: Mirror_Key,
+	entry: Mirror_Entry,
+) -> Mirror_Entry {
+	if entry.guest_deleted {
+		return entry
+	}
+	stored := entry
+	stored.guest_deleted = true
+	if stored.base_node != nil {
+		release_node_clusters(v, stored.base_node)
+		for index := len(v.journal.pending_deletes) - 1; index >= 0; index -= 1 {
+			if v.journal.pending_deletes[index].node == stored.base_node {
+				ordered_remove(&v.journal.pending_deletes, index)
+			}
+		}
+		for index := len(v.journal.pending_extends) - 1; index >= 0; index -= 1 {
+			if v.journal.pending_extends[index] == stored.base_node {
+				ordered_remove(&v.journal.pending_extends, index)
+			}
+		}
+	}
+	v.journal.mirrored[key] = stored
+	return stored
+}
+
+@(private = "file")
 reconcile_seed_dir :: proc(v: ^Volume, dir: ^Node) {
 	shorts := dir_short_names(dir, context.temp_allocator)
 	for child, index in dir.children {
@@ -85,6 +228,11 @@ reconcile_seed_dir :: proc(v: ^Volume, dir: ^Node) {
 			first_cluster = child.first_cluster,
 			size          = u32(min(child.size, u64(0xFFFF_FFFF))),
 			is_dir        = child.is_dir,
+			chain_identity = reconcile_contiguous_chain_identity(
+				child.first_cluster,
+				child.cluster_len,
+			),
+			has_chain_identity = true,
 			base_node     = child,
 		}
 		if child.is_dir {
@@ -134,10 +282,81 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 	renames := make([dynamic]Reconcile_Rename, ta)
 	deletes := make([dynamic]Reconcile_Delete, ta)
 	donors := make([dynamic]Reconcile_Donor, ta)
+	replacements := make(map[Mirror_Key]Reconcile_Replacement, ta)
 	handled := make(map[Mirror_Key]bool, ta)
+	blocked_keys := make(map[Mirror_Key]bool, ta)
+	blocked_directory_clusters := make(map[u32]bool, ta)
+	blocked_roots := make([dynamic]^Node, ta)
+	prepared_cleanup := make([dynamic]string, ta)
+	defer for path in prepared_cleanup {
+		if path != "" {_ = os.remove(path)}
+	}
 
 	for key, mirrored in v.journal.mirrored {
+		if mirrored.guest_deleted {
+			append(&deletes, Reconcile_Delete{key, mirrored})
+			if info := by_key[key]; info.count > 0 {
+				host_failed = true
+				blocked_keys[key] = true
+				if info.count == 1 {
+					live := &scan.entries[info.index]
+					if live.is_dir && live.first_cluster >= 2 {
+						blocked_directory_clusters[live.first_cluster] = true
+					}
+				}
+			}
+			continue
+		}
 		if info := by_key[key]; info.count > 0 {
+			if info.count == 1 {
+				live := &scan.entries[info.index]
+				backing_path := reconcile_entry_backing_path(mirrored)
+				if backing_path != live.host_path {
+					if mirrored.is_dir || live.is_dir {
+						identity := reconcile_directory_identity(mirrored, live, &scan)
+						if identity != .Match {
+							log.warnf(
+								"fat32: holding directory identity reuse %s -> %s",
+								backing_path,
+								live.host_path,
+							)
+							host_failed = true
+							blocked_keys[live.key] = true
+							if live.first_cluster >= 2 {
+								blocked_directory_clusters[live.first_cluster] = true
+							}
+							if mirrored.base_node != nil {append(&blocked_roots, mirrored.base_node)}
+						}
+					} else if mirrored.first_cluster != live.first_cluster {
+						identity, prepared, fingerprint := reconcile_file_identity(
+							v,
+							mirrored,
+							live,
+							ta,
+						)
+						if prepared != "" {append(&prepared_cleanup, prepared)}
+						switch identity {
+						case .Reused:
+							replacements[live.key] = Reconcile_Replacement {
+								old_key     = key,
+								entry       = mirrored,
+								prepared    = prepared,
+								fingerprint = fingerprint,
+							}
+							handled[live.key] = true
+						case .Unavailable:
+							log.warnf(
+								"fat32: holding ambiguous file identity %s -> %s",
+								backing_path,
+								live.host_path,
+							)
+							host_failed = true
+							blocked_keys[live.key] = true
+						case .Match:
+						}
+					}
+				}
+			}
 			continue
 		}
 		if !scan.scanned_dirs[key.parent_cluster] {
@@ -148,8 +367,53 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			live := &scan.entries[claim.index]
 			target, target_exists := v.journal.mirrored[live.key]
 			if live.is_dir == mirrored.is_dir && !target_exists && !handled[live.key] {
-				append(&renames, Reconcile_Rename{key, live.key, mirrored, live.host_path})
 				handled[live.key] = true
+				if live.is_dir {
+					identity := reconcile_directory_identity(mirrored, live, &scan)
+					if identity == .Match {
+						append(&renames, Reconcile_Rename{key, live.key, mirrored, live.host_path})
+						handled[live.key] = true
+					} else {
+						log.warnf(
+							"fat32: holding directory identity reuse %s -> %s",
+							reconcile_entry_backing_path(mirrored),
+							live.host_path,
+						)
+						host_failed = true
+						blocked_keys[live.key] = true
+						blocked_directory_clusters[live.first_cluster] = true
+						if mirrored.base_node != nil {append(&blocked_roots, mirrored.base_node)}
+					}
+				} else {
+					identity, prepared, fingerprint := reconcile_file_identity(
+						v,
+						mirrored,
+						live,
+						ta,
+					)
+					if prepared != "" {append(&prepared_cleanup, prepared)}
+					switch identity {
+					case .Match:
+						append(&renames, Reconcile_Rename{key, live.key, mirrored, live.host_path})
+						handled[live.key] = true
+					case .Reused:
+						replacements[live.key] = Reconcile_Replacement {
+							old_key     = key,
+							entry       = mirrored,
+							prepared    = prepared,
+							fingerprint = fingerprint,
+						}
+						handled[live.key] = true
+					case .Unavailable:
+						log.warnf(
+							"fat32: holding ambiguous file identity %s -> %s",
+							reconcile_entry_backing_path(mirrored),
+							live.host_path,
+						)
+						host_failed = true
+						blocked_keys[live.key] = true
+					}
+				}
 				continue
 			}
 			if !mirrored.is_dir &&
@@ -167,46 +431,57 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			append(&deletes, Reconcile_Delete{key, mirrored})
 		}
 	}
+	for &action in deletes {
+		if action.entry.guest_deleted {continue}
+		action.entry = reconcile_mark_guest_deleted(v, action.key, action.entry)
+	}
+
+	changed := true
+	for changed {
+		changed = false
+		for live in scan.entries {
+			if blocked_keys[live.key] || !blocked_directory_clusters[live.key.parent_cluster] {
+				continue
+			}
+			blocked_keys[live.key] = true
+			if live.is_dir && live.first_cluster >= 2 {
+				blocked_directory_clusters[live.first_cluster] = true
+			}
+			changed = true
+		}
+	}
+	for key in replacements {
+		if blocked_keys[key] {delete_key(&replacements, key)}
+	}
 
 	slice.sort_by(renames[:], proc(a, b: Reconcile_Rename) -> bool {
 		return reconcile_node_depth(a.entry.base_node) < reconcile_node_depth(b.entry.base_node)
 	})
 	for action in renames {
-		if action.entry.host_path != action.new_path {
-			source_path := action.entry.host_path
-			if action.entry.base_node != nil {
-				source_path = action.entry.base_node.host_path
-			}
-			old_exists := os.exists(source_path)
-			new_exists := os.exists(action.new_path)
-			already_applied :=
-				new_exists &&
-				action.entry.base_node != nil &&
-				action.entry.base_node.host_path == action.new_path &&
-				(source_path == action.new_path || !old_exists)
-			if old_exists && !new_exists {
-				if err := os.rename(source_path, action.new_path); err == nil {
-					already_applied = true
-				}
-			}
-			if !already_applied {
-				log.warnf(
-					"fat32: holding rename %s -> %s",
-					source_path,
-					action.new_path,
-				)
-				host_failed = true
-				delete_key(&handled, action.new_key)
-				continue
-			}
+		if blocked_keys[action.new_key] || reconcile_node_blocked(action.entry.base_node, blocked_roots[:]) {
+			continue
 		}
-		entry := action.entry
-		delete_key(&v.journal.mirrored, action.old_key)
-		delete(entry.host_path, v.allocator)
-		entry.host_path = strings.clone(action.new_path, v.allocator)
-		v.journal.mirrored[action.new_key] = entry
+		entry, entry_exists := v.journal.mirrored[action.old_key]
+		if !entry_exists {
+			volume_fail(v, "FAT32 rename lost its mirror identity")
+			return false
+		}
+		source_path := strings.clone(reconcile_entry_backing_path(entry), ta)
+		if !reconcile_move_backing(v, &entry, action.new_path) {
+			log.warnf(
+				"fat32: holding rename %s -> %s",
+				source_path,
+				action.new_path,
+			)
+			host_failed = true
+			delete_key(&handled, action.new_key)
+			continue
+		}
+		entry = v.journal.mirrored[action.old_key]
+		reconcile_mirror_remove(v, action.old_key)
+		entry.host_path = ""
+		reconcile_mirror_store(v, action.new_key, entry, action.new_path)
 		if entry.base_node != nil {
-			reconcile_rebase_node(v, entry.base_node, action.new_path)
 			live_info := by_key[action.new_key]
 			if live_info.count == 1 {
 				live := &scan.entries[live_info.index]
@@ -230,12 +505,15 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 	deleting := make(map[Mirror_Key]bool, ta)
 	blocked_deletes := make(map[Mirror_Key]bool, ta)
 	delete_roots := make([dynamic]Reconcile_Delete, ta)
+	forced_retirement_roots := make([dynamic]^Node, ta)
 	for action in deletes {
 		deleting[action.key] = true
 		if action.entry.is_dir {append(&delete_roots, action)}
 	}
 	for root in delete_roots {
 		if root.entry.base_node == nil {continue}
+		retiring_reused_tree := root.entry.guest_deleted && by_key[root.key].count > 0
+		if retiring_reused_tree {append(&forced_retirement_roots, root.entry.base_node)}
 		blocked := false
 		for key, entry in v.journal.mirrored {
 			if entry.base_node == nil ||
@@ -243,6 +521,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			   !reconcile_node_descends_from(entry.base_node, root.entry.base_node) {
 				continue
 			}
+			if entry.guest_deleted || retiring_reused_tree {continue}
 			key_live := by_key[key].count > 0
 			cluster_live := entry.first_cluster >= 2 && by_cluster[entry.first_cluster].count > 0
 			if key_live || cluster_live {
@@ -251,7 +530,10 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			}
 		}
 		if blocked {
-			log.warnf("fat32: holding directory delete %s: live descendant", root.entry.host_path)
+			log.warnf(
+				"fat32: holding directory delete %s: live descendant",
+				reconcile_entry_backing_path(root.entry),
+			)
 			host_failed = true
 			blocked_deletes[root.key] = true
 			continue
@@ -275,23 +557,28 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 	for action in deletes {
 		if v.frozen {return false}
 		if blocked_deletes[action.key] {continue}
-		if action.entry.base_node != nil {
-			if action.entry.base_node == v.alloc.root ||
-			   !managed_node_attached(v.alloc.root, action.entry.base_node) ||
-			   action.entry.base_node.is_dir != action.entry.is_dir {
+		entry, entry_exists := v.journal.mirrored[action.key]
+		if !entry_exists {continue}
+		forced_retirement := reconcile_node_blocked(entry.base_node, forced_retirement_roots[:])
+		if !forced_retirement && reconcile_node_blocked(entry.base_node, blocked_roots[:]) {continue}
+		if entry.base_node != nil {
+			if entry.base_node == v.alloc.root ||
+			   !managed_node_attached(v.alloc.root, entry.base_node) ||
+			   entry.base_node.is_dir != entry.is_dir {
 				volume_fail(v, "FAT32 delete lost its base-node ownership")
 				host_failed = true
 				continue
 			}
 		}
-		err := os.remove(action.entry.host_path)
-		if err != nil && os.exists(action.entry.host_path) {
-			log.warnf("fat32: holding delete %s: %v", action.entry.host_path, err)
+		backing_path := reconcile_entry_backing_path(entry)
+		err := os.remove(backing_path)
+		if err != nil && os.exists(backing_path) {
+			log.warnf("fat32: holding delete %s: %v", backing_path, err)
 			host_failed = true
 			continue
 		}
-		if action.entry.base_node != nil {
-			if !managed_node_destroy(v, action.entry.base_node) {
+		if entry.base_node != nil {
+			if !managed_node_destroy(v, entry.base_node) {
 				volume_fail(v, "FAT32 delete ownership teardown failed")
 				host_failed = true
 			}
@@ -302,7 +589,8 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 
 	for &live in scan.entries {
 		if v.frozen {return false}
-		if !live.is_dir ||
+		if blocked_keys[live.key] ||
+		   !live.is_dir ||
 		   !live.valid ||
 		   by_key[live.key].count != 1 ||
 		   by_cluster[live.first_cluster].count != 1 {
@@ -347,21 +635,17 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 				is_dir = true,
 			}
 		} else if entry.host_path != live.host_path {
-			if os.exists(entry.host_path) && !os.exists(live.host_path) {
-				if err := os.rename(entry.host_path, live.host_path); err != nil {
-					log.warnf(
-						"fat32: holding directory rename %s -> %s: %v",
-						entry.host_path,
-						live.host_path,
-						err,
-					)
-					host_failed = true
-					continue
-				}
+			source_path := strings.clone(reconcile_entry_backing_path(entry), ta)
+			if !reconcile_move_backing(v, &entry, live.host_path) {
+				log.warnf(
+					"fat32: holding directory rename %s -> %s",
+					source_path,
+					live.host_path,
+				)
+				host_failed = true
+				continue
 			}
-			if entry.base_node != nil {
-				reconcile_rebase_node(v, entry.base_node, live.host_path)
-			}
+			entry = v.journal.mirrored[live.key]
 		}
 		entry.first_cluster = live.first_cluster
 		entry.size = 0
@@ -433,13 +717,25 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 	materialized := make(map[Mirror_Key]bool, ta)
 	for &live in scan.entries {
 		if v.frozen {return false}
-		if live.is_dir ||
+		if blocked_keys[live.key] ||
+		   live.is_dir ||
 		   !live.valid ||
 		   by_key[live.key].count != 1 ||
 		   (live.first_cluster >= 2 && by_cluster[live.first_cluster].count != 1) {
 			continue
 		}
+		replacement, replacing := replacements[live.key]
 		entry, exists := v.journal.mirrored[live.key]
+		if replacing {
+			old_entry, old_exists := v.journal.mirrored[replacement.old_key]
+			if !old_exists || old_entry.is_dir || old_entry.base_node != replacement.entry.base_node {
+				volume_fail(v, "FAT32 reused file lost its mirror ownership")
+				host_failed = true
+				continue
+			}
+			entry = Mirror_Entry{}
+			exists = false
+		}
 		if exists && entry.is_dir {
 			continue
 		}
@@ -471,41 +767,56 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			host_failed = true
 			continue
 		}
-		if exists && entry.host_path != live.host_path {
-			if os.exists(entry.host_path) && !os.exists(live.host_path) {
-				if err := os.rename(entry.host_path, live.host_path); err != nil {
-					log.warnf(
-						"fat32: holding file rename %s -> %s: %v",
-						entry.host_path,
-						live.host_path,
-						err,
-					)
-					host_failed = true
-					continue
-				}
+		if !replacing && exists && entry.host_path != live.host_path {
+			source_path := strings.clone(reconcile_entry_backing_path(entry), ta)
+			if !reconcile_move_backing(v, &entry, live.host_path) {
+				log.warnf(
+					"fat32: holding file rename %s -> %s",
+					source_path,
+					live.host_path,
+				)
+				host_failed = true
+				continue
 			}
-			if entry.base_node != nil {
-				reconcile_rebase_node(v, entry.base_node, live.host_path)
-			}
+			entry = v.journal.mirrored[live.key]
 			reconcile_mirror_store(v, live.key, entry, live.host_path)
 			entry = v.journal.mirrored[live.key]
 		}
 
+		chain_identity := reconcile_chain_identity(chain[:])
 		metadata_changed :=
-			!exists || entry.first_cluster != live.first_cluster || entry.size != live.size
+			!exists ||
+			entry.first_cluster != live.first_cluster ||
+			entry.size != live.size ||
+			!entry.has_chain_identity ||
+			entry.chain_identity != chain_identity
 		if !metadata_changed && !live.data_touched {
 			continue
 		}
-		data, ok := guest_read_file(v, live.first_cluster, live.size, v.allocator)
-		if !ok {
-			host_failed = true
-			continue
+		prepared := replacement.prepared
+		fingerprint := replacement.fingerprint
+		if !replacing {
+			stream_error: Guest_Stream_Error
+			prepared, fingerprint, stream_error = guest_prepare_file(
+				v,
+				live.host_path,
+				chain[:],
+				live.size,
+				.Guest_View,
+				ta,
+			)
+			if stream_error != .None {
+				log.warnf("fat32: cannot stream guest file %s (%v)", live.host_path, stream_error)
+				host_failed = true
+				continue
+			}
 		}
-		fingerprint := reconcile_fingerprint(data)
 		if exists && entry.has_fingerprint && entry.fingerprint == fingerprint {
-			delete(data, v.allocator)
+			guest_prepared_discard(prepared, ta)
 			entry.first_cluster = live.first_cluster
 			entry.size = live.size
+			entry.chain_identity = chain_identity
+			entry.has_chain_identity = true
 			if !reconcile_bind_live_node(v, &entry, &live, parent, chain[:]) {
 				volume_fail(v, "FAT32 unchanged file ownership update failed")
 				host_failed = true
@@ -513,22 +824,63 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			}
 			reconcile_mirror_store(v, live.key, entry, live.host_path)
 			materialized[live.key] = true
+			overlay_clear_chain_dirty(v, chain[:])
 			continue
 		}
 		if exists && entry.base_node != nil && !reconcile_snapshot_base_file(v, entry.base_node) {
-			delete(data, v.allocator)
+			guest_prepared_discard(prepared, ta)
 			host_failed = true
 			continue
 		}
-		if !reconcile_atomic_write(live.host_path, data) {
-			delete(data, v.allocator)
+		install_prepared := true
+		if replacing && os.exists(live.host_path) {
+			existing_fingerprint, existing_ok := host_file_fingerprint(live.host_path, live.size)
+			if existing_ok && existing_fingerprint == fingerprint {
+				_ = os.remove(prepared)
+				install_prepared = false
+			} else if !reconcile_same_path(
+				reconcile_entry_backing_path(replacement.entry),
+				live.host_path,
+			) {
+				log.warnf("fat32: holding reused file at occupied path %s", live.host_path)
+				host_failed = true
+				continue
+			}
+		}
+		if install_prepared && !guest_prepared_install(prepared, live.host_path) {
+			log.warnf("fat32: cannot install temporary file for %s", live.host_path)
+			if !replacing {guest_prepared_discard(prepared, ta)}
 			host_failed = true
 			continue
 		}
-		delete(data, v.allocator)
+		if replacing {
+			old_entry := v.journal.mirrored[replacement.old_key]
+			old_path := reconcile_entry_backing_path(old_entry)
+			if !reconcile_same_path(old_path, live.host_path) {
+				if remove_error := os.remove(old_path);
+				   remove_error != nil && os.exists(old_path) {
+					log.warnf("fat32: holding reused file retirement %s: %v", old_path, remove_error)
+					host_failed = true
+					continue
+				}
+			}
+			if old_entry.base_node != nil {
+				if !managed_node_destroy(v, old_entry.base_node) {
+					volume_fail(v, "FAT32 reused file ownership teardown failed")
+					host_failed = true
+					continue
+				}
+			} else {
+				reconcile_mirror_remove(v, replacement.old_key)
+			}
+			delete_key(&replacements, live.key)
+		}
+		if !replacing {delete(prepared, ta)}
 		entry.first_cluster = live.first_cluster
 		entry.size = live.size
 		entry.is_dir = false
+		entry.chain_identity = chain_identity
+		entry.has_chain_identity = true
 		entry.fingerprint = fingerprint
 		entry.has_fingerprint = true
 		if !reconcile_bind_live_node(v, &entry, &live, parent, chain[:]) {
@@ -538,16 +890,20 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 		}
 		reconcile_mirror_store(v, live.key, entry, live.host_path)
 		materialized[live.key] = true
+		overlay_clear_chain_dirty(v, chain[:])
 	}
 
 	for donor in donors {
 		if v.frozen {return false}
-		if !materialized[donor.target_key] {
+		if blocked_keys[donor.target_key] ||
+		   reconcile_node_blocked(donor.entry.base_node, blocked_roots[:]) ||
+		   !materialized[donor.target_key] {
 			continue
 		}
+		donor_entry, donor_ok := v.journal.mirrored[donor.key]
 		target, target_ok := v.journal.mirrored[donor.target_key]
 		live_info := by_key[donor.target_key]
-		if !target_ok || live_info.count != 1 {
+		if !donor_ok || !target_ok || live_info.count != 1 {
 			volume_fail(v, "FAT32 replacement target lost its mirror ownership")
 			host_failed = true
 			continue
@@ -559,7 +915,7 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			host_failed = true
 			continue
 		}
-		donor_node := donor.entry.base_node
+		donor_node := donor_entry.base_node
 		target_node := target.base_node
 		donor_invalid :=
 			donor_node != nil &&
@@ -587,10 +943,12 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 				continue
 			}
 		}
-		if donor.entry.host_path != target.host_path {
-			if err := os.remove(donor.entry.host_path);
-			   err != nil && os.exists(donor.entry.host_path) {
-				log.warnf("fat32: holding replacement donor %s: %v", donor.entry.host_path, err)
+		donor_path := reconcile_entry_backing_path(donor_entry)
+		target_path := reconcile_entry_backing_path(target)
+		if donor_path != target_path {
+			if err := os.remove(donor_path);
+			   err != nil && os.exists(donor_path) {
+				log.warnf("fat32: holding replacement donor %s: %v", donor_path, err)
 				host_failed = true
 				continue
 			}
@@ -627,7 +985,94 @@ volume_reconcile :: proc(v: ^Volume) -> bool {
 			v.journal.mirrored[donor.target_key] = target
 		}
 	}
+	if !host_failed {overlay_clear_all_dirty(v)}
 	return !host_failed
+}
+
+@(private = "file")
+reconcile_node_blocked :: proc(node: ^Node, roots: []^Node) -> bool {
+	for root in roots {
+		if root != nil && reconcile_node_descends_from(node, root) {return true}
+	}
+	return false
+}
+
+@(private = "file")
+reconcile_directory_identity :: proc(
+	mirrored: Mirror_Entry,
+	live: ^Guest_Entry,
+	scan: ^Guest_Scan,
+) -> Reconcile_Identity {
+	owner := mirrored.base_node
+	if owner == nil || !owner.is_dir || live == nil || !live.is_dir || !live.valid {
+		return .Unavailable
+	}
+	if mirrored.first_cluster != live.first_cluster {return .Reused}
+
+	live_children := 0
+	for candidate in scan.entries {
+		if candidate.key.parent_cluster == live.first_cluster {live_children += 1}
+	}
+	if live_children != len(owner.children) {return .Reused}
+	for child in owner.children {
+		matched := false
+		for candidate in scan.entries {
+			if candidate.key.parent_cluster == live.first_cluster &&
+			   candidate.first_cluster == child.first_cluster &&
+			   candidate.is_dir == child.is_dir {
+				matched = true
+				break
+			}
+		}
+		if !matched {return .Reused}
+	}
+	return .Match
+}
+
+@(private = "file")
+reconcile_file_identity :: proc(
+	v: ^Volume,
+	mirrored: Mirror_Entry,
+	live: ^Guest_Entry,
+	allocator := context.allocator,
+) -> (
+	identity: Reconcile_Identity,
+	prepared: string,
+	fingerprint: u64,
+) {
+	if live == nil || live.is_dir || !live.valid || mirrored.is_dir {
+		return .Unavailable, "", 0
+	}
+	if !os.exists(reconcile_entry_backing_path(mirrored)) {
+		return .Unavailable, "", 0
+	}
+	chain, chain_state := volume_chain_inspect(v, live.first_cluster, allocator)
+	if live.first_cluster >= 2 && chain_state != .Complete {
+		return .Unavailable, "", 0
+	}
+	if mirrored.first_cluster == live.first_cluster && mirrored.size == live.size {
+		guest_fingerprint, guest_ok := guest_file_fingerprint(v, chain[:], live.size)
+		if !guest_ok {return .Unavailable, "", 0}
+		host_fingerprint, host_ok := host_file_fingerprint(
+			reconcile_entry_backing_path(mirrored),
+			mirrored.size,
+		)
+		if !host_ok {return .Unavailable, "", 0}
+		if host_fingerprint == guest_fingerprint {
+			return .Match, "", guest_fingerprint
+		}
+	}
+	stream_error: Guest_Stream_Error
+	prepared, fingerprint, stream_error = guest_prepare_file(
+		v,
+		live.host_path,
+		chain[:],
+		live.size,
+		.Guest_View,
+		allocator,
+	)
+	if stream_error != .None {return .Unavailable, "", 0}
+	return .Reused, prepared, fingerprint
 }
 
 @(private = "file")
@@ -715,19 +1160,6 @@ reconcile_bind_live_node :: proc(
 	return true
 }
 
-@(private = "file")
-reconcile_rebase_node :: proc(v: ^Volume, node: ^Node, path: string) {
-	delete(node.host_path, v.allocator)
-	node.host_path = strings.clone(path, v.allocator)
-	if !node.is_dir {
-		return
-	}
-	for child in node.children {
-		child_path, _ := filepath.join({path, child.name}, context.temp_allocator)
-		reconcile_rebase_node(v, child, child_path)
-	}
-}
-
 @(private)
 reconcile_snapshot_base_file :: proc(v: ^Volume, node: ^Node) -> bool {
 	if node == nil || node.is_dir || node.first_cluster < 2 || v.journal.snapshotted[node] {
@@ -744,7 +1176,7 @@ reconcile_snapshot_base_file :: proc(v: ^Volume, node: ^Node) -> bool {
 		first_rel := v.alloc.geo.data_start + (cluster - 2) * SECTORS_PER_CLUSTER
 		for sector in u32(0) ..< SECTORS_PER_CLUSTER {
 			rel := first_rel + sector
-			if _, exists := v.journal.overlay[rel]; exists {
+			if overlay_has(v, rel) {
 				continue
 			}
 			block: [SECTOR]u8
@@ -753,51 +1185,9 @@ reconcile_snapshot_base_file :: proc(v: ^Volume, node: ^Node) -> bool {
 			if !backing_read_exact(v, f, node.host_path, block[:expected], offset) {
 				return false
 			}
-			overlay_put(v, rel, block[:])
+			if !overlay_put(v, rel, block[:]) {return false}
 		}
 	}
 	v.journal.snapshotted[node] = true
 	return true
-}
-
-@(private = "file")
-reconcile_atomic_write :: proc(path: string, data: []u8) -> bool {
-	temporary := fmt.tprintf("%s.retvrn99-%d.tmp", path, os.get_pid())
-	defer _ = os.remove(temporary)
-	f, open_error := os.open(temporary, {.Write, .Create, .Trunc})
-	if open_error != nil {
-		log.warnf("fat32: cannot create temporary file for %s", path)
-		return false
-	}
-	closed := false
-	defer if !closed {os.close(f)}
-	total := 0
-	for total < len(data) {
-		n, write_error := os.write(f, data[total:])
-		if write_error != nil || n == 0 {
-			log.warnf("fat32: cannot write temporary file for %s", path)
-			return false
-		}
-		total += n
-	}
-	if close_error := os.close(f); close_error != nil {
-		closed = true
-		log.warnf("fat32: cannot close temporary file for %s", path)
-		return false
-	}
-	closed = true
-	if rename_error := os.rename(temporary, path); rename_error != nil {
-		log.warnf("fat32: cannot install temporary file for %s", path)
-		return false
-	}
-	return true
-}
-
-@(private = "file")
-reconcile_fingerprint :: proc(data: []u8) -> u64 {
-	hash: u64 = 0xCBF29CE484222325
-	for byte in data {
-		hash = (hash ~ u64(byte)) * 0x100000001B3
-	}
-	return hash
 }

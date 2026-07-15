@@ -150,6 +150,13 @@ fdc_test_seek_sense :: proc(t: ^testing.T) {
 	fdc_out(&f, 0x3F5, 0x08)
 	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x20))
 	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x21))
+
+	fdc_out(&f, 0x3F5, 0x0F)
+	fdc_out(&f, 0x3F5, 0x04) // drive 0, head 1; SEEK completion reports H=0
+	fdc_out(&f, 0x3F5, 0x22)
+	fdc_out(&f, 0x3F5, 0x08)
+	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x20))
+	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x22))
 }
 
 @(test)
@@ -332,6 +339,52 @@ fdc_test_invalid_command :: proc(t: ^testing.T) {
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0xD0))
 	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x80))
 	testing.expect_value(t, fdc_in(&f, 0x3F4), u8(0x80))
+}
+
+@(test)
+fdc_test_configure_lock_and_dumpreg :: proc(t: ^testing.T) {
+	f: Fdc
+	d: Fdc_Test_Dma
+	irqs := 0
+	fdc_test_setup(&f, &d, &irqs)
+	fdc_test_enable(&f)
+
+	fdc_out(&f, 0x3F5, 0x03)
+	fdc_out(&f, 0x3F5, 0xAF)
+	fdc_out(&f, 0x3F5, 0x02)
+	fdc_out(&f, 0x3F5, 0x13)
+	fdc_out(&f, 0x3F5, 0x00)
+	fdc_out(&f, 0x3F5, 0xDA)
+	fdc_out(&f, 0x3F5, 0x24)
+
+	fdc_out(&f, 0x3F5, 0x94)
+	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0x10))
+	fdc_out(&f, 0x3F5, 0x0E)
+	dump: [10]u8
+	for i in 0 ..< len(dump) {dump[i] = fdc_in(&f, 0x3F5)}
+	testing.expect_value(t, dump[4], u8(0xAF))
+	testing.expect_value(t, dump[5], u8(0x02))
+	testing.expect_value(t, dump[7], u8(0x80))
+	testing.expect_value(t, dump[8], u8(0x5A))
+	testing.expect_value(t, dump[9], u8(0x24))
+
+	fdc_out(&f, 0x3F4, 0x80)
+	fdc_out(&f, 0x3F5, 0x0E)
+	for i in 0 ..< len(dump) {dump[i] = fdc_in(&f, 0x3F5)}
+	testing.expect_value(t, dump[4], u8(0))
+	testing.expect_value(t, dump[5], u8(0))
+	testing.expect_value(t, dump[7], u8(0x80))
+	testing.expect_value(t, dump[8], u8(0x5A))
+	testing.expect_value(t, dump[9], u8(0x24))
+
+	fdc_out(&f, 0x3F5, 0x14)
+	testing.expect_value(t, fdc_in(&f, 0x3F5), u8(0))
+	fdc_out(&f, 0x3F4, 0x80)
+	fdc_out(&f, 0x3F5, 0x0E)
+	for i in 0 ..< len(dump) {dump[i] = fdc_in(&f, 0x3F5)}
+	testing.expect_value(t, dump[7], u8(0))
+	testing.expect_value(t, dump[8], u8(0x20))
+	testing.expect_value(t, dump[9], u8(0))
 }
 
 // Exact SeaBIOS floppy.c sequence for the INT 13 boot-sector read: enable via

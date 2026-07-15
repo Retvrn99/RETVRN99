@@ -67,3 +67,64 @@ test_machine_hlt_waits_for_deliverable_latched_pit_irq :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, seen, u32(0x42))
 }
+
+@(test)
+test_machine_halted_pending_event_drains_before_pic_irq :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available")
+		return
+	}
+	testing.set_fail_timeout(t, 10 * time.Second)
+	m := new(Machine)
+	defer free(m)
+	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(m)
+	machine_test_setup_irq0(&m.pic, true)
+
+	copy(m.vm.ram[0x18:], []u8{0x00, 0x05, 0x00, 0x00})
+	copy(m.vm.ram[0x20:], []u8{0x20, 0x05, 0x00, 0x00})
+	copy(m.vm.ram[0x500:], []u8{0xFE, 0x06, 0x40, 0x05, 0xCF})
+	copy(m.vm.ram[0x520:], []u8{
+		0xFE, 0x06, 0x41, 0x05,
+		0xB0, 0x20,
+		0xE6, 0x20,
+		0xCF,
+	})
+	copy(m.vm.ram[0x7C00:], []u8{
+		0x31, 0xC0,
+		0x8E, 0xD8,
+		0x8E, 0xD0,
+		0xBC, 0x00, 0x70,
+		0xFB,
+		0xF4,
+		0xF4,
+	})
+	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
+
+	if !testing.expect(t, step(m)) {return}
+	if !testing.expect(t, m.cpu_halted) {return}
+
+	pending_name := hv.WHV_REGISTER_NAME.PendingEvent
+	pending: hv.WHV_REGISTER_VALUE
+	pending.Reg128[0] = u64(1) | u64(6) << 16
+	if !testing.expect(
+		t,
+		hv.WHvSetVirtualProcessorRegisters(m.vm.part, 0, &pending_name, 1, &pending) >= 0,
+	) {
+		return
+	}
+	pic_raise(&m.pic, 0)
+	pic_out(&m.pic, 0x21, 0xFE)
+
+	if !testing.expect(t, step(m)) {return}
+	testing.expect_value(t, m.vm.ram[0x540], u8(1))
+	testing.expect_value(t, m.vm.ram[0x541], u8(0))
+	testing.expect(t, m.vm.irq_pending_event_deferrals > 0)
+
+	for _ in 0 ..< 10 {
+		if m.vm.ram[0x541] != 0 || !step(m) {break}
+	}
+	testing.expect_value(t, m.vm.ram[0x540], u8(1))
+	testing.expect_value(t, m.vm.ram[0x541], u8(1))
+	testing.expect_value(t, m.inj_count[0x08], u64(1))
+}

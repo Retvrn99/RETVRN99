@@ -14,7 +14,9 @@ test_machine_master_timeline_publishes_timed_ide_phase :: proc(t: ^testing.T) {
 	defer delete(backing)
 	disk.ide_init(&m.ide, machine_test_bd(&backing))
 	m.ide.irq_ctx = m
-	m.ide.irq = proc(ctx: rawptr) {pic_raise(&(^Machine)(ctx).pic, 14)}
+	m.ide.irq = proc(ctx: rawptr, asserted: bool) {
+		pic_set_irq_level(&(^Machine)(ctx).pic, 14, asserted)
+	}
 
 	disk.ide_io_write(&m.ide, 0x1F6, 1, 0xE0)
 	disk.ide_io_write(&m.ide, 0x1F7, 1, 0xEC)

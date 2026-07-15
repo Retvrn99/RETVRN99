@@ -41,10 +41,16 @@ Fdc :: struct {
 	params:       [8]u8,
 	params_need:  int,
 	params_got:   int,
-	result:       [7]u8,
+	result:       [10]u8,
 	result_len:   int,
 	result_pos:   int,
-	pcn:          u8,
+	pcn:          [4]u8,
+	specify_1:    u8,
+	specify_2:    u8,
+	configure:    u8,
+	pretrack:     u8,
+	last_eot:     u8,
+	locked:       bool,
 	int_pending:  bool,
 	int_st0:      u8,
 	reset_sense:  int, // SENSE INTERRUPTs pending after reset (4-drive poll)
@@ -69,7 +75,7 @@ Fdc :: struct {
 }
 
 fdc_init :: proc(f: ^Fdc) {
-	f^ = {}
+	f^ = {configure = 0x20}
 }
 
 fdc_set_media :: proc(f: ^Fdc, raw: []u8) -> bool {
@@ -101,6 +107,14 @@ fdc_reset :: proc(f: ^Fdc) {
 	f.phase = .Idle
 	f.int_pending = false
 	f.reset_sense = 4
+	f.pcn = {}
+	f.specify_1 = 0
+	f.specify_2 = 0
+	f.last_eot = 0
+	if !f.locked {
+		f.configure = 0x20
+		f.pretrack = 0
+	}
 	fdc_raise_irq(f)
 }
 
@@ -158,8 +172,11 @@ fdc_msr :: proc(f: ^Fdc) -> u8 {
 @(private = "file")
 fdc_param_count :: proc(cmd: u8) -> int {
 	if cmd == 0x10 { return 0 } // VERSION takes no bit mask
+	if cmd & 0x7F == 0x14 { return 0 } // LOCK/UNLOCK
 	switch cmd & 0x1F {
 	case 0x03: return 2 // SPECIFY
+	case 0x0E: return 0 // DUMPREG
+	case 0x13: return 3 // CONFIGURE
 	case 0x07: return 1 // RECALIBRATE
 	case 0x08: return 0 // SENSE INTERRUPT
 	case 0x0F: return 2 // SEEK
@@ -227,14 +244,25 @@ fdc_execute :: proc(f: ^Fdc) {
 	switch {
 	case f.cmd == 0x10: // VERSION
 		fdc_finish_result(f, []u8{FDC_VERSION_82077}, false)
-	case f.cmd & 0x1F == 0x03: // SPECIFY: timings ignored
+	case f.cmd & 0x7F == 0x14: // LOCK/UNLOCK
+		f.locked = f.cmd & 0x80 != 0
+		fdc_finish_result(f, []u8{f.locked ? u8(0x10) : u8(0)}, false)
+	case f.cmd & 0x1F == 0x03: // SPECIFY
+		f.specify_1 = f.params[0]
+		f.specify_2 = f.params[1]
+		f.phase = .Idle
+	case f.cmd & 0x1F == 0x0E: // DUMPREG
+		fdc_dumpreg(f)
+	case f.cmd & 0x1F == 0x13: // CONFIGURE
+		f.configure = f.params[1] & 0x7F
+		f.pretrack = f.params[2]
 		f.phase = .Idle
 	case f.cmd & 0x1F == 0x07: // RECALIBRATE
-		f.pcn = 0
+		f.pcn[f.params[0] & 3] = 0
 		fdc_seek_done(f, f.params[0] & 3)
 	case f.cmd & 0x1F == 0x0F: // SEEK
-		f.pcn = f.params[1]
-		fdc_seek_done(f, f.params[0] & 7)
+		f.pcn[f.params[0] & 3] = f.params[1]
+		fdc_seek_done(f, f.params[0] & 3)
 	case f.cmd & 0x1F == 0x08: // SENSE INTERRUPT
 		fdc_sense_interrupt(f)
 	case f.cmd & 0x1F == 0x0A: // READ ID
@@ -246,6 +274,22 @@ fdc_execute :: proc(f: ^Fdc) {
 	case:
 		fdc_finish_invalid(f)
 	}
+}
+
+@(private = "file")
+fdc_dumpreg :: proc(f: ^Fdc) {
+	fdc_finish_result(f, []u8{
+		f.pcn[0],
+		f.pcn[1],
+		f.pcn[2],
+		f.pcn[3],
+		f.specify_1,
+		f.specify_2,
+		f.last_eot,
+		f.locked ? u8(0x80) : u8(0),
+		f.configure,
+		f.pretrack,
+	}, false)
 }
 
 // the step pulse clears DSKCHG when media is present
@@ -266,7 +310,7 @@ fdc_sense_interrupt :: proc(f: ^Fdc) {
 		fdc_finish_result(f, []u8{0xC0 | unit, 0}, false)
 	} else if f.int_pending {
 		f.int_pending = false
-		fdc_finish_result(f, []u8{f.int_st0, f.pcn}, false)
+		fdc_finish_result(f, []u8{f.int_st0, f.pcn[f.int_st0 & 3]}, false)
 	} else {
 		fdc_finish_invalid(f)
 	}
@@ -282,7 +326,7 @@ fdc_read_id :: proc(f: ^Fdc) {
 		return
 	}
 	head := (unit_head >> 2) & 1
-	fdc_finish_result(f, []u8{unit_head, 0, 0, f.pcn, head, 1, 2}, true)
+	fdc_finish_result(f, []u8{unit_head, 0, 0, f.pcn[unit_head & 3], head, 1, 2}, true)
 }
 
 @(private = "file")
@@ -293,6 +337,7 @@ fdc_rw :: proc(f: ^Fdc, is_write: bool) {
 	f.rw_h = int(f.params[2])
 	f.rw_s = int(f.params[3])
 	f.rw_eot = int(f.params[5])
+	f.last_eot = f.params[5]
 	f.rw_write = is_write
 	f.rw_pos = 0
 

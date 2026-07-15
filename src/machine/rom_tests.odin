@@ -73,7 +73,6 @@ test_load_roms_exposes_open_bus_hole_and_keeps_shadow_ranges_writable :: proc(t:
 	if !testing.expect(t, hv.create(&vm, 64 * 1024 * 1024)) {return}
 	defer hv.destroy(&vm)
 	if !testing.expect(t, load_roms(&vm)) {return}
-
 	vm.ram[0xC8000] = 0x11
 	vm.ram[0xDFFFF] = 0x22
 	copy(
@@ -123,4 +122,38 @@ test_load_roms_exposes_open_bus_hole_and_keeps_shadow_ranges_writable :: proc(t:
 	testing.expect_value(t, vm.ram[0x507], u8(0x77))
 	testing.expect_value(t, vm.ram[0xC8000], u8(0x11))
 	testing.expect_value(t, vm.ram[0xDFFFF], u8(0x22))
+	testing.expect_value(t, vm.ram[0xE1000], u8(0x77))
+}
+
+@(test)
+test_high_bios_alias_guest_store_is_isolated_and_survives :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available")
+		return
+	}
+	testing.set_fail_timeout(t, 10 * time.Second)
+	vm: hv.Vm
+	if !testing.expect(t, hv.create(&vm, 64 * 1024 * 1024)) {return}
+	defer hv.destroy(&vm)
+	image := make([]u8, BIOS_SIZE)
+	defer delete(image)
+	image[0x11000] = 0x22
+	copy(
+		image[0x1FF80:],
+		[]u8 {
+			0xFA,
+			0x2E, 0xC6, 0x06, 0x00, 0x10, 0x6D,
+			0x2E, 0xA0, 0x00, 0x10,
+			0xA2, 0x0B, 0x05,
+			0xF4,
+		},
+	)
+	copy(image[0x1FFF0:], []u8{0xEB, 0x8E})
+	if !testing.expect(t, hv.map_rom(&vm, BIOS_HIGH_GPA, image)) {return}
+	vm.ram[BIOS_SHADOW_GPA + 0x1000] = 0xA5
+	exit := hv.run(&vm)
+	if !testing.expect_value(t, exit.kind, hv.Exit_Kind.Halt) {return}
+	testing.expect_value(t, vm.ram[0x50B], u8(0x6D))
+	testing.expect_value(t, vm.ram[BIOS_SHADOW_GPA + 0x1000], u8(0xA5))
+	testing.expect_value(t, image[0x11000], u8(0x22))
 }

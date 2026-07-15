@@ -123,6 +123,124 @@ test_pit_mode3_rewrite_keeps_live_phase :: proc(t: ^testing.T) {
 	testing.expect(t, transitions >= 2 && transitions <= 8)
 }
 
+@(private = "file")
+pit_test_latched_count :: proc(p: ^Pit) -> u16 {
+	pit_out(p, 0x43, 0)
+	low := pit_in(p, 0x40)
+	high := pit_in(p, 0x40)
+	return u16(low) | u16(high) << 8
+}
+
+@(test)
+test_pit_lsb_msb_write_commits_atomically :: proc(t: ^testing.T) {
+	modes := [?]u8{0, 2, 3, 4}
+	for mode in modes {
+		pit: Pit
+		pit_test_program(&pit, 0, mode, 20)
+		_ = pit_tick(&pit, 1)
+		_ = pit_tick(&pit, 2)
+		before := pit.ch[0].count
+		before_out := pit.ch[0].out
+
+		pit_out(&pit, 0x40, 8)
+		testing.expect_value(t, pit.ch[0].reload, u16(20))
+		testing.expect_value(t, pit.ch[0].active_reload, u16(20))
+		testing.expect_value(t, pit.ch[0].state, Pit_Counter_State.Counting)
+		testing.expect_value(t, pit.ch[0].out, before_out)
+		testing.expect(t, !pit.ch[0].null_count)
+		_ = pit_tick(&pit, 2)
+		testing.expect(t, pit.ch[0].count != before)
+
+		pit_out(&pit, 0x40, 0)
+		testing.expect_value(t, pit.ch[0].reload, u16(8))
+		testing.expect(t, pit.ch[0].null_count)
+		if mode == 2 || mode == 3 {
+			testing.expect_value(t, pit.ch[0].state, Pit_Counter_State.Counting)
+			testing.expect_value(t, pit.ch[0].active_reload, u16(20))
+		} else {
+			testing.expect_value(t, pit.ch[0].state, Pit_Counter_State.Load_Delay)
+		}
+	}
+}
+
+@(test)
+test_pit_periodic_reload_transfers_at_cycle_boundary :: proc(t: ^testing.T) {
+	pit: Pit
+	pit_test_program(&pit, 0, 2, 6)
+	_ = pit_tick(&pit, 1)
+	_ = pit_tick(&pit, 2)
+	pit_out(&pit, 0x40, 10)
+	pit_out(&pit, 0x40, 0)
+	testing.expect_value(t, pit.ch[0].active_reload, u16(6))
+	testing.expect(t, pit.ch[0].null_count)
+	_ = pit_tick(&pit, 4)
+	testing.expect_value(t, pit.ch[0].active_reload, u16(10))
+	testing.expect_value(t, pit.ch[0].count, u32(10))
+	testing.expect(t, !pit.ch[0].null_count)
+
+	pit_init(&pit)
+	pit_test_program(&pit, 0, 3, 6)
+	_ = pit_tick(&pit, 1)
+	_ = pit_tick(&pit, 1)
+	pit_out(&pit, 0x40, 10)
+	pit_out(&pit, 0x40, 0)
+	testing.expect_value(t, pit.ch[0].active_reload, u16(6))
+	testing.expect(t, pit.ch[0].null_count)
+	_ = pit_tick(&pit, 2)
+	testing.expect_value(t, pit.ch[0].active_reload, u16(10))
+	testing.expect_value(t, pit.ch[0].count, u32(10))
+	testing.expect(t, !pit.ch[0].null_count)
+}
+
+@(test)
+test_pit_mode4_rewrite_during_low_strobe_runs_new_count :: proc(t: ^testing.T) {
+	pit: Pit
+	pit_test_program(&pit, 0, 4, 3)
+	_ = pit_tick(&pit, 1)
+	_ = pit_tick(&pit, 3)
+	testing.expect(t, !pit.ch[0].out)
+
+	pit_out(&pit, 0x40, 4)
+	pit_out(&pit, 0x40, 0)
+	testing.expect_value(t, pit.ch[0].state, Pit_Counter_State.Load_Delay)
+	testing.expect(t, !pit.ch[0].out)
+	transitions := pit_tick(&pit, 1)
+	testing.expect_value(t, transitions, 1)
+	testing.expect(t, pit.ch[0].out)
+	testing.expect_value(t, pit.ch[0].count, u32(4))
+	testing.expect_value(t, pit.ch[0].state, Pit_Counter_State.Counting)
+
+	_ = pit_tick(&pit, 4)
+	testing.expect(t, !pit.ch[0].out)
+	transitions = pit_tick(&pit, 1)
+	testing.expect_value(t, transitions, 1)
+	testing.expect(t, pit.ch[0].out)
+	testing.expect_value(t, pit.ch[0].state, Pit_Counter_State.Inactive)
+}
+
+@(test)
+test_pit_mode4_low_strobe_rewrite_deadline_is_next_clock :: proc(t: ^testing.T) {
+	pit: Pit
+	pit_test_program(&pit, 0, 4, 3)
+	fall, pending := pit_next_out_edge(&pit, 0)
+	if !testing.expect(t, pending) {return}
+	_ = pit_advance_to(&pit, fall)
+	testing.expect(t, !pit.ch[0].out)
+
+	pit_out(&pit, 0x40, 4)
+	pit_out(&pit, 0x40, 0)
+	rise, rise_pending := pit_next_deadline(&pit)
+	edge, edge_pending := pit_next_out_edge(&pit, 0)
+	expected_delta, expected_pending := rate_phase_ticks_until(pit.clock_phase, 1, PIT_HZ)
+	if !testing.expect(t, rise_pending && edge_pending && expected_pending) {return}
+	testing.expect_value(t, rise, pit.now_tick + expected_delta)
+	testing.expect_value(t, edge, rise)
+	testing.expect_value(t, pit_advance_to(&pit, rise - 1), 0)
+	testing.expect_value(t, pit_advance_to(&pit, rise), 1)
+	testing.expect(t, pit.ch[0].out)
+	testing.expect_value(t, pit.ch[0].count, u32(4))
+}
+
 @(test)
 test_pit_bcd_counts_decimal :: proc(t: ^testing.T) {
 	pit: Pit
@@ -211,6 +329,32 @@ test_pit_count_latch_restarts_word_read_at_lsb :: proc(t: ^testing.T) {
 	high := pit_in(&pit, 0x40)
 	testing.expect_value(t, low, u8(0xFA))
 	testing.expect_value(t, high, u8(0xF5))
+}
+
+@(test)
+test_pit_win98_vtd_delay_accumulates_across_mode2_wraps :: proc(t: ^testing.T) {
+	RELOAD :: u16(0x04A9)
+	TARGET_CLOCKS :: u64(1_000_000)
+	SAMPLE_CLOCKS :: u64(13)
+	pit: Pit
+	pit_test_program(&pit, 0, 2, RELOAD)
+	_ = pit_tick(&pit, 1)
+	previous := pit_test_latched_count(&pit)
+	elapsed: u64
+	iterations := 0
+	for elapsed < TARGET_CLOCKS {
+		_ = pit_tick(&pit, SAMPLE_CLOCKS)
+		current := pit_test_latched_count(&pit)
+		delta := u64(previous) + u64(RELOAD) - u64(current)
+		if previous >= current {delta = u64(previous - current)}
+		elapsed += delta
+		previous = current
+		iterations += 1
+		if iterations > 100_000 {break}
+	}
+	testing.expect(t, elapsed >= TARGET_CLOCKS)
+	testing.expect(t, elapsed < TARGET_CLOCKS + SAMPLE_CLOCKS)
+	testing.expect(t, iterations < 100_000)
 }
 
 @(test)

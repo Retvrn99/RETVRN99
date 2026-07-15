@@ -29,6 +29,7 @@ vga_in :: proc(v: ^Vga, port: u16) -> u8 {
 }
 
 vga_io_write :: proc(v: ^Vga, port: u16, size: u8, value: u32) {
+	if v == nil || !v.pci_io_enabled {return}
 	if port == DISPI_PORT_INDEX || port == DISPI_PORT_DATA {
 		if dispi_io_write(v, port, size, value) {vga_note_content_change(v)}
 		return
@@ -41,6 +42,13 @@ vga_io_write :: proc(v: ^Vga, port: u16, size: u8, value: u32) {
 }
 
 vga_io_read :: proc(v: ^Vga, port: u16, size: u8) -> u32 {
+	if v == nil || !v.pci_io_enabled {
+		switch size {
+		case 1: return 0xFF
+		case 2: return 0xFFFF
+		}
+		return 0xFFFF_FFFF
+	}
 	if port == DISPI_PORT_INDEX || port == DISPI_PORT_DATA {
 		return dispi_io_read(v, port, size)
 	}

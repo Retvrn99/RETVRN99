@@ -80,6 +80,7 @@ protected_system_disk_write_policy :: proc(
 		)
 		return .Reject
 	}
+	if v.frozen {return .Reject}
 	return .Allow
 }
 
@@ -177,9 +178,9 @@ protected_directory_layout_replacement :: proc(v: ^Volume, rel: u32, sec: []u8) 
 		return false
 	}
 	old: [SECTOR]u8
-	if overlay, overlay_ok := v.journal.overlay[rel]; overlay_ok {
-		copy(old[:], overlay)
-	} else {
+	overlay_ok, read_ok := overlay_get(v, rel, old[:])
+	if !read_ok {return false}
+	if !overlay_ok {
 		index: u32
 		if claim, claim_ok := v.journal.claimed[cluster]; claim_ok {
 			index = claim.index

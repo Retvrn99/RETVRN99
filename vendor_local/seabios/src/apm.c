@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 // Basic support for apmbios callbacks.
 //
 // Copyright (C) 2008  Kevin O'Connor <kevin@koconnor.net>
@@ -13,6 +14,11 @@
 #include "stacks.h" // yield_toirq
 #include "util.h" // apm_shutdown
 #include "x86.h" // outb
+
+#define RETVRN99_APM_POWER_PORT 0xb004
+#define APM_RET_DEVICE_ID_UNRECOGNIZED 0x09
+#define APM_RET_PARAMETER_OUT_OF_RANGE 0x0a
+#define APM_RET_UNABLE_TO_ENTER_STATE 0x60
 
 // APM installation check
 static void
@@ -92,6 +98,8 @@ apm_shutdown(void)
     u16 pm1a_cnt = GET_GLOBAL(acpi_pm1a_cnt);
     if (pm1a_cnt)
         outw(0x2000, pm1a_cnt);
+    else
+        outw(0x2000, RETVRN99_APM_POWER_PORT);
 
     irq_disable();
     for (;;)
@@ -103,21 +111,28 @@ static void
 handle_155307(struct bregs *regs)
 {
     if (regs->bx != 1) {
-        set_success(regs);
+        set_code_invalid_silent(regs, APM_RET_DEVICE_ID_UNRECOGNIZED);
         return;
     }
     switch (regs->cx) {
+    case 0:
+        set_success(regs);
+        return;
     case 1:
         dprintf(1, "APM standby request\n");
-        break;
+        set_code_invalid_silent(regs, APM_RET_UNABLE_TO_ENTER_STATE);
+        return;
     case 2:
         dprintf(1, "APM suspend request\n");
-        break;
+        set_code_invalid_silent(regs, APM_RET_UNABLE_TO_ENTER_STATE);
+        return;
     case 3:
         apm_shutdown();
-        break;
+        return;
+    default:
+        set_code_invalid_silent(regs, APM_RET_PARAMETER_OUT_OF_RANGE);
+        return;
     }
-    set_success(regs);
 }
 
 static void

@@ -168,3 +168,21 @@ gsw_vga_test_malformed_command_stops_ring :: proc(t: ^testing.T) {
 	testing.expect_value(t, g.ring_head, u32(0))
 	testing.expect_value(t, g.metrics.malformed, u64(1))
 }
+
+@(test)
+gsw_vga_test_control_bar_decode_tracks_pci_state :: proc(t: ^testing.T) {
+	framebuffer: [4096]u8
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer[:])
+	new_base := u64(0xD100_0000)
+
+	gsw_vga_set_pci_decode(&g, false, new_base)
+	_, disabled := gsw_vga_control_offset(&g, new_base, 4)
+	testing.expect(t, !disabled)
+	gsw_vga_set_pci_decode(&g, true, new_base)
+	_, old := gsw_vga_control_offset(&g, GSW_VGA_CONTROL_BASE, 4)
+	offset, relocated := gsw_vga_control_offset(&g, new_base + u64(GSW_VGA_REG_STATUS), 4)
+	testing.expect(t, !old)
+	testing.expect(t, relocated)
+	testing.expect_value(t, offset, GSW_VGA_REG_STATUS)
+}

@@ -60,6 +60,8 @@ Gsw_Vga_Metrics :: struct {
 Gsw_Vga :: struct {
 	framebuffer: []u8,
 	scanout:     ^Vga,
+	memory_space_enabled: bool,
+	control_base:         u64,
 	ring_gpa:    u64,
 	ring_size:   u32,
 	ring_head:   u32,
@@ -79,7 +81,26 @@ Gsw_Vga :: struct {
 }
 
 gsw_vga_init :: proc(g: ^Gsw_Vga, framebuffer: []u8) {
-	g^ = {framebuffer = framebuffer, status = GSW_VGA_STATUS_READY}
+	g^ = {
+		framebuffer = framebuffer,
+		memory_space_enabled = true,
+		control_base = GSW_VGA_CONTROL_BASE,
+		status = GSW_VGA_STATUS_READY,
+	}
+}
+
+gsw_vga_set_pci_decode :: proc(g: ^Gsw_Vga, memory_space_enabled: bool, control_base: u64) {
+	if g == nil {return}
+	g.memory_space_enabled = memory_space_enabled
+	g.control_base = control_base
+}
+
+gsw_vga_control_offset :: proc(g: ^Gsw_Vga, gpa: u64, size: int) -> (u32, bool) {
+	if g == nil || !g.memory_space_enabled || size < 0 || gpa < g.control_base ||
+	   u64(size) > GSW_VGA_CONTROL_SIZE || gpa - g.control_base > GSW_VGA_CONTROL_SIZE - u64(size) {
+		return 0, false
+	}
+	return u32(gpa - g.control_base), true
 }
 
 gsw_vga_set_irq :: proc(g: ^Gsw_Vga, ctx: rawptr, irq: proc(ctx: rawptr, asserted: bool)) {

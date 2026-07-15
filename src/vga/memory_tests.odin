@@ -31,9 +31,31 @@ vga_test_aperture_maps :: proc(t: ^testing.T) {
 		case 3: testing.expect(t, !a0 && !b0 && b8)
 		}
 	}
-	testing.expect(t, vga_mmio_contains(0xA0000, 4))
-	testing.expect(t, vga_mmio_contains(VBE_LFB_BASE, 4))
-	testing.expect(t, !vga_mmio_contains(VBE_LFB_END - 1, 4))
+	testing.expect(t, vga_mmio_contains(&v, 0xA0000, 4))
+	testing.expect(t, vga_mmio_contains(&v, VBE_LFB_BASE, 4))
+	testing.expect(t, !vga_mmio_contains(&v, VBE_LFB_END - 1, 4))
+}
+
+@(test)
+vga_test_pci_command_and_framebuffer_bar_control_decode :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	new_base := u64(0xD000_0000)
+
+	vga_set_pci_decode(&v, false, false, new_base)
+	testing.expect_value(t, vga_io_read(&v, 0x3C2, 1), u32(0xFF))
+	testing.expect(t, !vga_mmio_contains(&v, LEGACY_APERTURE_BASE, 1))
+	testing.expect(t, !vga_mmio_contains(&v, new_base, 1))
+
+	vga_set_pci_decode(&v, true, true, new_base)
+	testing.expect_value(t, vga_io_read(&v, 0x3C2, 1), u32(0x10))
+	testing.expect(t, vga_mmio_contains(&v, LEGACY_APERTURE_BASE, 1))
+	testing.expect(t, !vga_mmio_contains(&v, VBE_LFB_BASE, 1))
+	testing.expect(t, vga_mmio_contains(&v, new_base, 4))
+	testing.expect(t, vga_mmio_write(&v, new_base + 4, 4, 0x4433_2211))
+	testing.expect_value(t, backing[4], u8(0x11))
 }
 
 @(test)

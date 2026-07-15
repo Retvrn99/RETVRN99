@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package fat32
 
+import disk "../disk"
+
 SECTOR :: 512
 SECTORS_PER_CLUSTER :: 8 // 4K clusters
-PART_START_LBA :: 2048
+DISK_HEADS :: disk.IDE_CHS_HEADS
+SECTORS_PER_TRACK :: disk.IDE_CHS_SECTORS_PER_TRACK
+PART_START_LBA :: SECTORS_PER_TRACK
 RESERVED_SECTORS :: 32
 NUM_FATS :: 2
 
@@ -52,6 +56,19 @@ put32 :: proc(b: []u8, off: int, v: u32) {
 	b[off + 3] = u8(v >> 24)
 }
 
+@(private = "file")
+put_chs :: proc(b: []u8, off: int, lba: u64) {
+	max_lba := u64(1024 * DISK_HEADS * SECTORS_PER_TRACK - 1)
+	address := min(lba, max_lba)
+	cylinder := address / (DISK_HEADS * SECTORS_PER_TRACK)
+	remainder := address % (DISK_HEADS * SECTORS_PER_TRACK)
+	head := remainder / SECTORS_PER_TRACK
+	sector := remainder % SECTORS_PER_TRACK + 1
+	b[off] = u8(head)
+	b[off + 1] = u8(sector) | u8(cylinder >> 2) & 0xC0
+	b[off + 2] = u8(cylinder)
+}
+
 // clean-room boot code assembled from assets/vbr/*.asm
 MBR_BIN :: #load("../../assets/vbr/mbr.bin")
 VBR_BIN :: #load("../../assets/vbr/vbr.bin")
@@ -64,13 +81,9 @@ make_mbr :: proc(total_sectors: u32) -> (mbr: [512]u8) {
 	copy(mbr[:446], MBR_BIN)
 	e := mbr[446:]
 	e[0] = 0x80 // bootable
-	e[1] = 0xFE // dummy CHS (LBA only)
-	e[2] = 0xFF
-	e[3] = 0xFF
+	put_chs(e, 1, PART_START_LBA)
 	e[4] = 0x0C // FAT32 LBA
-	e[5] = 0xFE
-	e[6] = 0xFF
-	e[7] = 0xFF
+	put_chs(e, 5, u64(PART_START_LBA) + u64(total_sectors) - 1)
 	put32(e, 8, PART_START_LBA)
 	put32(e, 12, total_sectors)
 	mbr[510] = 0x55
@@ -101,8 +114,8 @@ make_vbr :: proc(g: ^Geometry, total: u32, io_sys_lba: u64 = 0, io_sys_cluster: 
 	put16(vbr[:], 14, RESERVED_SECTORS)
 	vbr[16] = NUM_FATS
 	vbr[21] = 0xF8 // media
-	put16(vbr[:], 24, 63) // sectors/track
-	put16(vbr[:], 26, 16) // heads
+	put16(vbr[:], 24, SECTORS_PER_TRACK)
+	put16(vbr[:], 26, DISK_HEADS)
 	put32(vbr[:], 28, PART_START_LBA) // hidden
 	put32(vbr[:], 32, total)
 	put32(vbr[:], 36, g.sectors_per_fat)

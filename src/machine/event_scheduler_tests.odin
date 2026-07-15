@@ -46,20 +46,22 @@ event_scheduler_test_replaces_and_removes_deadline :: proc(t: ^testing.T) {
 
 @(test)
 event_scheduler_test_turbo_has_no_governor_or_silent_audio_deadline :: proc(t: ^testing.T) {
-	m: Machine
+	m := new(Machine)
+	defer free(m)
 	m.cpu_mode = config.Cpu_Mode.Turbo
-	machine_scheduler_refresh(&m)
+	machine_scheduler_refresh(m)
 	testing.expect_value(t, m.scheduler.positions[int(Scheduled_Device.Governor)], -1)
 	testing.expect_value(t, m.scheduler.positions[int(Scheduled_Device.Audio)], -1)
 }
 
 @(test)
 event_scheduler_test_gsw_governor_deadline_is_not_postponed_by_refresh :: proc(t: ^testing.T) {
-	m: Machine
+	m := new(Machine)
+	defer free(m)
 	m.cpu_mode = config.Cpu_Mode.GSW_886
-	machine_scheduler_refresh(&m)
+	machine_scheduler_refresh(m)
 	first := m.governor_deadline
-	machine_scheduler_refresh(&m)
+	machine_scheduler_refresh(m)
 	testing.expect_value(t, m.governor_deadline, first)
 	testing.expect(t, first > 0)
 }

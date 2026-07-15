@@ -18,6 +18,7 @@ test_pc_at_platform_owns_promoted_fixed_hardware :: proc(t: ^testing.T) {
 	testing.expect(t, &m.serial2 == &m.platform.serial2)
 	testing.expect(t, &m.parallel1 == &m.platform.parallel1)
 	testing.expect(t, &m.parallel2 == &m.platform.parallel2)
+	testing.expect(t, &m.isa_pnp == &m.platform.isa_pnp)
 	testing.expect(t, &m.isa_delay == &m.platform.isa_delay)
 }
 

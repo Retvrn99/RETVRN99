@@ -92,19 +92,20 @@ test_bus_byte_decomposes_declared_handler :: proc(t: ^testing.T) {
 
 @(test)
 test_machine_unknown_mmio_is_open_bus_unless_strict :: proc(t: ^testing.T) {
-	m: Machine
+	m := new(Machine)
+	defer free(m)
 	bus_init(&m.bus)
 	defer bus_destroy(&m.bus)
 	m.vm.a20_enabled = true
 	data := [4]u8{}
-	machine_mmio(&m, 0x4000_0000, false, data[:])
+	machine_mmio(m, 0x4000_0000, false, data[:])
 	testing.expect_value(t, data, [4]u8{0xFF, 0xFF, 0xFF, 0xFF})
 	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(1))
 	testing.expect(t, !m.bus.frozen)
 
 	bus_set_strict_io(&m.bus, true)
 	context.logger = log.nil_logger()
-	machine_mmio(&m, 0x4000_1000, true, data[:2])
+	machine_mmio(m, 0x4000_1000, true, data[:2])
 	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(2))
 	testing.expect(t, m.bus.frozen)
 }

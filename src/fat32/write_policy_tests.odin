@@ -64,6 +64,27 @@ protection_test_stage_fat_pair :: proc(
 	return volume_stage_write(v, start_lba, sectors)
 }
 
+protection_test_stage_root_without_terminator :: proc(t: ^testing.T, v: ^Volume) -> bool {
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	cluster: [CLUSTER_BYTES]u8
+	if !testing.expect(t, volume_read(v, root_lba, cluster[:])) {
+		return false
+	}
+	found := false
+	for offset := 0; offset < len(cluster); offset += 32 {
+		if cluster[offset] == 0 {
+			found = true
+		}
+		if found {
+			cluster[offset] = 0xE5
+		}
+	}
+	if !testing.expect(t, found) {
+		return false
+	}
+	return volume_stage_write(v, root_lba, cluster[:])
+}
+
 protection_test_add_long_root_files :: proc(t: ^testing.T, dir: string, count: int) {
 	padding := "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz"
 	for i in 0 ..< count {
@@ -143,6 +164,24 @@ protection_test_compatible_boot_code_is_ignored_but_layout_is_protected :: proc(
 	reserved_layout[0] = 0xF6
 	testing.expect(t, !volume_write(v4, PART_START_LBA + 3, reserved_layout[:]))
 	testing.expect(t, v4.frozen && failure2.useful)
+}
+
+@(test)
+protection_test_windows98_backup_boot_run_is_accepted :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := fat32_test_fixture(t)
+	defer os.remove_all(dir)
+	v := volume_open(dir, 2048)
+	testing.expect(t, v != nil)
+	if v == nil {return}
+
+	backup: [3 * SECTOR]u8
+	testing.expect(t, volume_read(v, PART_START_LBA, backup[:]))
+	testing.expect(t, volume_stage_write(v, PART_START_LBA + 6, backup[:]))
+	testing.expect(t, !v.frozen)
+	written: [3 * SECTOR]u8
+	testing.expect(t, volume_read(v, PART_START_LBA + 6, written[:]))
+	testing.expect(t, written == backup)
 }
 
 protection_test_add_root_files :: proc(t: ^testing.T, dir: string, count: int) {
@@ -321,6 +360,7 @@ protection_test_staged_root_growth_stays_protected_after_fat_free :: proc(t: ^te
 	want, read_error := os.read_entire_file(command_path, context.temp_allocator)
 	testing.expect(t, read_error == nil)
 	new_root_cluster := v.alloc.next_free
+	testing.expect(t, protection_test_stage_root_without_terminator(t, v))
 
 	// The first half of a cross-write FAT update is incomplete, not corrupt.
 	testing.expect(t, protection_test_stage_fat_set(t, v, root.first_cluster, new_root_cluster))
@@ -559,6 +599,7 @@ protection_test_staged_grown_root_truncation_preserves_tail_file :: proc(t: ^tes
 	root := v.alloc.root
 	tail := v.alloc.next_free
 	file_cluster := tail + 1
+	testing.expect(t, protection_test_stage_root_without_terminator(t, v))
 	testing.expect(t, protection_test_stage_fat_set(t, v, tail, 0x0FFFFFFF))
 	testing.expect(t, protection_test_stage_fat_set(t, v, root.first_cluster, tail))
 	testing.expect(t, protection_test_stage_fat_set(t, v, file_cluster, 0x0FFFFFFF))
@@ -630,7 +671,7 @@ protection_test_preflight_and_normal_writes :: proc(t: ^testing.T) {
 	three[SECTOR * 2] = 0xF6
 	testing.expect(t, !volume_write(v2, PART_START_LBA + 1, three[:]))
 	testing.expect(t, v2.frozen)
-	testing.expect_value(t, len(v2.journal.overlay), 0)
+	testing.expect_value(t, volume_journal_storage_stats(v2).present_sectors, u32(0))
 }
 
 @(test)

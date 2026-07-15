@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 // PIR table generation (for emulators)
 // DO NOT ADD NEW FEATURES HERE.  (See paravirt.c / biostables.c instead.)
 //
@@ -7,6 +8,7 @@
 // This file may be distributed under the terms of the GNU LGPLv3 license.
 
 #include "config.h" // CONFIG_*
+#include "fw/retvrn99-amd750.h" // RETVRN99_AMD750_PIRQ_*
 #include "output.h" // dprintf
 #include "std/pirtable.h" // struct pir_header
 #include "string.h" // checksum
@@ -14,77 +16,48 @@
 
 struct pir_table {
     struct pir_header pir;
-    struct pir_slot slots[6];
+    struct pir_slot slots[2];
 } PACKED;
 
 static struct pir_table PIR_TABLE = {
     .pir = {
         .version = 0x0100,
         .size = sizeof(struct pir_table),
-        .router_devfunc = 0x08,
-        .compatible_devid = 0x122e8086,
+        .router_devfunc = RETVRN99_AMD756_ISA_DEVFUNC,
+        .exclusive_irqs = RETVRN99_AMD750_PIRQ_EXCLUSIVE_BITMAP,
+        // PIRQ programming belongs to the omitted AMD-756 PM function.
+        // Keep 00:07.0 as the topology anchor without claiming compatibility
+        // with a programmable PCI interrupt router.
+        .compatible_devid = 0,
     },
     .slots = {
         {
-            // first slot entry PCI-to-ISA (embedded)
-            .dev = 1<<3,
+            // Embedded GSW VGA at 00:02.0.  The link rotation is shared with
+            // the emulator: INTA maps to PIRQB and therefore IRQ11.
+            .bus = 0,
+            .dev = RETVRN99_GSW_VGA_DEVICE << 3,
             .links = {
-                {.link = 0x60, .bitmap = 0xdef8}, // INTA#
-                {.link = 0x61, .bitmap = 0xdef8}, // INTB#
-                {.link = 0x62, .bitmap = 0xdef8}, // INTC#
-                {.link = 0x63, .bitmap = 0xdef8}, // INTD#
+                {
+                    .link = RETVRN99_AMD750_PIRQ_LINK(
+                        RETVRN99_GSW_VGA_DEVICE, 1),
+                    .bitmap = RETVRN99_AMD750_PIRQ_BITMAP(
+                        RETVRN99_GSW_VGA_DEVICE, 1),
+                },
             },
             .slot_nr = 0, // embedded
         }, {
-            // second slot entry: 1st PCI slot
-            .dev = 2<<3,
+            // AMD-756 IDE at 00:07.1 uses INTA/PIRQC when native.
+            .bus = 0,
+            .dev = RETVRN99_AMD756_ISA_DEVICE << 3,
             .links = {
-                {.link = 0x61, .bitmap = 0xdef8}, // INTA#
-                {.link = 0x62, .bitmap = 0xdef8}, // INTB#
-                {.link = 0x63, .bitmap = 0xdef8}, // INTC#
-                {.link = 0x60, .bitmap = 0xdef8}, // INTD#
+                {
+                    .link = RETVRN99_AMD750_PIRQ_LINK(
+                        RETVRN99_AMD756_ISA_DEVICE, 1),
+                    .bitmap = RETVRN99_AMD750_PIRQ_BITMAP(
+                        RETVRN99_AMD756_ISA_DEVICE, 1),
+                },
             },
-            .slot_nr = 1,
-        }, {
-            // third slot entry: 2nd PCI slot
-            .dev = 3<<3,
-            .links = {
-                {.link = 0x62, .bitmap = 0xdef8}, // INTA#
-                {.link = 0x63, .bitmap = 0xdef8}, // INTB#
-                {.link = 0x60, .bitmap = 0xdef8}, // INTC#
-                {.link = 0x61, .bitmap = 0xdef8}, // INTD#
-            },
-            .slot_nr = 2,
-        }, {
-            // 4th slot entry: 3rd PCI slot
-            .dev = 4<<3,
-            .links = {
-                {.link = 0x63, .bitmap = 0xdef8}, // INTA#
-                {.link = 0x60, .bitmap = 0xdef8}, // INTB#
-                {.link = 0x61, .bitmap = 0xdef8}, // INTC#
-                {.link = 0x62, .bitmap = 0xdef8}, // INTD#
-            },
-            .slot_nr = 3,
-        }, {
-            // 5th slot entry: 4th PCI slot
-            .dev = 5<<3,
-            .links = {
-                {.link = 0x60, .bitmap = 0xdef8}, // INTA#
-                {.link = 0x61, .bitmap = 0xdef8}, // INTB#
-                {.link = 0x62, .bitmap = 0xdef8}, // INTC#
-                {.link = 0x63, .bitmap = 0xdef8}, // INTD#
-            },
-            .slot_nr = 4,
-        }, {
-            // 6th slot entry: 5th PCI slot
-            .dev = 6<<3,
-            .links = {
-                {.link = 0x61, .bitmap = 0xdef8}, // INTA#
-                {.link = 0x62, .bitmap = 0xdef8}, // INTB#
-                {.link = 0x63, .bitmap = 0xdef8}, // INTC#
-                {.link = 0x60, .bitmap = 0xdef8}, // INTD#
-            },
-            .slot_nr = 5,
+            .slot_nr = 0, // embedded
         },
     }
 };

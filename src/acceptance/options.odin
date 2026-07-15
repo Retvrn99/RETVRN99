@@ -9,6 +9,12 @@ DEFAULT_ARTIFACTS_DIRECTORY :: "artifacts"
 Accept_Until :: enum {
 	None,
 	Hardware_Detection,
+	Desktop,
+}
+
+Setup_Diagnostics :: enum {
+	None,
+	Hardware,
 }
 
 Options :: struct {
@@ -19,6 +25,7 @@ Options :: struct {
 	install_windows:     bool,
 	install_windows_path: string,
 	accept_until:        Accept_Until,
+	setup_diagnostics:  Setup_Diagnostics,
 	mouse_stress:        bool,
 	input_script:         string,
 	firmware_log_all:    bool,
@@ -28,6 +35,7 @@ Options_Diagnostic :: enum {
 	None,
 	Missing_Value,
 	Invalid_Accept_Until,
+	Invalid_Setup_Diagnostics,
 	Invalid_Firmware_Log,
 }
 
@@ -47,7 +55,7 @@ options_parse :: proc(args: []string) -> (Options, Options_Diagnostic) {
 			options.install_windows = true
 		case "--mouse-stress":
 			options.mouse_stress = true
-		case "--accept-until", "--firmware-log", "--input-script":
+		case "--accept-until", "--setup-diagnostics", "--firmware-log", "--input-script":
 			return {}, .Missing_Value
 		}
 		if strings.has_prefix(argument, "--result-json:") ||
@@ -72,10 +80,24 @@ options_parse :: proc(args: []string) -> (Options, Options_Diagnostic) {
 			switch value {
 			case "hardware-detection":
 				options.accept_until = .Hardware_Detection
+			case "desktop":
+				options.accept_until = .Desktop
 			case "":
 				return {}, .Missing_Value
 			case:
 				return {}, .Invalid_Accept_Until
+			}
+		}
+		if strings.has_prefix(argument, "--setup-diagnostics:") ||
+		   strings.has_prefix(argument, "--setup-diagnostics=") {
+			value := argument[len("--setup-diagnostics:"):]
+			switch value {
+			case "hardware":
+				options.setup_diagnostics = .Hardware
+			case "":
+				return {}, .Missing_Value
+			case:
+				return {}, .Invalid_Setup_Diagnostics
 			}
 		}
 		if strings.has_prefix(argument, "--firmware-log:") ||
@@ -90,6 +112,9 @@ options_parse :: proc(args: []string) -> (Options, Options_Diagnostic) {
 			if options.input_script == "" {return {}, .Missing_Value}
 		}
 	}
+	if options.setup_diagnostics == .Hardware && options.artifacts == "" {
+		options.artifacts = DEFAULT_ARTIFACTS_DIRECTORY
+	}
 	return options, .None
 }
 
@@ -102,6 +127,7 @@ options_request_headless :: proc(options: ^Options) -> bool {
 	       options.artifacts != "" ||
 	       options.install_windows ||
 	       options.accept_until != .None ||
+	       options.setup_diagnostics != .None ||
 		options.mouse_stress ||
 		options.input_script != "" \
 	)

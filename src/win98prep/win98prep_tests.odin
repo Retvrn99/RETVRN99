@@ -66,6 +66,14 @@ test_launcher_restores_one_shot_autoexec_before_setup :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_launcher_enables_hardware_diagnostics_without_detection_skips :: proc(t: ^testing.T) {
+	launcher := launcher_text("SETUP.EXE", true, true, true)
+	testing.expect(t, contains(launcher, "/P G=3;L=3;P"))
+	testing.expect(t, !contains(launcher, ";I"))
+	testing.expect(t, !contains(launcher, ";S="))
+}
+
+@(test)
 test_payload_copy_releases_source_directory_handles :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	root := install_test_directory(t)

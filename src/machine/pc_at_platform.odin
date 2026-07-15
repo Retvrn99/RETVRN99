@@ -2,6 +2,8 @@
 package machine
 
 PC_AT_RESET_HISTORY :: 32
+APM_POWER_OFF_PORT :: u16(0xB004)
+APM_POWER_OFF_VALUE :: u16(0x2000)
 
 Reset_Provenance :: enum u8 {
 	None,
@@ -32,6 +34,11 @@ Pc_At_Reset_State :: struct {
 	reset_control:     u8,
 }
 
+Pc_At_Power_State :: struct {
+	power_off_requested: bool,
+	power_off_reason:    string,
+}
+
 Pc_At_Platform :: struct {
 	bus:       Bus,
 	pic:       Pic_Pair,
@@ -43,6 +50,10 @@ Pc_At_Platform :: struct {
 	serial2:   Uart_16450,
 	parallel1: Lpt,
 	parallel2: Lpt,
+	isa_pnp:   Isa_Pnp,
+	isa_pnp_passive_port:      u16,
+	isa_pnp_passive_installed: bool,
 	isa_delay: Isa_Delay,
 	using reset: Pc_At_Reset_State,
+	using power: Pc_At_Power_State,
 }

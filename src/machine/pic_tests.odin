@@ -138,6 +138,25 @@ test_pic_preview_is_transactional :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_pic_queued_offer_completion_survives_epoch_drift :: proc(t: ^testing.T) {
+	p: Pic_Pair
+	pic_setup(&p)
+	pic_raise(&p, 4)
+	queued, ok := pic_interrupt_preview(&p)
+	if !testing.expect(t, ok) {return}
+	pic_raise(&p, 1)
+	testing.expect(t, queued.epoch != p.epoch)
+
+	pic_interrupt_complete_queued(&p, queued)
+	testing.expect_value(t, p.master.irr, u8(0x02))
+	testing.expect_value(t, p.master.isr, u8(0x10))
+	pic_out(&p, 0x20, 0x64)
+	next, next_ok := pic_interrupt_preview(&p)
+	testing.expect(t, next_ok)
+	testing.expect_value(t, next.vector, u8(0x09))
+}
+
+@(test)
 test_pic_deferred_offer_can_be_replaced :: proc(t: ^testing.T) {
 	p: Pic_Pair
 	pic_setup(&p)
@@ -169,6 +188,33 @@ test_pic_poll_without_request_returns_zero :: proc(t: ^testing.T) {
 	pic_setup(&p)
 	pic_out(&p, 0x20, 0x0C)
 	testing.expect_value(t, pic_in(&p, 0x21), u8(0))
+	testing.expect_value(t, p.master.isr, u8(0))
+}
+
+@(test)
+test_pic_poll_freezes_priority_until_read :: proc(t: ^testing.T) {
+	p: Pic_Pair
+	pic_setup(&p)
+	pic_raise(&p, 4)
+	pic_out(&p, 0x20, 0x0C)
+	pic_raise(&p, 1)
+
+	testing.expect_value(t, pic_in(&p, 0x20), u8(0x84))
+	testing.expect_value(t, p.master.irr, u8(0x02))
+	testing.expect_value(t, p.master.isr, u8(0x10))
+	pic_out(&p, 0x20, 0x0C)
+	testing.expect_value(t, pic_in(&p, 0x20), u8(0x81))
+}
+
+@(test)
+test_pic_empty_poll_ignores_request_arriving_before_read :: proc(t: ^testing.T) {
+	p: Pic_Pair
+	pic_setup(&p)
+	pic_out(&p, 0x20, 0x0C)
+	pic_raise(&p, 1)
+
+	testing.expect_value(t, pic_in(&p, 0x20), u8(0))
+	testing.expect_value(t, p.master.irr, u8(0x02))
 	testing.expect_value(t, p.master.isr, u8(0))
 }
 
@@ -205,6 +251,38 @@ test_pic_special_mask_mode :: proc(t: ^testing.T) {
 	testing.expect_value(t, token.vector, u8(0x0F))
 	testing.expect(t, pic_commit(&p, token))
 	testing.expect(t, !pic_has_pending(&p))
+}
+
+@(private = "file")
+pic_setup_special_mask_nested_isr :: proc(p: ^Pic_Pair) {
+	pic_setup(p)
+	pic_out(p, 0x20, 0x68)
+	pic_raise(p, 0)
+	_, _ = pic_ack(p)
+	pic_out(p, 0x21, 0x01)
+	pic_raise(p, 6)
+	_, _ = pic_ack(p)
+}
+
+@(test)
+test_pic_special_mask_nonspecific_eoi_skips_masked_isr :: proc(t: ^testing.T) {
+	p: Pic_Pair
+	pic_setup_special_mask_nested_isr(&p)
+	testing.expect_value(t, p.master.isr, u8(0x41))
+
+	pic_out(&p, 0x20, 0x20)
+	testing.expect_value(t, p.master.isr, u8(0x01))
+}
+
+@(test)
+test_pic_special_mask_rotate_nonspecific_eoi_skips_masked_isr :: proc(t: ^testing.T) {
+	p: Pic_Pair
+	pic_setup_special_mask_nested_isr(&p)
+	testing.expect_value(t, p.master.isr, u8(0x41))
+
+	pic_out(&p, 0x20, 0xA0)
+	testing.expect_value(t, p.master.isr, u8(0x01))
+	testing.expect_value(t, p.master.lowest, u8(6))
 }
 
 @(test)
@@ -453,6 +531,50 @@ test_pic_icw_modes_are_recorded :: proc(t: ^testing.T) {
 	testing.expect(t, p.master.buffered)
 	testing.expect(t, p.master.is_master)
 	testing.expect(t, p.master.sfnm)
+}
+
+@(test)
+test_pic_icw1_restores_initial_defaults :: proc(t: ^testing.T) {
+	p: Pic_Pair
+	p.master = Pic {
+		irr = 0xFF, isr = 0xFF, imr = 0xFF, icw3 = 0xA5,
+		read_isr = true, poll_pending = true, poll_result = 0x84,
+		special_mask = true, lowest = 3, auto_rotate = true,
+		auto_eoi = true, buffered = true, is_master = true,
+		mode_8086 = true, sfnm = true,
+	}
+	p.slave = Pic {
+		irr = 0xFF, isr = 0xFF, imr = 0xFF, icw3 = 2,
+		read_isr = true, poll_pending = true, poll_result = 0x82,
+		special_mask = true, lowest = 1, auto_rotate = true,
+		auto_eoi = true, buffered = true, mode_8086 = true, sfnm = true,
+	}
+	p.master_int_latch = true
+
+	pic_out(&p, 0x20, 0x11)
+	pic_out(&p, 0xA0, 0x11)
+
+	testing.expect_value(t, p.master.irr, u8(0))
+	testing.expect_value(t, p.master.isr, u8(0))
+	testing.expect_value(t, p.master.imr, u8(0))
+	testing.expect_value(t, p.master.icw3, u8(0))
+	testing.expect_value(t, p.slave.irr, u8(0))
+	testing.expect_value(t, p.slave.isr, u8(0))
+	testing.expect_value(t, p.slave.imr, u8(0))
+	testing.expect_value(t, p.slave.icw3, u8(7))
+	testing.expect_value(t, p.master.lowest, u8(7))
+	testing.expect_value(t, p.slave.lowest, u8(7))
+	testing.expect(t, !p.master.read_isr && !p.slave.read_isr)
+	testing.expect(t, !p.master.poll_pending && !p.slave.poll_pending)
+	testing.expect_value(t, p.master.poll_result, u8(0))
+	testing.expect_value(t, p.slave.poll_result, u8(0))
+	testing.expect(t, !p.master.special_mask && !p.slave.special_mask)
+	testing.expect(t, !p.master.auto_eoi && !p.slave.auto_eoi)
+	testing.expect(t, !p.master.auto_rotate && !p.slave.auto_rotate)
+	testing.expect(t, !p.master.buffered && !p.slave.buffered)
+	testing.expect(t, !p.master.mode_8086 && !p.slave.mode_8086)
+	testing.expect(t, !p.master.sfnm && !p.slave.sfnm)
+	testing.expect(t, !p.master_int_latch)
 }
 
 @(test)
