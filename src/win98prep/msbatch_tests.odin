@@ -211,16 +211,23 @@ test_msbatch_desktop_probe_is_opt_in_and_language_independent :: proc(t: ^testin
 		{directory, DESKTOP_DYNAMIC_ENUM_FILE},
 		context.temp_allocator,
 	)
+	stale_disk_probe, _ := filepath.join(
+		{directory, DESKTOP_DISK_PROBE_FILE},
+		context.temp_allocator,
+	)
 	testing.expect(t, os.write_entire_file(stale_marker, "STALE") == nil)
 	testing.expect(t, os.write_entire_file(stale_enum, "STALE") == nil)
 	testing.expect(t, os.write_entire_file(stale_dynamic_enum, "STALE") == nil)
+	testing.expect(t, os.write_entire_file(stale_disk_probe, "STALE") == nil)
 	testing.expect(t, desktop_probe_write(directory))
 	_, marker_error := os.stat(stale_marker, context.temp_allocator)
 	_, enum_error := os.stat(stale_enum, context.temp_allocator)
 	_, dynamic_enum_error := os.stat(stale_dynamic_enum, context.temp_allocator)
+	_, disk_probe_error := os.stat(stale_disk_probe, context.temp_allocator)
 	testing.expect(t, marker_error != nil)
 	testing.expect(t, enum_error != nil)
 	testing.expect(t, dynamic_enum_error != nil)
+	testing.expect(t, disk_probe_error != nil)
 	path, _ := filepath.join({directory, DESKTOP_PROBE_FILE}, context.temp_allocator)
 	payload, read_error := os.read_entire_file(path, context.temp_allocator)
 	testing.expect(t, read_error == nil)
@@ -238,7 +245,20 @@ test_msbatch_desktop_probe_is_opt_in_and_language_independent :: proc(t: ^testin
 	static_check := strings.index(string(payload), "IF NOT EXIST C:\\GSWSETUP\\ENUM.REG")
 	dynamic_check := strings.index(string(payload), "IF NOT EXIST C:\\GSWSETUP\\DYNENUM.REG")
 	marker_write := strings.index(string(payload), "ECHO READY>C:\\GSWSETUP\\DESKTOP.OK")
-	testing.expect(t, static_check >= 0 && dynamic_check > static_check && marker_write > dynamic_check)
+	disk_copy := strings.index(
+		string(payload),
+		"COPY /B C:\\WINDOWS\\WIN.COM C:\\GSWSETUP\\DMAPROBE.BIN >NUL",
+	)
+	disk_compare := strings.index(
+		string(payload),
+		"FC /B C:\\WINDOWS\\WIN.COM C:\\GSWSETUP\\DMAPROBE.BIN >NUL",
+	)
+	disk_read := strings.index(
+		string(payload),
+		"COPY /B C:\\GSWSETUP\\DMAPROBE.BIN NUL >NUL",
+	)
+	testing.expect(t, disk_copy >= 0 && disk_compare > disk_copy && disk_read > disk_compare)
+	testing.expect(t, static_check > disk_read && dynamic_check > static_check && marker_write > dynamic_check)
 	testing.expect(t, contains(string(payload), "ECHO READY>C:\\GSWSETUP\\DESKTOP.OK"))
 }
 

@@ -18,6 +18,7 @@ DESKTOP_PROBE_FILE :: "DESKTOP.BAT"
 DESKTOP_MARKER_FILE :: "DESKTOP.OK"
 DESKTOP_ENUM_FILE :: "ENUM.REG"
 DESKTOP_DYNAMIC_ENUM_FILE :: "DYNENUM.REG"
+DESKTOP_DISK_PROBE_FILE :: "DMAPROBE.BIN"
 MSBATCH_BOOT_OPTIONS_SECTION :: "RETVRN99BootOptions"
 
 normalize_msbatch_file :: proc(path: string, desktop_probe := false) -> bool {
@@ -106,6 +107,7 @@ desktop_probe_write :: proc(directory: string) -> bool {
 		DESKTOP_MARKER_FILE,
 		DESKTOP_ENUM_FILE,
 		DESKTOP_DYNAMIC_ENUM_FILE,
+		DESKTOP_DISK_PROBE_FILE,
 	}
 	for name in stale_names {
 		stale, stale_error := filepath.join({directory, name}, context.temp_allocator)
@@ -117,11 +119,22 @@ desktop_probe_write :: proc(directory: string) -> bool {
 	defer delete(path, context.temp_allocator)
 	text :=
 		"@ECHO OFF\r\n" +
+		"COPY /B C:\\WINDOWS\\WIN.COM C:\\GSWSETUP\\DMAPROBE.BIN >NUL\r\n" +
+		"IF ERRORLEVEL 1 GOTO GSWCLEAN\r\n" +
+		"FC /B C:\\WINDOWS\\WIN.COM C:\\GSWSETUP\\DMAPROBE.BIN >NUL\r\n" +
+		"IF ERRORLEVEL 1 GOTO GSWCLEAN\r\n" +
+		"COPY /B C:\\GSWSETUP\\DMAPROBE.BIN NUL >NUL\r\n" +
+		"IF ERRORLEVEL 1 GOTO GSWCLEAN\r\n" +
+		"DEL C:\\GSWSETUP\\DMAPROBE.BIN >NUL\r\n" +
+		"IF EXIST C:\\GSWSETUP\\DMAPROBE.BIN GOTO GSWEND\r\n" +
 		"REGEDIT /E C:\\GSWSETUP\\ENUM.REG HKEY_LOCAL_MACHINE\\Enum\r\n" +
 		"REGEDIT /E C:\\GSWSETUP\\DYNENUM.REG \"HKEY_DYN_DATA\\Config Manager\\Enum\"\r\n" +
 		"IF NOT EXIST C:\\GSWSETUP\\ENUM.REG GOTO GSWEND\r\n" +
 		"IF NOT EXIST C:\\GSWSETUP\\DYNENUM.REG GOTO GSWEND\r\n" +
 		"ECHO READY>C:\\GSWSETUP\\DESKTOP.OK\r\n" +
+		"GOTO GSWEND\r\n" +
+		":GSWCLEAN\r\n" +
+		"IF EXIST C:\\GSWSETUP\\DMAPROBE.BIN DEL C:\\GSWSETUP\\DMAPROBE.BIN >NUL\r\n" +
 		":GSWEND\r\n"
 	return os.write_entire_file(path, text) == nil
 }

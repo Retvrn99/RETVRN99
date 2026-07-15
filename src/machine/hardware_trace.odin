@@ -202,7 +202,8 @@ hardware_trace_io_kind :: proc(
 	isa_pnp: ^Isa_Pnp = nil,
 	value: u32 = 0,
 ) -> Hardware_Event_Kind {
-	if write && (port == 0x0092 || port == 0x0CF9) {return .Reset_Request}
+	if write && port == 0x0092 && value & 1 != 0 {return .Reset_Request}
+	if write && port == 0x0CF9 && value & 0x04 != 0 {return .Reset_Request}
 	if write && port >= 0x0040 && port <= 0x0042 {return .Pit_Program}
 	if write && port == 0x0043 && value != 0 {return .Pit_Program}
 	if write && port == 0x0061 {return .Pit_Program}

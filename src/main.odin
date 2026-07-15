@@ -1824,9 +1824,13 @@ console_main :: proc(
 	input_visual_since := start
 	input_visual_changed := false
 	input_memory_next := start
-	if options.accept_until != .None && !profile.install_state_active(&install_state) {
+	if !console_acceptance_profile_ready(
+		options.accept_until,
+		&install_state,
+		install_diagnostic,
+	) {
 		fmt.eprintln(
-			"acceptance: Windows setup milestone requires an active Windows 98 installation",
+			"acceptance: target requires a valid Windows 98 installation state",
 		)
 		return 1
 	}
@@ -1993,6 +1997,24 @@ console_main :: proc(
 				run_result.exit_code = result
 				break loop
 			} else if machine.machine_cpu_reset_pending(m) {
+				reset_source := machine.machine_reset_provenance(m)
+				if !console_acceptance_cpu_reset_allowed(
+					options.accept_until,
+					reset_source,
+					profile.install_state_active(&install_state),
+				) {
+					firmware_log_host_flush(&firmware, nil)
+					fmt.printfln(
+						"unexpected CPU reset after %d iterations: %s",
+						iterations,
+						machine.machine_cpu_reset_reason(m),
+					)
+					run_result.stop_reason = .Fatal_Virtualization_Failure
+					run_result.last_progress_reason = "unexpected_cpu_reset"
+					result = 2
+					run_result.exit_code = result
+					break loop
+				}
 				reason := strings.clone(machine.machine_cpu_reset_reason(m))
 				reset_code := m.cpu_reset_cmos_0f
 				sync.lock(&guard.mu)
@@ -2012,6 +2034,13 @@ console_main :: proc(
 					break loop
 				}
 				run_result.last_progress_reason = "warm_reset"
+				if options.accept_until == .Desktop {
+					desktop_marker_seen = false
+					run_result.desktop_marker_seen = false
+					run_result.desktop_enum_valid = false
+					run_result.desktop_vga_irq11_seen = false
+					desktop_graphics = {}
+				}
 				firmware_log_host_flush(&firmware, nil)
 				fmt.printfln(
 					"warm CPU reset %d after %d iterations: %s, CMOS 0F=%02x",
@@ -2196,7 +2225,7 @@ console_main :: proc(
 			!hardware_detection_seen
 		desktop_pending :=
 			options.accept_until == .Desktop &&
-			install_state.reset_count > 0 &&
+			console_desktop_profile_probe_ready(&install_state) &&
 			!desktop_marker_seen
 		if console_setup_artifact_poll_due(
 			install_state.reset_count,
@@ -2242,7 +2271,8 @@ console_main :: proc(
 				}
 			}
 			if reconciled && desktop_pending {
-				enum_evidence, enum_valid := console_desktop_marker_evidence(paths.c_drive)
+				enum_evidence, marker_seen, enum_valid :=
+					console_desktop_marker_evidence(paths.c_drive)
 				primary_dma_transactions, primary_dma_bytes := console_primary_ide_dma_evidence(
 					&run_result,
 					m,
@@ -2250,10 +2280,10 @@ console_main :: proc(
 					primary_dma_epoch_baseline_transactions,
 					primary_dma_epoch_baseline_bytes,
 				)
-				if enum_valid {
-					run_result.desktop_marker_seen = true
-					run_result.desktop_enum_valid = true
-					run_result.desktop_vga_irq11_seen = enum_evidence.vga_irq11_seen
+				run_result.desktop_marker_seen = marker_seen
+				run_result.desktop_enum_valid = enum_valid
+				run_result.desktop_vga_irq11_seen = enum_evidence.vga_irq11_seen
+				if marker_seen && enum_valid {
 					if primary_dma_transactions == 0 || primary_dma_bytes == 0 {
 						run_result.last_progress_reason =
 							DESKTOP_WAITING_PRIMARY_IDE_DMA_PROGRESS_REASON
@@ -2309,19 +2339,21 @@ console_main :: proc(
 		if options.accept_until == .Desktop &&
 		   desktop_marker_seen &&
 		   console_desktop_graphics_stable(&desktop_graphics, now) {
-			finish_diagnostic := console_install_session_finish(
-				paths,
-				&install_state,
-				m,
-				&run_result,
-			)
-			if finish_diagnostic != .None {
-				fmt.eprintfln(
-					"Windows 98: cannot finalize completed installation session (%v)",
-					finish_diagnostic,
+			if profile.install_state_active(&install_state) {
+				finish_diagnostic := console_install_session_finish(
+					paths,
+					&install_state,
+					m,
+					&run_result,
 				)
-				result = console_install_session_finish_failure(&run_result)
-				break loop
+				if finish_diagnostic != .None {
+					fmt.eprintfln(
+						"Windows 98: cannot finalize completed installation session (%v)",
+						finish_diagnostic,
+					)
+					result = console_install_session_finish_failure(&run_result)
+					break loop
+				}
 			}
 			run_result.stop_reason = .Acceptance_Reached
 			run_result.exit_code = 0
