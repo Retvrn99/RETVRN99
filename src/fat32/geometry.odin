@@ -5,7 +5,7 @@ import disk "../disk"
 
 SECTOR :: 512
 SECTORS_PER_CLUSTER :: 8 // 4K clusters
-DISK_HEADS :: disk.IDE_CHS_HEADS
+BIOS_LOGICAL_HEADS :: 128
 SECTORS_PER_TRACK :: disk.IDE_CHS_SECTORS_PER_TRACK
 PART_START_LBA :: SECTORS_PER_TRACK
 RESERVED_SECTORS :: 32
@@ -56,12 +56,22 @@ put32 :: proc(b: []u8, off: int, v: u32) {
 	b[off + 3] = u8(v >> 24)
 }
 
+@(private = "package")
+bios_logical_cylinder_count :: proc(partition_sectors: u32) -> u64 {
+	disk_sectors := u64(PART_START_LBA) + u64(partition_sectors)
+	return clamp(
+		disk_sectors / (BIOS_LOGICAL_HEADS * SECTORS_PER_TRACK),
+		u64(1),
+		u64(1024),
+	)
+}
+
 @(private = "file")
-put_chs :: proc(b: []u8, off: int, lba: u64) {
-	max_lba := u64(1024 * DISK_HEADS * SECTORS_PER_TRACK - 1)
+put_chs :: proc(b: []u8, off: int, lba, cylinder_count: u64) {
+	max_lba := cylinder_count * BIOS_LOGICAL_HEADS * SECTORS_PER_TRACK - 1
 	address := min(lba, max_lba)
-	cylinder := address / (DISK_HEADS * SECTORS_PER_TRACK)
-	remainder := address % (DISK_HEADS * SECTORS_PER_TRACK)
+	cylinder := address / (BIOS_LOGICAL_HEADS * SECTORS_PER_TRACK)
+	remainder := address % (BIOS_LOGICAL_HEADS * SECTORS_PER_TRACK)
 	head := remainder / SECTORS_PER_TRACK
 	sector := remainder % SECTORS_PER_TRACK + 1
 	b[off] = u8(head)
@@ -79,11 +89,12 @@ VBR_CLUSTER_OFFSET :: 0x1E4 // dword: first cluster of IO.SYS
 // MBR: one bootable 0x0C partition at PART_START_LBA
 make_mbr :: proc(total_sectors: u32) -> (mbr: [512]u8) {
 	copy(mbr[:446], MBR_BIN)
+	logical_cylinders := bios_logical_cylinder_count(total_sectors)
 	e := mbr[446:]
 	e[0] = 0x80 // bootable
-	put_chs(e, 1, PART_START_LBA)
+	put_chs(e, 1, PART_START_LBA, logical_cylinders)
 	e[4] = 0x0C // FAT32 LBA
-	put_chs(e, 5, u64(PART_START_LBA) + u64(total_sectors) - 1)
+	put_chs(e, 5, u64(PART_START_LBA) + u64(total_sectors) - 1, logical_cylinders)
 	put32(e, 8, PART_START_LBA)
 	put32(e, 12, total_sectors)
 	mbr[510] = 0x55
@@ -115,7 +126,7 @@ make_vbr :: proc(g: ^Geometry, total: u32, io_sys_lba: u64 = 0, io_sys_cluster: 
 	vbr[16] = NUM_FATS
 	vbr[21] = 0xF8 // media
 	put16(vbr[:], 24, SECTORS_PER_TRACK)
-	put16(vbr[:], 26, DISK_HEADS)
+	put16(vbr[:], 26, BIOS_LOGICAL_HEADS)
 	put32(vbr[:], 28, PART_START_LBA) // hidden
 	put32(vbr[:], 32, total)
 	put32(vbr[:], 36, g.sectors_per_fat)

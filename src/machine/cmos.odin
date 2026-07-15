@@ -14,6 +14,9 @@ CMOS_CHECKSUM_HIGH :: 0x2E
 CMOS_CHECKSUM_LOW :: 0x2F
 CMOS_CENTURY :: 0x32
 CMOS_CENTURY_ALTERNATE :: 0x37
+CMOS_BIOS_DISK_TRANSLATION :: 0x39
+CMOS_BIOS_DISK_TRANSLATION_PRIMARY_MASK :: u8(0x03)
+CMOS_BIOS_DISK_TRANSLATION_LARGE :: u8(0x02)
 
 Cmos_Time :: struct {
 	year:    u16,
@@ -233,6 +236,9 @@ cmos_apply_machine_config :: proc(c: ^Cmos, ram_bytes: u64) {
 	above16 = min(above16, u64(0xFFFF))
 	c.ram[0x34] = u8(above16)
 	c.ram[0x35] = u8(above16 >> 8)
+	c.ram[CMOS_BIOS_DISK_TRANSLATION] =
+		(c.ram[CMOS_BIOS_DISK_TRANSLATION] & ~CMOS_BIOS_DISK_TRANSLATION_PRIMARY_MASK) |
+		CMOS_BIOS_DISK_TRANSLATION_LARGE
 }
 
 cmos_checksum :: proc(c: ^Cmos) -> u16 {

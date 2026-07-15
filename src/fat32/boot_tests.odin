@@ -108,6 +108,8 @@ boot_test_volume_vbr :: proc(t: ^testing.T) {
 	testing.expect_value(t, fat32_rd32le(vbr[:], VBR_CLUSTER_OFFSET), io.first_cluster)
 	bak := read_test_sector(t, v, PART_START_LBA + 6)
 	testing.expect_value(t, fat32_rd32le(bak[:], VBR_CLUSTER_OFFSET), io.first_cluster)
+	testing.expect_value(t, fat32_rd16le(bak[:], 24), u16(SECTORS_PER_TRACK))
+	testing.expect_value(t, fat32_rd16le(bak[:], 26), u16(BIOS_LOGICAL_HEADS))
 
 	// without IO.SYS the int 18h stub stays
 	base, _ := os.temp_directory(context.allocator)

@@ -18,6 +18,7 @@ IDE_SECTOR_SIZE :: 512
 IDE_CHS_HEADS :: 16
 IDE_CHS_SECTORS_PER_TRACK :: 63
 IDE_CHS_MAX_CYLINDERS :: 16_383
+IDE_MULTIPLE_MAX_SECTORS :: 16
 IDE_DMA_MAX_SECTORS :: 256
 IDE_DMA_MAX_BYTES :: IDE_SECTOR_SIZE * IDE_DMA_MAX_SECTORS
 IDE_UDMA_MODE :: persona.GUEST_PERSONA.max_udma_mode
@@ -68,6 +69,7 @@ Ide :: struct {
 	reg_status:              u8,
 	reg_ctrl:                u8,
 	transfer_mode:           u8,
+	multiple_sector_count:   u8,
 	io_space_enabled:        bool,
 	channel_enabled:         bool,
 	irq_pending:             bool,
@@ -86,6 +88,7 @@ Ide :: struct {
 	pio_read_start_lba:      u64,
 	pio_read_sectors:        int,
 	pio_read_loaded:         bool,
+	pio_block_remaining:     int,
 	// A full ATA command is staged before commit so protected folder-backed
 	// writes remain one atomic Block_Device transaction.
 	dma_pending:             bool,
@@ -117,6 +120,7 @@ ide_reset_signature :: proc(ide: ^Ide) {
 	ide.reg_lba_hi = 0
 	ide.reg_drive = 0xA0
 	ide.reg_status = IDE_STATUS_DRDY
+	ide.multiple_sector_count = IDE_MULTIPLE_MAX_SECTORS
 }
 
 ide_set_pci_decode :: proc(ide: ^Ide, io_space_enabled, channel_enabled: bool) {
@@ -333,7 +337,7 @@ ide_note_writeback :: proc(ide: ^Ide) {
 }
 
 ide_load_sector :: proc(ide: ^Ide) -> bool {
-	if ide.cmd != 0x20 || ide.pio_read_sectors <= 0 {
+	if (ide.cmd != 0x20 && ide.cmd != 0xC4) || ide.pio_read_sectors <= 0 {
 		ide_abort(ide)
 		return false
 	}
@@ -373,8 +377,12 @@ ide_command :: proc(ide: ^Ide, cmd: u8) {
 		ide.state = .Idle
 		ide.reg_status = IDE_STATUS_BSY
 		ide_schedule(ide, .Identify_Ready, IDE_COMMAND_LATENCY_TICKS)
-	case 0x20:
-		// READ SECTORS
+	case 0x20, 0xC4:
+		// READ SECTORS / READ MULTIPLE
+		if cmd == 0xC4 && ide.multiple_sector_count == 0 {
+			ide_abort(ide)
+			return
+		}
 		ide.lba = ide_current_lba(ide)
 		ide.pending = int(ide.reg_seccount)
 		if ide.pending == 0 {ide.pending = 256}
@@ -390,8 +398,12 @@ ide_command :: proc(ide: ^Ide, cmd: u8) {
 		ide.state = .Idle
 		ide.reg_status = IDE_STATUS_BSY
 		ide_schedule(ide, .Read_Ready, IDE_COMMAND_LATENCY_TICKS)
-	case 0x30:
-		// WRITE SECTORS
+	case 0x30, 0xC5:
+		// WRITE SECTORS / WRITE MULTIPLE
+		if cmd == 0xC5 && ide.multiple_sector_count == 0 {
+			ide_abort(ide)
+			return
+		}
 		if ide.writeback_failed {ide_abort(ide); return}
 		ide.lba = ide_current_lba(ide)
 		ide.pending = int(ide.reg_seccount)
@@ -408,6 +420,17 @@ ide_command :: proc(ide: ^Ide, cmd: u8) {
 		ide.state = .Idle
 		ide.reg_status = IDE_STATUS_BSY
 		ide_schedule(ide, .Write_Ready, IDE_COMMAND_LATENCY_TICKS)
+	case 0xC6:
+		// SET MULTIPLE MODE; zero disables multiple-sector commands.
+		count := ide.reg_seccount
+		if count > IDE_MULTIPLE_MAX_SECTORS || count != 0 && count & (count - 1) != 0 {
+			ide_abort(ide)
+			return
+		}
+		ide.multiple_sector_count = count
+		ide.state = .Idle
+		ide.reg_status = IDE_STATUS_BSY
+		ide_schedule(ide, .Command_Complete, IDE_COMMAND_LATENCY_TICKS)
 	case 0xC8, 0xC9:
 		// READ DMA / READ DMA WITHOUT RETRY
 		ide_begin_dma(ide, .Device_To_Memory)
@@ -610,11 +633,7 @@ ide_bmide_pending :: proc(ide: ^Ide) -> bool {
 }
 
 ide_irq_enabled :: proc(ide: ^Ide) -> bool {
-	return(
-		ide != nil &&
-		ide.channel_enabled &&
-		ide.reg_ctrl & 0x02 == 0 \
-	)
+	return ide != nil && ide.channel_enabled && ide.reg_ctrl & 0x02 == 0
 }
 
 @(private = "file")
@@ -629,11 +648,16 @@ ide_data_read :: proc(ide: ^Ide, size: u8) -> u32 {
 	if ide.buf_pos >= 512 {
 		ide.pending -= 1
 		ide.reg_seccount = u8(ide.pending)
-		if ide.pending > 0 && ide.cmd == 0x20 {
+		if ide.cmd == 0x20 || ide.cmd == 0xC4 {ide.pio_block_remaining -= 1}
+		if ide.pending > 0 && (ide.cmd == 0x20 || ide.cmd == 0xC4) {
 			ide.lba += 1
-			ide.state = .Idle
-			ide.reg_status = IDE_STATUS_BSY
-			ide_schedule(ide, .Read_Ready, IDE_PIO_SECTOR_TICKS)
+			if ide.pio_block_remaining > 0 {
+				if !ide_load_sector(ide) {return v}
+			} else {
+				ide.state = .Idle
+				ide.reg_status = IDE_STATUS_BSY
+				ide_schedule(ide, .Read_Ready, IDE_PIO_SECTOR_TICKS)
+			}
 		} else {
 			ide.state = .Idle
 			ide.reg_status = IDE_STATUS_DRDY
@@ -657,13 +681,21 @@ ide_data_write :: proc(ide: ^Ide, size: u8, val: u32) {
 		ide.pio_staged_bytes += IDE_SECTOR_SIZE
 		ide.pending -= 1
 		ide.reg_seccount = u8(ide.pending)
-		ide.state = .Idle
-		ide.reg_status = IDE_STATUS_BSY
+		ide.pio_block_remaining -= 1
 		if ide.pending > 0 {
 			ide.lba += 1
 			ide.buf_pos = 0
-			ide_schedule(ide, .Write_Ready, IDE_PIO_SECTOR_TICKS)
+			if ide.pio_block_remaining > 0 {
+				ide.state = .Data_Out
+				ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ
+			} else {
+				ide.state = .Idle
+				ide.reg_status = IDE_STATUS_BSY
+				ide_schedule(ide, .Write_Ready, IDE_PIO_SECTOR_TICKS)
+			}
 		} else {
+			ide.state = .Idle
+			ide.reg_status = IDE_STATUS_BSY
 			ide_schedule(ide, .Write_Commit, IDE_PIO_SECTOR_TICKS)
 		}
 	}
@@ -690,7 +722,7 @@ ide_fill_identify :: proc(ide: ^Ide) {
 	ide_put_word(&ide.buf, 1, cylinders)
 	ide_put_word(&ide.buf, 3, IDE_CHS_HEADS)
 	ide_put_word(&ide.buf, 6, IDE_CHS_SECTORS_PER_TRACK)
-	ide_put_word(&ide.buf, 47, 0x8000)
+	ide_put_word(&ide.buf, 47, 0x8000 | IDE_MULTIPLE_MAX_SECTORS)
 	ide_put_word(&ide.buf, 49, 0x0F00) // DMA, LBA, and IORDY supported
 	validity: u16 = 0x0006 // words 64-70 and 88 are valid
 	if cylinders != 0 {
@@ -703,6 +735,9 @@ ide_fill_identify :: proc(ide: ^Ide) {
 		ide_put_word(&ide.buf, 58, u16(chs_sectors >> 16))
 	}
 	ide_put_word(&ide.buf, 53, validity)
+	if ide.multiple_sector_count != 0 {
+		ide_put_word(&ide.buf, 59, 0x0100 | u16(ide.multiple_sector_count))
+	}
 	mwdma: u16 = 0x0007
 	if ide.transfer_mode & 0xF8 == 0x20 {
 		mwdma |= u16(1) << (8 + uint(ide.transfer_mode & 7))

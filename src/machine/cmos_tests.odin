@@ -118,6 +118,23 @@ test_cmos_nvram_rejects_wrong_size :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_cmos_seabios_primary_disk_uses_large_translation :: proc(t: ^testing.T) {
+	c: Cmos
+	cmos_init(&c, 64 * 1024 * 1024)
+	testing.expect_value(t, c.ram[CMOS_BIOS_DISK_TRANSLATION], u8(0x02))
+	testing.expect(t, cmos_checksum_valid(&c))
+
+	saved := cmos_nvram_export(&c)
+	saved[CMOS_BIOS_DISK_TRANSLATION] = 0xFD
+	restored: Cmos
+	cmos_init(&restored, 64 * 1024 * 1024)
+	testing.expect(t, cmos_nvram_import(&restored, saved[:], 64 * 1024 * 1024))
+	testing.expect(t, cmos_last_import_checksum_was_valid(&restored))
+	testing.expect_value(t, restored.ram[CMOS_BIOS_DISK_TRANSLATION], u8(0xFE))
+	testing.expect(t, cmos_checksum_valid(&restored))
+}
+
+@(test)
 test_cmos_calendar_leap_day_and_month_rollover :: proc(t: ^testing.T) {
 	c: Cmos
 	cmos_init(&c, 64 * 1024 * 1024)
