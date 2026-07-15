@@ -47,7 +47,7 @@ test_launcher_restores_gui_boot_only_for_managed_dos_seed :: proc(t: ^testing.T)
 	managed := launcher_text("INSTALAR.EXE", true)
 	testing.expect(t, strings.has_prefix(managed, LAUNCHER_MARKER))
 	testing.expect(t, contains(managed, "ECHO BootGUI=1>>C:\\MSDOS.SYS"))
-	testing.expect(t, contains(managed, "INSTALAR.EXE MSBATCH.INF"))
+	testing.expect(t, contains(managed, "INSTALAR.EXE MSBATCH.INF /C /IS /IQ /IM /IV"))
 	custom := launcher_text("SETUP.EXE", false)
 	testing.expect(t, !contains(custom, "BootGUI=1"))
 }
