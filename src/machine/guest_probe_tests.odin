@@ -12,14 +12,18 @@ import "core:time"
 // Bare-probe harness conventions selectively adapted from IzarraVM commit
 // d930de57acccbc6a70cda8cc5a603173bf23cd1c test fixtures.
 
-@(rodata) GUEST_PROBE_HLT_PIT_IRQ := #load("../../assets/probes/hlt_pit_irq.bin")
-@(rodata) GUEST_PROBE_REP_IRQ_PROGRESS := #load("../../assets/probes/rep_irq_progress.bin")
-@(rodata) GUEST_PROBE_PAGING_AD := #load("../../assets/probes/paging_ad.bin")
-@(rodata) GUEST_PROBE_VGA_CLEAR_PIT := #load("../../assets/probes/vga_clear_pit.bin")
+@(rodata)
+GUEST_PROBE_HLT_PIT_IRQ := #load("../../assets/probes/hlt_pit_irq.bin")
+@(rodata)
+GUEST_PROBE_REP_IRQ_PROGRESS := #load("../../assets/probes/rep_irq_progress.bin")
+@(rodata)
+GUEST_PROBE_PAGING_AD := #load("../../assets/probes/paging_ad.bin")
+@(rodata)
+GUEST_PROBE_VGA_CLEAR_PIT := #load("../../assets/probes/vga_clear_pit.bin")
 
 GUEST_PROBE_LOAD_ADDRESS :: 0x7C00
-GUEST_PROBE_STEP_NS       :: u64(2_000_000)
-GUEST_PROBE_MASTER_LIMIT  :: 30 * MASTER_CLOCK_HZ
+GUEST_PROBE_STEP_NS :: u64(2_000_000)
+GUEST_PROBE_MASTER_LIMIT :: 30 * MASTER_CLOCK_HZ
 
 Guest_Probe_Watchdog :: struct {
 	vm:   ^hv.Vm,
@@ -42,7 +46,10 @@ guest_probe_start_watchdog :: proc(watchdog: ^Guest_Probe_Watchdog) -> ^thread.T
 }
 
 @(private = "file")
-guest_probe_stop_watchdog :: proc(watchdog: ^Guest_Probe_Watchdog, watchdog_thread: ^thread.Thread) {
+guest_probe_stop_watchdog :: proc(
+	watchdog: ^Guest_Probe_Watchdog,
+	watchdog_thread: ^thread.Thread,
+) {
 	sync.lock(&watchdog.mu)
 	watchdog.stop = true
 	sync.unlock(&watchdog.mu)
@@ -54,6 +61,10 @@ guest_probe_prepare :: proc(t: ^testing.T, m: ^Machine, image: []u8) -> bool {
 	if !testing.expect(t, len(image) > 0) {return false}
 	if !testing.expect(t, GUEST_PROBE_LOAD_ADDRESS + len(image) <= 64 * 1024 * 1024) {return false}
 	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return false}
+	// Bare probes skip firmware, so establish the PCI VGA decode state that
+	// SeaBIOS normally programs before invoking a VGA option ROM.
+	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_1004)
+	bus_io_write(&m.bus, 0xCFC, 2, 0x0007)
 	machine_enable_test_device(m)
 	copy(m.vm.ram[GUEST_PROBE_LOAD_ADDRESS:], image)
 	hv.set_realmode_entry(&m.vm, 0, GUEST_PROBE_LOAD_ADDRESS)
@@ -62,7 +73,9 @@ guest_probe_prepare :: proc(t: ^testing.T, m: ^Machine, image: []u8) -> bool {
 
 @(private = "file")
 guest_probe_run :: proc(m: ^Machine, wall_limit: time.Duration) -> bool {
-	watchdog := Guest_Probe_Watchdog{vm = &m.vm}
+	watchdog := Guest_Probe_Watchdog {
+		vm = &m.vm,
+	}
 	watchdog_thread := guest_probe_start_watchdog(&watchdog)
 	defer guest_probe_stop_watchdog(&watchdog, watchdog_thread)
 
@@ -113,10 +126,12 @@ guest_probe_u16 :: proc(memory: []u8, address: int) -> u16 {
 
 @(private = "file")
 guest_probe_u32 :: proc(memory: []u8, address: int) -> u32 {
-	return u32(memory[address]) |
-	       u32(memory[address + 1]) << 8 |
-	       u32(memory[address + 2]) << 16 |
-	       u32(memory[address + 3]) << 24
+	return(
+		u32(memory[address]) |
+		u32(memory[address + 1]) << 8 |
+		u32(memory[address + 2]) << 16 |
+		u32(memory[address + 3]) << 24 \
+	)
 }
 
 @(private = "file")

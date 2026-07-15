@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-only
+#ifndef __RETVRN99_AMD750_H
+#define __RETVRN99_AMD750_H
+
+#define RETVRN99_AMD756_ISA_DEVICE 7
+#define RETVRN99_AMD756_ISA_DEVFUNC (RETVRN99_AMD756_ISA_DEVICE << 3)
+#define RETVRN99_AMD756_ISA_BDF RETVRN99_AMD756_ISA_DEVFUNC
+#define RETVRN99_AMD756_ROM_DECODE_CONTROL 0x43
+#define RETVRN99_AMD756_HIGH_BIOS_128K_DECODE 0x80
+
+#define RETVRN99_GSW_VGA_DEVICE 2
+#define RETVRN99_AMD750_PIRQ_INDEX(device, pin) \
+    (((pin) - 1 + (device) - 1) & 3)
+#define RETVRN99_AMD750_PIRQ_LINK(device, pin) \
+    (RETVRN99_AMD750_PIRQ_INDEX(device, pin) + 1)
+#define RETVRN99_AMD750_PIRQ_IRQ(device, pin) \
+    ((RETVRN99_AMD750_PIRQ_INDEX(device, pin) & 1) ? 11 : 10)
+#define RETVRN99_AMD750_PIRQ_BITMAP(device, pin) \
+    (1 << RETVRN99_AMD750_PIRQ_IRQ(device, pin))
+#define RETVRN99_AMD750_PIRQ_EXCLUSIVE_BITMAP \
+    ((1 << 10) | (1 << 11))
+
+#endif
