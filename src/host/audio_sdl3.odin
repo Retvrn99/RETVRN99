@@ -9,11 +9,12 @@ import sdl3 "vendor:sdl3"
 HOST_AUDIO_CALLBACK_FRAMES :: 1024
 
 Host_Audio :: struct {
-	stream:            ^sdl3.AudioStream,
-	consumer:          audio.Audio_Consumer,
-	callback_frames:   [HOST_AUDIO_CALLBACK_FRAMES]audio.Audio_Frame,
-	last_callback_ns:  u64,
-	last_frame_count:  int,
+	stream:           ^sdl3.AudioStream,
+	consumer:         audio.Audio_Consumer,
+	callback_frames:  [HOST_AUDIO_CALLBACK_FRAMES]audio.Audio_Frame,
+	last_callback_ns: u64,
+	last_frame_count: int,
+	gain:             f32,
 }
 
 host_audio_open :: proc(host: ^Host_Audio, output: ^audio.Audio_Output) -> bool {
@@ -52,6 +53,12 @@ host_audio_active :: proc(host: ^Host_Audio) -> bool {
 	return host != nil && host.stream != nil
 }
 
+host_audio_set_gain :: proc(host: ^Host_Audio, gain: f32) -> bool {
+	if host == nil {return false}
+	host.gain = clamp(gain, 0, 1)
+	return host.stream == nil || sdl3.SetAudioStreamGain(host.stream, host.gain)
+}
+
 host_audio_callback :: proc "c" (
 	userdata: rawptr,
 	stream: ^sdl3.AudioStream,
@@ -66,21 +73,22 @@ host_audio_callback :: proc "c" (
 		expected := u64(host.last_frame_count) * 1_000_000_000 / audio.AUDIO_OUTPUT_HZ
 		elapsed := now - min(now, host.last_callback_ns)
 		if elapsed > expected {
-			audio.audio_output_record_callback_lateness(
-				host.consumer.output,
-				elapsed - expected,
-			)
+			audio.audio_output_record_callback_lateness(host.consumer.output, elapsed - expected)
 		}
 	}
-	remaining := (int(additional_amount) + size_of(audio.Audio_Frame) - 1) /
-	             size_of(audio.Audio_Frame)
+	remaining :=
+		(int(additional_amount) + size_of(audio.Audio_Frame) - 1) / size_of(audio.Audio_Frame)
 	host.last_callback_ns = now
 	host.last_frame_count = remaining
 	for remaining > 0 {
 		count := min(remaining, len(host.callback_frames))
 		frames := host.callback_frames[:count]
 		audio.audio_consumer_read(&host.consumer, frames)
-		if !sdl3.PutAudioStreamData(stream, raw_data(frames), c.int(len(frames) * size_of(audio.Audio_Frame))) {
+		if !sdl3.PutAudioStreamData(
+			stream,
+			raw_data(frames),
+			c.int(len(frames) * size_of(audio.Audio_Frame)),
+		) {
 			return
 		}
 		remaining -= count

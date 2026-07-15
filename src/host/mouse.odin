@@ -9,7 +9,19 @@ MOUSE_MIDDLE :: u8(1 << 2)
 
 mouse_inside_guest :: proc(h: ^Host, x, y: f32) -> bool {
 	if h == nil || !h.has_frame {return false}
-	r := guest_view_rect(h.aspect_width, h.aspect_height)
+	output_width, output_height := WIN_W, WIN_H
+	w, hh: i32
+	if h.ren != nil && sdl3.GetRenderOutputSize(h.ren, &w, &hh) {
+		output_width = int(w)
+		output_height = int(hh)
+	}
+	r := guest_view_rect(
+		h.aspect_width,
+		h.aspect_height,
+		output_width,
+		output_height,
+		f32(MENU_BAR_H) * h.menu_reveal,
+	)
 	return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
 
