@@ -515,6 +515,131 @@ reconcile_test_entry_offset :: proc(bytes: []u8, short: [11]u8) -> int {
 }
 
 @(test)
+reconcile_test_planned_detach_prepares_before_exact_commit :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	command := reconcile_test_child_named(v.alloc.root, "COMMAND.COM")
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	edit := reconcile_test_child_named(dos, "EDIT.HLP")
+	if !testing.expect(t, command != nil && dos != nil && edit != nil) {return}
+	command_chain := volume_chain(v, command.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(command_chain) == 1) {return}
+	old_edit := edit.first_cluster
+	new_edit := v.alloc.next_free
+	reconcile_test_stage_fat_set(t, v, new_edit, 0x0FFF_FFFF)
+	reconcile_test_stage_fat_set(t, v, command_chain[0], old_edit)
+	if v.frozen {return}
+	v.journal.claimed[new_edit] = Claim{edit, 0}
+	planned := make(map[^Node]Reconcile_Planned_Chain, context.temp_allocator)
+	edit_key := Mirror_Key{dos.first_cluster, edit.short}
+	planned_chain := [1]u32{new_edit}
+	old_clusters := make(map[u32]bool, context.temp_allocator)
+	new_clusters := make(map[u32]bool, context.temp_allocator)
+	old_clusters[old_edit] = true
+	new_clusters[new_edit] = true
+	planned[edit] = Reconcile_Planned_Chain {
+		key          = edit_key,
+		chain        = planned_chain[:],
+		old_clusters = old_clusters,
+		new_clusters = new_clusters,
+	}
+	incoming := [2]u32{command_chain[0], old_edit}
+
+	preflight, valid := reconcile_file_chain_owners_preflight(
+		v,
+		command,
+		command.name,
+		incoming[:],
+		planned,
+		context.temp_allocator,
+	)
+	testing.expect(t, valid)
+	if !valid {return}
+	testing.expect_value(t, len(preflight.planned_detaches), 1)
+	testing.expect(t, v.alloc.by_cluster[old_edit] == edit)
+	testing.expect(t, reconcile_ownership_preflight_prepare(v, &preflight))
+	testing.expect(t, !v.journal.snapshotted[edit])
+	testing.expect(t, v.alloc.by_cluster[old_edit] == edit)
+	testing.expect(t, overlay_has(v, u32(journal_test_data_lba(v, old_edit) - PART_START_LBA)))
+	testing.expect(t, !overlay_has(v, u32(journal_test_data_lba(v, new_edit) - PART_START_LBA)))
+	new_claim, new_claimed := v.journal.claimed[new_edit]
+	testing.expect(t, new_claimed)
+	if new_claimed {testing.expect(t, new_claim.node == edit)}
+
+	testing.expect(t, reconcile_planned_detaches_apply(v, preflight.planned_detaches[:]))
+	testing.expect(t, v.alloc.by_cluster[old_edit] == nil)
+	new_claim, new_claimed = v.journal.claimed[new_edit]
+	testing.expect(t, new_claimed)
+	if new_claimed {testing.expect(t, new_claim.node == edit)}
+}
+
+@(test)
+reconcile_test_snapshot_preserves_guest_visible_orphan_tail :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	edit := reconcile_test_child_named(dos, "EDIT.HLP")
+	if !testing.expect(t, edit != nil) {return}
+	sector: [SECTOR]u8
+	for &byte, index in sector {byte = u8(index * 19 + 7)}
+	lba := journal_test_data_lba(v, edit.first_cluster)
+	testing.expect(t, volume_write(v, lba, sector[:]))
+	testing.expect(t, orphan_has(v, edit.first_cluster))
+	testing.expect(t, reconcile_snapshot_base_file(v, edit))
+	testing.expect(t, v.journal.snapshotted[edit])
+
+	got: [SECTOR]u8
+	testing.expect(t, volume_read(v, lba, got[:]))
+	testing.expect(t, got == sector)
+	testing.expect(t, overlay_has(v, u32(lba - PART_START_LBA)))
+}
+
+@(test)
+reconcile_test_snapshot_batches_contiguous_backing_reads :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	io := reconcile_test_child_named(v.alloc.root, "IO.SYS")
+	if !testing.expect(t, io != nil) {return}
+	chain := volume_chain(v, io.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(chain) == 2 && chain[1] == chain[0] + 1) {return}
+	staged: [SECTOR]u8
+	for &byte, index in staged {byte = u8(index * 31 + 9)}
+	for cluster in chain {
+		first_lba := journal_test_data_lba(v, cluster)
+		for sector in 0 ..< SECTORS_PER_CLUSTER {
+			if sector % 2 == 0 {
+				testing.expect(t, volume_stage_write(v, first_lba + u64(sector), staged[:]))
+			}
+		}
+	}
+	before := v.backing_read_opens
+
+	testing.expect(t, reconcile_snapshot_base_file(v, io))
+	testing.expect_value(t, v.backing_read_opens - before, u64(1))
+	for cluster in chain {
+		first_rel := v.alloc.geo.data_start + (cluster - 2) * SECTORS_PER_CLUSTER
+		for sector in u32(0) ..< SECTORS_PER_CLUSTER {
+			testing.expect(t, overlay_has(v, first_rel + sector))
+		}
+	}
+	got: [SECTOR]u8
+	testing.expect(t, volume_read(v, journal_test_data_lba(v, chain[0]), got[:]))
+	testing.expect(t, got == staged)
+}
+
+@(test)
 reconcile_test_snapshot_short_read_freezes_without_losing_original :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir, v := decode_test_open(t)
@@ -1621,6 +1746,442 @@ reconcile_test_same_sector_reclaims_detached_synthesized_tail :: proc(t: ^testin
 	testing.expect(t, v.alloc.by_cluster[reused_tail] == nil)
 	testing.expect(t, v.alloc.by_cluster[io.first_cluster] == io)
 	testing.expect(t, managed_node_attached(v.alloc.root, io))
+}
+
+@(test)
+reconcile_test_earlier_file_adopts_old_head_after_later_owner_moves :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	closed := false
+	defer if !closed {volume_discard(v)}
+
+	command := reconcile_test_child_named(v.alloc.root, "COMMAND.COM")
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	edit := reconcile_test_child_named(dos, "EDIT.HLP")
+	if !testing.expect(t, command != nil && dos != nil && edit != nil) {return}
+	command_node := command
+	edit_node := edit
+	command_chain := volume_chain(v, command.first_cluster, context.temp_allocator)
+	edit_chain := volume_chain(v, edit.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(command_chain) == 1 && len(edit_chain) == 1) {return}
+	old_command := command.first_cluster
+	old_edit := edit.first_cluster
+	new_edit := v.alloc.next_free
+	command_key := Mirror_Key{v.alloc.root.first_cluster, command.short}
+	edit_key := Mirror_Key{dos.first_cluster, edit.short}
+
+	reconcile_test_stage_fat_set(t, v, new_edit, 0x0FFF_FFFF)
+	reconcile_test_stage_fat_set(t, v, old_command, old_edit)
+	if v.frozen {return}
+	tail: [CLUSTER_BYTES]u8
+	for &byte, index in tail {byte = u8(index * 23 + 5)}
+	replacement: [CLUSTER_BYTES]u8
+	for &byte, index in replacement {byte = u8(index * 29 + 11)}
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, old_edit), tail[:]))
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, new_edit), replacement[:]))
+
+	new_command_size := u32(CLUSTER_BYTES + 100)
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	command_offset := reconcile_test_entry_offset(root_sector[:], command.short)
+	if !testing.expect(t, command_offset >= 0) {return}
+	decode_test_put_entry(
+		root_sector[:],
+		command_offset,
+		"COMMAND COM",
+		ATTR_FILE,
+		old_command,
+		new_command_size,
+	)
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	dos_lba := journal_test_data_lba(v, dos.first_cluster)
+	dos_sector := read_test_sector(t, v, dos_lba)
+	edit_offset := reconcile_test_entry_offset(dos_sector[:], edit.short)
+	if !testing.expect(t, edit_offset >= 0) {return}
+	decode_test_put_entry(
+		dos_sector[:],
+		edit_offset,
+		"EDIT    HLP",
+		ATTR_FILE,
+		new_edit,
+		u32(edit.size),
+	)
+	testing.expect(t, volume_stage_write(v, dos_lba, dos_sector[:]))
+	testing.expect_value(t, edit.first_cluster, old_edit)
+	if v.frozen {return}
+
+	testing.expect(t, volume_reconcile(v))
+	testing.expect(t, !v.frozen)
+	testing.expect(t, command == command_node && edit == edit_node)
+	testing.expect_value(t, command.first_cluster, old_command)
+	testing.expect_value(t, command.size, u64(new_command_size))
+	testing.expect_value(t, edit.first_cluster, new_edit)
+	command_chain = volume_chain(v, command.first_cluster, context.temp_allocator)
+	edit_chain = volume_chain(v, edit.first_cluster, context.temp_allocator)
+	if testing.expect(t, len(command_chain) == 2) {
+		testing.expect_value(t, command_chain[1], old_edit)
+	}
+	testing.expect(t, len(edit_chain) == 1)
+	command_claim, command_claimed := v.journal.claimed[old_edit]
+	edit_claim, edit_claimed := v.journal.claimed[new_edit]
+	testing.expect(t, command_claimed && edit_claimed)
+	if command_claimed {testing.expect(t, command_claim.node == command)}
+	if edit_claimed {testing.expect(t, edit_claim.node == edit)}
+	testing.expect(t, v.alloc.by_cluster[old_edit] == nil)
+	testing.expect(t, v.alloc.by_cluster[new_edit] == nil)
+	command_mirror, command_mirrored := v.journal.mirrored[command_key]
+	edit_mirror, edit_mirrored := v.journal.mirrored[edit_key]
+	testing.expect(t, command_mirrored && edit_mirrored)
+	if command_mirrored {
+		testing.expect(t, command_mirror.base_node == command_node)
+		testing.expect_value(t, command_mirror.size, new_command_size)
+	}
+	if edit_mirrored {
+		testing.expect(t, edit_mirror.base_node == edit_node)
+		testing.expect_value(t, edit_mirror.first_cluster, new_edit)
+	}
+
+	command_host, command_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	edit_host, edit_error := os.read_entire_file(edit.host_path, context.temp_allocator)
+	testing.expect(t, command_error == nil && edit_error == nil)
+	if command_error == nil && testing.expect_value(t, len(command_host), int(new_command_size)) {
+		testing.expect(t, string(command_host[CLUSTER_BYTES:]) == string(tail[:100]))
+	}
+	if edit_error == nil && testing.expect_value(t, len(edit_host), int(edit.size)) {
+		testing.expect(t, string(edit_host) == string(replacement[:len(edit_host)]))
+	}
+	before_retry := volume_journal_storage_stats(v)
+	testing.expect(t, volume_reconcile(v))
+	after_retry := volume_journal_storage_stats(v)
+	testing.expect_value(t, after_retry.streamed_guest_files, before_retry.streamed_guest_files)
+	testing.expect_value(t, after_retry.streamed_guest_bytes, before_retry.streamed_guest_bytes)
+	testing.expect_value(t, after_retry.dirty_sectors, u32(0))
+
+	if !volume_close(v) {
+		testing.expect(t, false)
+		return
+	}
+	closed = true
+	v2 := volume_open(dir, 2048)
+	if !testing.expect(t, v2 != nil) {return}
+	defer volume_discard(v2)
+	reopened_command := reconcile_test_child_named(v2.alloc.root, "COMMAND.COM")
+	reopened_dos := reconcile_test_child_named(v2.alloc.root, "DOS")
+	reopened_edit := reconcile_test_child_named(reopened_dos, "EDIT.HLP")
+	if !testing.expect(t, reopened_command != nil && reopened_edit != nil) {return}
+	testing.expect_value(t, reopened_command.size, u64(new_command_size))
+	testing.expect_value(t, reopened_edit.size, u64(100))
+	testing.expect(t, len(volume_chain(v2, reopened_command.first_cluster, context.temp_allocator)) == 2)
+	testing.expect(t, len(volume_chain(v2, reopened_edit.first_cluster, context.temp_allocator)) == 1)
+}
+
+@(test)
+reconcile_test_later_file_adopts_old_head_after_earlier_owner_moves :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	command := reconcile_test_child_named(v.alloc.root, "COMMAND.COM")
+	io := reconcile_test_child_named(v.alloc.root, "IO.SYS")
+	if !testing.expect(t, command != nil && io != nil) {return}
+	command_contents, command_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	if !testing.expect(t, command_error == nil) {return}
+	old_command := command.first_cluster
+	new_command := v.alloc.next_free
+	reconcile_test_stage_fat_set(t, v, new_command, 0x0FFF_FFFF)
+	if v.frozen {return}
+	new_block: [CLUSTER_BYTES]u8
+	copy(new_block[:], command_contents)
+	testing.expect(t, volume_stage_write(v, journal_test_data_lba(v, new_command), new_block[:]))
+
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	command_offset := reconcile_test_entry_offset(root_sector[:], command.short)
+	io_offset := reconcile_test_entry_offset(root_sector[:], io.short)
+	if !testing.expect(t, command_offset >= 0 && io_offset > command_offset) {return}
+	decode_test_put_entry(
+		root_sector[:],
+		command_offset,
+		"COMMAND COM",
+		ATTR_FILE,
+		new_command,
+		u32(len(command_contents)),
+	)
+	decode_test_put_entry(
+		root_sector[:],
+		io_offset,
+		"IO      SYS",
+		ATTR_FILE,
+		old_command,
+		u32(len(command_contents)),
+	)
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	if v.frozen {return}
+
+	testing.expect(t, volume_reconcile(v))
+	testing.expect(t, !v.frozen)
+	testing.expect_value(t, command.first_cluster, new_command)
+	testing.expect_value(t, io.first_cluster, old_command)
+	testing.expect(t, v.journal.snapshotted[command])
+	command_host, command_host_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	io_host, io_host_error := os.read_entire_file(io.host_path, context.temp_allocator)
+	testing.expect(t, command_host_error == nil && io_host_error == nil)
+	if command_host_error == nil {
+		testing.expect(t, string(command_host) == string(command_contents))
+	}
+	if io_host_error == nil {
+		testing.expect(t, string(io_host) == string(command_contents))
+	}
+	before_retry := volume_journal_storage_stats(v)
+	testing.expect(t, volume_reconcile(v))
+	after_retry := volume_journal_storage_stats(v)
+	testing.expect_value(t, after_retry.streamed_guest_files, before_retry.streamed_guest_files)
+	testing.expect_value(t, after_retry.streamed_guest_bytes, before_retry.streamed_guest_bytes)
+}
+
+@(test)
+reconcile_test_invalid_planned_destination_blocks_earlier_handoff :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	command := reconcile_test_child_named(v.alloc.root, "COMMAND.COM")
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	edit := reconcile_test_child_named(dos, "EDIT.HLP")
+	io := reconcile_test_child_named(v.alloc.root, "IO.SYS")
+	if !testing.expect(t, command != nil && dos != nil && edit != nil && io != nil) {return}
+	command_contents, command_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	edit_contents, edit_error := os.read_entire_file(edit.host_path, context.temp_allocator)
+	io_contents, io_error := os.read_entire_file(io.host_path, context.temp_allocator)
+	if !testing.expect(t, command_error == nil && edit_error == nil && io_error == nil) {return}
+	old_command := command.first_cluster
+	old_edit := edit.first_cluster
+	new_edit := v.alloc.next_free
+
+	reconcile_test_stage_fat_set(t, v, new_edit, io.first_cluster)
+	reconcile_test_stage_fat_set(t, v, old_command, old_edit)
+	if v.frozen {return}
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	command_offset := reconcile_test_entry_offset(root_sector[:], command.short)
+	if !testing.expect(t, command_offset >= 0) {return}
+	decode_test_put_entry(
+		root_sector[:],
+		command_offset,
+		"COMMAND COM",
+		ATTR_FILE,
+		old_command,
+		u32(CLUSTER_BYTES + 100),
+	)
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	dos_lba := journal_test_data_lba(v, dos.first_cluster)
+	dos_sector := read_test_sector(t, v, dos_lba)
+	edit_offset := reconcile_test_entry_offset(dos_sector[:], edit.short)
+	if !testing.expect(t, edit_offset >= 0) {return}
+	decode_test_put_entry(
+		dos_sector[:],
+		edit_offset,
+		"EDIT    HLP",
+		ATTR_FILE,
+		new_edit,
+		u32(edit.size),
+	)
+	testing.expect(t, volume_stage_write(v, dos_lba, dos_sector[:]))
+	if v.frozen {return}
+
+	testing.expect(t, !volume_reconcile(v))
+	testing.expect(t, v.frozen)
+	got_command, got_command_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	got_edit, got_edit_error := os.read_entire_file(edit.host_path, context.temp_allocator)
+	got_io, got_io_error := os.read_entire_file(io.host_path, context.temp_allocator)
+	testing.expect(t, got_command_error == nil && got_edit_error == nil && got_io_error == nil)
+	if got_command_error == nil {testing.expect(t, string(got_command) == string(command_contents))}
+	if got_edit_error == nil {testing.expect(t, string(got_edit) == string(edit_contents))}
+	if got_io_error == nil {testing.expect(t, string(got_io) == string(io_contents))}
+	testing.expect_value(t, command.first_cluster, old_command)
+	testing.expect_value(t, edit.first_cluster, old_edit)
+	testing.expect(t, v.alloc.by_cluster[old_edit] == edit)
+}
+
+@(private = "file")
+reconcile_test_shared_live_tail_case :: proc(t: ^testing.T, oversized: bool) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	command := reconcile_test_child_named(v.alloc.root, "COMMAND.COM")
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	edit := reconcile_test_child_named(dos, "EDIT.HLP")
+	io := reconcile_test_child_named(v.alloc.root, "IO.SYS")
+	if !testing.expect(t, command != nil && dos != nil && edit != nil && io != nil) {return}
+	command_contents, command_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	edit_contents, edit_error := os.read_entire_file(edit.host_path, context.temp_allocator)
+	io_contents, io_error := os.read_entire_file(io.host_path, context.temp_allocator)
+	if !testing.expect(t, command_error == nil && edit_error == nil && io_error == nil) {return}
+	old_command := command.first_cluster
+	old_edit := edit.first_cluster
+	new_edit := v.alloc.next_free
+	shared_tail := new_edit + 1
+	io_chain := volume_chain(v, io.first_cluster, context.temp_allocator)
+	if !testing.expect(t, len(io_chain) == 2) {return}
+
+	reconcile_test_stage_fat_set(t, v, new_edit, shared_tail)
+	reconcile_test_stage_fat_set(t, v, io_chain[len(io_chain) - 1], shared_tail)
+	reconcile_test_stage_fat_set(t, v, shared_tail, 0x0FFF_FFFF)
+	reconcile_test_stage_fat_set(t, v, old_command, old_edit)
+	if v.frozen {return}
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	command_offset := reconcile_test_entry_offset(root_sector[:], command.short)
+	if !testing.expect(t, command_offset >= 0) {return}
+	decode_test_put_entry(
+		root_sector[:],
+		command_offset,
+		"COMMAND COM",
+		ATTR_FILE,
+		old_command,
+		u32(CLUSTER_BYTES + 100),
+	)
+	if oversized {
+		io_offset := reconcile_test_entry_offset(root_sector[:], io.short)
+		if !testing.expect(t, io_offset >= 0) {return}
+		decode_test_put_entry(
+			root_sector[:],
+			io_offset,
+			"IO      SYS",
+			ATTR_FILE,
+			io.first_cluster,
+			u32((len(io_chain) + 2) * CLUSTER_BYTES),
+		)
+	}
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	dos_lba := journal_test_data_lba(v, dos.first_cluster)
+	dos_sector := read_test_sector(t, v, dos_lba)
+	edit_offset := reconcile_test_entry_offset(dos_sector[:], edit.short)
+	if !testing.expect(t, edit_offset >= 0) {return}
+	decode_test_put_entry(
+		dos_sector[:],
+		edit_offset,
+		"EDIT    HLP",
+		ATTR_FILE,
+		new_edit,
+		u32(edit.size),
+	)
+	testing.expect(t, volume_stage_write(v, dos_lba, dos_sector[:]))
+	if v.frozen {return}
+
+	testing.expect(t, !volume_reconcile(v))
+	testing.expect(t, v.frozen)
+	got_command, got_command_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	got_edit, got_edit_error := os.read_entire_file(edit.host_path, context.temp_allocator)
+	got_io, got_io_error := os.read_entire_file(io.host_path, context.temp_allocator)
+	testing.expect(t, got_command_error == nil && got_edit_error == nil && got_io_error == nil)
+	if got_command_error == nil {testing.expect(t, string(got_command) == string(command_contents))}
+	if got_edit_error == nil {testing.expect(t, string(got_edit) == string(edit_contents))}
+	if got_io_error == nil {testing.expect(t, string(got_io) == string(io_contents))}
+	testing.expect_value(t, command.first_cluster, old_command)
+	testing.expect_value(t, edit.first_cluster, old_edit)
+	testing.expect(t, v.alloc.by_cluster[old_edit] == edit)
+}
+
+@(test)
+reconcile_test_shared_live_tail_blocks_earlier_handoff :: proc(t: ^testing.T) {
+	reconcile_test_shared_live_tail_case(t, false)
+}
+
+@(test)
+reconcile_test_shared_oversized_tail_blocks_earlier_handoff :: proc(t: ^testing.T) {
+	reconcile_test_shared_live_tail_case(t, true)
+}
+
+@(test)
+reconcile_test_moved_live_owner_still_blocks_shared_old_head :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir, v := decode_test_open(t)
+	defer os.remove_all(dir)
+	if v == nil {return}
+	defer volume_discard(v)
+
+	command := reconcile_test_child_named(v.alloc.root, "COMMAND.COM")
+	dos := reconcile_test_child_named(v.alloc.root, "DOS")
+	edit := reconcile_test_child_named(dos, "EDIT.HLP")
+	if !testing.expect(t, command != nil && dos != nil && edit != nil) {return}
+	command_host, command_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	edit_host, edit_error := os.read_entire_file(edit.host_path, context.temp_allocator)
+	if !testing.expect(t, command_error == nil && edit_error == nil) {return}
+	old_command := command.first_cluster
+	old_command_size := command.size
+	old_edit := edit.first_cluster
+	old_edit_size := edit.size
+	new_edit := v.alloc.next_free
+	command_key := Mirror_Key{v.alloc.root.first_cluster, command.short}
+	edit_key := Mirror_Key{dos.first_cluster, edit.short}
+	command_mirror := v.journal.mirrored[command_key]
+	edit_mirror := v.journal.mirrored[edit_key]
+
+	reconcile_test_stage_fat_set(t, v, new_edit, old_edit)
+	reconcile_test_stage_fat_set(t, v, old_command, old_edit)
+	if v.frozen {return}
+	root_lba := journal_test_data_lba(v, v.alloc.root.first_cluster)
+	root_sector := read_test_sector(t, v, root_lba)
+	command_offset := reconcile_test_entry_offset(root_sector[:], command.short)
+	if !testing.expect(t, command_offset >= 0) {return}
+	decode_test_put_entry(
+		root_sector[:],
+		command_offset,
+		"COMMAND COM",
+		ATTR_FILE,
+		old_command,
+		u32(CLUSTER_BYTES + 100),
+	)
+	testing.expect(t, volume_stage_write(v, root_lba, root_sector[:]))
+	dos_lba := journal_test_data_lba(v, dos.first_cluster)
+	dos_sector := read_test_sector(t, v, dos_lba)
+	edit_offset := reconcile_test_entry_offset(dos_sector[:], edit.short)
+	if !testing.expect(t, edit_offset >= 0) {return}
+	decode_test_put_entry(
+		dos_sector[:],
+		edit_offset,
+		"EDIT    HLP",
+		ATTR_FILE,
+		new_edit,
+		u32(edit.size),
+	)
+	testing.expect(t, volume_stage_write(v, dos_lba, dos_sector[:]))
+	if v.frozen {return}
+
+	testing.expect(t, !volume_reconcile(v))
+	testing.expect(t, v.frozen)
+	got_command, got_command_error := os.read_entire_file(command.host_path, context.temp_allocator)
+	got_edit, got_edit_error := os.read_entire_file(edit.host_path, context.temp_allocator)
+	testing.expect(t, got_command_error == nil && got_edit_error == nil)
+	if got_command_error == nil {testing.expect(t, string(got_command) == string(command_host))}
+	if got_edit_error == nil {testing.expect(t, string(got_edit) == string(edit_host))}
+	testing.expect_value(t, command.first_cluster, old_command)
+	testing.expect_value(t, command.size, old_command_size)
+	testing.expect_value(t, edit.first_cluster, old_edit)
+	testing.expect_value(t, edit.size, old_edit_size)
+	testing.expect(t, v.alloc.by_cluster[old_edit] == edit)
+	if claim, claimed := v.journal.claimed[old_edit]; claimed {
+		testing.expect(t, claim.node == edit)
+	}
+	current_command_mirror := v.journal.mirrored[command_key]
+	current_edit_mirror := v.journal.mirrored[edit_key]
+	testing.expect_value(t, current_command_mirror.first_cluster, command_mirror.first_cluster)
+	testing.expect_value(t, current_command_mirror.size, command_mirror.size)
+	testing.expect(t, current_command_mirror.base_node == command_mirror.base_node)
+	testing.expect_value(t, current_edit_mirror.first_cluster, edit_mirror.first_cluster)
+	testing.expect_value(t, current_edit_mirror.size, edit_mirror.size)
+	testing.expect(t, current_edit_mirror.base_node == edit_mirror.base_node)
+	testing.expect(t, volume_journal_storage_stats(v).dirty_sectors > 0)
 }
 
 @(test)
