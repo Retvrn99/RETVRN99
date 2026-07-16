@@ -404,7 +404,10 @@ whpx_io_try_stream :: proc(
 	user: bool,
 	limit: u64,
 	cache: ^Whpx_IO_Translation_Cache,
-) -> (completed: u64, handled, ok: bool) {
+) -> (
+	completed: u64,
+	handled, ok: bool,
+) {
 	if limit == 0 ||
 	   is_write && vm.io_stream_write == nil ||
 	   !is_write && vm.io_stream_read == nil {return 0, false, true}
@@ -453,10 +456,19 @@ whpx_emulate_io :: proc(
 	bool,
 	string,
 ) {
+	vm.io_origin = {}
 	size := u8(io.AccessInfo >> 1 & 0x7)
 	if size != 1 && size != 2 && size != 4 {
 		return false, fmt.tprintf("invalid I/O access size %d at port 0x%04x", size, io.PortNumber)
 	}
+	vm.io_origin = {
+		valid          = true,
+		protected_mode = vp.ExecutionState & (u16(1) << 2) != 0,
+		cpl            = u8(vp.ExecutionState & 3),
+		cs             = vp.Cs.Selector,
+		linear         = (vp.Cs.Base + vp.Rip) & 0xFFFF_FFFF,
+	}
+	defer vm.io_origin = {}
 	is_write := io.AccessInfo & 0x1 != 0
 	is_string := io.AccessInfo & 0x10 != 0
 	has_rep := io.AccessInfo & 0x20 != 0
@@ -529,7 +541,10 @@ whpx_emulate_io :: proc(
 			if handled {
 				if !stream_ok {
 					_ = whpx_io_commit(vm, rax, rcx, rsi, rdi, vp.Rip)
-					return false, fmt.tprintf("streaming string I/O rejected at port 0x%04x", io.PortNumber)
+					return false, fmt.tprintf(
+						"streaming string I/O rejected at port 0x%04x",
+						io.PortNumber,
+					)
 				}
 				index = whpx_io_low(index + streamed * u64(size), address_bits)
 				if is_write {rsi = whpx_io_replace_low(rsi, index, address_bits)} else {rdi = whpx_io_replace_low(rdi, index, address_bits)}
@@ -538,7 +553,10 @@ whpx_emulate_io :: proc(
 					rcx = whpx_io_replace_low(rcx, remaining, address_bits)
 				}
 				completed += streamed
-				iteration_limit = min(iteration_limit, whpx_io_iteration_budget(vm, initial_remaining))
+				iteration_limit = min(
+					iteration_limit,
+					whpx_io_iteration_budget(vm, initial_remaining),
+				)
 				continue
 			}
 		}

@@ -12,14 +12,12 @@ import "acceptance"
 import "core:fmt"
 import "core:log"
 import "core:os"
-import "core:path/filepath"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
-import "disk"
-import "fat32"
+import "fat32session"
 import "host"
 import "hv"
 import "machine"
@@ -27,10 +25,8 @@ import "profile"
 import sdl3 "vendor:sdl3"
 import "vga"
 import "vmconfig"
-import "win98prep"
 
 RAM_SIZE :: vmconfig.GSW_RAM_BYTES
-VOLUME_MB :: 2048
 SNAP_PERIOD :: 8 * time.Millisecond
 MAX_LOG_LINES :: 2000
 HOST_SDL_EVENTS_PER_FRAME :: 512
@@ -46,59 +42,75 @@ Command_Kind :: enum {
 	Mount_Cdrom,
 	Eject_Cdrom,
 	Install_Windows_98,
-	Finish_Windows_98_Installation,
+	Abandon_Windows_98_Installation,
 	Set_Cpu_Mode,
 	Set_Pause,
 	Set_Volume,
 }
 
 Command :: struct {
-	kind:         Command_Kind,
-	path:         string, // Mount_Floppy; owned by the VM thread once queued
-	cpu_mode:     vmconfig.Cpu_Mode, // Set_Cpu_Mode: absolute selection
-	pause_reason: host.Pause_Reason,
-	pause_active: bool,
-	volume_gain:  f32,
+	kind:            Command_Kind,
+	path:            string, // Mount_Floppy; owned by the VM thread once queued
+	boot_path:       string, // Install_Windows_98: optional FAT12 boot seed
+	locale_language: string, // Install_Windows_98: owned host locale language
+	locale_country:  string, // Install_Windows_98: owned host locale country
+	cpu_mode:        vmconfig.Cpu_Mode, // Set_Cpu_Mode: absolute selection
+	pause_reason:    host.Pause_Reason,
+	pause_active:    bool,
+	volume_gain:     f32,
 }
 
 Shared :: struct {
-	mu:                    sync.Mutex,
-	snap:                  vga.Text_Snapshot,
-	frames:                Frame_Mailbox,
-	log_lines:             [dynamic]string,
-	cmds:                  [dynamic]Command,
-	running:               bool,
-	machine_running:       bool,
-	frozen_msg:            string,
-	exit_stats:            [hv.Exit_Kind]u64,
-	regs_text:             string,
-	cdrom_mounted:         bool,
-	installing_windows_98: bool,
-	pause_state:           host.Pause_State,
-	input:                 host.Host_Input_Queue,
-	guard:                 ^Vm_Guard,
+	mu:                               sync.Mutex,
+	snap:                             vga.Text_Snapshot,
+	frames:                           Frame_Mailbox,
+	log_lines:                        [dynamic]string,
+	cmds:                             [dynamic]Command,
+	running:                          bool,
+	machine_running:                  bool,
+	frozen_msg:                       string,
+	exit_stats:                       [hv.Exit_Kind]u64,
+	regs_text:                        string,
+	cdrom_mounted:                    bool,
+	floppy_mounted:                   bool,
+	storage_activity:                 machine.Storage_Activity,
+	storage_activity_session:         u64,
+	installing_windows_98:            bool,
+	install_recovery_required:        bool,
+	install_prepare_running:          bool,
+	install_prepare_cancel_requested: bool,
+	install_prepare_generation:       u64,
+	install_prepare_succeeded:        bool,
+	install_prepare_message:          string,
+	pause_state:                      host.Pause_State,
+	input:                            host.Host_Input_Queue,
+	guard:                            ^Vm_Guard,
 }
 
 Vm_Ctx :: struct {
-	shared:                  ^Shared,
-	guard:                   Vm_Guard,
-	audio:                   host.Host_Audio,
-	audio_enabled:           bool,
-	volume_gain:             f32,
-	volume:                  ^fat32.Volume,
-	bd:                      disk.Block_Device,
-	attach:                  bool,
-	floppy:                  []u8, // retained copy of the mounted image so Reset keeps it in the drive
-	floppy_path:             string,
-	cdrom_path:              string, // retained path; each machine instance opens its own handle
-	cpu_mode:                vmconfig.Cpu_Mode,
-	paths:                   profile.Paths,
-	cmos:                    profile.Cmos_Data,
-	has_cmos:                bool,
-	install_state:           profile.Install_State,
-	preparation_interrupted: bool,
-	preparation_recovered:   bool,
-	firmware_log_all:        bool,
+	shared:                   ^Shared,
+	guard:                    Vm_Guard,
+	audio:                    host.Host_Audio,
+	audio_enabled:            bool,
+	volume_gain:              f32,
+	fat_session:              ^fat32session.Machine_Session,
+	volume_open_error:        fat32session.Session_Error,
+	machine_session_id:       string,
+	attach:                   bool,
+	allow_hard_drive:         bool,
+	floppy:                   []u8, // retained copy of the mounted image so Reset keeps it in the drive
+	floppy_path:              string,
+	cdrom_path:               string, // retained path; each machine instance opens its own handle
+	cpu_mode:                 vmconfig.Cpu_Mode,
+	paths:                    profile.Paths,
+	cmos:                     profile.Cmos_Data,
+	has_cmos:                 bool,
+	install_state:            profile.Install_State,
+	install_state_diagnostic: profile.Install_State_Diagnostic,
+	preparation_interrupted:  bool,
+	preparation_recovered:    bool,
+	firmware_log_all:         bool,
+	hard_drive_path:          string,
 }
 
 main :: proc() {
@@ -118,6 +130,7 @@ run_main :: proc() -> int {
 	profile_root := ""
 	frame_dump_path := ""
 	seconds_explicit := false
+	start_requested := false
 	acceptance_options, acceptance_diagnostic := acceptance.options_parse(os.args[1:])
 	if acceptance_diagnostic != .None {
 		fmt.eprintfln("acceptance option error: %v", acceptance_diagnostic)
@@ -126,6 +139,7 @@ run_main :: proc() -> int {
 	if acceptance.options_request_headless(&acceptance_options) {console = true}
 	for a in os.args[1:] {
 		if a == "--console" {console = true}
+		if a == "--start" {start_requested = true}
 		if a == "--no-disk" {attach = false}
 		if strings.has_prefix(a, "--auto-close:") {
 			auto_close, _ = strconv.parse_int(a[len("--auto-close:"):])
@@ -171,25 +185,39 @@ run_main :: proc() -> int {
 		)
 	}
 	defer profile.paths_destroy(&paths)
-	switch dos_diagnostic := profile.dos_seed_prepare(paths.c_drive); dos_diagnostic {
-	case .Updated:
-		fmt.println("DOS seed: disabled the IO.SYS boot logo in placeholder MSDOS.SYS")
-	case .Missing, .Preserved:
-	case .Path_Failed,
-	     .Read_Failed,
-	     .Create_Directory_Failed,
-	     .Temporary_Path_Failed,
-	     .Write_Failed,
-	     .Replace_Failed:
-		fmt.eprintfln("DOS seed warning: MSDOS.SYS preparation failed (%v)", dos_diagnostic)
+	profile_lock: profile.Lock
+	if lock_diagnostic := profile.lock_acquire(
+		&profile_lock,
+		paths.root,
+		fmt.tprintf("retvrn99-%d", os.get_pid()),
+	); lock_diagnostic != .None {
+		fmt.eprintfln("profile lock failed: %v", lock_diagnostic)
+		return console_acceptance_configuration_error(
+			&acceptance_options,
+			&paths,
+			.GSW_886,
+			"another RETVRN99 session owns this Profile or its lock is unavailable",
+		)
 	}
-	settings, settings_diag := profile.settings_load(paths.settings)
+	defer profile.lock_release(&profile_lock)
+	settings, settings_diag, settings_migration := profile.settings_load(paths.settings)
+	defer profile.settings_destroy(&settings)
 	if settings_diag == .Missing {
 		if save_diag := profile.settings_save(paths.settings, settings); save_diag != .None {
 			fmt.eprintfln("settings save failed: %v", save_diag)
 		}
 	} else if settings_diag != .None {
 		fmt.eprintfln("settings load warning: %v; using defaults", settings_diag)
+	} else if settings_migration != .None {
+		if migration_diagnostic := profile.settings_migrate(
+			paths.settings,
+			settings,
+			settings_migration,
+		); migration_diagnostic != .None {
+			fmt.eprintfln("settings v1 migration failed: %v", migration_diagnostic)
+		} else {
+			fmt.println("settings: migrated v1 CPU selection to v2; no hard drive selected")
+		}
 	}
 	cmos, cmos_diag := profile.cmos_load(paths.cmos)
 	has_cmos := cmos_diag == .None
@@ -213,6 +241,7 @@ run_main :: proc() -> int {
 			if acceptance_options.install_windows_path != "" {
 				if !console_prepare_windows_install(
 					acceptance_options.install_windows_path,
+					settings.hard_drive_path,
 					&paths,
 					cmos,
 					has_cmos,
@@ -267,6 +296,7 @@ run_main :: proc() -> int {
 		cmos,
 		has_cmos,
 		acceptance_options.firmware_log_all,
+		start_requested,
 	)
 }
 
@@ -280,56 +310,77 @@ gui_main :: proc(
 	cmos: profile.Cmos_Data,
 	has_cmos: bool,
 	firmware_log_all: bool,
+	start_requested: bool,
 ) -> (
 	result: int,
 ) {
 	active_settings := settings
+	active_settings.hard_drive_path = strings.clone(settings.hard_drive_path)
+	defer profile.settings_destroy(&active_settings)
 	auto_close_after := auto_close
 	ctx := new(Vm_Ctx)
 	shared := new(Shared)
 	guard_storage_retained := false
 	defer {
-		if ctx.volume != nil {
-			if fat32.volume_close(ctx.volume) {
-				ctx.volume = nil
+		if ctx.fat_session != nil {
+			close_error := fat32session.close(ctx.fat_session, .Commit)
+			if close_error.code == .None || close_error.outcome == .Completed {
+				ctx.fat_session = nil
+				if close_error.code != .None {
+					fmt.eprintfln(
+						"disk: close completed with a companion cleanup warning: %s",
+						fat32session.error_text(&close_error),
+					)
+				}
 			} else {
-				fmt.eprintln("disk: close failed; staged C: writes remain retained")
+				fmt.eprintfln("disk: close failed: %s", fat32session.error_text(&close_error))
+				_ = fat32session.close(ctx.fat_session, .Retain)
+				ctx.fat_session = nil
 				if result == 0 {result = 1}
 			}
 		}
+		delete(ctx.machine_session_id)
+		delete(ctx.hard_drive_path)
 		profile.install_state_destroy(&ctx.install_state)
 		frame_mailbox_destroy(&shared.frames)
 		command_queue_destroy(shared)
 		vm_log_destroy(shared)
+		delete(shared.install_prepare_message)
 		free(shared)
 		if !guard_storage_retained {free(ctx)}
 	}
 	shared.running = true
 	ctx.shared = shared
+	ctx.allow_hard_drive = attach
 	ctx.attach = attach
 	ctx.cpu_mode = active_settings.cpu_mode
 	ctx.paths = paths^
+	ctx.machine_session_id = strings.clone(fmt.tprintf("gui-%d-%d", os.get_pid(), time.tick_now()))
 	ctx.cmos = cmos
 	ctx.has_cmos = has_cmos
 	ctx.firmware_log_all = firmware_log_all
+	ctx.hard_drive_path = strings.clone(active_settings.hard_drive_path)
+	ctx.attach = ctx.allow_hard_drive && ctx.hard_drive_path != ""
 	install_state, install_diagnostic := profile.install_state_load(paths.install_state)
 	ctx.install_state = install_state
-	ctx.preparation_interrupted, ctx.preparation_recovered =
-		install_interrupted_preparation_recover(&ctx.paths, &ctx.install_state)
+	ctx.install_state_diagnostic = install_diagnostic
+	shared.install_recovery_required = profile.install_state_recovery_required(install_diagnostic)
+	ctx.preparation_interrupted = false
+	ctx.preparation_recovered = true
 	if profile.install_state_active(&ctx.install_state) {
 		shared.installing_windows_98 = true
 		ctx.cdrom_path = strings.clone(ctx.install_state.source_path)
 	}
 	if install_diagnostic != .None && install_diagnostic != .Missing {
-		vm_log(shared, fmt.tprintf("Windows 98: install state ignored (%v)", install_diagnostic))
+		vm_log(
+			shared,
+			fmt.tprintf(
+				"Windows 98: install state is invalid; Start is blocked (%v)",
+				install_diagnostic,
+			),
+		)
 	}
-	if attach {
-		if !vm_open_volume(ctx) {
-			fmt.eprintfln("volume_open failed: %s", paths.c_drive)
-			return 1
-		}
-		fmt.printfln("disk: %s as %dMB FAT32 volume", paths.c_drive, VOLUME_MB)
-	} else {
+	if !ctx.attach {
 		fmt.println("disk: none (--no-disk)")
 	}
 
@@ -338,9 +389,11 @@ gui_main :: proc(
 		fmt.eprintfln("host_init failed: %s", sdl3.GetError())
 		return 1
 	}
+	preferred_locale, _ := host.host_preferred_locale()
+	defer host.host_locale_destroy(&preferred_locale)
 	lifecycle_watch := Lifecycle_Watch {
-			shared = shared,
-		}
+		shared = shared,
+	}
 	lifecycle_watch_registered := sdl3.AddEventWatch(lifecycle_event_watch, &lifecycle_watch)
 	if !lifecycle_watch_registered {
 		fmt.eprintfln("SDL lifecycle watch failed: %s", sdl3.GetError())
@@ -377,18 +430,35 @@ gui_main :: proc(
 		}
 	}
 	vm_thr := thread.create_and_start_with_poly_data(ctx, vm_thread_proc)
+	if start_requested {push_cmd(shared, Command{kind = .Start})}
 
 	st := host.Menu_State {
-			cpu_mode          = ctx.cpu_mode,
-			window_scale      = h.window_scale,
-			fullscreen        = h.fullscreen,
-			menu_reveal       = 1,
-			visual_shader     = h.visual_shader,
-			shaders_available = h.shader_state != nil,
-		}
+		cpu_mode          = ctx.cpu_mode,
+		window_scale      = h.window_scale,
+		fullscreen        = h.fullscreen,
+		menu_reveal       = 1,
+		visual_shader     = h.visual_shader,
+		shaders_available = h.shader_state != nil,
+		hard_drive_path   = active_settings.hard_drive_path,
+	}
+	floppy_activity_light: host.Activity_Light_State
+	hard_drive_activity_light: host.Activity_Light_State
+	dvd_rom_activity_light: host.Activity_Light_State
+	gui_hard_drive_status_refresh(&st, active_settings.hard_drive_path)
+	defer delete(st.hard_drive_diagnostic)
 	floppy_pending := pending_mount_create()
 	cdrom_pending := pending_mount_create()
-	install_pending := pending_mount_create()
+	hard_drive_dialog_pending := pending_hard_drive_dialog_create()
+	create_model: host.Hard_Drive_Create_Model
+	create_worker: Hard_Drive_Create_Worker
+	create_worker.allocator = context.allocator
+	defer hard_drive_create_worker_destroy(&create_worker)
+	guided_install: Guided_Install_Model
+	install_resume_after_create := false
+	hard_drive_controller: Hard_Drive_Controller
+	hard_drive_controller_init(&hard_drive_controller)
+	dropped_paths := make([dynamic]string)
+	drop_complete := false
 	release_mouse_key := false
 	host_hotkey_scancode := sdl3.Scancode.UNKNOWN
 	host_lgui_down := false
@@ -396,6 +466,7 @@ gui_main :: proc(
 	host_lshift_down := false
 	host_rshift_down := false
 	audio_gain := f32(1)
+	exit_requested := false
 	keyboard: host.Host_Keyboard
 	start := time.tick_now()
 	menu_animation_tick := start
@@ -407,7 +478,7 @@ gui_main :: proc(
 		if !running {break}
 
 		ev: sdl3.Event
-		for event_count in 0 ..< HOST_SDL_EVENTS_PER_FRAME {
+		for _ in 0 ..< HOST_SDL_EVENTS_PER_FRAME {
 			if !sdl3.PollEvent(&ev) {break}
 			mouse_event :=
 				ev.type == .MOUSE_MOTION ||
@@ -417,7 +488,19 @@ gui_main :: proc(
 			if !h.mouse_captured || !mouse_event {imgui_impl_sdl3.ProcessEvent(&ev)}
 			#partial switch ev.type {
 			case .QUIT:
-				push_cmd(shared, Command{kind = .Power_Off})
+				exit_requested = true
+			case .DROP_BEGIN:
+				for path in dropped_paths {delete(path)}
+				clear(&dropped_paths)
+				drop_complete = false
+			case .DROP_FILE:
+				if ev.drop.data != nil &&
+				   hard_drive_controller_is_open(&hard_drive_controller) &&
+				   !st.machine_running {
+					append(&dropped_paths, strings.clone(string(ev.drop.data)))
+				}
+			case .DROP_COMPLETE:
+				drop_complete = true
 			case .KEY_DOWN, .KEY_UP:
 				if ev.key.repeat {continue}
 				#partial switch ev.key.scancode {
@@ -533,6 +616,28 @@ gui_main :: proc(
 				}
 			}
 		}
+		if drop_complete {
+			if len(dropped_paths) > 0 {
+				drop_machine_running, drop_install_active := gui_storage_lifecycle_snapshot(shared)
+				hard_drive_controller.model.machine_running = drop_machine_running
+				if gui_storage_dispatch_allowed(
+					drop_machine_running,
+					drop_install_active,
+					guided_install.phase != .Closed || create_model.visible,
+				) {
+					_ = hard_drive_controller_handle(
+						&hard_drive_controller,
+						host.hard_drive_browser_accept_drop(
+							&hard_drive_controller.model,
+							dropped_paths[:],
+						),
+					)
+				}
+			}
+			for path in dropped_paths {delete(path)}
+			clear(&dropped_paths)
+			drop_complete = false
+		}
 
 		if path, ready := pending_take(floppy_pending); ready {
 			push_cmd(shared, Command{kind = .Mount_Floppy, path = path})
@@ -540,8 +645,144 @@ gui_main :: proc(
 		if path, ready := pending_take(cdrom_pending); ready {
 			push_cmd(shared, Command{kind = .Mount_Cdrom, path = path})
 		}
-		if path, ready := pending_take(install_pending); ready {
-			push_cmd(shared, Command{kind = .Install_Windows_98, path = path})
+		if dialog_result, ready := pending_hard_drive_dialog_take(hard_drive_dialog_pending);
+		   ready {
+			storage_machine_running, storage_install_active := gui_storage_lifecycle_snapshot(
+				shared,
+			)
+			switch dialog_result.purpose {
+			case .Select_Image:
+				if dialog_result.failed {
+					vm_log(
+						shared,
+						fmt.tprintf(
+							"hard drive: file picker failed: %s",
+							dialog_result.diagnostic,
+						),
+					)
+				} else if dialog_result.accepted && len(dialog_result.paths) == 1 {
+					blocked :=
+						guided_install.phase != .Closed ||
+						create_model.visible ||
+						hard_drive_controller_is_open(&hard_drive_controller)
+					if !gui_storage_dispatch_allowed(
+						storage_machine_running,
+						storage_install_active,
+						blocked,
+					) {
+						vm_log(
+							shared,
+							"hard drive: selection ignored while storage controls are blocked",
+						)
+					} else if !gui_hard_drive_select(
+						ctx,
+						&active_settings,
+						&st,
+						dialog_result.paths[0],
+						storage_machine_running,
+						storage_install_active,
+					) {
+						vm_log(
+							shared,
+							fmt.tprintf("hard drive: cannot select %s", dialog_result.paths[0]),
+						)
+					}
+				}
+			case .Create_Image_Path:
+				blocked :=
+					guided_install.phase != .Closed ||
+					hard_drive_controller_is_open(&hard_drive_controller)
+				if dialog_result.failed {
+					vm_log(
+						shared,
+						fmt.tprintf(
+							"hard drive: file picker failed: %s",
+							dialog_result.diagnostic,
+						),
+					)
+					host.hard_drive_create_accept_result(
+						&create_model,
+						{
+							kind = .Error,
+							diagnostic = "The file picker could not be opened. Try Browse again.",
+						},
+					)
+				} else if gui_storage_dispatch_allowed(
+					storage_machine_running,
+					storage_install_active,
+					blocked,
+				) {
+					_ = host.hard_drive_create_accept_dialog(&create_model, dialog_result)
+				} else {
+					host.hard_drive_create_accept_result(
+						&create_model,
+						{
+							kind = .Error,
+							diagnostic = "Stop the machine before creating a hard drive.",
+						},
+					)
+				}
+			case .Import_Files, .Import_Folder, .Export_Entry:
+				blocked := guided_install.phase != .Closed || create_model.visible
+				if dialog_result.failed {
+					vm_log(
+						shared,
+						fmt.tprintf(
+							"hard drive: file picker failed: %s",
+							dialog_result.diagnostic,
+						),
+					)
+				} else if gui_storage_dispatch_allowed(
+					storage_machine_running,
+					storage_install_active,
+					blocked,
+				) {
+					_ = hard_drive_controller_handle(
+						&hard_drive_controller,
+						host.hard_drive_browser_accept_dialog(
+							&hard_drive_controller.model,
+							dialog_result,
+						),
+					)
+				}
+			case .Install_ISO:
+				blocked :=
+					create_model.visible || hard_drive_controller_is_open(&hard_drive_controller)
+				allowed := gui_storage_dispatch_allowed(
+					storage_machine_running,
+					storage_install_active,
+					blocked,
+				)
+				if dialog_result.failed {
+					guided_install_dialog_error(&guided_install, dialog_result.diagnostic)
+				} else if allowed && dialog_result.accepted && len(dialog_result.paths) == 1 {
+					action := guided_install_inspect(&guided_install, dialog_result.paths[0], "")
+					_ = action
+				} else {
+					guided_install_dialog_cancel(&guided_install)
+				}
+			case .Install_Boot_Floppy:
+				blocked :=
+					create_model.visible || hard_drive_controller_is_open(&hard_drive_controller)
+				allowed := gui_storage_dispatch_allowed(
+					storage_machine_running,
+					storage_install_active,
+					blocked,
+				)
+				if dialog_result.failed {
+					guided_install_dialog_error(&guided_install, dialog_result.diagnostic)
+				} else if allowed && dialog_result.accepted && len(dialog_result.paths) == 1 {
+					_ = guided_install_inspect(
+						&guided_install,
+						guided_install.iso_path,
+						dialog_result.paths[0],
+					)
+				} else {
+					guided_install_dialog_cancel(&guided_install)
+				}
+			case .None:
+			}
+			pending_hard_drive_dialog_result_destroy(&dialog_result)
 		}
 
 		// copy of the shared state for this frame
@@ -550,10 +791,20 @@ gui_main :: proc(
 		regs := strings.clone(shared.regs_text, context.temp_allocator)
 		machine_running := shared.machine_running
 		st.user_paused = host.pause_reason_active(&shared.pause_state, .User)
+		st.install_active = shared.installing_windows_98
+		st.install_recovery_required = shared.install_recovery_required
+		st.floppy_mounted = shared.floppy_mounted
+		st.cdrom_mounted = shared.cdrom_mounted
+		storage_activity := shared.storage_activity
+		storage_activity_session := shared.storage_activity_session
 		sync.unlock(&shared.mu)
 
 		if st.machine_running && !machine_running {host.host_clear_frame(&h)}
 		st.machine_running = machine_running
+		st.storage_actions_blocked =
+			guided_install.phase != .Closed ||
+			create_model.visible ||
+			pending_hard_drive_dialog_active(hard_drive_dialog_pending)
 		st.window_scale = h.window_scale
 		st.fullscreen = h.fullscreen
 		st.visual_shader = h.visual_shader
@@ -562,6 +813,27 @@ gui_main :: proc(
 			time.duration_seconds(time.tick_diff(menu_animation_tick, menu_animation_now)),
 		)
 		menu_animation_tick = menu_animation_now
+		st.floppy_active = host.activity_light_step(
+			&floppy_activity_light,
+			storage_activity.floppy,
+			storage_activity_session,
+			st.machine_running,
+			menu_animation_seconds,
+		)
+		st.hard_drive_active = host.activity_light_step(
+			&hard_drive_activity_light,
+			storage_activity.hard_drive,
+			storage_activity_session,
+			st.machine_running,
+			menu_animation_seconds,
+		)
+		st.dvd_rom_active = host.activity_light_step(
+			&dvd_rom_activity_light,
+			storage_activity.dvd_rom,
+			storage_activity_session,
+			st.machine_running,
+			menu_animation_seconds,
+		)
 		menu_target := f32(1)
 		if h.fullscreen && h.mouse_captured {menu_target = 0}
 		st.menu_reveal = host.menu_reveal_step(st.menu_reveal, menu_target, menu_animation_seconds)
@@ -582,9 +854,13 @@ gui_main :: proc(
 			frozen_msg = frozen,
 			regs_text  = regs,
 		}
-		switch host.menu_draw(&st, info) {
+		switch host.menu_draw(&st, info, h.storage_icons) {
 		case .Start:
-			push_cmd(shared, Command{kind = .Start})
+			if host.menu_action_enabled(&st, .Start) &&
+			   !st.storage_actions_blocked &&
+			   hard_drive_controller_prepare_machine_start(&hard_drive_controller) {
+				push_cmd(shared, Command{kind = .Start})
+			}
 		case .Stop:
 			push_cmd(shared, Command{kind = .Stop})
 		case .Reset:
@@ -596,7 +872,33 @@ gui_main :: proc(
 				Command{kind = .Set_Pause, pause_reason = .User, pause_active = st.user_paused},
 			)
 		case .Power_Off:
-			push_cmd(shared, Command{kind = .Power_Off})
+			exit_requested = true
+		case .Select_Hard_Drive:
+			if host.menu_action_enabled(&st, .Select_Hard_Drive) &&
+			   !hard_drive_controller_is_open(&hard_drive_controller) {
+				_ = pending_hard_drive_dialog_show(
+					hard_drive_dialog_pending,
+					h.win,
+					host.hard_drive_select_dialog_request(active_settings.hard_drive_path),
+				)
+			}
+		case .Browse_C_Drive:
+			if host.menu_action_enabled(&st, .Browse_C_Drive) &&
+			   !hard_drive_controller_open(
+					   &hard_drive_controller,
+					   active_settings.hard_drive_path,
+					   st.machine_running,
+				   ) {
+				vm_log(
+					shared,
+					fmt.tprintf("hard drive: %s", hard_drive_controller.model.diagnostic),
+				)
+			}
+		case .Create_Hard_Drive:
+			if host.menu_action_enabled(&st, .Create_Hard_Drive) &&
+			   !hard_drive_controller_is_open(&hard_drive_controller) {
+				_ = host.hard_drive_create_open(&create_model, paths.default_image)
+			}
 		case .Mount_Floppy:
 			pending_mount_show(floppy_pending, h.win)
 		case .Eject_Floppy:
@@ -606,9 +908,17 @@ gui_main :: proc(
 		case .Eject_Cdrom:
 			push_cmd(shared, Command{kind = .Eject_Cdrom})
 		case .Install_Windows_98:
-			pending_mount_show(install_pending, h.win)
-		case .Finish_Windows_98_Installation:
-			push_cmd(shared, Command{kind = .Finish_Windows_98_Installation})
+			if !host.menu_action_enabled(&st, .Install_Windows_98) ||
+			   hard_drive_controller_is_open(&hard_drive_controller) {
+				break
+			} else if st.hard_drive_status != .Ready || active_settings.hard_drive_path == "" {
+				install_resume_after_create = true
+				_ = host.hard_drive_create_open(&create_model, paths.default_image)
+			} else {
+				_ = guided_install_open(&guided_install, active_settings.hard_drive_path)
+			}
+		case .Abandon_Windows_98_Installation:
+			push_cmd(shared, Command{kind = .Abandon_Windows_98_Installation})
 		case .Set_Cpu_Mode:
 			push_cmd(shared, Command{kind = .Set_Cpu_Mode, cpu_mode = st.cpu_mode})
 			active_settings.cpu_mode = st.cpu_mode
@@ -626,8 +936,276 @@ gui_main :: proc(
 			st.visual_shader = h.visual_shader
 		case .Open_Github:
 			_ = sdl3.OpenURL("https://github.com/vorvek/RETVRN99")
+		case .Open_Documentation:
+			_ = sdl3.OpenURL("https://github.com/vorvek/RETVRN99/blob/main/docs/user-guide.md")
 		case .Open_Third_Party:
 			_ = sdl3.OpenURL("https://github.com/vorvek/RETVRN99/blob/main/THIRDPARTY.md")
+		case .None:
+		}
+		worker_result := hard_drive_create_worker_poll(&create_worker)
+		if worker_result.ready {
+			create_machine_running, create_install_active := gui_storage_lifecycle_snapshot(shared)
+			if worker_result.cancelled {
+				install_resume_after_create = false
+				host.hard_drive_create_accept_result(
+					&create_model,
+					{kind = .Cancelled, diagnostic = "Hard-drive creation was cancelled."},
+				)
+			} else if worker_result.error.code != .None {
+				fat32session.image_info_destroy(&worker_result.info)
+				if worker_result.error.outcome == .Completed {
+					host.hard_drive_create_accept_result(
+						&create_model,
+						{
+							kind = .Image_Created_Unselected,
+							diagnostic = fat32session.error_text(&worker_result.error),
+						},
+					)
+				} else {
+					kind := host.Hard_Drive_UI_Result_Kind.Error
+					if worker_result.error.code == .Sparse_Unsupported {
+						kind = .Sparse_Unsupported
+					}
+					host.hard_drive_create_accept_result(
+						&create_model,
+						{kind = kind, diagnostic = fat32session.error_text(&worker_result.error)},
+					)
+				}
+			} else if create_machine_running || create_install_active {
+				fat32session.image_info_destroy(&worker_result.info)
+				install_resume_after_create = false
+				host.hard_drive_create_accept_result(
+					&create_model,
+					{
+						kind = .Image_Created_Unselected,
+						diagnostic = "The image was created, but the machine is no longer stopped. Stop it, then select the image.",
+					},
+				)
+			} else {
+				fat32session.image_info_destroy(&worker_result.info)
+				selected := gui_hard_drive_select(
+					ctx,
+					&active_settings,
+					&st,
+					host.hard_drive_create_path(&create_model),
+					create_machine_running,
+					create_install_active,
+				)
+				if selected {
+					host.hard_drive_create_accept_result(&create_model, {kind = .Image_Created})
+					if install_resume_after_create {
+						install_resume_after_create = false
+						_ = guided_install_open(&guided_install, active_settings.hard_drive_path)
+					}
+				} else {
+					host.hard_drive_create_accept_result(
+						&create_model,
+						{
+							kind = .Image_Created_Unselected,
+							diagnostic = "The image was created, but its selection could not be saved. Retry selection below.",
+						},
+					)
+				}
+			}
+		}
+		create_was_visible := create_model.visible
+		create_action := host.hard_drive_create_draw(&create_model)
+		if create_was_visible && !create_model.visible {install_resume_after_create = false}
+		storage_machine_running, storage_install_active := gui_storage_lifecycle_snapshot(shared)
+		create_blocked :=
+			guided_install.phase != .Closed ||
+			hard_drive_controller_is_open(&hard_drive_controller)
+		if create_action.kind == .Request_Native_Dialog {
+			if gui_storage_dispatch_allowed(
+				storage_machine_running,
+				storage_install_active,
+				create_blocked,
+			) {
+				_ = pending_hard_drive_dialog_show(
+					hard_drive_dialog_pending,
+					h.win,
+					create_action.dialog,
+				)
+			}
+		} else if create_action.kind == .Cancel_Operation {
+			if hard_drive_create_worker_cancel(&create_worker) {
+				host.hard_drive_create_accept_result(
+					&create_model,
+					{
+						kind = .Progress,
+						progress = {
+							active = true,
+							completed = 0,
+							total = 1,
+							message = "Cancelling after the current creation step...",
+							cancellable = false,
+						},
+					},
+				)
+			}
+		} else if create_action.kind == .Select_Created_Image {
+			selected :=
+				gui_storage_dispatch_allowed(
+					storage_machine_running,
+					storage_install_active,
+					create_blocked,
+				) &&
+				gui_hard_drive_select(
+					ctx,
+					&active_settings,
+					&st,
+					create_action.path,
+					storage_machine_running,
+					storage_install_active,
+				)
+			if selected {
+				host.hard_drive_create_accept_result(&create_model, {kind = .Image_Created})
+				if install_resume_after_create {
+					install_resume_after_create = false
+					_ = guided_install_open(&guided_install, active_settings.hard_drive_path)
+				}
+			} else {
+				host.hard_drive_create_accept_result(
+					&create_model,
+					{
+						kind = .Image_Created_Unselected,
+						diagnostic = "The created image is still valid, but its selection could not be saved.",
+					},
+				)
+			}
+		} else if create_action.kind == .Create_Image {
+			if !gui_storage_dispatch_allowed(
+				storage_machine_running,
+				storage_install_active,
+				create_blocked,
+			) {
+				host.hard_drive_create_accept_result(
+					&create_model,
+					{kind = .Error, diagnostic = "Stop the machine before creating a hard drive."},
+				)
+			} else if hard_drive_create_worker_begin(
+				&create_worker,
+				create_action.path,
+				u32(create_action.size_gib),
+				create_action.allow_full_allocation,
+			) {
+				host.hard_drive_create_accept_result(
+					&create_model,
+					{
+						kind = .Busy,
+						progress = {
+							active = true,
+							completed = 0,
+							total = 1,
+							message = "Creating and validating the hard-drive image...",
+							cancellable = true,
+						},
+					},
+				)
+			} else {
+				host.hard_drive_create_accept_result(
+					&create_model,
+					{kind = .Error, diagnostic = "Hard-drive creation could not be started."},
+				)
+			}
+		}
+		hard_drive_controller.model.machine_running = st.machine_running
+		hard_drive_controller_step(&hard_drive_controller)
+		browser_action := host.hard_drive_browser_draw(&hard_drive_controller.model)
+		storage_machine_running, storage_install_active = gui_storage_lifecycle_snapshot(shared)
+		browser_blocked := guided_install.phase != .Closed || create_model.visible
+		if browser_action.kind == .Cancel_Close {
+			exit_requested = false
+		} else if browser_action.kind == .Request_Native_Dialog {
+			if gui_storage_dispatch_allowed(
+				storage_machine_running,
+				storage_install_active,
+				browser_blocked,
+			) {
+				_ = pending_hard_drive_dialog_show(
+					hard_drive_dialog_pending,
+					h.win,
+					browser_action.dialog,
+				)
+			}
+		} else if browser_action.kind != .None {
+			if gui_storage_dispatch_allowed(
+				storage_machine_running,
+				storage_install_active,
+				browser_blocked,
+			) {
+				_ = hard_drive_controller_handle(&hard_drive_controller, browser_action)
+			}
+		}
+		if exit_requested &&
+		   hard_drive_controller_prepare_application_exit(&hard_drive_controller) &&
+		   push_cmd(shared, Command{kind = .Power_Off}) {
+			exit_requested = false
+		}
+		install_status := install_prepare_status_snapshot(shared)
+		guided_install_status_update(&guided_install, install_status)
+		install_action := guided_install_draw(&guided_install, install_status)
+		storage_machine_running, storage_install_active = gui_storage_lifecycle_snapshot(shared)
+		install_action_allowed := gui_storage_dispatch_allowed(
+			storage_machine_running,
+			storage_install_active,
+			create_model.visible || hard_drive_controller_is_open(&hard_drive_controller),
+		)
+		switch install_action.kind {
+		case .Request_ISO:
+			if install_action_allowed {
+				if !pending_hard_drive_dialog_show(
+					hard_drive_dialog_pending,
+					h.win,
+					guided_install_iso_dialog(),
+				) {
+					guided_install_dialog_error(
+						&guided_install,
+						"Another file dialog is already open.",
+					)
+				}
+			}
+		case .Request_Boot_Floppy:
+			if install_action_allowed {
+				if !pending_hard_drive_dialog_show(
+					hard_drive_dialog_pending,
+					h.win,
+					guided_install_boot_dialog(),
+				) {
+					guided_install_dialog_error(
+						&guided_install,
+						"Another file dialog is already open.",
+					)
+				}
+			}
+		case .Prepare:
+			if install_action_allowed {
+				install_prepare_status_queue(shared)
+				guided_install_prepare_started(&guided_install, install_status.generation)
+				queued := push_cmd(
+					shared,
+					Command {
+						kind = .Install_Windows_98,
+						path = strings.clone(install_action.iso_path),
+						boot_path = strings.clone(install_action.boot_path),
+						locale_language = strings.clone(preferred_locale.language),
+						locale_country = strings.clone(preferred_locale.country),
+					},
+				)
+				if !queued {
+					install_prepare_status_finish(
+						shared,
+						false,
+						"Windows 98 preparation could not be queued",
+					)
+				}
+			} else {
+				guided_install_dialog_cancel(&guided_install)
+			}
+		case .Cancel_Prepare:
+			install_prepare_cancel_request(shared)
+		case .Close:
+			guided_install_destroy(&guided_install)
 		case .None:
 		}
 		imgui.Render()
@@ -639,7 +1217,7 @@ gui_main :: proc(
 
 		if auto_close_after >= 0 &&
 		   time.duration_seconds(time.tick_since(start)) >= f64(auto_close_after) {
-			push_cmd(shared, Command{kind = .Power_Off})
+			exit_requested = true
 			auto_close_after = -1
 		}
 	}
@@ -649,8 +1227,12 @@ gui_main :: proc(
 	floppy_pending = nil
 	pending_mount_release(cdrom_pending)
 	cdrom_pending = nil
-	pending_mount_release(install_pending)
-	install_pending = nil
+	pending_hard_drive_dialog_release(hard_drive_dialog_pending)
+	hard_drive_dialog_pending = nil
+	for path in dropped_paths {delete(path)}
+	delete(dropped_paths)
+	hard_drive_controller_destroy(&hard_drive_controller)
+	guided_install_destroy(&guided_install)
 
 	thread.destroy(vm_thr)
 
@@ -667,634 +1249,6 @@ gui_main :: proc(
 	return 0
 }
 
-// --- VM thread ---
-
-vm_thread_proc :: proc(c: ^Vm_Ctx) {
-	context.logger = log.create_console_logger(.Info, {.Level})
-	s := c.shared
-	m := new(machine.Machine)
-	pause_state: host.Pause_State
-
-	preparation_blocked := !install_state_boot_allowed(&c.install_state)
-	launch_state_ready := !preparation_blocked && install_launch_prepare(c)
-	machine_live := false
-	if launch_state_ready {
-		machine_live = vm_boot(c, m, !host.pause_active(&pause_state))
-	}
-	publish_machine_running(s, machine_live)
-	if preparation_blocked {
-		message := "Windows 98: interrupted preparation is blocked; choose Install Windows 98 to retry"
-		if !c.preparation_recovered {
-			message = "Windows 98: interrupted preparation recovery is ambiguous; retained files were preserved"
-		}
-		publish_freeze(s, message, "")
-	} else if !launch_state_ready {
-		publish_freeze(
-			s,
-			"Windows 98: cannot record the direct Setup launch; fix install-state storage and Reset to retry",
-			"",
-		)
-	} else if !machine_live {
-		publish_freeze(s, "machine init failed (WHPX unavailable?)", "")
-	} else {
-		vm_log(s, cpu_mode_log(install_runtime_cpu_mode(c.cpu_mode, &c.install_state)))
-	}
-
-	firmware: Firmware_Log
-	firmware.live_stdout = c.firmware_log_all
-	defer firmware_log_destroy(&firmware)
-	stats: [hv.Exit_Kind]u64
-	frozen := false
-	if c.install_state.phase == .Preparing {
-		if c.preparation_recovered {
-			vm_log(
-				s,
-				"Windows 98: interrupted preparation recovered; select Install Windows 98 to retry",
-			)
-		} else {
-			vm_log(
-				s,
-				"Windows 98: interrupted preparation retained because recovery was not provably safe",
-			)
-		}
-	} else if c.install_state.phase == .Setup_Running {
-		vm_log(
-			s,
-			fmt.tprintf(
-				"Windows 98: resuming Setup session after %d guest reset(s)",
-				c.install_state.reset_count,
-			),
-		)
-	}
-	sync.lock(&s.mu)
-	frozen = s.frozen_msg != ""
-	sync.unlock(&s.mu)
-	last_snap := time.tick_now()
-
-	loop: for {
-		// commands from the UI
-		sync.lock(&s.mu)
-		if !s.running {sync.unlock(&s.mu); break loop}
-		cmds := make([]Command, len(s.cmds), context.allocator)
-		copy(cmds, s.cmds[:])
-		clear(&s.cmds)
-		sync.unlock(&s.mu)
-
-		quit := false
-		for cmd in cmds {
-			if quit {
-				delete(cmd.path)
-				continue
-			}
-			switch cmd.kind {
-			case .Start, .Reset:
-				starting := cmd.kind == .Start
-				if starting && machine_live {continue}
-				preparation_blocked = !install_state_boot_allowed(&c.install_state)
-				state_ready :=
-					!preparation_blocked &&
-					(!profile.install_state_active(&c.install_state) ||
-							install_state_save(c, "before manual reset"))
-				launch_ready := state_ready && install_launch_prepare(c)
-				reset_diagnostic := Vm_Reinitialize_Diagnostic.None
-				if launch_ready {
-					reset_diagnostic = vm_reinitialize_machine(
-						c,
-						m,
-						&machine_live,
-						!host.pause_active(&pause_state),
-					)
-				}
-				if launch_ready && reset_diagnostic == .None && machine_live {
-					stats = {}
-					frozen = false
-					publish_freeze(s, "", "")
-					vm_log(
-						s,
-						fmt.tprintf(
-							"machine: %s (%s)",
-							starting ? "started" : "reset",
-							vmconfig.cpu_mode_name(
-								install_runtime_cpu_mode(c.cpu_mode, &c.install_state),
-							),
-						),
-					)
-				} else if preparation_blocked {
-					frozen = true
-					publish_freeze(
-						s,
-						"reset blocked: interrupted Windows 98 preparation must be retried or finished",
-						"",
-					)
-				} else if !launch_ready {
-					frozen = true
-					publish_freeze(
-						s,
-						"reset blocked: Windows 98 install state or direct launch could not be persisted",
-						"",
-					)
-				} else if reset_diagnostic == .Reconciliation_Failed {
-					frozen = true
-					publish_freeze(
-						s,
-						"reset blocked: disk reconciliation failed; staged C: writes retained; retry Reset or Exit",
-						"",
-					)
-				} else if reset_diagnostic == .Volume_Open_Failed {
-					frozen = true
-					publish_freeze(s, "reset failed: cannot reopen protected C:", "")
-				} else {
-					frozen = true
-					publish_freeze(s, "reset failed: machine init error", "")
-				}
-				publish_machine_running(s, machine_live)
-			case .Stop:
-				if !machine_live {continue}
-				if !vm_close_then_shutdown(c, m, &machine_live) {
-					frozen = true
-					publish_freeze(
-						s,
-						"disk reconciliation failed; staged C: writes retained; retry Stop",
-						"",
-					)
-					continue
-				}
-				frozen = false
-				publish_freeze(s, "", "")
-				publish_machine_running(s, false)
-				vm_log(s, "machine: stopped")
-			case .Power_Off:
-				if !vm_close_then_shutdown(c, m, &machine_live) {
-					frozen = true
-					publish_freeze(
-						s,
-						"disk reconciliation failed; staged C: writes retained; retry Exit",
-						"",
-					)
-					continue
-				}
-				sync.lock(&s.mu)
-				s.running = false
-				s.machine_running = false
-				sync.unlock(&s.mu)
-				quit = true
-			case .Mount_Floppy:
-				if !machine_live {
-					vm_log(s, "floppy: machine is not running; Reset before mounting media")
-					delete(cmd.path)
-					continue
-				}
-				if img, err := os.read_entire_file_from_path(cmd.path, context.allocator);
-				   err == nil {
-					if machine.machine_mount_floppy(m, img) {
-						delete(c.floppy)
-						c.floppy = img
-						delete(c.floppy_path)
-						c.floppy_path = strings.clone(cmd.path)
-						vm_log(s, fmt.tprintf("floppy: mounted %s", cmd.path))
-					} else {
-						vm_log(s, fmt.tprintf("floppy: %s is not a 1.44MB image", cmd.path))
-						delete(img)
-					}
-				} else {
-					vm_log(s, fmt.tprintf("floppy: cannot read %s", cmd.path))
-				}
-				delete(cmd.path)
-			case .Eject_Floppy:
-				if !machine_live {
-					vm_log(s, "floppy: machine is not running; Reset before ejecting media")
-					continue
-				}
-				machine.machine_eject_floppy(m)
-				delete(c.floppy)
-				c.floppy = nil
-				delete(c.floppy_path)
-				c.floppy_path = ""
-				vm_log(s, "floppy: ejected")
-			case .Mount_Cdrom:
-				if !machine_live {
-					vm_log(s, "CD-ROM: machine is not running; Reset before mounting media")
-					delete(cmd.path)
-					continue
-				}
-				if machine.machine_mount_cdrom(m, cmd.path) {
-					delete(c.cdrom_path)
-					c.cdrom_path = strings.clone(cmd.path)
-					publish_cdrom_state(s, true)
-					vm_log(s, fmt.tprintf("CD-ROM: mounted %s", c.cdrom_path))
-				} else {
-					vm_log(s, fmt.tprintf("CD-ROM: unsupported or unreadable image %s", cmd.path))
-				}
-				delete(cmd.path)
-			case .Eject_Cdrom:
-				if !machine_live {
-					vm_log(s, "CD-ROM: machine is not running; Reset before ejecting media")
-					continue
-				}
-				machine.machine_eject_cdrom(m)
-				delete(c.cdrom_path)
-				c.cdrom_path = ""
-				publish_cdrom_state(s, false)
-				vm_log(s, "CD-ROM: ejected")
-			case .Install_Windows_98:
-				if !c.attach {
-					vm_log(s, "Windows 98: installation requires the protected C: drive")
-					delete(cmd.path)
-					continue
-				}
-				publish_install_state(s, true)
-				vm_log(s, fmt.tprintf("Windows 98: validating and extracting %s", cmd.path))
-				if !vm_close_then_shutdown(c, m, &machine_live) {
-					publish_install_state(s, profile.install_state_active(&c.install_state))
-					delete(cmd.path)
-					frozen = true
-					publish_freeze(
-						s,
-						"Windows 98: C: reconciliation failed before preparation; staged writes are retained",
-						"",
-					)
-					continue
-				}
-				publish_machine_running(s, false)
-
-				launch_ready := false
-				rollback_failed := false
-				state_restore_failed := false
-				previous_state := install_state_clone(&c.install_state)
-				previous_cdrom_path := strings.clone(c.cdrom_path)
-				candidate := install_state_candidate(
-					cmd.path,
-					c.cmos[:],
-					c.has_cmos,
-					&c.install_state,
-				)
-				if install_state_save_value(c, &candidate, "before media preparation") {
-					profile.install_state_destroy(&c.install_state)
-					c.install_state = candidate
-					candidate = {}
-					delete(c.cdrom_path)
-					c.cdrom_path = strings.clone(cmd.path)
-
-					report := win98prep.prepare(
-						cmd.path,
-						c.paths.install,
-						c.paths.c_drive,
-						c.floppy_path,
-					)
-					prepared := report.diagnostic == .None
-					if prepared {
-						vm_log(
-							s,
-							fmt.tprintf(
-								"Windows 98: staged %d files (%d bytes), setup is %s",
-								report.media_info.win98_file_count,
-								report.media_info.win98_total_bytes,
-								report.media_info.setup_executable,
-							),
-						)
-						c.install_state.phase = .Launch_Pending
-						if install_state_save(c, "after media preparation") {
-							if !win98prep.prepare_finish(&report) {
-								vm_log(
-									s,
-									"Windows 98: prepared generation is active; obsolete backups could not be removed",
-								)
-							}
-							launch_ready = true
-							if c.floppy_path != "" {
-								delete(c.floppy)
-								c.floppy = nil
-								delete(c.floppy_path)
-								c.floppy_path = ""
-								vm_log(
-									s,
-									"Windows 98: boot floppy seed consumed; direct HDD launch armed",
-								)
-							}
-							if report.retry_cleanup.archived_count > 0 {
-								vm_log(
-									s,
-									fmt.tprintf(
-										"Windows 98: archived %d failed-Setup artifacts in %s",
-										report.retry_cleanup.archived_count,
-										report.retry_cleanup.archive_path,
-									),
-								)
-							}
-						} else {
-							c.install_state.phase = .Preparing
-							if !win98prep.prepare_rollback(&report) {
-								rollback_failed = true
-								vm_log(
-									s,
-									"Windows 98: preparation rollback failed; retained generations require manual recovery",
-								)
-							}
-						}
-					} else {
-						if report.bootstrap_diagnostic == .Boot_Image_Required {
-							vm_log(
-								s,
-								"Windows 98: mount a matching Windows 98 boot floppy before retrying a fresh installation",
-							)
-						}
-						vm_log(
-							s,
-							fmt.tprintf(
-								"Windows 98: preparation failed (%v, media %v, bootstrap %v, cleanup %v)",
-								report.diagnostic,
-								report.media_diagnostic,
-								report.bootstrap_diagnostic,
-								report.retry_cleanup.diagnostic,
-							),
-						)
-						rollback_failed = install_preparation_rollback_failed(&report)
-					}
-					if !launch_ready && !rollback_failed {
-						switch install_preparation_restore_previous(
-							c,
-							&previous_state,
-							&previous_cdrom_path,
-							&report,
-						) {
-						case .Restored:
-							vm_log(
-								s,
-								"Windows 98: failed preparation rolled back; previous installation state restored",
-							)
-						case .Persistence_Failed:
-							state_restore_failed = true
-						case .Unsafe:
-							rollback_failed = true
-						}
-					}
-					win98prep.report_destroy(&report)
-				} else {
-					profile.install_state_destroy(&candidate)
-				}
-				profile.install_state_destroy(&previous_state)
-				delete(previous_cdrom_path)
-				publish_install_state(s, profile.install_state_active(&c.install_state))
-				delete(cmd.path)
-				if !vm_open_volume(c) {
-					frozen = true
-					publish_freeze(s, "Windows 98: cannot reopen C: after preparation", "")
-					continue
-				}
-				if rollback_failed {
-					frozen = true
-					publish_freeze(
-						s,
-						"Windows 98: preparation rollback failed; retained generations require manual recovery",
-						"",
-					)
-					continue
-				}
-				if state_restore_failed {
-					frozen = true
-					publish_freeze(
-						s,
-						"Windows 98: previous install state could not be restored; preparation recovery state retained",
-						"",
-					)
-					continue
-				}
-				preparation_blocked = !install_state_boot_allowed(&c.install_state)
-				if preparation_blocked {
-					frozen = true
-					publish_freeze(
-						s,
-						"Windows 98: interrupted preparation remains blocked; retry installation or finish the session",
-						"",
-					)
-					continue
-				}
-				launch_state_ready = install_launch_prepare(c)
-				if launch_state_ready {
-					machine_live = vm_boot(c, m, !host.pause_active(&pause_state))
-				}
-				if machine_live {
-					frozen = false
-					publish_freeze(s, "", "")
-					if launch_ready {
-						vm_log(s, "Windows 98: booting the direct unattended Setup launcher")
-					}
-				} else if !launch_state_ready {
-					frozen = true
-					publish_freeze(
-						s,
-						"Windows 98: direct Setup launch state could not be persisted; Reset to retry",
-						"",
-					)
-				} else {
-					frozen = true
-					publish_freeze(s, "Windows 98: reboot after preparation failed", "")
-				}
-				publish_machine_running(s, machine_live)
-			case .Finish_Windows_98_Installation:
-				_ = install_session_finish(c, m)
-			case .Set_Cpu_Mode:
-				c.cpu_mode = cmd.cpu_mode
-				runtime_mode := install_runtime_cpu_mode(c.cpu_mode, &c.install_state)
-				if machine_live {machine.machine_set_cpu_mode(m, runtime_mode)}
-				vm_log(s, cpu_mode_log(runtime_mode))
-			case .Set_Pause:
-				transition := host.pause_set(&pause_state, cmd.pause_reason, cmd.pause_active)
-				if machine_live && transition != .Unchanged {
-					machine.machine_clock_set_running(m, transition == .Resumed)
-				}
-				publish_pause_state(s, pause_state)
-			case .Set_Volume:
-				c.volume_gain = clamp(cmd.volume_gain, 0, 1)
-				_ = host.host_audio_set_gain(&c.audio, c.volume_gain)
-			}
-		}
-		delete(cmds)
-		if quit {break loop}
-		if machine_live && !frozen && !host.pause_active(&pause_state) {
-			input_events: [HOST_INPUTS_PER_VM_STEP]host.Host_Input_Event
-			sync.lock(&s.mu)
-			input_count := host.host_input_drain(&s.input, input_events[:])
-			sync.unlock(&s.mu)
-			for event in input_events[:input_count] {
-				switch event.kind {
-				case .Key:
-					for i in 0 ..< int(event.key_n) {machine.machine_key(m, event.key[i])}
-				case .Mouse_Motion, .Mouse_Buttons:
-					machine.machine_mouse(m, event.dx, event.dy, event.buttons)
-				case .Mouse_Wheel:
-					machine.machine_mouse_wheel(m, event.wheel, event.buttons)
-				}
-			}
-		}
-
-		if machine_live && !frozen && !host.pause_active(&pause_state) {
-			alive := machine.step(m)
-			vm_guard_flush_wake_evidence(&c.guard, m)
-			stats[m.exit_hist[(m.exit_count - 1) % machine.EXIT_HISTORY]] += 1
-			firmware_log_drain(&firmware, m, s)
-			if vm_guard_failed(&c.guard) {
-				frozen = true
-				publish_freeze(s, "vCPU watchdog scheduling failed", "")
-				continue loop
-			}
-			if !alive {
-				if machine.machine_power_off_requested(m) {
-					power_reason := machine.machine_power_off_reason(m)
-					if vm_close_then_shutdown(c, m, &machine_live) {
-						vm_log(s, fmt.tprintf("machine: %s", power_reason))
-						sync.lock(&s.mu)
-						s.running = false
-						sync.unlock(&s.mu)
-						break loop
-					}
-					frozen = true
-					publish_freeze(
-						s,
-						"APM power off blocked: disk reconciliation failed; staged writes retained",
-						"",
-					)
-				} else if machine.machine_cpu_reset_pending(m) {
-					reason := machine.machine_cpu_reset_reason(m)
-					reset_code := m.cpu_reset_cmos_0f
-					sync.lock(&c.guard.mu)
-					c.guard.valid = false
-					reset_ok := machine.machine_cpu_reset(m)
-					c.guard.valid = reset_ok
-					sync.unlock(&c.guard.mu)
-					if reset_ok {
-						machine.machine_rearm_wake(m)
-					}
-					if reset_ok {
-						frozen = false
-						vm_log(
-							s,
-							fmt.tprintf(
-								"machine: warm CPU reset (%s, CMOS 0F=%02x)",
-								reason,
-								reset_code,
-							),
-						)
-					} else {
-						frozen = true
-						publish_freeze(s, m.bus.freeze_msg, "")
-					}
-				} else if machine.machine_reset_requested(m) {
-					reset_reason := strings.clone(machine.machine_reset_reason(m))
-					reset_transaction, reset_state_ready := install_reset_transaction_stage(
-						&c.install_state,
-					)
-					if !reset_state_ready {
-						frozen = true
-						publish_freeze(
-							s,
-							"guest reset blocked: invalid Windows 98 install state",
-							"",
-						)
-						delete(reset_reason)
-						continue loop
-					}
-					if reset_transaction.state_changed {
-						if !install_state_save(c, "after guest reset") {
-							install_reset_transaction_restore(&c.install_state, &reset_transaction)
-							frozen = true
-							publish_freeze(
-								s,
-								"guest reset blocked: Windows 98 install state could not be persisted; Reset to retry",
-								"",
-							)
-							delete(reset_reason)
-							continue loop
-						}
-					}
-					publish_machine_running(s, false)
-					reset_diagnostic := vm_reinitialize_machine(
-						c,
-						m,
-						&machine_live,
-						!host.pause_active(&pause_state),
-						reset_transaction.state_changed,
-					)
-					rollback_diagnostic := profile.Install_State_Diagnostic.None
-					if reset_diagnostic != .None || !machine_live {
-						rollback_diagnostic = install_reset_transaction_rollback(
-							c.paths.install_state,
-							&c.install_state,
-							&reset_transaction,
-						)
-					}
-					if reset_diagnostic == .None && machine_live {
-						_ = install_reset_transaction_commit(&reset_transaction)
-						stats = {}
-						frozen = false
-						publish_freeze(s, "", "")
-						vm_log(s, fmt.tprintf("machine: reset (%s)", reset_reason))
-					} else if rollback_diagnostic != .None {
-						frozen = true
-						publish_freeze(s, "guest reset failed: install state rollback failed", "")
-					} else if reset_diagnostic == .Reconciliation_Failed {
-						frozen = true
-						publish_freeze(
-							s,
-							"guest reset blocked: disk reconciliation failed; staged C: writes retained; retry Reset or Exit",
-							"",
-						)
-					} else if reset_diagnostic == .Install_Cleanup_Failed {
-						frozen = true
-						publish_freeze(
-							s,
-							"guest reset blocked: Windows failed-boot sentinel could not be cleared",
-							"",
-						)
-					} else if reset_diagnostic == .Volume_Open_Failed {
-						frozen = true
-						publish_freeze(s, "guest reset failed: cannot reopen protected C:", "")
-					} else {
-						frozen = true
-						publish_freeze(s, "guest reset failed: machine init error", "")
-					}
-					publish_machine_running(s, machine_live)
-					delete(reset_reason)
-				} else {
-					frozen = true
-					r := hv.get_regs(&m.vm)
-					msg := strings.clone(m.bus.freeze_msg)
-					regs := format_regs(r, m)
-					publish_freeze(s, msg, regs)
-					fmt.printfln("VM frozen: %s", msg)
-				}
-			}
-		} else {
-			time.sleep(10 * time.Millisecond)
-		}
-
-		now := time.tick_now()
-		if machine_live && time.tick_diff(last_snap, now) >= SNAP_PERIOD {
-			last_snap = now
-			snap := machine.machine_text_snapshot(m)
-			if frame_mailbox_publish(&s.frames, m) {
-				machine.machine_note_scanout_copy(m)
-			}
-			sync.lock(&s.mu)
-			s.snap = snap
-			s.exit_stats = stats
-			sync.unlock(&s.mu)
-		}
-		free_all(context.temp_allocator)
-	}
-
-	sync.lock(&s.mu)
-	s.exit_stats = stats
-	sync.unlock(&s.mu)
-	firmware_log_host_flush(&firmware, s)
-	if machine_live {vm_shutdown(c, m)}
-	machine.machine_destroy(m)
-	publish_machine_running(s, false)
-	delete(c.floppy)
-	delete(c.floppy_path)
-	delete(c.cdrom_path)
-	free(m)
-}
 
 install_state_save :: proc(c: ^Vm_Ctx, reason: string) -> bool {
 	return install_state_save_value(c, &c.install_state, reason)
@@ -1314,55 +1268,20 @@ install_state_save_value :: proc(
 	return false
 }
 
-Install_Preparation_State_Restore :: enum {
-	Unsafe,
-	Restored,
-	Persistence_Failed,
-}
-
 install_state_clone :: proc(state: ^profile.Install_State) -> profile.Install_State {
 	if state == nil {return {}}
 	return profile.Install_State {
 		phase = state.phase,
 		milestone = state.milestone,
 		source_path = strings.clone(state.source_path),
+		image_path = strings.clone(state.image_path),
+		image_identity = state.image_identity,
+		edit_transaction_id = state.edit_transaction_id,
 		reset_count = state.reset_count,
 		saved_cmos_valid = state.saved_cmos_valid,
 		saved_cmos_38 = state.saved_cmos_38,
 		saved_cmos_3d = state.saved_cmos_3d,
 	}
-}
-
-install_preparation_restore_previous :: proc(
-	c: ^Vm_Ctx,
-	previous: ^profile.Install_State,
-	previous_cdrom_path: ^string,
-	report: ^win98prep.Report,
-) -> Install_Preparation_State_Restore {
-	if c == nil || previous == nil || previous_cdrom_path == nil || report == nil {
-		return .Unsafe
-	}
-	if report.diagnostic == .Rollback_Failed ||
-	   (report.transaction.state != .Inactive && report.transaction.state != .Rolled_Back) {
-		return .Unsafe
-	}
-	if !install_state_save_value(c, previous, "after failed media preparation") {
-		if c.shared != nil {
-			publish_freeze(
-				c.shared,
-				"Windows 98: previous install state could not be restored; preparation recovery state retained",
-				"",
-			)
-		}
-		return .Persistence_Failed
-	}
-	profile.install_state_destroy(&c.install_state)
-	c.install_state = previous^
-	previous^ = {}
-	delete(c.cdrom_path)
-	c.cdrom_path = previous_cdrom_path^
-	previous_cdrom_path^ = ""
-	return .Restored
 }
 
 install_state_candidate :: proc(
@@ -1382,13 +1301,19 @@ install_state_candidate :: proc(
 		saved_cmos_38 = previous.saved_cmos_38
 		saved_cmos_3d = previous.saved_cmos_3d
 	}
-	return profile.Install_State {
-		phase = .Preparing,
-		source_path = strings.clone(source_path),
+	state := profile.Install_State {
+		phase            = .Preparing,
+		source_path      = strings.clone(source_path),
 		saved_cmos_valid = saved_cmos_valid,
-		saved_cmos_38 = saved_cmos_38,
-		saved_cmos_3d = saved_cmos_3d,
+		saved_cmos_38    = saved_cmos_38,
+		saved_cmos_3d    = saved_cmos_3d,
 	}
+	if profile.install_state_bound(previous) {
+		state.image_path = strings.clone(previous.image_path)
+		state.image_identity = previous.image_identity
+		state.edit_transaction_id = previous.edit_transaction_id
+	}
+	return state
 }
 
 install_prepare_boot_cmos :: proc(c: ^Vm_Ctx, cmos: []u8) -> bool {
@@ -1408,13 +1333,6 @@ install_prepare_boot_cmos :: proc(c: ^Vm_Ctx, cmos: []u8) -> bool {
 	}
 	install_apply_boot_order(cmos)
 	return true
-}
-
-install_preparation_rollback_failed :: proc(report: ^win98prep.Report) -> bool {
-	return(
-		report != nil &&
-		(report.diagnostic == .Rollback_Failed || report.transaction.state == .Rollback_Failed) \
-	)
 }
 
 install_launch_stage :: proc(
@@ -1564,6 +1482,19 @@ console_main :: proc(
 	loaded_cmos := cmos
 	install_state, install_diagnostic := profile.install_state_load(paths.install_state)
 	defer profile.install_state_destroy(&install_state)
+	selected_image_path := attach ? settings.hard_drive_path : ""
+	install_gate := install_image_boot_gate_loaded(
+		&install_state,
+		selected_image_path,
+		install_diagnostic,
+	)
+	if !install_gate.allowed {
+		fmt.eprintfln(
+			"Windows 98: start blocked: %s",
+			install_image_boot_diagnostic_text(&install_gate),
+		)
+		return 1
+	}
 	runtime_cpu_mode := install_runtime_cpu_mode(settings.cpu_mode, &install_state)
 	runtime_settings := settings
 	runtime_settings.cpu_mode = runtime_cpu_mode
@@ -1571,21 +1502,11 @@ console_main :: proc(
 	if install_diagnostic != .None && install_diagnostic != .Missing {
 		fmt.eprintfln("Windows 98: install state ignored (%v)", install_diagnostic)
 	}
-	interrupted, recovered := install_interrupted_preparation_recover(paths, &install_state)
-	if interrupted {
-		message := "interrupted Windows 98 preparation recovered; rerun --install-windows with media"
-		if !recovered {
-			message = "interrupted Windows 98 preparation recovery was not provably safe"
-		}
-		fmt.eprintln(message)
-		return console_acceptance_configuration_error(
-			&run_options,
-			paths,
-			runtime_cpu_mode,
-			message,
-		)
-	}
-	vol: ^fat32.Volume
+	fat_session: ^fat32session.Machine_Session
+	machine_session_id := strings.clone(
+		fmt.tprintf("console-%d-%d", os.get_pid(), time.tick_now()),
+	)
+	defer delete(machine_session_id)
 	floppy_image: []u8
 	defer delete(floppy_image)
 	m := new(machine.Machine)
@@ -1597,6 +1518,7 @@ console_main :: proc(
 			m,
 			nil,
 			&firmware,
+			nil,
 			paths,
 			start,
 			&result,
@@ -1620,30 +1542,43 @@ console_main :: proc(
 	}
 	defer firmware_log_destroy(&firmware)
 	machine_segment_accumulated := false
+	defer {
+		if fat_session != nil {
+			if machine_live {_ = machine.machine_detach_disk(m)}
+			close_error := fat32session.close(fat_session, .Commit)
+			if close_error.code == .None || close_error.outcome == .Completed {
+				fat_session = nil
+			}
+			if close_error.code != .None && close_error.outcome != .Completed {
+				fmt.eprintfln(
+					"disk: close failed; FAT32 session retained: %s",
+					fat32session.error_text(&close_error),
+				)
+				_ = fat32session.close(fat_session, .Retain)
+				fat_session = nil
+				result = 2
+				run_result.stop_reason = .Fatal_Virtualization_Failure
+				run_result.exit_code = result
+			} else if close_error.code != .None {
+				fmt.eprintfln(
+					"disk: close completed with a companion cleanup warning: %s",
+					fat32session.error_text(&close_error),
+				)
+			}
+		}
+	}
 	defer console_acceptance_finalize(
 		&run_options,
 		&run_result,
 		m,
 		&machine_live,
 		&firmware,
+		&fat_session,
 		paths,
 		start,
 		&result,
 		&machine_segment_accumulated,
 	)
-	defer {
-		if vol != nil {
-			if machine_live {_ = machine.machine_detach_disk(m)}
-			closed := fat32.volume_close(vol)
-			vol = nil
-			if !closed {
-				fmt.eprintln("disk: close failed; staged C: writes remain retained")
-				result = 2
-				run_result.stop_reason = .Fatal_Virtualization_Failure
-				run_result.exit_code = result
-			}
-		}
-	}
 	defer {
 		if frame_dump_path != "" && machine_live {
 			console_dump_frame(frame_dump_path, machine.machine_display_frame(m))
@@ -1688,10 +1623,7 @@ console_main :: proc(
 	machine.machine_set_cpu_mode(m, runtime_cpu_mode)
 	machine.bus_set_strict_io(&m.bus, options.strict_io)
 	machine.machine_set_diagnostic_tracing(m, options.strict_io)
-	machine.machine_set_bus_diagnostic_tracing(
-		m,
-		options.setup_diagnostics == .Hardware,
-	)
+	machine.machine_set_bus_diagnostic_tracing(m, options.setup_diagnostics == .Hardware)
 	if !machine.machine_set_hardware_trace(m, true) {
 		fmt.eprintln("hardware flight recorder allocation failed")
 		return 1
@@ -1706,19 +1638,20 @@ console_main :: proc(
 		fmt.printfln("CD-ROM: mounted %s", cdrom_path)
 	}
 
-	if attach {
-		vol = fat32.volume_open(paths.c_drive, VOLUME_MB)
-		if vol == nil {
-			fmt.eprintfln("volume_open failed: %s", paths.c_drive)
+	if attach && settings.hard_drive_path != "" {
+		open_error: fat32session.Session_Error
+		fat_session, open_error = fat32session.open_machine(
+			settings.hard_drive_path,
+			machine_session_id,
+		)
+		if open_error.code != .None {
+			fmt.eprintfln("FAT32 session open failed: %s", fat32session.error_text(&open_error))
 			return 1
 		}
-		vol.on_fail = proc(ctx: rawptr, msg: string) {
-			fmt.printfln("disk: writes frozen: %s", msg)
-		}
-		machine.machine_attach_disk(m, fat32.volume_block_device(vol))
-		fmt.printfln("disk: %s as %dMB FAT32 volume", paths.c_drive, VOLUME_MB)
+		machine.machine_attach_disk(m, fat32session.block_device(fat_session))
+		fmt.printfln("disk: %s", settings.hard_drive_path)
 	} else {
-		fmt.println("disk: none (--no-disk)")
+		fmt.println("disk: none")
 	}
 
 	if floppy_path != "" {
@@ -1789,8 +1722,8 @@ console_main :: proc(
 	iterations := 0
 	setup_log_names := []string{"SETUPLOG.TXT"}
 	detection_log_names := []string{"DETLOG.TXT", "DETCRASH.LOG"}
-	setup_log_baseline := console_log_total_size(paths.c_drive, setup_log_names)
-	detection_log_baseline := console_log_total_size(paths.c_drive, detection_log_names)
+	setup_log_baseline := console_log_total_size(fat_session, setup_log_names)
+	detection_log_baseline := console_log_total_size(fat_session, detection_log_names)
 	last_setup_artifact_check := start
 	setup_artifact_reset_count: u32
 	last_progress_check := start
@@ -1829,9 +1762,7 @@ console_main :: proc(
 		&install_state,
 		install_diagnostic,
 	) {
-		fmt.eprintln(
-			"acceptance: target requires a valid Windows 98 installation state",
-		)
+		fmt.eprintln("acceptance: target requires a valid Windows 98 installation state")
 		return 1
 	}
 
@@ -1952,6 +1883,16 @@ console_main :: proc(
 			stress_next = time.tick_now()
 		}
 		alive := machine.step(m)
+		if storage_error, terminal := fat32session.session_terminal_error(fat_session); terminal {
+			fmt.eprintfln(
+				"disk: terminal FAT32 session failure: %s",
+				fat32session.error_text(&storage_error),
+			)
+			run_result.stop_reason = .Fatal_Virtualization_Failure
+			result = 2
+			run_result.exit_code = result
+			break loop
+		}
 		vm_guard_flush_wake_evidence(guard, m)
 		iterations += 1
 		firmware_log_drain(&firmware, m, nil)
@@ -2102,7 +2043,7 @@ console_main :: proc(
 					m,
 					guard,
 					&machine_live,
-					&vol,
+					&fat_session,
 					paths,
 					runtime_settings,
 					reboot_cmos[:],
@@ -2125,7 +2066,7 @@ console_main :: proc(
 					}
 					if machine_live {
 						fmt.eprintln(
-							"machine reset blocked: disk reconciliation failed; staged writes retained",
+							"machine reset blocked: disk durability barrier failed; recovery state retained",
 						)
 					} else {
 						fmt.eprintln("machine reinitialization failed after guest reset")
@@ -2139,13 +2080,16 @@ console_main :: proc(
 				if install_reset_transaction_commit(&reset_transaction) {
 					console_result_record_reset_success(&run_result, &desktop_graphics)
 					primary_dma_epoch_baseline_transactions =
-						run_result.execution.primary_ide_dma_transactions
-					primary_dma_epoch_baseline_bytes = run_result.execution.primary_ide_dma_bytes
+						run_result.execution.primary_ide_kernel_dma_transactions
+					primary_dma_epoch_baseline_bytes =
+						run_result.execution.primary_ide_kernel_dma_bytes
 					if options.accept_until == .Desktop {
 						desktop_marker_seen = false
 						run_result.desktop_marker_seen = false
 						run_result.desktop_enum_valid = false
 						run_result.desktop_vga_irq11_seen = false
+						run_result.desktop_primary_ide_dma_transactions = 0
+						run_result.desktop_primary_ide_dma_bytes = 0
 					}
 				}
 				input_reset_count += 1
@@ -2235,22 +2179,28 @@ console_main :: proc(
 			&last_setup_artifact_check,
 			now,
 		) {
-			reconciled := vol == nil
-			if vol != nil {
-				stats := fat32.volume_journal_storage_stats(vol)
-				reconciled = !vol.frozen && (stats.dirty_sectors == 0 || fat32.volume_flush(vol))
+			materialized := fat_session == nil
+			barrier_error: fat32session.Session_Error
+			if fat_session != nil {
+				barrier_result: fat32session.Barrier_Result
+				barrier_result, barrier_error = fat32session.barrier(fat_session, .Observation)
+				materialized =
+					barrier_error.code == .None && barrier_result.materialization == .Materialized
 			}
 			last_setup_artifact_check = time.tick_now()
-			if !reconciled && vol.frozen {
-				fmt.eprintln("Windows 98: C: reconciliation failed while observing Setup")
+			if !materialized && barrier_error.code != .None {
+				fmt.eprintfln(
+					"Windows 98: C: observation barrier failed: %s",
+					fat32session.error_text(&barrier_error),
+				)
 				run_result.stop_reason = .Fatal_Virtualization_Failure
 				result = 2
 				run_result.exit_code = result
 				break loop
 			}
-			if reconciled && detection_pending {
-				setup_size := console_log_total_size(paths.c_drive, setup_log_names)
-				detection_size := console_log_total_size(paths.c_drive, detection_log_names)
+			if materialized && detection_pending {
+				setup_size := console_log_total_size(fat_session, setup_log_names)
+				detection_size := console_log_total_size(fat_session, detection_log_names)
 				logs_changed :=
 					setup_size > 0 &&
 					detection_size > 0 &&
@@ -2270,16 +2220,20 @@ console_main :: proc(
 					}
 				}
 			}
-			if reconciled && desktop_pending {
-				enum_evidence, marker_seen, enum_valid :=
-					console_desktop_marker_evidence(paths.c_drive)
-				primary_dma_transactions, primary_dma_bytes := console_primary_ide_dma_evidence(
-					&run_result,
-					m,
-					machine_segment_accumulated,
-					primary_dma_epoch_baseline_transactions,
-					primary_dma_epoch_baseline_bytes,
+			if materialized && desktop_pending {
+				enum_evidence, marker_seen, enum_valid := console_desktop_marker_evidence(
+					fat_session,
 				)
+				primary_dma_transactions, primary_dma_bytes :=
+					console_primary_ide_kernel_dma_evidence(
+						&run_result,
+						m,
+						machine_segment_accumulated,
+						primary_dma_epoch_baseline_transactions,
+						primary_dma_epoch_baseline_bytes,
+					)
+				run_result.desktop_primary_ide_dma_transactions = primary_dma_transactions
+				run_result.desktop_primary_ide_dma_bytes = primary_dma_bytes
 				run_result.desktop_marker_seen = marker_seen
 				run_result.desktop_enum_valid = enum_valid
 				run_result.desktop_vga_irq11_seen = enum_evidence.vga_irq11_seen
@@ -2407,9 +2361,21 @@ publish_cdrom_state :: proc(s: ^Shared, mounted: bool) {
 	sync.unlock(&s.mu)
 }
 
+publish_floppy_state :: proc(s: ^Shared, mounted: bool) {
+	sync.lock(&s.mu)
+	s.floppy_mounted = mounted
+	sync.unlock(&s.mu)
+}
+
 publish_install_state :: proc(s: ^Shared, installing: bool) {
 	sync.lock(&s.mu)
 	s.installing_windows_98 = installing
+	sync.unlock(&s.mu)
+}
+
+publish_install_recovery_state :: proc(s: ^Shared, recovery_required: bool) {
+	sync.lock(&s.mu)
+	s.install_recovery_required = recovery_required
 	sync.unlock(&s.mu)
 }
 

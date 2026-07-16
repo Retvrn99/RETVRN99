@@ -31,7 +31,7 @@ i8042_test_write :: proc(k: ^I8042, port: u16, value: u8) {
 }
 
 i8042_test_read :: proc(k: ^I8042) -> u8 {
-	for i in 0 ..< 32 {
+	for _ in 0 ..< 32 {
 		if i8042_in(k, 0x64) & 1 != 0 {return i8042_in(k, 0x60)}
 		if wait, ok := i8042_next_deadline_ns(k); ok {i8042_advance(k, max(wait, u64(1)))} else {break}
 	}

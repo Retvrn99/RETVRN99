@@ -64,22 +64,58 @@ whpx_test_string_port_write :: proc(ctx: rawptr, port: u16, size: u8, value: u32
 }
 
 Whpx_Stream_Probe :: struct {
-	calls: int,
+	calls:    int,
 	elements: int,
-	first: u16,
+	first:    u16,
 }
 
-whpx_test_stream_write :: proc(
-	ctx: rawptr,
-	port: u16,
-	size: u8,
-	data: []u8,
-) -> (int, bool, bool) {
+Whpx_IO_Origin_Probe :: struct {
+	vm:     ^Vm,
+	origin: Io_Origin,
+}
+
+whpx_test_origin_write :: proc(ctx: rawptr, port: u16, size: u8, value: u32) -> bool {
+	probe := (^Whpx_IO_Origin_Probe)(ctx)
+	probe.origin = probe.vm.io_origin
+	return true
+}
+
+whpx_test_stream_write :: proc(ctx: rawptr, port: u16, size: u8, data: []u8) -> (int, bool, bool) {
 	probe := (^Whpx_Stream_Probe)(ctx)
 	probe.calls += 1
 	probe.elements = len(data) / int(size)
 	probe.first = u16(data[0]) | u16(data[1]) << 8
 	return probe.elements, true, true
+}
+
+@(test)
+test_whpx_io_origin_uses_exit_cpl_and_is_transient :: proc(t: ^testing.T) {
+	if !available() {log.warn("WHPX not available"); return}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+	vp: WHV_VP_EXIT_CONTEXT
+	io: WHV_X64_IO_PORT_ACCESS_CONTEXT
+	if !whpx_test_manual_io_context(t, &vm, &vp, &io, 0xA5, 0, 0, 0, 0x1234, 0x2) {
+		return
+	}
+	vp.ExecutionState = u16(3) | u16(1) << 2
+	vp.Cs.Base = 0xC100_0000
+	whpx_test_manual_io_instruction(&vp, &io, []u8{0xE6, 0x80}, 0x3, 0x80)
+	probe := Whpx_IO_Origin_Probe {
+		vm = &vm,
+	}
+	vm.io_ctx = &probe
+	vm.io_write = whpx_test_origin_write
+	ok, detail := whpx_emulate_io(&vm, &vp, &io)
+	if !testing.expect(t, ok) {return}
+	testing.expect_value(t, detail, "")
+	testing.expect(t, probe.origin.valid)
+	testing.expect(t, probe.origin.protected_mode)
+	testing.expect_value(t, probe.origin.cpl, u8(3))
+	testing.expect_value(t, probe.origin.cs, u16(8))
+	testing.expect_value(t, probe.origin.linear, u64(0xC100_1234))
+	testing.expect(t, !vm.io_origin.valid)
 }
 
 @(test)

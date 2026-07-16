@@ -7,6 +7,7 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 import "core:time"
+import "fat32session"
 import "machine"
 import "profile"
 import "vga"
@@ -42,14 +43,16 @@ console_acceptance_test_success_requires_one_boot_epoch_per_guest_reset :: proc(
 		accept_until = .Desktop,
 	}
 	result := acceptance.Result {
-		stop_reason = .Acceptance_Reached,
-		exit_code = 0,
-		reset_count = 1,
-		boot_epoch = 2,
-		guest_requested_resets = 1,
-		desktop_marker_seen = true,
-		desktop_enum_valid = true,
-		desktop_vga_irq11_seen = true,
+		stop_reason                          = .Acceptance_Reached,
+		exit_code                            = 0,
+		reset_count                          = 1,
+		boot_epoch                           = 2,
+		guest_requested_resets               = 1,
+		desktop_marker_seen                  = true,
+		desktop_enum_valid                   = true,
+		desktop_vga_irq11_seen               = true,
+		desktop_primary_ide_dma_transactions = 1,
+		desktop_primary_ide_dma_bytes        = 512,
 	}
 	result.execution.primary_ide_dma_transactions = 1
 	result.execution.primary_ide_dma_bytes = 512
@@ -74,9 +77,30 @@ console_acceptance_test_success_requires_one_boot_epoch_per_guest_reset :: proc(
 	testing.expect_value(t, desktop_lost.last_progress_reason, "desktop_evidence_lost")
 	testing.expect_value(t, desktop_lost_return_code, 2)
 
+	firmware_only := result
+	firmware_only.desktop_primary_ide_dma_transactions = 0
+	firmware_only.desktop_primary_ide_dma_bytes = 0
+	firmware_only_return_code := 0
+	console_acceptance_enforce_result_invariants(
+		&options,
+		&firmware_only,
+		&firmware_only_return_code,
+	)
+	testing.expect_value(
+		t,
+		firmware_only.stop_reason,
+		acceptance.Stop_Reason.Fatal_Virtualization_Failure,
+	)
+	testing.expect_value(t, firmware_only.last_progress_reason, "desktop_evidence_lost")
+	testing.expect_value(t, firmware_only_return_code, 2)
+
 	result.guest_requested_resets = 2
 	console_acceptance_enforce_result_invariants(&options, &result, &return_code)
-	testing.expect_value(t, result.stop_reason, acceptance.Stop_Reason.Fatal_Virtualization_Failure)
+	testing.expect_value(
+		t,
+		result.stop_reason,
+		acceptance.Stop_Reason.Fatal_Virtualization_Failure,
+	)
 	testing.expect_value(t, result.last_progress_reason, "reset_epoch_mismatch")
 	testing.expect_value(t, result.exit_code, 2)
 	testing.expect_value(t, return_code, 2)
@@ -324,15 +348,22 @@ console_acceptance_test_artifact_setup_logs_are_bounded_and_path_free :: proc(t:
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_console_artifact_*", context.temp_allocator)
 	defer os.remove_all(dir)
-	windows, _ := filepath.join({dir, "WINDOWS"})
-	testing.expect(t, os.make_directory_all(windows) == nil)
-	log_path, _ := filepath.join({windows, "SETUPLOG.TXT"})
 	payload := make([]u8, CONSOLE_ARTIFACT_LOG_BYTES + 4096, context.temp_allocator)
 	for &byte in payload {byte = 'x'}
-	testing.expect(t, os.write_entire_file(log_path, payload) == nil)
-	paths := profile.Paths {
-		c_drive = dir,
-	}
+	image_path := test_image_create(t, dir, "artifact.img")
+	if image_path == "" {return}
+	if !test_image_write_files(
+		t,
+		image_path,
+		[]string{"WINDOWS"},
+		[]Test_Image_File {
+			{path = "WINDOWS/SETUPLOG.TXT", data = string(payload)},
+			{path = "IO.SYS", data = "boot"},
+		},
+	) {return}
+	session, session_error := fat32session.open_in_process(image_path, "artifact-test")
+	if !testing.expect(t, session_error.code == .None && session != nil) {return}
+	defer if session != nil {_ = fat32session.close(session, .Commit)}
 	result := acceptance.Result {
 		stop_reason            = .Strict_IO_Failure,
 		exit_code              = 2,
@@ -350,7 +381,7 @@ console_acceptance_test_artifact_setup_logs_are_bounded_and_path_free :: proc(t:
 		stale_callbacks  = 1,
 		evidence_dropped = 3,
 	}
-	diagnostics := console_artifact_diagnostics(&result, nil, "firmware-tail", &paths)
+	diagnostics := console_artifact_diagnostics(&result, nil, "firmware-tail", session)
 	defer delete(diagnostics)
 	testing.expect(t, strings.contains(diagnostics, "unclassified=3 mmio=4"))
 	testing.expect(t, strings.contains(diagnostics, "setup-log C:\\WINDOWS\\SETUPLOG.TXT"))
@@ -373,12 +404,11 @@ console_acceptance_test_artifact_setup_logs_are_bounded_and_path_free :: proc(t:
 
 @(test)
 console_acceptance_test_configuration_failure_writes_requested_outputs :: proc(t: ^testing.T) {
-	context.allocator = context.temp_allocator
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_console_config_*", context.temp_allocator)
 	defer os.remove_all(dir)
-	result_path, _ := filepath.join({dir, "result.json"})
-	artifacts, _ := filepath.join({dir, "artifacts"})
+	result_path, _ := filepath.join({dir, "result.json"}, context.temp_allocator)
+	artifacts, _ := filepath.join({dir, "artifacts"}, context.temp_allocator)
 	options := acceptance.Options {
 		result_json = result_path,
 		artifacts   = artifacts,
@@ -394,7 +424,7 @@ console_acceptance_test_configuration_failure_writes_requested_outputs :: proc(t
 		t,
 		strings.contains(string(result_data), `"stop_reason": "configuration_error"`),
 	)
-	diagnostics_path, _ := filepath.join({artifacts, "diagnostics.txt"})
+	diagnostics_path, _ := filepath.join({artifacts, "diagnostics.txt"}, context.temp_allocator)
 	diagnostics, diagnostics_error := os.read_entire_file(diagnostics_path, context.temp_allocator)
 	testing.expect(t, diagnostics_error == nil)
 	testing.expect(t, strings.contains(string(diagnostics), "configuration=isolated failure"))
@@ -702,6 +732,7 @@ console_acceptance_test_nonlive_machine_trace_is_written_and_released :: proc(t:
 		&live,
 		&firmware,
 		nil,
+		nil,
 		time.tick_now(),
 		&return_code,
 	)
@@ -748,6 +779,7 @@ console_acceptance_test_requested_artifact_failure_is_nonzero :: proc(t: ^testin
 		&live,
 		&firmware,
 		nil,
+		nil,
 		time.tick_now(),
 		&return_code,
 	)
@@ -761,6 +793,37 @@ console_acceptance_test_requested_artifact_failure_is_nonzero :: proc(t: ^testin
 	testing.expect(t, strings.contains(string(serialized), `"exit_code": 2`))
 }
 
+console_acceptance_test_stopped_write :: proc(
+	t: ^testing.T,
+	session: ^^fat32session.Machine_Session,
+	image_path: string,
+	files: []Test_Image_File,
+) -> bool {
+	if session == nil || session^ == nil {return false}
+	if close_error := fat32session.close(session^, .Commit); close_error.code != .None {
+		return false
+	}
+	session^ = nil
+	if !test_image_write_files(t, image_path, nil, files) {return false}
+	reopened, open_error := fat32session.open_in_process(image_path, "desktop-marker-test")
+	if open_error.code != .None || reopened == nil {return false}
+	session^ = reopened
+	return true
+}
+
+console_acceptance_test_stopped_write_one :: proc(
+	t: ^testing.T,
+	session: ^^fat32session.Machine_Session,
+	image_path, guest_path, data: string,
+) -> bool {
+	return console_acceptance_test_stopped_write(
+		t,
+		session,
+		image_path,
+		[]Test_Image_File{{path = guest_path, data = data}},
+	)
+}
+
 @(test)
 console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: proc(
 	t: ^testing.T,
@@ -769,24 +832,59 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_desktop_marker_*", context.temp_allocator)
 	defer os.remove_all(dir)
-	testing.expect(t, !console_desktop_marker_exists(dir))
-	setup, _ := filepath.join({dir, "GSWSETUP"})
-	testing.expect(t, os.make_directory(setup) == nil)
-	marker, _ := filepath.join({setup, "DESKTOP.OK"})
-	testing.expect(t, os.write_entire_file(marker, "READY\r\n") == nil)
-	_, marker_seen, enum_valid := console_desktop_marker_evidence(dir)
+	image_path := test_image_create(t, dir, "desktop.img")
+	if image_path == "" {return}
+	if !test_image_write_files(
+		t,
+		image_path,
+		[]string{"GSWSETUP"},
+		[]Test_Image_File{{path = "IO.SYS", data = "boot"}},
+	) {return}
+	session, session_error := fat32session.open_in_process(image_path, "desktop-marker-test")
+	if !testing.expect(t, session_error.code == .None && session != nil) {return}
+	defer if session != nil {_ = fat32session.close(session, .Commit)}
+	testing.expect(t, !console_desktop_marker_exists(session))
+	testing.expect(
+		t,
+		console_acceptance_test_stopped_write(
+			t,
+			&session,
+			image_path,
+			[]Test_Image_File{{path = "GSWSETUP/DESKTOP.OK", data = "READY\r\n"}},
+		),
+	)
+	marker_batch, marker_error := fat32session.observe(
+		session,
+		[]fat32session.Probe{{kind = .Read_Range, path = "GSWSETUP/DESKTOP.OK", length = 64}},
+		context.temp_allocator,
+	)
+	if testing.expect_value(t, marker_error.code, fat32session.Error_Code.None) {
+		defer fat32session.observation_batch_destroy(&marker_batch, context.temp_allocator)
+		testing.expect_value(t, len(marker_batch.items), 1)
+		if len(marker_batch.items) == 1 {
+			testing.expect_value(t, marker_batch.items[0].type, fat32session.Observed_Type.Regular)
+			testing.expect_value(t, string(marker_batch.items[0].data), "READY\r\n")
+		}
+	}
+	_, marker_seen, enum_valid := console_desktop_marker_evidence(session)
 	testing.expect(t, marker_seen)
 	testing.expect(t, !enum_valid)
 	result: acceptance.Result
-	console_result_refresh_desktop_evidence(&result, dir)
+	console_result_refresh_desktop_evidence(&result, session)
 	testing.expect(t, result.desktop_marker_seen)
 	testing.expect(t, !result.desktop_enum_valid)
 	testing.expect(t, !result.desktop_vga_irq11_seen)
-	testing.expect(t, !console_desktop_marker_exists(dir))
-	enumeration, _ := filepath.join({setup, "ENUM.REG"})
-	dynamic_enumeration, _ := filepath.join({setup, "DYNENUM.REG"})
-	testing.expect(t, os.write_entire_file(enumeration, "REGEDIT4\r\n") == nil)
-	testing.expect(t, !console_desktop_marker_exists(dir))
+	testing.expect(t, !console_desktop_marker_exists(session))
+	testing.expect(
+		t,
+		console_acceptance_test_stopped_write(
+			t,
+			&session,
+			image_path,
+			[]Test_Image_File{{path = "GSWSETUP/ENUM.REG", data = "REGEDIT4\r\n"}},
+		),
+	)
+	testing.expect(t, !console_desktop_marker_exists(session))
 	valid_enumeration :=
 		"REGEDIT4\r\n\r\n" +
 		"[HKEY_LOCAL_MACHINE\\Enum\\PCI\\VEN_1022&DEV_7006&REV_25\\BUS_00&DEV_00&FUNC_00]\r\n" +
@@ -804,40 +902,74 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 	valid_dynamic_enumeration :=
 		"REGEDIT4\r\n\r\n" +
 		"[HKEY_DYN_DATA\\Config Manager\\Enum\\C0000001]\r\n" +
-		`"HardWareKey"="PCI\\VEN_1022&DEV_7006&REV_25\\BUS_00&DEV_00&FUNC_00"` + "\r\n" +
-		`"Problem"=hex:00,00,00,00` + "\r\n" +
-		`"Status"=hex:4a,00,00,00` + "\r\n\r\n" +
+		`"HardWareKey"="PCI\\VEN_1022&DEV_7006&REV_25\\BUS_00&DEV_00&FUNC_00"` +
+		"\r\n" +
+		`"Problem"=hex:00,00,00,00` +
+		"\r\n" +
+		`"Status"=hex:4a,00,00,00` +
+		"\r\n\r\n" +
 		"[HKEY_DYN_DATA\\Config Manager\\Enum\\C0000002]\r\n" +
-		`"HardWareKey"="PCI\\VEN_1022&DEV_7408&REV_01\\BUS_00&DEV_07&FUNC_00"` + "\r\n" +
-		`"Problem"=dword:00000000` + "\r\n" +
-		`"Status"=dword:0000004a` + "\r\n\r\n" +
+		`"HardWareKey"="PCI\\VEN_1022&DEV_7408&REV_01\\BUS_00&DEV_07&FUNC_00"` +
+		"\r\n" +
+		`"Problem"=dword:00000000` +
+		"\r\n" +
+		`"Status"=dword:0000004a` +
+		"\r\n\r\n" +
 		"[HKEY_DYN_DATA\\Config Manager\\Enum\\C0000003]\r\n" +
-		`"HardWareKey"="PCI\\VEN_1022&DEV_7409&REV_07\\BUS_00&DEV_07&FUNC_01"` + "\r\n" +
-		`"Problem"=hex:00,00,00,00` + "\r\n" +
-		`"Status"=hex:4a,00,00,00` + "\r\n\r\n" +
+		`"HardWareKey"="PCI\\VEN_1022&DEV_7409&REV_07\\BUS_00&DEV_07&FUNC_01"` +
+		"\r\n" +
+		`"Problem"=hex:00,00,00,00` +
+		"\r\n" +
+		`"Status"=hex:4a,00,00,00` +
+		"\r\n\r\n" +
 		"[HKEY_DYN_DATA\\Config Manager\\Enum\\C0000004]\r\n" +
-		`"HardWareKey"="PCI\\VEN_FFFE&DEV_0002&REV_01\\BUS_00&DEV_02&FUNC_00"` + "\r\n" +
-		`"Problem"=hex:00,00,00,00` + "\r\n" +
-		`"Status"=hex:4a,00,00,00` + "\r\n" +
-		`"Allocation"=hex:00,04,00,00,01,00,00,00,10,00,00,00,04,00,00,00,\` + "\r\n" +
+		`"HardWareKey"="PCI\\VEN_FFFE&DEV_0002&REV_01\\BUS_00&DEV_02&FUNC_00"` +
+		"\r\n" +
+		`"Problem"=hex:00,00,00,00` +
+		"\r\n" +
+		`"Status"=hex:4a,00,00,00` +
+		"\r\n" +
+		`"Allocation"=hex:00,04,00,00,01,00,00,00,10,00,00,00,04,00,00,00,\` +
+		"\r\n" +
 		"  03,00,0b,00,00,08,00,00,00,00,00,00\r\n\r\n" +
 		"[HKEY_DYN_DATA\\Config Manager\\Enum\\C0000005]\r\n" +
-		`"HardWareKey"="MF\\GOODPRIMARY\\PCI&VEN_1022&DEV_7409&REV_07&BUS_00&DEV_07&FUNC_01"` + "\r\n" +
-		`"Problem"=hex:00,00,00,00` + "\r\n" +
-		`"Status"=hex:4a,00,02,00` + "\r\n\r\n" +
+		`"HardWareKey"="MF\\GOODPRIMARY\\PCI&VEN_1022&DEV_7409&REV_07&BUS_00&DEV_07&FUNC_01"` +
+		"\r\n" +
+		`"Problem"=hex:00,00,00,00` +
+		"\r\n" +
+		`"Status"=hex:4a,00,02,00` +
+		"\r\n\r\n" +
 		"[HKEY_DYN_DATA\\Config Manager\\Enum\\C0000006]\r\n" +
-		`"HardWareKey"="MF\\GOODSECONDARY\\PCI&VEN_1022&DEV_7409&REV_07&BUS_00&DEV_07&FUNC_01"` + "\r\n" +
-		`"Problem"=hex:00,00,00,00` + "\r\n" +
-		`"Status"=hex:4a,00,02,00` + "\r\n"
-	testing.expect(t, os.write_entire_file(enumeration, valid_enumeration) == nil)
-	testing.expect(t, !console_desktop_marker_exists(dir))
+		`"HardWareKey"="MF\\GOODSECONDARY\\PCI&VEN_1022&DEV_7409&REV_07&BUS_00&DEV_07&FUNC_01"` +
+		"\r\n" +
+		`"Problem"=hex:00,00,00,00` +
+		"\r\n" +
+		`"Status"=hex:4a,00,02,00` +
+		"\r\n"
 	testing.expect(
 		t,
-		os.write_entire_file(dynamic_enumeration, valid_dynamic_enumeration) == nil,
+		console_acceptance_test_stopped_write_one(
+			t,
+			&session,
+			image_path,
+			"GSWSETUP/ENUM.REG",
+			valid_enumeration,
+		),
 	)
-	testing.expect(t, console_desktop_marker_exists(dir))
+	testing.expect(t, !console_desktop_marker_exists(session))
+	testing.expect(
+		t,
+		console_acceptance_test_stopped_write_one(
+			t,
+			&session,
+			image_path,
+			"GSWSETUP/DYNENUM.REG",
+			valid_dynamic_enumeration,
+		),
+	)
+	testing.expect(t, console_desktop_marker_exists(session))
 	testing.expect(t, console_windows98_enum_valid(valid_enumeration, valid_dynamic_enumeration))
-	console_result_refresh_desktop_evidence(&result, dir)
+	console_result_refresh_desktop_evidence(&result, session)
 	testing.expect(t, result.desktop_marker_seen)
 	testing.expect(t, result.desktop_enum_valid)
 	testing.expect(t, result.desktop_vga_irq11_seen)
@@ -852,8 +984,8 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 	missing_allocation, missing_allocation_allocated := strings.replace_all(
 		valid_dynamic_enumeration,
 		`"Allocation"=hex:00,04,00,00,01,00,00,00,10,00,00,00,04,00,00,00,\` +
-			"\r\n" +
-			"  03,00,0b,00,00,08,00,00,00,00,00,00\r\n",
+		"\r\n" +
+		"  03,00,0b,00,00,08,00,00,00,00,00,00\r\n",
 		"",
 	)
 	testing.expect(t, missing_allocation_allocated)
@@ -871,15 +1003,34 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 		"03,00,0b,00,00,08,00,00",
 		"03,00,0a,00,00,08,00,00",
 	)
-	testing.expect(t, os.write_entire_file(dynamic_enumeration, bad_irq) == nil)
+	testing.expect(
+		t,
+		console_acceptance_test_stopped_write_one(
+			t,
+			&session,
+			image_path,
+			"GSWSETUP/DYNENUM.REG",
+			bad_irq,
+		),
+	)
 	if bad_irq_allocated {delete(bad_irq)}
-	testing.expect(t, !console_desktop_marker_exists(dir))
-	testing.expect(t, os.write_entire_file(dynamic_enumeration, valid_dynamic_enumeration) == nil)
+	testing.expect(t, !console_desktop_marker_exists(session))
+	testing.expect(
+		t,
+		console_acceptance_test_stopped_write_one(
+			t,
+			&session,
+			image_path,
+			"GSWSETUP/DYNENUM.REG",
+			valid_dynamic_enumeration,
+		),
+	)
 	mixed_irq, mixed_irq_error := strings.concatenate(
 		{
 			valid_enumeration,
 			"\r\n[HKEY_LOCAL_MACHINE\\Enum\\PCI\\VEN_FFFE&DEV_0002&REV_01\\BUS_00&DEV_02&FUNC_00\\LogConfig\\ALT]\r\n",
-			`"AllocConfig"=hex(8):01,00,00,00,05,00,00,00,00,00,00,00,01,00,01,00,01,00,00,00,02,03,00,00,0a,00,00,00,0a,00,00,00,ff,ff,ff,ff` + "\r\n",
+			`"AllocConfig"=hex(8):01,00,00,00,05,00,00,00,00,00,00,00,01,00,01,00,01,00,00,00,02,03,00,00,0a,00,00,00,0a,00,00,00,ff,ff,ff,ff` +
+			"\r\n",
 		},
 	)
 	testing.expect(t, mixed_irq_error == nil)
@@ -935,20 +1086,51 @@ console_acceptance_test_desktop_proof_requires_marker_and_nonblack_graphics :: p
 	)
 	if !testing.expect(t, synthetic_error == nil) {return}
 	defer delete(synthetic)
-	testing.expect(t, os.write_entire_file(enumeration, synthetic) == nil)
-	testing.expect(t, !console_desktop_marker_exists(dir))
+	testing.expect(
+		t,
+		console_acceptance_test_stopped_write_one(
+			t,
+			&session,
+			image_path,
+			"GSWSETUP/ENUM.REG",
+			synthetic,
+		),
+	)
+	testing.expect(t, !console_desktop_marker_exists(session))
 	harmless_text, harmless_text_error := strings.concatenate(
-		{valid_enumeration, "\r\n[HKEY_LOCAL_MACHINE\\Enum\\Root\\LEGACY]\r\n", `"Comment"="VEN_FFFE&DEV_0001"`},
+		{
+			valid_enumeration,
+			"\r\n[HKEY_LOCAL_MACHINE\\Enum\\Root\\LEGACY]\r\n",
+			`"Comment"="VEN_FFFE&DEV_0001"`,
+		},
 	)
 	testing.expect(t, harmless_text_error == nil)
 	if harmless_text_error == nil {
 		testing.expect(t, console_windows98_enum_valid(harmless_text, valid_dynamic_enumeration))
 		delete(harmless_text)
 	}
-	testing.expect(t, os.write_entire_file(enumeration, valid_enumeration) == nil)
-	testing.expect(t, console_desktop_marker_exists(dir))
-	testing.expect(t, os.write_entire_file(marker, "STALE\r\n") == nil)
-	testing.expect(t, !console_desktop_marker_exists(dir))
+	testing.expect(
+		t,
+		console_acceptance_test_stopped_write_one(
+			t,
+			&session,
+			image_path,
+			"GSWSETUP/ENUM.REG",
+			valid_enumeration,
+		),
+	)
+	testing.expect(t, console_desktop_marker_exists(session))
+	testing.expect(
+		t,
+		console_acceptance_test_stopped_write_one(
+			t,
+			&session,
+			image_path,
+			"GSWSETUP/DESKTOP.OK",
+			"STALE\r\n",
+		),
+	)
+	testing.expect(t, !console_desktop_marker_exists(session))
 
 	pixels := []u32{0xFF000000, 0xFF000000}
 	frame := vga.Display_Frame {
@@ -978,10 +1160,7 @@ console_acceptance_test_profile_readiness_preserves_install_gates :: proc(t: ^te
 	testing.expect(t, !console_acceptance_profile_ready(.Desktop, nil, .None))
 	testing.expect(t, !console_acceptance_profile_ready(.Desktop, &inactive, .Missing))
 	testing.expect(t, console_acceptance_profile_ready(.Desktop, &inactive, .None))
-	testing.expect(
-		t,
-		!console_acceptance_profile_ready(.Hardware_Detection, &inactive, .None),
-	)
+	testing.expect(t, !console_acceptance_profile_ready(.Hardware_Detection, &inactive, .None))
 	testing.expect(
 		t,
 		console_acceptance_profile_ready(.Hardware_Detection, &active_pre_reset, .None),
@@ -1050,9 +1229,7 @@ console_acceptance_test_win98_dynamic_allocation_irq_is_strict :: proc(t: ^testi
 }
 
 @(test)
-console_acceptance_test_desktop_graphics_requires_one_percent_visible_rgb :: proc(
-	t: ^testing.T,
-) {
+console_acceptance_test_desktop_graphics_requires_one_percent_visible_rgb :: proc(t: ^testing.T) {
 	width, height := 640, 480
 	pixels := make([]u32, width * height)
 	defer delete(pixels)
@@ -1098,28 +1275,35 @@ console_acceptance_test_primary_ide_dma_evidence_combines_completed_segments :: 
 	t: ^testing.T,
 ) {
 	result := acceptance.Result {
-		execution = {primary_ide_dma_transactions = 2, primary_ide_dma_bytes = 1024},
+		execution = {
+			primary_ide_dma_transactions = 200,
+			primary_ide_dma_bytes = 100 * 1024,
+			primary_ide_kernel_dma_transactions = 2,
+			primary_ide_kernel_dma_bytes = 1024,
+		},
 	}
 	m := new(machine.Machine)
 	defer free(m)
-	m.bmide.channel_transactions[0] = 3
-	m.bmide.channel_bytes_moved[0] = 1536
+	m.bmide.channel_transactions[0] = 300
+	m.bmide.channel_bytes_moved[0] = 150 * 1024
 	m.bmide.channel_transactions[1] = 7
 	m.bmide.channel_bytes_moved[1] = 14 * 1024
+	m.primary_ide_kernel_dma_transactions = 3
+	m.primary_ide_kernel_dma_bytes = 1536
 
-	transactions, bytes := console_primary_ide_dma_evidence(&result, m, false)
+	transactions, bytes := console_primary_ide_kernel_dma_evidence(&result, m, false)
 	testing.expect_value(t, transactions, u64(5))
 	testing.expect_value(t, bytes, u64(2560))
-	transactions, bytes = console_primary_ide_dma_evidence(&result, m, false, 2, 1024)
+	transactions, bytes = console_primary_ide_kernel_dma_evidence(&result, m, false, 2, 1024)
 	testing.expect_value(t, transactions, u64(3))
 	testing.expect_value(t, bytes, u64(1536))
-	transactions, bytes = console_primary_ide_dma_evidence(&result, m, false, 5, 2560)
+	transactions, bytes = console_primary_ide_kernel_dma_evidence(&result, m, false, 5, 2560)
 	testing.expect_value(t, transactions, u64(0))
 	testing.expect_value(t, bytes, u64(0))
-	transactions, bytes = console_primary_ide_dma_evidence(&result, m, false, 6, 2561)
+	transactions, bytes = console_primary_ide_kernel_dma_evidence(&result, m, false, 6, 2561)
 	testing.expect_value(t, transactions, u64(0))
 	testing.expect_value(t, bytes, u64(0))
-	transactions, bytes = console_primary_ide_dma_evidence(&result, m, true)
+	transactions, bytes = console_primary_ide_kernel_dma_evidence(&result, m, true)
 	testing.expect_value(t, transactions, u64(2))
 	testing.expect_value(t, bytes, u64(1024))
 	testing.expect(t, console_desktop_hardware_evidence_complete(true, transactions, bytes))

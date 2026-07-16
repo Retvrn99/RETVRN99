@@ -22,6 +22,7 @@ Mmio_Zone :: enum {
 EXIT_HISTORY :: 32
 IO_HISTORY :: 64
 IDE_HISTORY :: 128
+IDE_KERNEL_PROBE_HISTORY :: 1024
 MACHINE_GOVERNOR_QUANTUM_NS :: u64(1_000_000)
 MACHINE_NO_WAKE_NS :: u64(86_400_000_000_000)
 MACHINE_CDDA_PENDING_FRAMES :: disk.DISC_RAW_SECTOR_SIZE / size_of(sound.Audio_Frame) * 2
@@ -55,67 +56,145 @@ Ide_Cmd_Trace :: struct {
 	lba:   u32,
 }
 
+Ide_Kernel_Probe_Trace :: struct {
+	port:           u16,
+	write:          bool,
+	size:           u8,
+	value:          u32,
+	elements:       u32,
+	repeats:        u32,
+	protected_mode: bool,
+	cpl:            u8,
+	cs:             u16,
+	linear:         u64,
+}
+
+Storage_Activity :: struct {
+	floppy:     u64,
+	hard_drive: u64,
+	dvd_rom:    u64,
+}
+
+WIN9X_KERNEL_LINEAR_BASE :: u64(0xC000_0000)
+
 Machine :: struct {
-	using platform:      Pc_At_Platform,
-	pci:                 Pci,
-	fwcfg:               Fwcfg,
-	vga:                 video.Vga,
-	gsw_vga:             video.Gsw_Vga,
-	ide:                 disk.Ide,
-	atapi:               disk.Atapi,
-	bmide:               disk.Bmide,
-	audio:               sound.Audio_Mixer,
-	cdda_pending:        [MACHINE_CDDA_PENDING_FRAMES]sound.Audio_Frame,
-	cdda_pending_count:  int,
-	fdc:                 disk.Fdc,
-	test_device:         Test_Device,
-	test_device_enabled: bool,
-	has_disk:            bool,
-	vm:                  hv.Vm,
-	governor:            hv.Governor,
-	cpu_mode:            config.Cpu_Mode,
-	idle_waiter:         hosttime.Waiter,
-	scheduler:           Event_Scheduler,
-	timeline:            Master_Timeline,
-	time_source:         Master_Source_Phase,
-	nanosecond_phase:    Rate_Phase,
-	active_tick:         time.Tick,
-	active_ns:           u64,
-	cmos_active_ns:      u64,
-	clock_running:       bool,
-	wake_ctx:            rawptr,
-	wake_schedule:       Wake_Schedule_Proc,
-	wake_deadline:       u64,
-	wake_scheduled:      bool,
-	wake_mode:           Wake_Schedule_Mode,
-	wake_generation:     u64,
-	wake_arms:           u64,
-	vcpu_running:        bool,
-	io_string_depth:     u32,
-	yield_requested:     bool,
-	governor_deadline:   u64,
-	device_advances:     [SCHEDULED_DEVICE_COUNT]u64,
-	device_sync_tick:    [SCHEDULED_DEVICE_COUNT]u64,
-	device_sync_valid:   [SCHEDULED_DEVICE_COUNT]bool,
-	diagnostic_tracing:  bool,
-	hardware_trace:      ^Hardware_Trace,
-	scanout_copies:      u64,
-	cpu_halted:          bool,
-	dbg_out:             [dynamic]u8, // firmware debug ports 0x402 and 0x500
-	mmio_seen:           [Mmio_Zone]bool, // log tolerated zones only once
-	exit_hist:           [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
-	exit_count:          u64,
-	io_hist:             [IO_HISTORY]Io_Trace, // ring, io_count % IO_HISTORY
-	io_count:            u64,
-	ide_hist:            [IDE_HISTORY]Io_Trace, // ring of IDE-port accesses only
-	ide_count:           u64,
-	cmd_hist:            [IDE_HISTORY]Ide_Cmd_Trace, // ring of IDE commands
-	cmd_count:           u64,
-	pic_offer_queued:    bool,
-	pic_queued_offer:    Pic_Interrupt_Token,
-	pic_queue_count:     u64,
-	pic_delivery_count:  u64,
-	inj_count:           [256]u64, // injected IRQ vectors
+	using platform:                      Pc_At_Platform,
+	pci:                                 Pci,
+	fwcfg:                               Fwcfg,
+	vga:                                 video.Vga,
+	gsw_vga:                             video.Gsw_Vga,
+	ide:                                 disk.Ide,
+	atapi:                               disk.Atapi,
+	bmide:                               disk.Bmide,
+	primary_ide_kernel_dma_request:      bool,
+	primary_ide_kernel_dma_transactions: u64,
+	primary_ide_kernel_dma_bytes:        u64,
+	audio:                               sound.Audio_Mixer,
+	cdda_pending:                        [MACHINE_CDDA_PENDING_FRAMES]sound.Audio_Frame,
+	cdda_pending_count:                  int,
+	fdc:                                 disk.Fdc,
+	test_device:                         Test_Device,
+	test_device_enabled:                 bool,
+	has_disk:                            bool,
+	vm:                                  hv.Vm,
+	governor:                            hv.Governor,
+	cpu_mode:                            config.Cpu_Mode,
+	idle_waiter:                         hosttime.Waiter,
+	scheduler:                           Event_Scheduler,
+	timeline:                            Master_Timeline,
+	time_source:                         Master_Source_Phase,
+	nanosecond_phase:                    Rate_Phase,
+	active_tick:                         time.Tick,
+	active_ns:                           u64,
+	cmos_active_ns:                      u64,
+	clock_running:                       bool,
+	wake_ctx:                            rawptr,
+	wake_schedule:                       Wake_Schedule_Proc,
+	wake_deadline:                       u64,
+	wake_scheduled:                      bool,
+	wake_mode:                           Wake_Schedule_Mode,
+	wake_generation:                     u64,
+	wake_arms:                           u64,
+	vcpu_running:                        bool,
+	io_string_depth:                     u32,
+	yield_requested:                     bool,
+	governor_deadline:                   u64,
+	device_advances:                     [SCHEDULED_DEVICE_COUNT]u64,
+	device_sync_tick:                    [SCHEDULED_DEVICE_COUNT]u64,
+	device_sync_valid:                   [SCHEDULED_DEVICE_COUNT]bool,
+	diagnostic_tracing:                  bool,
+	hardware_trace:                      ^Hardware_Trace,
+	scanout_copies:                      u64,
+	cpu_halted:                          bool,
+	dbg_out:                             [dynamic]u8, // firmware debug ports 0x402 and 0x500
+	mmio_seen:                           [Mmio_Zone]bool, // log tolerated zones only once
+	exit_hist:                           [EXIT_HISTORY]hv.Exit_Kind, // ring, exit_count % EXIT_HISTORY
+	exit_count:                          u64,
+	io_hist:                             [IO_HISTORY]Io_Trace, // ring, io_count % IO_HISTORY
+	io_count:                            u64,
+	ide_hist:                            [IDE_HISTORY]Io_Trace, // ring of IDE-port accesses only
+	ide_count:                           u64,
+	cmd_hist:                            [IDE_HISTORY]Ide_Cmd_Trace, // ring of IDE commands
+	cmd_count:                           u64,
+	ide_kernel_probe_hist:               [IDE_KERNEL_PROBE_HISTORY]Ide_Kernel_Probe_Trace,
+	ide_kernel_probe_count:              u64,
+	ide_kernel_probe_total:              u64,
+	ide_kernel_probe_started:            bool,
+	pic_offer_queued:                    bool,
+	pic_queued_offer:                    Pic_Interrupt_Token,
+	pic_queue_count:                     u64,
+	pic_delivery_count:                  u64,
+	inj_count:                           [256]u64, // injected IRQ vectors
+}
+
+@(private = "file")
+machine_record_ide_kernel_probe :: proc(
+	m: ^Machine,
+	port: u16,
+	write: bool,
+	size: u8,
+	value: u32,
+	elements: u32 = 1,
+) {
+	if m == nil || !m.bus.diagnostic_tracing {
+		return
+	}
+	kernel_origin := machine_primary_ide_kernel_origin(m.vm.io_origin)
+	if !m.ide_kernel_probe_started && !kernel_origin {return}
+	if kernel_origin {m.ide_kernel_probe_started = true}
+	m.ide_kernel_probe_total += 1
+	if m.ide_kernel_probe_count > 0 {
+		previous := &m.ide_kernel_probe_hist[m.ide_kernel_probe_count - 1]
+		origin := m.vm.io_origin
+		if previous.port == port &&
+		   previous.write == write &&
+		   previous.size == size &&
+		   previous.value == value &&
+		   previous.elements == elements &&
+		   previous.protected_mode == origin.protected_mode &&
+		   previous.cpl == origin.cpl &&
+		   previous.cs == origin.cs &&
+		   previous.linear == origin.linear &&
+		   previous.repeats < max(u32) {
+			previous.repeats += 1
+			return
+		}
+	}
+	if m.ide_kernel_probe_count >= IDE_KERNEL_PROBE_HISTORY {return}
+	origin := m.vm.io_origin
+	m.ide_kernel_probe_hist[m.ide_kernel_probe_count] = {
+		port           = port,
+		write          = write,
+		size           = size,
+		value          = value,
+		elements       = elements,
+		repeats        = 1,
+		protected_mode = origin.protected_mode,
+		cpl            = origin.cpl,
+		cs             = origin.cs,
+		linear         = origin.linear,
+	}
+	m.ide_kernel_probe_count += 1
 }
 
 machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
@@ -378,7 +457,9 @@ machine_drain_dbg :: proc(m: ^Machine, sink: ^[dynamic]u8) {
 // stores the device and takes over the IDE ports whitelisted at init
 machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
 	disk.bmide_reset_channel(&m.bmide, 0)
+	m.primary_ide_kernel_dma_request = false
 	disk.ide_init(&m.ide, bd)
+	cmos_set_primary_disk(&m.cmos, bd.sector_count)
 	m.ide.irq_ctx = m
 	m.ide.irq = machine_irq14
 	m.has_disk = true
@@ -399,8 +480,11 @@ machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
 machine_detach_disk :: proc(m: ^Machine) -> bool {
 	if m == nil || !m.has_disk {return true}
 	if !disk.ide_checkpoint(&m.ide) {return false}
+	disk.bmide_reset_channel(&m.bmide, 0)
+	m.primary_ide_kernel_dma_request = false
 	m.ide.bd = {}
 	m.has_disk = false
+	cmos_set_primary_disk(&m.cmos, 0)
 	return true
 }
 
@@ -449,6 +533,7 @@ machine_set_cpu_mode :: proc(m: ^Machine, mode: config.Cpu_Mode) {
 
 machine_init_atapi :: proc(m: ^Machine) {
 	disk.atapi_init(&m.atapi)
+	_ = disk.bmide_set_drive_dma_capable(&m.bmide, 1, 0, true)
 	m.atapi.irq_ctx = m
 	m.atapi.irq = machine_irq15
 	disk.atapi_set_cdda_output(&m.atapi, m, machine_cdda_frame)
@@ -465,18 +550,21 @@ machine_init_atapi :: proc(m: ^Machine) {
 
 machine_mount_cdrom :: proc(m: ^Machine, path: string) -> bool {
 	disk.bmide_reset_channel(&m.bmide, 1)
+	_ = disk.bmide_set_drive_dma_capable(&m.bmide, 1, 0, true)
 	machine_audio_reset_cdda(m)
 	return disk.atapi_mount(&m.atapi, path)
 }
 
 machine_attach_cdrom :: proc(m: ^Machine, path: string) -> bool {
 	disk.bmide_reset_channel(&m.bmide, 1)
+	_ = disk.bmide_set_drive_dma_capable(&m.bmide, 1, 0, true)
 	machine_audio_reset_cdda(m)
 	return disk.atapi_attach(&m.atapi, path)
 }
 
 machine_eject_cdrom :: proc(m: ^Machine) {
 	disk.bmide_reset_channel(&m.bmide, 1)
+	_ = disk.bmide_set_drive_dma_capable(&m.bmide, 1, 0, true)
 	disk.atapi_eject(&m.atapi)
 	machine_audio_reset_cdda(m)
 }
@@ -521,20 +609,22 @@ machine_audio_metrics :: proc(m: ^Machine) -> sound.Audio_Metrics_Snapshot {
 }
 
 Machine_Execution_Counters :: struct {
-	hypervisor_runs:              u64,
-	hypervisor_cancellations:     u64,
-	timer_arms:                   u64,
-	scheduler_dispatches:         u64,
-	device_advances:              u64,
-	storage_transactions:         u64,
-	storage_host_calls:           u64,
-	storage_bytes:                u64,
-	primary_ide_dma_transactions: u64,
-	primary_ide_dma_bytes:        u64,
-	audio_blocks:                 u64,
-	scanout_copies:               u64,
-	full_frame_renders:           u64,
-	software_rendered_pixels:     u64,
+	hypervisor_runs:                     u64,
+	hypervisor_cancellations:            u64,
+	timer_arms:                          u64,
+	scheduler_dispatches:                u64,
+	device_advances:                     u64,
+	storage_transactions:                u64,
+	storage_host_calls:                  u64,
+	storage_bytes:                       u64,
+	primary_ide_dma_transactions:        u64,
+	primary_ide_dma_bytes:               u64,
+	primary_ide_kernel_dma_transactions: u64,
+	primary_ide_kernel_dma_bytes:        u64,
+	audio_blocks:                        u64,
+	scanout_copies:                      u64,
+	full_frame_renders:                  u64,
+	software_rendered_pixels:            u64,
 }
 
 machine_execution_counters :: proc(m: ^Machine) -> Machine_Execution_Counters {
@@ -552,6 +642,8 @@ machine_execution_counters :: proc(m: ^Machine) -> Machine_Execution_Counters {
 		storage_bytes = m.bmide.bytes_moved,
 		primary_ide_dma_transactions = m.bmide.channel_transactions[0],
 		primary_ide_dma_bytes = m.bmide.channel_bytes_moved[0],
+		primary_ide_kernel_dma_transactions = m.primary_ide_kernel_dma_transactions,
+		primary_ide_kernel_dma_bytes = m.primary_ide_kernel_dma_bytes,
 		audio_blocks = sound.audio_mixer_blocks_rendered(&m.audio),
 		scanout_copies = m.scanout_copies,
 		full_frame_renders = m.vga.full_frame_renders,
@@ -571,6 +663,7 @@ machine_cmos_export :: proc(m: ^Machine) -> [CMOS_NVRAM_SIZE]u8 {
 machine_cmos_import :: proc(m: ^Machine, data: []u8) -> bool {
 	ok := cmos_nvram_import(&m.cmos, data, u64(len(m.vm.ram)))
 	if ok {
+		if m.has_disk {cmos_set_primary_disk(&m.cmos, m.ide.bd.sector_count)}
 		m.cmos_active_ns = m.active_ns
 		m.device_sync_valid[int(Scheduled_Device.Cmos)] = false
 	}
@@ -1014,7 +1107,10 @@ machine_advance_device :: proc(m: ^Machine, device: Scheduled_Device) {
 	case .Atapi:
 		disk.atapi_advance_to(&m.atapi, now)
 	case .Bmide:
+		transactions_before := m.bmide.channel_transactions[0]
+		bytes_before := m.bmide.channel_bytes_moved[0]
 		_ = disk.bmide_advance_to(&m.bmide, now, machine_bmide_memory(m))
+		machine_bmide_account_completion(m, transactions_before, bytes_before)
 		machine_bmide_poll_irqs(m)
 	case .I8042:
 		i8042_advance_to(&m.kbd, m.active_ns)
@@ -1275,8 +1371,8 @@ machine_ide_io_decode :: proc(
 			   valid && machine_io_access_in_range(port, size, base, base + 7) {
 				matched = true
 				translated = command_port + (port - base)
-			} else if control, valid := machine_ide_native_control_port(ide, channel);
-			   valid && port == control && size == 1 {
+			} else if control, control_valid := machine_ide_native_control_port(ide, channel);
+			   control_valid && port == control && size == 1 {
 				matched = true
 				translated = control_port
 			}
@@ -1360,6 +1456,7 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 	if ide_decode == .Decoded {
 		if m.bus.diagnostic_tracing {m.ide_hist[m.ide_count % IDE_HISTORY] = t}
 		m.ide_count += 1
+		machine_record_ide_kernel_probe(m, port, false, size, v)
 	}
 	machine_rearm_wake(m)
 	return v, !m.bus.frozen && !m.reset_requested && !m.power_off_requested
@@ -1386,6 +1483,7 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 	if ide_decode == .Decoded {
 		if m.bus.diagnostic_tracing {m.ide_hist[m.ide_count % IDE_HISTORY] = t}
 		m.ide_count += 1
+		machine_record_ide_kernel_probe(m, port, true, size, val)
 	}
 	if ide_decode == .Decoded && bus_port == 0x1F7 {
 		lba :=
@@ -1435,6 +1533,13 @@ machine_io_stream_read :: proc(
 		return 0, false, true
 	}
 	completed, handled = bus_io_stream_read(&m.bus, bus_port, size, data)
+	if handled && completed > 0 {
+		value: u32
+		for byte in 0 ..< min(int(size), len(data)) {
+			value |= u32(data[byte]) << (8 * uint(byte))
+		}
+		machine_record_ide_kernel_probe(m, port, false, size, value, u32(completed))
+	}
 	return completed, handled, !m.bus.frozen && !m.reset_requested && !m.power_off_requested
 }
 
@@ -1455,7 +1560,23 @@ machine_io_stream_write :: proc(
 		return 0, false, true
 	}
 	completed, handled = bus_io_stream_write(&m.bus, bus_port, size, data)
+	if handled && completed > 0 {
+		value: u32
+		for byte in 0 ..< min(int(size), len(data)) {
+			value |= u32(data[byte]) << (8 * uint(byte))
+		}
+		machine_record_ide_kernel_probe(m, port, true, size, value, u32(completed))
+	}
 	return completed, handled, !m.bus.frozen && !m.reset_requested && !m.power_off_requested
+}
+
+machine_storage_activity :: proc(m: ^Machine) -> Storage_Activity {
+	if m == nil {return {}}
+	return {
+		floppy = m.fdc.activity_generation,
+		hard_drive = m.ide.activity_generation,
+		dvd_rom = m.atapi.activity_generation,
+	}
 }
 
 // VGA owns the legacy aperture; known probe zones read FF / swallow writes.
@@ -1647,8 +1768,36 @@ machine_bmide_poll_irqs :: proc(m: ^Machine) {
 	_ = disk.bmide_take_irq(&m.bmide, 1)
 }
 
+@(private = "file")
+machine_bmide_account_completion :: proc(m: ^Machine, transactions_before, bytes_before: u64) {
+	transactions_after := m.bmide.channel_transactions[0]
+	if transactions_after > transactions_before {
+		if m.primary_ide_kernel_dma_request {
+			m.primary_ide_kernel_dma_transactions += transactions_after - transactions_before
+			m.primary_ide_kernel_dma_bytes += m.bmide.channel_bytes_moved[0] - bytes_before
+		}
+		m.primary_ide_kernel_dma_request = false
+	} else if !m.bmide.channels[0].request_pending && !m.bmide.channels[0].transfer.active {
+		m.primary_ide_kernel_dma_request = false
+	}
+}
+
+machine_primary_ide_kernel_origin :: proc(origin: hv.Io_Origin) -> bool {
+	return(
+		origin.valid &&
+		origin.protected_mode &&
+		origin.cpl == 0 &&
+		origin.linear >= WIN9X_KERNEL_LINEAR_BASE &&
+		origin.linear < u64(BIOS_HIGH_GPA) \
+	)
+}
+
 machine_bmide_synchronize :: proc(m: ^Machine) {
+	machine_sync_device(m, .Bmide)
+	transactions_before := m.bmide.channel_transactions[0]
+	bytes_before := m.bmide.channel_bytes_moved[0]
 	disk.bmide_synchronize(&m.bmide, pci_ide_bus_master_enabled(&m.pci), machine_bmide_memory(m))
+	machine_bmide_account_completion(m, transactions_before, bytes_before)
 	machine_bmide_poll_irqs(m)
 }
 
@@ -2222,9 +2371,17 @@ machine_ide_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	machine_sync_time(m)
 	machine_sync_device(m, .Ide)
-	if disk.ide_io_decoded(&m.ide) &&
-	   (port == 0x1F7 && m.ide.reg_drive & 0x10 == 0 || port == 0x3F6 && val & 0x04 != 0) {
+	primary_command := disk.ide_io_decoded(&m.ide) && port == 0x1F7 && m.ide.reg_drive & 0x10 == 0
+	software_reset := disk.ide_io_decoded(&m.ide) && port == 0x3F6 && val & 0x04 != 0
+	if primary_command || software_reset {
 		disk.bmide_cancel_request(&m.bmide, 0)
+		m.primary_ide_kernel_dma_request = false
+	}
+	if primary_command {
+		command := u8(val)
+		if command == 0xC8 || command == 0xC9 || command == 0xCA || command == 0xCB {
+			m.primary_ide_kernel_dma_request = machine_primary_ide_kernel_origin(m.vm.io_origin)
+		}
 	}
 	disk.ide_io_write(&m.ide, port, size, val)
 	machine_bmide_submit_ide(m)

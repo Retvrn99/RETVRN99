@@ -9,8 +9,10 @@ import persona "../persona"
 
 IDE_STATUS_ERR :: 0x01
 IDE_STATUS_DRQ :: 0x08
+IDE_STATUS_DSC :: 0x10
 IDE_STATUS_DRDY :: 0x40
 IDE_STATUS_BSY :: 0x80
+IDE_STATUS_READY :: IDE_STATUS_DRDY | IDE_STATUS_DSC
 
 IDE_ERROR_ABRT :: 0x04
 
@@ -22,6 +24,8 @@ IDE_MULTIPLE_MAX_SECTORS :: 16
 IDE_DMA_MAX_SECTORS :: 256
 IDE_DMA_MAX_BYTES :: IDE_SECTOR_SIZE * IDE_DMA_MAX_SECTORS
 IDE_UDMA_MODE :: persona.GUEST_PERSONA.max_udma_mode
+IDE_DEFAULT_TRANSFER_MODE :: u8(0x0C) // PIO mode 4
+IDE_HARDWARE_RESET_RESULT :: u16(0x600B) // primary master, 80-conductor cable
 IDE_UDMA_BYTES_PER_SECOND :: [5]u64{16_700_000, 25_000_000, 33_333_333, 44_444_444, 66_666_667}
 IDE_MWDMA_BYTES_PER_SECOND :: [3]u64{4_200_000, 13_300_000, 16_700_000}
 IDE_MASTER_CLOCK_HZ :: u64(6_600_000_000)
@@ -89,7 +93,7 @@ Ide :: struct {
 	pio_read_sectors:        int,
 	pio_read_loaded:         bool,
 	pio_block_remaining:     int,
-	// A full ATA command is staged before commit so protected folder-backed
+	// A full ATA command is staged before commit so protected image-backed
 	// writes remain one atomic Block_Device transaction.
 	dma_pending:             bool,
 	dma_submitted:           bool,
@@ -98,12 +102,13 @@ Ide :: struct {
 	dma_sectors:             u32,
 	dma_bytes:               int,
 	dma_buf:                 [IDE_DMA_MAX_BYTES]u8,
+	activity_generation:     u64,
 }
 
 ide_init :: proc(ide: ^Ide, bd: Block_Device) {
 	ide^ = Ide {
 		bd               = bd,
-		transfer_mode    = 0x40 | IDE_UDMA_MODE,
+		transfer_mode    = IDE_DEFAULT_TRANSFER_MODE,
 		io_space_enabled = true,
 		channel_enabled  = true,
 	}
@@ -119,7 +124,7 @@ ide_reset_signature :: proc(ide: ^Ide) {
 	ide.reg_lba_mid = 0
 	ide.reg_lba_hi = 0
 	ide.reg_drive = 0xA0
-	ide.reg_status = IDE_STATUS_DRDY
+	ide.reg_status = IDE_STATUS_READY
 	ide.multiple_sector_count = IDE_MULTIPLE_MAX_SECTORS
 }
 
@@ -293,7 +298,7 @@ ide_abort :: proc(ide: ^Ide) {
 	ide_dma_clear(ide)
 	ide.state = .Idle
 	ide.reg_error = IDE_ERROR_ABRT
-	ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_ERR
+	ide.reg_status = IDE_STATUS_READY | IDE_STATUS_ERR
 	ide_raise_irq(ide)
 }
 
@@ -307,7 +312,7 @@ ide_checkpoint :: proc(ide: ^Ide) -> bool {
 		ide.writeback_failed = true
 		ide.writeback_deadline_tick = 0
 		ide.reg_error = IDE_ERROR_ABRT
-		ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_ERR
+		ide.reg_status = IDE_STATUS_READY | IDE_STATUS_ERR
 		return false
 	}
 	ide.writeback_pending = false
@@ -348,6 +353,7 @@ ide_load_sector :: proc(ide: ^Ide) -> bool {
 			ide_abort(ide)
 			return false
 		}
+		ide.activity_generation += 1
 		ide.pio_read_loaded = true
 	}
 	sector := ide.pio_read_sectors - ide.pending
@@ -440,13 +446,11 @@ ide_command :: proc(ide: ^Ide, cmd: u8) {
 		ide_begin_dma(ide, .Memory_To_Device)
 	case 0xEF:
 		// SET FEATURES
-		if ide.reg_features == 0x03 {
-			if !ide_transfer_mode_supported(ide.reg_seccount) {
-				ide_abort(ide)
-				return
-			}
-			ide.transfer_mode = ide.reg_seccount
+		if ide.reg_features != 0x03 || !ide_transfer_mode_supported(ide.reg_seccount) {
+			ide_abort(ide)
+			return
 		}
+		ide.transfer_mode = ide.reg_seccount
 		ide.state = .Idle
 		ide.reg_status = IDE_STATUS_BSY
 		ide_schedule(ide, .Command_Complete, IDE_COMMAND_LATENCY_TICKS)
@@ -545,7 +549,10 @@ ide_dma_begin_adapter :: proc(
 		return false
 	}
 	if direction == .Device_To_Memory {
-		return ide.bd.read(ide.bd.ctx, ide.dma_lba, ide.dma_buf[:ide.dma_bytes])
+		if !ide.bd.read(ide.bd.ctx, ide.dma_lba, ide.dma_buf[:ide.dma_bytes]) {
+			return false
+		}
+		ide.activity_generation += 1
 	}
 	return true
 }
@@ -584,12 +591,13 @@ ide_dma_commit_adapter :: proc(ctx: rawptr, channel: u8) -> bool {
 		if !ide.bd.write(ide.bd.ctx, ide.dma_lba, ide.dma_buf[:ide.dma_bytes]) {
 			return false
 		}
+		ide.activity_generation += 1
 		ide_note_writeback(ide)
 	}
 	ide_dma_set_taskfile_lba(ide, ide.dma_lba + u64(ide.dma_sectors))
 	ide.reg_seccount = 0
 	ide.reg_error = 0
-	ide.reg_status = IDE_STATUS_DRDY
+	ide.reg_status = IDE_STATUS_READY
 	ide.state = .Idle
 	ide_dma_clear(ide)
 	ide_raise_irq(ide)
@@ -603,7 +611,7 @@ ide_dma_abort_adapter :: proc(ctx: rawptr, channel: u8) {
 	ide_dma_clear(ide)
 	ide.state = .Idle
 	ide.reg_error = IDE_ERROR_ABRT
-	ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_ERR
+	ide.reg_status = IDE_STATUS_READY | IDE_STATUS_ERR
 	ide_raise_irq(ide)
 }
 
@@ -612,6 +620,7 @@ ide_bmide_request :: proc(ide: ^Ide) -> (Bmide_Request, bool) {
 	return Bmide_Request {
 			direction = ide.dma_direction,
 			byte_count = u32(ide.dma_bytes),
+			bytes_per_second = ide_transfer_mode_rate(ide.transfer_mode),
 			device = {
 				ctx = ide,
 				begin = ide_dma_begin_adapter,
@@ -660,7 +669,7 @@ ide_data_read :: proc(ide: ^Ide, size: u8) -> u32 {
 			}
 		} else {
 			ide.state = .Idle
-			ide.reg_status = IDE_STATUS_DRDY
+			ide.reg_status = IDE_STATUS_READY
 			ide_dma_set_taskfile_lba(ide, ide.lba + 1)
 		}
 	}
@@ -687,7 +696,7 @@ ide_data_write :: proc(ide: ^Ide, size: u8, val: u32) {
 			ide.buf_pos = 0
 			if ide.pio_block_remaining > 0 {
 				ide.state = .Data_Out
-				ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ
+				ide.reg_status = IDE_STATUS_READY | IDE_STATUS_DRQ
 			} else {
 				ide.state = .Idle
 				ide.reg_status = IDE_STATUS_BSY
@@ -708,10 +717,24 @@ ide_put_word :: proc(buf: ^[512]u8, w: int, v: u16) {
 }
 
 @(private = "file")
+ide_put_identify_string :: proc(buf: ^[512]u8, first_word, word_count: int, value: string) {
+	for word in 0 ..< word_count {
+		first, second := u8(' '), u8(' ')
+		if word * 2 < len(value) {first = value[word * 2]}
+		if word * 2 + 1 < len(value) {second = value[word * 2 + 1]}
+		ide_put_word(buf, first_word + word, u16(first) << 8 | u16(second))
+	}
+}
+
+@(private = "file")
 ide_chs_cylinders :: proc(sector_count: u64) -> u16 {
 	sectors_per_cylinder := u64(IDE_CHS_HEADS * IDE_CHS_SECTORS_PER_TRACK)
 	cylinders := min(sector_count / sectors_per_cylinder, u64(IDE_CHS_MAX_CYLINDERS))
 	return u16(cylinders)
+}
+
+ide_chs_geometry :: proc(sector_count: u64) -> (cylinders: u16, heads, sectors_per_track: u8) {
+	return ide_chs_cylinders(sector_count), IDE_CHS_HEADS, IDE_CHS_SECTORS_PER_TRACK
 }
 
 @(private = "file")
@@ -724,6 +747,8 @@ ide_fill_identify :: proc(ide: ^Ide) {
 	ide_put_word(&ide.buf, 6, IDE_CHS_SECTORS_PER_TRACK)
 	ide_put_word(&ide.buf, 47, 0x8000 | IDE_MULTIPLE_MAX_SECTORS)
 	ide_put_word(&ide.buf, 49, 0x0F00) // DMA, LBA, and IORDY supported
+	ide_put_word(&ide.buf, 50, 0x4000)
+	ide_put_word(&ide.buf, 51, 0x0200) // original PIO mode 2 fallback
 	validity: u16 = 0x0006 // words 64-70 and 88 are valid
 	if cylinders != 0 {
 		validity |= 0x0001
@@ -748,22 +773,20 @@ ide_fill_identify :: proc(ide: ^Ide) {
 	ide_put_word(&ide.buf, 66, 120)
 	ide_put_word(&ide.buf, 67, 120)
 	ide_put_word(&ide.buf, 68, 120)
+	ide_put_word(&ide.buf, 80, 0x003E) // ATA-1 through ATA/ATAPI-5
+	ide_put_word(&ide.buf, 83, 0x5000) // command-set word valid; FLUSH CACHE supported
+	ide_put_word(&ide.buf, 86, 0x5000)
 	udma: u16 = u16((u32(1) << (IDE_UDMA_MODE + 1)) - 1)
 	if ide.transfer_mode & 0xF8 == 0x40 {
 		udma |= u16(1) << (8 + uint(ide.transfer_mode & 7))
 	}
 	ide_put_word(&ide.buf, 88, udma)
+	ide_put_word(&ide.buf, 93, IDE_HARDWARE_RESET_RESULT)
 	sectors := ide.bd.sector_count
 	if sectors > 0x0FFF_FFFF {sectors = 0x0FFF_FFFF}
 	ide_put_word(&ide.buf, 60, u16(sectors & 0xFFFF))
 	ide_put_word(&ide.buf, 61, u16(sectors >> 16))
-	// model in words 27-46, bytes swapped per word
-	model := "RETVRN99 VDISK"
-	for w in 0 ..< 20 {
-		c0: u8 = 0x20
-		c1: u8 = 0x20
-		if 2 * w < len(model) {c0 = model[2 * w]}
-		if 2 * w + 1 < len(model) {c1 = model[2 * w + 1]}
-		ide_put_word(&ide.buf, 27 + w, u16(c0) << 8 | u16(c1))
-	}
+	ide_put_identify_string(&ide.buf, 10, 10, "RETVRN99-VDISK-0001")
+	ide_put_identify_string(&ide.buf, 23, 4, "1.0")
+	ide_put_identify_string(&ide.buf, 27, 20, "RETVRN99 VDISK")
 }

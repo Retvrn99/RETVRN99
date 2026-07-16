@@ -48,9 +48,10 @@ Bmide_Device_Adapter :: struct {
 }
 
 Bmide_Request :: struct {
-	direction:  Bmide_Direction,
-	byte_count: u32,
-	device:     Bmide_Device_Adapter,
+	direction:        Bmide_Direction,
+	byte_count:       u32,
+	bytes_per_second: u64,
+	device:           Bmide_Device_Adapter,
 }
 
 Bmide_Prd_Span :: struct {
@@ -59,19 +60,22 @@ Bmide_Prd_Span :: struct {
 }
 
 Bmide_Transfer :: struct {
-	active:      bool,
-	direction:   Bmide_Direction,
-	spans:       [BMIDE_MAX_PRDS]Bmide_Prd_Span,
-	span_count:  int,
-	completed:   u32,
-	byte_count:  u32,
-	retires_eot: bool,
+	active:        bool,
+	direction:     Bmide_Direction,
+	spans:         [BMIDE_MAX_PRDS]Bmide_Prd_Span,
+	span_count:    int,
+	completed:     u32,
+	byte_count:    u32,
+	deadline_tick: u64,
+	retires_eot:   bool,
 }
 
 Bmide_Channel :: struct {
 	command:                   u8,
 	status:                    u8,
 	prd_address:               u32,
+	latched_prd_address:       u32,
+	prd_latched:               bool,
 	request:                   Bmide_Request,
 	request_pending:           bool,
 	transfer:                  Bmide_Transfer,
@@ -93,6 +97,21 @@ Bmide :: struct {
 
 bmide_init :: proc(bm: ^Bmide) {
 	bm^ = {}
+}
+
+bmide_set_drive_dma_capable :: proc(
+	bm: ^Bmide,
+	channel_index, drive_index: u8,
+	capable: bool,
+) -> bool {
+	if bm == nil || channel_index >= BMIDE_CHANNEL_COUNT || drive_index > 1 {return false}
+	mask := drive_index == 0 ? BMIDE_STATUS_DRIVE0_DMA : BMIDE_STATUS_DRIVE1_DMA
+	if capable {
+		bm.channels[channel_index].status |= mask
+	} else {
+		bm.channels[channel_index].status &~= mask
+	}
+	return true
 }
 
 @(private = "file")
@@ -146,6 +165,7 @@ bmide_fail_channel :: proc(channel: ^Bmide_Channel, channel_index: u8) {
 	channel.request_pending = false
 	channel.transfer = {}
 	channel.completion_waits_for_stop = false
+	channel.prd_latched = false
 	channel.status &= ~BMIDE_STATUS_ACTIVE
 	channel.status |= BMIDE_STATUS_ERROR
 	bmide_signal_interrupt(channel)
@@ -169,16 +189,28 @@ bmide_read_byte :: proc(bm: ^Bmide, offset: u8) -> u8 {
 bmide_write_command :: proc(channel: ^Bmide_Channel, channel_index, value: u8) {
 	old := channel.command
 	channel.command = value & (BMIDE_COMMAND_START | BMIDE_COMMAND_READ_FROM_DISK)
+	started := old & BMIDE_COMMAND_START == 0 && channel.command & BMIDE_COMMAND_START != 0
 	stopped := old & BMIDE_COMMAND_START != 0 && channel.command & BMIDE_COMMAND_START == 0
 	direction_changed := (old ~ channel.command) & BMIDE_COMMAND_READ_FROM_DISK != 0
+	if started {
+		channel.latched_prd_address = channel.prd_address
+		channel.prd_latched = true
+		channel.status |= BMIDE_STATUS_ACTIVE
+	}
 	if stopped && channel.completion_waits_for_stop {
 		channel.status &= ~BMIDE_STATUS_ACTIVE
 		channel.completion_waits_for_stop = false
+		channel.prd_latched = false
 		return
 	}
 	if stopped && (channel.transfer.active || channel.request_pending) ||
 	   direction_changed && channel.transfer.active {
 		bmide_fail_channel(channel, channel_index)
+		return
+	}
+	if stopped {
+		channel.status &= ~BMIDE_STATUS_ACTIVE
+		channel.prd_latched = false
 	}
 }
 
@@ -225,7 +257,9 @@ bmide_io_write :: proc(bm: ^Bmide, offset, size: u8, value: u32) {
 }
 
 bmide_submit_request :: proc(bm: ^Bmide, channel_index: u8, request: Bmide_Request) -> bool {
-	if channel_index >= BMIDE_CHANNEL_COUNT || request.byte_count == 0 {
+	if channel_index >= BMIDE_CHANNEL_COUNT ||
+	   request.byte_count == 0 ||
+	   request.bytes_per_second == 0 {
 		return false
 	}
 	channel := &bm.channels[channel_index]
@@ -240,12 +274,16 @@ bmide_submit_request :: proc(bm: ^Bmide, channel_index: u8, request: Bmide_Reque
 bmide_cancel_request :: proc(bm: ^Bmide, channel_index: u8) {
 	if channel_index >= BMIDE_CHANNEL_COUNT {return}
 	channel := &bm.channels[channel_index]
+	had_operation := channel.request_pending || channel.transfer.active || channel.completion_waits_for_stop
 	bmide_abort_adapter(channel, channel_index)
 	channel.request = {}
 	channel.request_pending = false
 	channel.transfer = {}
 	channel.completion_waits_for_stop = false
-	channel.status &= ~BMIDE_STATUS_ACTIVE
+	if had_operation {
+		channel.status &= ~BMIDE_STATUS_ACTIVE
+		channel.prd_latched = false
+	}
 }
 
 @(private = "file")
@@ -364,6 +402,19 @@ bmide_parse_prds :: proc(
 }
 
 @(private = "file")
+bmide_saturating_add :: proc(left, right: u64) -> u64 {
+	return left + min(right, ~u64(0) - left)
+}
+
+@(private = "file")
+bmide_data_ticks :: proc(bytes, bytes_per_second: u64) -> u64 {
+	if bytes_per_second == 0 {return ~u64(0)}
+	numerator := u128(bytes) * u128(BMIDE_MASTER_CLOCK_HZ)
+	value := (numerator + u128(bytes_per_second) - 1) / u128(bytes_per_second)
+	return value > u128(~u64(0)) ? ~u64(0) : u64(value)
+}
+
+@(private = "file")
 bmide_request_callbacks_valid :: proc(
 	memory: Bmide_Memory_Adapter,
 	request: Bmide_Request,
@@ -389,10 +440,16 @@ bmide_arm_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Ad
 		return
 	}
 	transfer := Bmide_Transfer {
-		direction  = request.direction,
-		byte_count = request.byte_count,
+		direction     = request.direction,
+		byte_count    = request.byte_count,
+		deadline_tick = bmide_saturating_add(
+			bmide_saturating_add(bm.now_tick, BMIDE_COMMAND_LATENCY_TICKS),
+			bmide_data_ticks(u64(request.byte_count), request.bytes_per_second),
+		),
 	}
-	if !bmide_parse_prds(memory, request, channel.prd_address, &transfer) {
+	table := channel.prd_address
+	if channel.prd_latched {table = channel.latched_prd_address}
+	if !bmide_parse_prds(memory, request, table, &transfer) {
 		bmide_fail_channel(channel, channel_index)
 		return
 	}
@@ -410,9 +467,6 @@ bmide_arm_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Ad
 	channel.transfer = transfer
 	channel.completion_waits_for_stop = false
 	channel.status |= BMIDE_STATUS_ACTIVE
-	if !bmide_transfer_channel(bm, channel_index, memory) {
-		bmide_fail_channel(channel, channel_index)
-	}
 }
 
 bmide_synchronize :: proc(bm: ^Bmide, bus_master_enabled: bool, memory: Bmide_Memory_Adapter) {
@@ -505,7 +559,15 @@ bmide_transfer_channel :: proc(
 }
 
 bmide_next_deadline :: proc(bm: ^Bmide) -> (deadline: u64, pending: bool) {
-	return 0, false
+	if bm == nil {return}
+	for &channel in bm.channels {
+		if !channel.transfer.active {continue}
+		if !pending || channel.transfer.deadline_tick < deadline {
+			deadline = channel.transfer.deadline_tick
+			pending = true
+		}
+	}
+	return
 }
 
 bmide_advance_to :: proc(
@@ -516,12 +578,25 @@ bmide_advance_to :: proc(
 	irq_mask: u8,
 ) {
 	if target_tick < bm.now_tick {return 0}
+	for {
+		deadline, pending := bmide_next_deadline(bm)
+		if !pending || deadline > target_tick {break}
+		bm.now_tick = deadline
+		for index in 0 ..< BMIDE_CHANNEL_COUNT {
+			channel := &bm.channels[index]
+			if !channel.transfer.active || channel.transfer.deadline_tick != deadline {continue}
+			if !bmide_transfer_channel(bm, u8(index), memory) {
+				bmide_fail_channel(channel, u8(index))
+			}
+			irq_mask |= u8(1 << uint(index))
+		}
+	}
 	bm.now_tick = target_tick
 	return
 }
 
 bmide_advance :: proc(bm: ^Bmide, master_ticks: u64, memory: Bmide_Memory_Adapter) -> u8 {
-	target := bm.now_tick + min(master_ticks, ~u64(0) - bm.now_tick)
+	target := bmide_saturating_add(bm.now_tick, master_ticks)
 	return bmide_advance_to(bm, target, memory)
 }
 

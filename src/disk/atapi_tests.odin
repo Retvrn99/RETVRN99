@@ -2,8 +2,8 @@
 package disk
 
 import persona "../persona"
-import "core:os"
 import "core:fmt"
+import "core:os"
 import "core:path/filepath"
 import "core:testing"
 
@@ -182,9 +182,12 @@ atapi_test_read_capacity_and_multiblock_read_10 :: proc(t: ^testing.T) {
 	second: [CDROM_SECTOR_SIZE]u8
 	atapi_test_read(&a, first[:])
 	testing.expect_value(t, first[0], u8(18))
+	generation_after_first := a.activity_generation
+	testing.expect(t, generation_after_first > 0)
 	testing.expect(t, atapi_test_inb(&a, 0x177) & ATAPI_STATUS_DRQ != 0)
 	atapi_test_read(&a, second[:])
 	testing.expect_value(t, second[0], u8(19))
+	testing.expect_value(t, a.activity_generation, generation_after_first)
 	testing.expect(t, atapi_test_inb(&a, 0x177) & ATAPI_STATUS_DRQ == 0)
 
 	write: [ATAPI_PACKET_BYTES]u8
@@ -232,6 +235,40 @@ atapi_test_mode_select_data_out_advances_phases_and_irqs :: proc(t: ^testing.T) 
 	testing.expect_value(t, a.state, Atapi_State.Idle)
 	testing.expect_value(t, atapi_test_inb(&a, 0x177), u8(ATAPI_STATUS_DRDY))
 	testing.expect_value(t, irq.asserts, 4)
+}
+
+@(test)
+atapi_test_windows_98_esdi_probe_restores_packet_signature :: proc(t: ^testing.T) {
+	path := cdrom_test_iso(t)
+	defer os.remove(path)
+	a: Atapi
+	atapi_init(&a)
+	testing.expect(t, atapi_attach(&a, path))
+	testing.expect_value(t, atapi_test_inb(&a, 0x177), u8(ATAPI_STATUS_DRDY))
+
+	// ESDI_506.PDR probes the packet device with ATA IDENTIFY DEVICE before
+	// issuing IDENTIFY PACKET DEVICE. The expected abort remains device-ready
+	// and restores the packet signature for device classification.
+	atapi_test_outb(&a, 0x172, 0x55)
+	atapi_test_outb(&a, 0x173, 0xAA)
+	atapi_test_outb(&a, 0x174, 0x55)
+	atapi_test_outb(&a, 0x175, 0xAA)
+	atapi_test_outb(&a, 0x177, 0xEC)
+	testing.expect_value(
+		t,
+		atapi_test_inb(&a, 0x177),
+		u8(ATAPI_STATUS_DRDY | ATAPI_STATUS_DSC | ATAPI_STATUS_ERR),
+	)
+	testing.expect_value(t, atapi_test_inb(&a, 0x171), u8(ATAPI_ERROR_ABRT))
+	testing.expect_value(t, atapi_test_inb(&a, 0x172), u8(1))
+	testing.expect_value(t, atapi_test_inb(&a, 0x173), u8(1))
+	testing.expect_value(t, atapi_test_inb(&a, 0x174), u8(0x14))
+	testing.expect_value(t, atapi_test_inb(&a, 0x175), u8(0xEB))
+
+	atapi_test_outb(&a, 0x177, 0xA1)
+	testing.expect_value(t, atapi_test_inb(&a, 0x177), u8(ATAPI_STATUS_DRDY | ATAPI_STATUS_DRQ))
+	for _ in 0 ..< 256 {_ = atapi_test_inw(&a)}
+	testing.expect_value(t, atapi_test_inb(&a, 0x177), u8(ATAPI_STATUS_DRDY))
 }
 
 @(test)
@@ -617,14 +654,22 @@ atapi_test_dvd_dma_request_uses_10x_data_rate :: proc(t: ^testing.T) {
 	read[0], read[5], read[8] = 0x28, 18, 1
 	atapi_test_packet(&a, read)
 	request, pending := atapi_bmide_request(&a)
-	testing.expect(t, pending)
+	if !testing.expect(t, pending) {return}
+	testing.expect(
+		t,
+		request.device.begin(request.device.ctx, 1, request.direction, request.byte_count),
+	)
+	testing.expect_value(t, a.activity_generation, u64(0))
+	sector: [DISC_DATA_SECTOR_SIZE]u8
+	testing.expect(t, request.device.read(request.device.ctx, 1, 0, sector[:]))
+	testing.expect_value(t, a.activity_generation, u64(1))
 	testing.expect_value(t, persona.GUEST_PERSONA.dvd_speed, u8(10))
 }
 
 Atapi_Test_Cdda_Sink :: struct {
 	frames: u64,
-	first: u8,
-	last: u8,
+	first:  u8,
+	last:   u8,
 }
 
 atapi_test_cdda_frame :: proc(ctx: rawptr, pcm: []u8) {

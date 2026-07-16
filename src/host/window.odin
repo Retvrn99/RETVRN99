@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
+import "core:fmt"
 import sdl3 "vendor:sdl3"
 
 DEFAULT_WINDOW_SCALE :: 2
 WIN_W :: TEXT_W * DEFAULT_WINDOW_SCALE // 1440
 WIN_H :: TEXT_H * DEFAULT_WINDOW_SCALE + MENU_BAR_H
+HOST_GPU_DRIVER :: "vulkan"
 
 Host :: struct {
 	win:            ^sdl3.Window,
@@ -22,15 +24,17 @@ Host :: struct {
 	fullscreen:     bool,
 	menu_reveal:    f32,
 	visual_shader:  Visual_Shader,
+	storage_icons:  Storage_Icon_Textures,
 	has_frame:      bool,
 	vsync:          bool, // presents are paced by the display; else the UI loop sleeps
 	mouse_captured: bool,
 	mouse_buttons:  u8,
 }
 
-host_init :: proc(h: ^Host) -> bool {
+host_init :: proc(h: ^Host) -> (ok: bool) {
 	h^ = {}
-	if !sdl3.Init({.VIDEO, .AUDIO}) {
+	defer if !ok {host_destroy(h)}
+	if !sdl3.Init({.VIDEO}) {
 		return false
 	}
 	// no RESIZABLE flag: fixed-size window
@@ -38,20 +42,20 @@ host_init :: proc(h: ^Host) -> bool {
 	if h.win == nil {
 		return false
 	}
-	h.gpu = sdl3.CreateGPUDevice({.DXIL, .SPIRV}, false, nil)
-	if h.gpu != nil {
-		h.ren = sdl3.CreateGPURenderer(h.gpu, h.win)
-	}
-	if h.ren == nil && h.gpu != nil {
-		sdl3.DestroyGPUDevice(h.gpu)
-		h.gpu = nil
-	}
-	if h.ren == nil {
-		h.ren = sdl3.CreateRenderer(h.win, nil)
-	}
-	if h.ren == nil {
+	h.gpu = sdl3.CreateGPUDevice({.SPIRV}, false, HOST_GPU_DRIVER)
+	if h.gpu == nil {return false}
+	driver := sdl3.GetGPUDeviceDriver(h.gpu)
+	if driver == nil || string(driver) != HOST_GPU_DRIVER {
+		_ = sdl3.SetError("SDL did not select the required Vulkan GPU driver")
 		return false
 	}
+	h.ren = sdl3.CreateGPURenderer(h.gpu, h.win)
+	if h.ren == nil {return false}
+	if !storage_icon_textures_init(&h.storage_icons, h.ren) {
+		_ = sdl3.SetError("built-in storage icons could not be loaded")
+		return false
+	}
+	fmt.printfln("video: SDL GPU renderer (%s)", driver)
 	h.vsync = sdl3.SetRenderVSync(h.ren, 1) // never busy-spin the UI loop
 	h.tex = sdl3.CreateTexture(h.ren, .ARGB8888, .STREAMING, TEXT_W, TEXT_H)
 	if h.tex == nil {
@@ -75,6 +79,7 @@ host_destroy :: proc(h: ^Host) {
 	if h.mouse_captured {_ = sdl3.SetWindowRelativeMouseMode(h.win, false)}
 	host_shader_destroy(h)
 	if h.tex != nil {sdl3.DestroyTexture(h.tex)}
+	storage_icon_textures_destroy(&h.storage_icons)
 	if h.ren != nil {sdl3.DestroyRenderer(h.ren)}
 	if h.gpu != nil {sdl3.DestroyGPUDevice(h.gpu)}
 	if h.win != nil {sdl3.DestroyWindow(h.win)}

@@ -3,17 +3,16 @@ package main
 
 import "acceptance"
 import "core:fmt"
-import "core:os"
-import "core:path/filepath"
 import "core:strings"
 import "core:time"
 import "disk"
+import "fat32session"
 import "hv"
 import "machine"
 import "profile"
 import "vga"
 import "vmconfig"
-import "win98prep"
+import "win98imageprep"
 
 RUN_SECONDS :: 60
 VGA_PERIOD :: 500 * time.Millisecond
@@ -23,7 +22,7 @@ DESKTOP_GRAPHICS_MIN_RGB_COVERAGE_DENOMINATOR :: 100
 CONSOLE_NO_PROGRESS_TIMEOUT :: 5 * time.Minute
 CONSOLE_SETUP_ARTIFACT_PERIOD :: 30 * time.Second
 DESKTOP_WAITING_PRIMARY_IDE_DMA_PROGRESS_REASON :: "desktop_waiting_primary_ide_dma"
-DESKTOP_ENUM_MAX_BYTES :: 16 * 1024 * 1024
+DESKTOP_ENUM_MAX_BYTES :: 4 * 1024 * 1024
 DESKTOP_ENUM_RESOURCE_MAX_BYTES :: 64 * 1024
 DESKTOP_ENUM_REQUIRED_AMD_IDS :: [?]string {
 	"VEN_1022&DEV_7006",
@@ -245,6 +244,7 @@ console_acceptance_progress_watchdog_poll :: proc(
 
 console_prepare_windows_install :: proc(
 	media_path: string,
+	image_path: string,
 	paths: ^profile.Paths,
 	cmos: profile.Cmos_Data,
 	has_cmos: bool,
@@ -252,74 +252,46 @@ console_prepare_windows_install :: proc(
 	setup_diagnostics: acceptance.Setup_Diagnostics,
 	desktop_probe: bool,
 ) -> bool {
-	if media_path == "" || paths == nil {return false}
-	previous, diagnostic := profile.install_state_load(paths.install_state)
-	defer profile.install_state_destroy(&previous)
+	if media_path == "" || image_path == "" || paths == nil {return false}
+	state, diagnostic := profile.install_state_load(paths.install_state)
+	defer profile.install_state_destroy(&state)
 	if diagnostic != .None && diagnostic != .Missing {
 		fmt.eprintfln("Windows 98: existing install state is unreadable (%v)", diagnostic)
 		return false
 	}
 	cmos_value := cmos
-	candidate := install_state_candidate(media_path, cmos_value[:], has_cmos, &previous)
-	defer profile.install_state_destroy(&candidate)
-	if profile.install_state_save(paths.install_state, &candidate) != .None {
-		fmt.eprintln("Windows 98: cannot record media preparation")
-		return false
-	}
-	report := win98prep.prepare(
+	flow := install_image_prepare(
+		paths,
+		&state,
+		image_path,
 		media_path,
-		paths.install,
-		paths.c_drive,
 		boot_image_path,
-		win98prep.Prepare_Options {
+		cmos_value[:],
+		has_cmos,
+		win98imageprep.Prepare_Options {
 			desktop_probe = desktop_probe,
 			hardware_diagnostics = setup_diagnostics == .Hardware,
 		},
 	)
-	defer win98prep.report_destroy(&report)
-	if report.diagnostic == .None {
-		candidate.phase = .Launch_Pending
-		if profile.install_state_save(paths.install_state, &candidate) == .None {
-			if !win98prep.prepare_finish(&report) {
-				fmt.eprintln("Windows 98: setup is ready; obsolete preparation backups remain")
-			}
-			fmt.printfln(
-				"Windows 98: prepared %d files (%d bytes)",
-				report.media_info.win98_file_count,
-				report.media_info.win98_total_bytes,
-			)
-			return true
-		}
-		candidate.phase = .Preparing
-		if !win98prep.prepare_rollback(&report) {
-			fmt.eprintln("Windows 98: preparation state save and rollback both failed")
-			return false
-		}
-	}
-	if report.transaction.state != .Inactive && report.transaction.state != .Rolled_Back {
-		fmt.eprintfln(
-			"Windows 98: preparation failed and rollback is incomplete (%v)",
-			report.diagnostic,
+	defer install_image_flow_result_destroy(&flow)
+	if flow.error.code == .None {
+		fmt.printfln(
+			"Windows 98: prepared %d files (%d bytes)",
+			flow.preparation.media_info.win98_file_count,
+			flow.preparation.media_info.win98_total_bytes,
 		)
-		return false
+		return true
 	}
-	if profile.install_state_save(paths.install_state, &previous) != .None {
-		fmt.eprintln(
-			"Windows 98: preparation failed and the previous install state could not be restored",
-		)
-		return false
-	}
-	if report.bootstrap_diagnostic == .Boot_Image_Required {
+	if flow.error.code == .Boot_Floppy_Required {
 		fmt.eprintln(
 			"Windows 98: --install-windows on a fresh C: also requires --floppy:<Windows 98 boot image>",
 		)
 	}
 	fmt.eprintfln(
-		"Windows 98: preparation failed (%v, media %v, bootstrap %v, cleanup %v)",
-		report.diagnostic,
-		report.media_diagnostic,
-		report.bootstrap_diagnostic,
-		report.retry_cleanup.diagnostic,
+		"Windows 98: image preparation failed (%v): %s%s",
+		flow.error.code,
+		win98imageprep.error_text(&flow.error),
+		flow.state_retained ? "; recovery state retained" : "",
 	)
 	return false
 }
@@ -350,7 +322,6 @@ console_acceptance_configuration_error :: proc(
 			acceptance.stop_reason_name(result.stop_reason),
 			message,
 		)
-		defer delete(diagnostics)
 		if diagnostic := acceptance.artifact_write_bundle(options.artifacts, diagnostics);
 		   diagnostic != .None {
 			fmt.eprintfln("acceptance artifact write failed: %v", diagnostic)
@@ -439,6 +410,9 @@ console_result_accumulate_machine :: proc(result: ^acceptance.Result, m: ^machin
 	result.execution.storage_bytes += execution.storage_bytes
 	result.execution.primary_ide_dma_transactions += execution.primary_ide_dma_transactions
 	result.execution.primary_ide_dma_bytes += execution.primary_ide_dma_bytes
+	result.execution.primary_ide_kernel_dma_transactions +=
+		execution.primary_ide_kernel_dma_transactions
+	result.execution.primary_ide_kernel_dma_bytes += execution.primary_ide_kernel_dma_bytes
 	result.execution.audio_blocks += execution.audio_blocks
 	result.execution.scanout_copies += execution.scanout_copies
 	result.execution.full_frame_renders += execution.full_frame_renders
@@ -473,7 +447,7 @@ console_result_accumulate_machine_segment :: proc(
 	return true
 }
 
-console_primary_ide_dma_evidence :: proc(
+console_primary_ide_kernel_dma_evidence :: proc(
 	result: ^acceptance.Result,
 	m: ^machine.Machine,
 	current_segment_accumulated: bool,
@@ -483,13 +457,13 @@ console_primary_ide_dma_evidence :: proc(
 	transactions, bytes: u64,
 ) {
 	if result != nil {
-		transactions = result.execution.primary_ide_dma_transactions
-		bytes = result.execution.primary_ide_dma_bytes
+		transactions = result.execution.primary_ide_kernel_dma_transactions
+		bytes = result.execution.primary_ide_kernel_dma_bytes
 	}
 	if m != nil && !current_segment_accumulated {
 		execution := machine.machine_execution_counters(m)
-		transactions += execution.primary_ide_dma_transactions
-		bytes += execution.primary_ide_dma_bytes
+		transactions += execution.primary_ide_kernel_dma_transactions
+		bytes += execution.primary_ide_kernel_dma_bytes
 	}
 	if transactions < baseline_transactions || bytes < baseline_bytes {
 		return 0, 0
@@ -563,8 +537,12 @@ console_acceptance_artifact_directory :: proc(
 }
 
 console_frame_is_nonblack_graphics :: proc(frame: ^vga.Display_Frame) -> bool {
-	if frame == nil || frame.kind == .Invalid || frame.kind == .Text ||
-	   frame.width <= 0 || frame.height <= 0 || frame.width > max(int) / frame.height {
+	if frame == nil ||
+	   frame.kind == .Invalid ||
+	   frame.kind == .Text ||
+	   frame.width <= 0 ||
+	   frame.height <= 0 ||
+	   frame.width > max(int) / frame.height {
 		return false
 	}
 	pixel_count := frame.width * frame.height
@@ -638,11 +616,11 @@ console_ascii_has_prefix_fold :: proc(text, prefix: string) -> bool {
 }
 
 console_ascii_token_boundary :: proc(byte: u8) -> bool {
-	return !(
-		(byte >= '0' && byte <= '9') ||
-		(byte >= 'A' && byte <= 'Z') ||
-		(byte >= 'a' && byte <= 'z') ||
-		byte == '_' \
+	return(
+		!((byte >= '0' && byte <= '9') ||
+			(byte >= 'A' && byte <= 'Z') ||
+			(byte >= 'a' && byte <= 'z') ||
+			byte == '_') \
 	)
 }
 
@@ -729,11 +707,7 @@ console_registry_u32_value :: proc(value: string) -> (u32, bool) {
 	}
 	if digits != 2 || byte_count != len(bytes) - 1 {return 0, false}
 	bytes[byte_count] = current
-	result :=
-		u32(bytes[0]) |
-		u32(bytes[1]) << 8 |
-		u32(bytes[2]) << 16 |
-		u32(bytes[3]) << 24
+	result := u32(bytes[0]) | u32(bytes[1]) << 8 | u32(bytes[2]) << 16 | u32(bytes[3]) << 24
 	return result, true
 }
 
@@ -897,21 +871,21 @@ console_win98_allocation_irq_evidence :: proc(
 }
 
 Console_Enum_Evidence :: struct {
-	header_seen:                bool,
-	dynamic_header_seen:        bool,
-	amd_found:                  [len(DESKTOP_ENUM_REQUIRED_AMD_IDS)]bool,
-	amd_active:                 [len(DESKTOP_ENUM_REQUIRED_AMD_IDS)]bool,
-	amd_health_bad:             [len(DESKTOP_ENUM_REQUIRED_AMD_IDS)]bool,
-	vga_found:                  bool,
-	vga_active:                 bool,
-	vga_health_bad:             bool,
-	vga_irq11_seen:             bool,
-	vga_irq_conflict:           bool,
-	synthetic_chipset_seen:     bool,
-	mf_child_hashes:            [DESKTOP_ENUM_MAX_MF_CHILDREN]u64,
-	mf_child_static_count:      int,
-	mf_child_active:            [DESKTOP_ENUM_MAX_MF_CHILDREN]bool,
-	mf_child_health_bad:        [DESKTOP_ENUM_MAX_MF_CHILDREN]bool,
+	header_seen:                 bool,
+	dynamic_header_seen:         bool,
+	amd_found:                   [len(DESKTOP_ENUM_REQUIRED_AMD_IDS)]bool,
+	amd_active:                  [len(DESKTOP_ENUM_REQUIRED_AMD_IDS)]bool,
+	amd_health_bad:              [len(DESKTOP_ENUM_REQUIRED_AMD_IDS)]bool,
+	vga_found:                   bool,
+	vga_active:                  bool,
+	vga_health_bad:              bool,
+	vga_irq11_seen:              bool,
+	vga_irq_conflict:            bool,
+	synthetic_chipset_seen:      bool,
+	mf_child_hashes:             [DESKTOP_ENUM_MAX_MF_CHILDREN]u64,
+	mf_child_static_count:       int,
+	mf_child_active:             [DESKTOP_ENUM_MAX_MF_CHILDREN]bool,
+	mf_child_health_bad:         [DESKTOP_ENUM_MAX_MF_CHILDREN]bool,
 	mf_child_unmatched_or_extra: bool,
 }
 
@@ -1001,10 +975,7 @@ console_windows98_static_enum_apply :: proc(contents: string, evidence: ^Console
 			if console_ascii_contains_fold(line, `\ENUM\PCI\`) {
 				for id, index in DESKTOP_ENUM_REQUIRED_AMD_IDS {
 					if console_ascii_token_contains_fold(line, id) &&
-					   console_ascii_token_contains_fold(
-						   line,
-						   amd_bdfs[index],
-					   ) {
+					   console_ascii_token_contains_fold(line, amd_bdfs[index]) {
 						evidence.amd_found[index] = true
 					}
 				}
@@ -1016,8 +987,8 @@ console_windows98_static_enum_apply :: proc(contents: string, evidence: ^Console
 					evidence.synthetic_chipset_seen = true
 				}
 			} else if console_ascii_contains_fold(line, `\ENUM\MF\`) &&
-			          console_ascii_token_contains_fold(line, DESKTOP_ENUM_REQUIRED_AMD_IDS[2]) &&
-			          console_ascii_token_contains_fold(line, DESKTOP_ENUM_REQUIRED_AMD_BDFS[2]) {
+			   console_ascii_token_contains_fold(line, DESKTOP_ENUM_REQUIRED_AMD_IDS[2]) &&
+			   console_ascii_token_contains_fold(line, DESKTOP_ENUM_REQUIRED_AMD_BDFS[2]) {
 				if hash, ok := console_mf_child_hash(line, true); ok {
 					console_enum_note_static_mf_child(evidence, hash)
 				}
@@ -1075,19 +1046,11 @@ console_enum_finish_dynamic_section :: proc(
 ) {
 	if evidence == nil || hardware_key == "" {return}
 	amd_bdfs := DESKTOP_ENUM_REQUIRED_AMD_BDFS
-	healthy := console_dynamic_device_healthy(
-		problem_present,
-		problem,
-		status_present,
-		status,
-	)
+	healthy := console_dynamic_device_healthy(problem_present, problem, status_present, status)
 	if console_ascii_has_prefix_fold(hardware_key, `PCI\`) {
 		for id, index in DESKTOP_ENUM_REQUIRED_AMD_IDS {
 			if !console_ascii_token_contains_fold(hardware_key, id) ||
-			   !console_ascii_token_contains_fold(
-				   hardware_key,
-				   amd_bdfs[index],
-			   ) {
+			   !console_ascii_token_contains_fold(hardware_key, amd_bdfs[index]) {
 				continue
 			}
 			evidence.amd_active[index] = true
@@ -1179,10 +1142,7 @@ console_windows98_dynamic_enum_apply :: proc(contents: string, evidence: ^Consol
 			allocation_present = false
 			allocation_pending = false
 			allocation_duplicate = false
-			in_section = console_ascii_contains_fold(
-				line,
-				`HKEY_DYN_DATA\Config Manager\Enum\`,
-			)
+			in_section = console_ascii_contains_fold(line, `HKEY_DYN_DATA\Config Manager\Enum\`)
 			continue
 		}
 		if !in_section {continue}
@@ -1265,91 +1225,77 @@ console_enum_evidence_valid :: proc(evidence: Console_Enum_Evidence) -> bool {
 }
 
 console_windows98_enum_valid :: proc(contents, dynamic_contents: string) -> bool {
-	return console_enum_evidence_valid(
-		console_windows98_enum_evidence(contents, dynamic_contents),
-	)
+	return console_enum_evidence_valid(console_windows98_enum_evidence(contents, dynamic_contents))
 }
 
 console_desktop_marker_evidence :: proc(
-	c_drive: string,
+	session: ^fat32session.Machine_Session,
 ) -> (
 	evidence: Console_Enum_Evidence,
 	marker_seen, enum_valid: bool,
 ) {
-	if c_drive == "" {return {}, false, false}
-	marker_path, path_error := filepath.join(
-		{c_drive, "GSWSETUP", win98prep.DESKTOP_MARKER_FILE},
-		context.temp_allocator,
-	)
-	if path_error != nil {return {}, false, false}
-	marker_info, stat_error := os.stat(marker_path, context.temp_allocator)
-	if stat_error != nil {return {}, false, false}
-	defer os.file_info_delete(marker_info, context.temp_allocator)
-	if marker_info.type != .Regular || marker_info.size == 0 || marker_info.size > 64 {
+	if session == nil {return {}, false, false}
+	probes := [?]fat32session.Probe {
+		{.Read_Range, fmt.tprintf("GSWSETUP/%s", win98imageprep.DESKTOP_MARKER_FILE), 0, 64},
+		{
+			.Read_Range,
+			fmt.tprintf("GSWSETUP/%s", win98imageprep.DESKTOP_ENUM_FILE),
+			0,
+			DESKTOP_ENUM_MAX_BYTES,
+		},
+		{
+			.Read_Range,
+			fmt.tprintf("GSWSETUP/%s", win98imageprep.DESKTOP_DYNAMIC_ENUM_FILE),
+			0,
+			DESKTOP_ENUM_MAX_BYTES,
+		},
+	}
+	batch, observe_error := fat32session.observe(session, probes[:], context.temp_allocator)
+	defer fat32session.observation_batch_destroy(&batch, context.temp_allocator)
+	if observe_error.code != .None || batch.pending || len(batch.items) != len(probes) {
 		return {}, false, false
 	}
-	marker, marker_error := os.read_entire_file(marker_path, context.temp_allocator)
-	if marker_error != nil || strings.trim_space(string(marker)) != "READY" {
+	marker := &batch.items[0]
+	if marker.type != .Regular ||
+	   marker.size == 0 ||
+	   marker.size > 64 ||
+	   strings.trim_space(string(marker.data)) != "READY" {
 		return {}, false, false
 	}
 	marker_seen = true
-	enum_path, enum_error := filepath.join(
-		{c_drive, "GSWSETUP", win98prep.DESKTOP_ENUM_FILE},
-		context.temp_allocator,
-	)
-	if enum_error != nil {return {}, marker_seen, false}
-	enum_info, enum_stat_error := os.stat(enum_path, context.temp_allocator)
-	if enum_stat_error != nil {return {}, marker_seen, false}
-	defer os.file_info_delete(enum_info, context.temp_allocator)
-	if enum_info.type != .Regular ||
-	   enum_info.size <= 0 ||
-	   enum_info.size > DESKTOP_ENUM_MAX_BYTES {
+	enumeration := &batch.items[1]
+	if enumeration.type != .Regular ||
+	   enumeration.size == 0 ||
+	   enumeration.size > DESKTOP_ENUM_MAX_BYTES ||
+	   u64(len(enumeration.data)) != enumeration.size {
 		return {}, marker_seen, false
 	}
-	enumeration, enumeration_error := os.read_entire_file(enum_path, context.temp_allocator)
-	if enumeration_error != nil {return {}, marker_seen, false}
-	defer delete(enumeration, context.temp_allocator)
-	dynamic_enum_path, dynamic_enum_error := filepath.join(
-		{c_drive, "GSWSETUP", win98prep.DESKTOP_DYNAMIC_ENUM_FILE},
-		context.temp_allocator,
-	)
-	if dynamic_enum_error != nil {return {}, marker_seen, false}
-	dynamic_enum_info, dynamic_enum_stat_error := os.stat(
-		dynamic_enum_path,
-		context.temp_allocator,
-	)
-	if dynamic_enum_stat_error != nil {return {}, marker_seen, false}
-	defer os.file_info_delete(dynamic_enum_info, context.temp_allocator)
-	if dynamic_enum_info.type != .Regular ||
-	   dynamic_enum_info.size <= 0 ||
-	   dynamic_enum_info.size > DESKTOP_ENUM_MAX_BYTES {
+	dynamic_enumeration := &batch.items[2]
+	if dynamic_enumeration.type != .Regular ||
+	   dynamic_enumeration.size == 0 ||
+	   dynamic_enumeration.size > DESKTOP_ENUM_MAX_BYTES ||
+	   u64(len(dynamic_enumeration.data)) != dynamic_enumeration.size {
 		return {}, marker_seen, false
 	}
-	dynamic_enumeration, dynamic_enumeration_error := os.read_entire_file(
-		dynamic_enum_path,
-		context.temp_allocator,
-	)
-	if dynamic_enumeration_error != nil {return {}, marker_seen, false}
-	defer delete(dynamic_enumeration, context.temp_allocator)
 	evidence = console_windows98_enum_evidence(
-		string(enumeration),
-		string(dynamic_enumeration),
+		string(enumeration.data),
+		string(dynamic_enumeration.data),
 	)
 	enum_valid = console_enum_evidence_valid(evidence)
 	return
 }
 
-console_desktop_marker_exists :: proc(c_drive: string) -> bool {
-	_, marker_seen, enum_valid := console_desktop_marker_evidence(c_drive)
+console_desktop_marker_exists :: proc(session: ^fat32session.Machine_Session) -> bool {
+	_, marker_seen, enum_valid := console_desktop_marker_evidence(session)
 	return marker_seen && enum_valid
 }
 
 console_result_refresh_desktop_evidence :: proc(
 	result: ^acceptance.Result,
-	c_drive: string,
+	session: ^fat32session.Machine_Session,
 ) {
 	if result == nil {return}
-	evidence, marker_seen, enum_valid := console_desktop_marker_evidence(c_drive)
+	evidence, marker_seen, enum_valid := console_desktop_marker_evidence(session)
 	result.desktop_marker_seen = marker_seen
 	result.desktop_enum_valid = enum_valid
 	result.desktop_vga_irq11_seen = evidence.vga_irq11_seen
@@ -1373,11 +1319,11 @@ console_acceptance_enforce_result_invariants :: proc(
 	if !reset_epochs_valid {
 		result.last_progress_reason = "reset_epoch_mismatch"
 	} else if options.accept_until == .Desktop &&
-	          (!result.desktop_marker_seen ||
-		          !result.desktop_enum_valid ||
-		          !result.desktop_vga_irq11_seen ||
-		          result.execution.primary_ide_dma_transactions == 0 ||
-		          result.execution.primary_ide_dma_bytes == 0) {
+	   (!result.desktop_marker_seen ||
+			   !result.desktop_enum_valid ||
+			   !result.desktop_vga_irq11_seen ||
+			   result.desktop_primary_ide_dma_transactions == 0 ||
+			   result.desktop_primary_ide_dma_bytes == 0) {
 		result.last_progress_reason = "desktop_evidence_lost"
 	} else {
 		return
@@ -1389,43 +1335,50 @@ console_acceptance_enforce_result_invariants :: proc(
 
 CONSOLE_ARTIFACT_LOG_BYTES :: 32 * 1024
 
-console_artifact_append_log :: proc(builder: ^strings.Builder, path, label: string) {
-	file, open_error := os.open(path, {.Read})
-	if open_error != nil {return}
-	defer os.close(file)
-	size, size_error := os.file_size(file)
-	if size_error != nil || size <= 0 {return}
-	start := max(i64(0), size - CONSOLE_ARTIFACT_LOG_BYTES)
-	wanted := int(min(i64(CONSOLE_ARTIFACT_LOG_BYTES), size))
-	buffer: [CONSOLE_ARTIFACT_LOG_BYTES]u8
-	total := 0
-	for total < wanted {
-		count, read_error := os.read_at(file, buffer[total:wanted], start + i64(total))
-		if count <= 0 {break}
-		total += count
-		if read_error != nil {break}
-	}
-	if total == 0 {return}
-	fmt.sbprintfln(builder, "\nsetup-log %s (last %d of %d bytes):", label, total, size)
-	fmt.sbprintfln(builder, "%s", string(buffer[:total]))
+console_artifact_append_log :: proc(
+	builder: ^strings.Builder,
+	item: ^fat32session.Observation,
+	label: string,
+) {
+	if builder == nil || item == nil || item.type != .Regular || len(item.data) == 0 {return}
+	fmt.sbprintfln(
+		builder,
+		"\nsetup-log %s (last %d of %d bytes):",
+		label,
+		len(item.data),
+		item.size,
+	)
+	fmt.sbprintfln(builder, "%s", string(item.data))
 }
 
-console_artifact_append_setup_logs :: proc(builder: ^strings.Builder, c_drive: string) {
-	if builder == nil || c_drive == "" {return}
-	windows, windows_error := filepath.join({c_drive, "WINDOWS"}, context.temp_allocator)
-	if windows_error != nil {return}
+console_artifact_append_setup_logs :: proc(
+	builder: ^strings.Builder,
+	session: ^fat32session.Machine_Session,
+) {
+	if builder == nil || session == nil {return}
 	roots := [?]struct {
-		path:  string,
-		label: string,
-	}{{c_drive, "C:\\"}, {windows, "C:\\WINDOWS\\"}}
+		path, label: string,
+	}{{"", "C:\\"}, {"WINDOWS/", "C:\\WINDOWS\\"}}
 	names := [?]string{"SETUPLOG.TXT", "DETLOG.TXT", "DETCRASH.LOG"}
+	probes: [len(roots) * len(names)]fat32session.Probe
+	labels: [len(probes)]string
+	index := 0
 	for root in roots {
 		for name in names {
-			path, path_error := filepath.join({root.path, name}, context.temp_allocator)
-			if path_error != nil {continue}
-			label := fmt.tprintf("%s%s", root.label, name)
-			console_artifact_append_log(builder, path, label)
+			probes[index] = fat32session.Probe {
+				kind   = .Read_Tail,
+				path   = fmt.tprintf("%s%s", root.path, name),
+				length = CONSOLE_ARTIFACT_LOG_BYTES,
+			}
+			labels[index] = fmt.tprintf("%s%s", root.label, name)
+			index += 1
 		}
+	}
+	batch, observe_error := fat32session.observe(session, probes[:], context.temp_allocator)
+	defer fat32session.observation_batch_destroy(&batch, context.temp_allocator)
+	if observe_error.code != .None || batch.pending {return}
+	for &item, item_index in batch.items {
+		console_artifact_append_log(builder, &item, labels[item_index])
 	}
 }
 
@@ -1450,6 +1403,29 @@ console_artifact_append_legacy_histories :: proc(builder: ^strings.Builder, m: ^
 		fmt.sbprintln(builder, "recent I/O: unavailable (diagnostic tracing disabled)")
 	}
 	if m.bus.diagnostic_tracing {
+		fmt.sbprintfln(
+			builder,
+			"first kernel IDE probe accesses (%d captured of %d):",
+			m.ide_kernel_probe_count,
+			m.ide_kernel_probe_total,
+		)
+		for i in 0 ..< int(m.ide_kernel_probe_count) {
+			trace := m.ide_kernel_probe_hist[i]
+			fmt.sbprintfln(
+				builder,
+				"  %s %04x size=%d value=%08x elements=%d repeats=%d pm=%t cpl=%d cs=%04x linear=%08x",
+				trace.write ? "out" : "in",
+				trace.port,
+				trace.size,
+				trace.value,
+				trace.elements,
+				trace.repeats,
+				trace.protected_mode,
+				trace.cpl,
+				trace.cs,
+				trace.linear,
+			)
+		}
 		ide_count := int(min(m.ide_count, u64(machine.IDE_HISTORY)))
 		fmt.sbprintfln(builder, "recent IDE I/O (%d of %d):", ide_count, m.ide_count)
 		for i in 0 ..< ide_count {
@@ -1531,7 +1507,7 @@ console_artifact_diagnostics :: proc(
 	result: ^acceptance.Result,
 	m: ^machine.Machine,
 	firmware_text: string,
-	paths: ^profile.Paths,
+	session: ^fat32session.Machine_Session,
 ) -> string {
 	builder := strings.builder_make()
 	fmt.sbprintfln(&builder, "stop_reason=%s", acceptance.stop_reason_name(result.stop_reason))
@@ -1575,6 +1551,14 @@ console_artifact_diagnostics :: proc(
 		"primary-ide-bmide transactions=%d bytes=%d",
 		result.execution.primary_ide_dma_transactions,
 		result.execution.primary_ide_dma_bytes,
+	)
+	fmt.sbprintfln(
+		&builder,
+		"primary-ide-kernel-bmide transactions=%d bytes=%d; desktop-epoch transactions=%d bytes=%d",
+		result.execution.primary_ide_kernel_dma_transactions,
+		result.execution.primary_ide_kernel_dma_bytes,
+		result.desktop_primary_ide_dma_transactions,
+		result.desktop_primary_ide_dma_bytes,
 	)
 	fmt.sbprintfln(
 		&builder,
@@ -1712,6 +1696,35 @@ console_artifact_diagnostics :: proc(
 			m.bmide.channels[0].status,
 			m.bmide.channels[1].status,
 		)
+		ide_pci := &m.pci.functions[machine.PCI_IDE_FUNCTION_INDEX]
+		fmt.sbprintfln(
+			&builder,
+			"ide mode=%02x pci command=%02x%02x prog-if=%02x bar4=%02x%02x%02x%02x " +
+			"cfg40=%02x cfg41=%02x timing48-4f=%02x%02x%02x%02x/%02x%02x%02x%02x " +
+			"udma50-53=%02x%02x%02x%02x",
+			m.ide.transfer_mode,
+			ide_pci.cfg[5],
+			ide_pci.cfg[4],
+			ide_pci.cfg[9],
+			ide_pci.cfg[0x23],
+			ide_pci.cfg[0x22],
+			ide_pci.cfg[0x21],
+			ide_pci.cfg[0x20],
+			ide_pci.cfg[0x40],
+			ide_pci.cfg[0x41],
+			ide_pci.cfg[0x48],
+			ide_pci.cfg[0x49],
+			ide_pci.cfg[0x4A],
+			ide_pci.cfg[0x4B],
+			ide_pci.cfg[0x4C],
+			ide_pci.cfg[0x4D],
+			ide_pci.cfg[0x4E],
+			ide_pci.cfg[0x4F],
+			ide_pci.cfg[0x50],
+			ide_pci.cfg[0x51],
+			ide_pci.cfg[0x52],
+			ide_pci.cfg[0x53],
+		)
 		fmt.sbprintfln(
 			&builder,
 			"RTC index=%02x A=%02x B=%02x C=%02x D=%02x irq_edge=%v nmi_disabled=%v",
@@ -1800,7 +1813,7 @@ console_artifact_diagnostics :: proc(
 			fmt.sbprintfln(&builder, "%s", string(line[:]))
 		}
 	}
-	if paths != nil {console_artifact_append_setup_logs(&builder, paths.c_drive)}
+	if session != nil {console_artifact_append_setup_logs(&builder, session)}
 	fmt.sbprintfln(&builder, "\nfirmware:\n%s", firmware_text)
 	return strings.to_string(builder)
 }
@@ -1811,12 +1824,14 @@ console_acceptance_finalize :: proc(
 	m: ^machine.Machine,
 	machine_live: ^bool,
 	firmware: ^Firmware_Log,
+	session: ^^fat32session.Machine_Session,
 	paths: ^profile.Paths,
 	start: time.Tick,
 	return_code: ^int,
 	machine_segment_accumulated: ^bool = nil,
 ) {
 	if options == nil || run_result == nil {return}
+	active_session := session != nil ? session^ : nil
 	live := machine_live != nil && machine_live^
 	defer if !live && m != nil {
 		orphan_trace := machine.machine_hardware_trace_detach(m)
@@ -1845,8 +1860,8 @@ console_acceptance_finalize :: proc(
 			run_result.installation_milestone = console_install_milestone_name(state.milestone)
 		}
 		profile.install_state_destroy(&state)
-		if options.accept_until == .Desktop {
-			console_result_refresh_desktop_evidence(run_result, paths.c_drive)
+		if options.accept_until == .Desktop && active_session != nil {
+			console_result_refresh_desktop_evidence(run_result, active_session)
 		}
 	}
 	console_acceptance_enforce_result_invariants(options, run_result, return_code)
@@ -1864,7 +1879,7 @@ console_acceptance_finalize :: proc(
 			run_result,
 			live ? m : nil,
 			firmware_text,
-			paths,
+			active_session,
 		)
 		defer delete(diagnostics)
 		hardware_trace := machine.machine_hardware_trace_text(m)
@@ -1901,20 +1916,26 @@ console_acceptance_finalize :: proc(
 	}
 }
 
-console_log_total_size :: proc(c_drive: string, names: []string) -> i64 {
-	total: i64
-	windows, _ := filepath.join({c_drive, "WINDOWS"}, context.temp_allocator)
-	roots := [?]string{c_drive, windows}
-	for root in roots {
+console_log_total_size :: proc(session: ^fat32session.Machine_Session, names: []string) -> i64 {
+	if session == nil || len(names) == 0 {return 0}
+	probes := make([]fat32session.Probe, len(names) * 2, context.temp_allocator)
+	index := 0
+	roots := [?]string{"", "WINDOWS/"}
+	for prefix in roots {
 		for name in names {
-			path, err := filepath.join({root, name}, context.temp_allocator)
-			if err != nil {continue}
-			info, stat_error := os.stat(path, context.temp_allocator)
-			if stat_error == nil {
-				if info.type == .Regular && info.size > 0 {total += info.size}
-				os.file_info_delete(info, context.temp_allocator)
+			probes[index] = fat32session.Probe {
+				kind = .Stat,
+				path = fmt.tprintf("%s%s", prefix, name),
 			}
+			index += 1
 		}
+	}
+	batch, observe_error := fat32session.observe(session, probes, context.temp_allocator)
+	defer fat32session.observation_batch_destroy(&batch, context.temp_allocator)
+	if observe_error.code != .None || batch.pending {return 0}
+	total: i64
+	for item in batch.items {
+		if item.type == .Regular && item.size > 0 {total += i64(item.size)}
 	}
 	return total
 }

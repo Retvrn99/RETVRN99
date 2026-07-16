@@ -12,7 +12,10 @@ param(
     [Alias('OutputPath')]
     [string]$OutputRoot = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dev\workload-gates'),
     [ValidateRange(30, 3600)]
-    [int]$TimeoutSeconds = 600
+    [int]$TimeoutSeconds = 600,
+    [string]$ImageToolPath = '',
+    [ValidateRange(1, 64)]
+    [int]$ThreadCount = [Environment]::ProcessorCount
 )
 
 Set-StrictMode -Version Latest
@@ -295,6 +298,61 @@ function Copy-TreeWithoutOverwrite {
     }
 }
 
+function Build-WorkloadImageTool {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [Parameter(Mandatory = $true)][int]$Threads
+    )
+    $source = Resolve-ExistingDirectory -Path (Join-Path $RepositoryRoot 'tools\workload-image') -Label 'Workload image tool source'
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    $output = Join-Path $OutputDirectory 'retvrn99-workload-image.exe'
+    $odinCommand = Get-Command odin -ErrorAction Stop
+    $build = Invoke-CapturedProcess -FilePath $odinCommand.Source -Arguments @(
+        'build', $source, "-out:$output", '-o:speed', "-thread-count:$Threads"
+    ) -WorkingDirectory $RepositoryRoot -Timeout 300
+    if ($build.timed_out) { throw 'Building the workload image tool timed out.' }
+    if ($build.exit_code -ne 0 -or -not (Test-Path -LiteralPath $output -PathType Leaf)) {
+        throw "Building the workload image tool failed: $($build.stderr.Trim())"
+    }
+    $sidecarOutput = Join-Path $OutputDirectory 'retvrn99-fat32.exe'
+    $sidecarSource = Join-Path $RepositoryRoot 'src\fat32_helper'
+    $sidecarBuild = Invoke-CapturedProcess -FilePath $odinCommand.Source -Arguments @(
+        'build', $sidecarSource, "-out:$sidecarOutput", '-o:speed', "-thread-count:$Threads"
+    ) -WorkingDirectory $RepositoryRoot -Timeout 300
+    if ($sidecarBuild.timed_out) { throw 'Building RETVRN99-FAT32 for the workload image tool timed out.' }
+    if ($sidecarBuild.exit_code -ne 0 -or -not (Test-Path -LiteralPath $sidecarOutput -PathType Leaf)) {
+        throw "Building RETVRN99-FAT32 for the workload image tool failed: $($sidecarBuild.stderr.Trim())"
+    }
+    return (Resolve-ExistingFile -Path $output -Label 'Workload image tool')
+}
+
+function Invoke-WorkloadImageTool {
+    param(
+        [Parameter(Mandatory = $true)][string]$ImageTool,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][int]$Timeout
+    )
+    $tool = Resolve-ExistingFile -Path $ImageTool -Label 'Workload image tool'
+    $result = Invoke-CapturedProcess -FilePath $tool -Arguments $Arguments -WorkingDirectory (Split-Path -Parent $tool) -Timeout $Timeout
+    if ($result.timed_out) { throw 'Workload image operation timed out.' }
+    return $result
+}
+
+function Write-WorkloadProfileSettings {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ImagePath
+    )
+    $absoluteImage = [IO.Path]::GetFullPath($ImagePath)
+    $settings = [ordered]@{
+        version = 2
+        cpu_mode = 'GSW-886'
+        hard_drive_path = $absoluteImage
+    }
+    Write-JsonFile -Path $Path -Value $settings
+}
+
 function New-QuakeGateConfig {
     param([Parameter(Mandatory = $true)][int64]$ExpectedFrames)
     $builder = New-Object Text.StringBuilder
@@ -323,34 +381,37 @@ function Stage-WorkloadProfile {
         [Parameter(Mandatory = $true)][string]$ProfileRoot,
         [Parameter(Mandatory = $true)][string]$DosSeed,
         [Parameter(Mandatory = $true)][string]$WorkloadDirectory,
-        [Parameter(Mandatory = $true)]$Workload
+        [Parameter(Mandatory = $true)]$Workload,
+        [Parameter(Mandatory = $true)][string]$ImageTool
     )
     if (Test-Path -LiteralPath $ProfileRoot) {
         throw "Fresh profile path already exists: $ProfileRoot"
     }
-    $cDrive = Join-Path $ProfileRoot 'c_drive'
-    New-Item -ItemType Directory -Path $cDrive -Force | Out-Null
-    Copy-TreeWithoutOverwrite -Source $DosSeed -Destination $cDrive
-    Copy-TreeWithoutOverwrite -Source $WorkloadDirectory -Destination $cDrive
+    $stagingRoot = Join-Path $ProfileRoot 'image-staging'
+    $imagePath = Join-Path $ProfileRoot 'c_drive.img'
+    $settingsPath = Join-Path $ProfileRoot 'settings.json'
+    New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
+    Copy-TreeWithoutOverwrite -Source $DosSeed -Destination $stagingRoot
+    Copy-TreeWithoutOverwrite -Source $WorkloadDirectory -Destination $stagingRoot
     foreach ($required in @('IO.SYS', 'MSDOS.SYS', 'COMMAND.COM')) {
-        if (-not (Test-Path -LiteralPath (Join-Path $cDrive $required) -PathType Leaf)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $stagingRoot $required) -PathType Leaf)) {
             throw "DOS seed is missing required file: $required"
         }
     }
-    $guestExecutable = Join-Path $cDrive $Workload.executable
+    $guestExecutable = Join-Path $stagingRoot $Workload.executable
     if (-not (Test-Path -LiteralPath $guestExecutable -PathType Leaf)) {
         throw "Staged workload executable is missing: $($Workload.executable)"
     }
-    $exitPath = Join-Path $cDrive 'EXITVM.COM'
+    $exitPath = Join-Path $stagingRoot 'EXITVM.COM'
     if (Test-Path -LiteralPath $exitPath) {
         throw 'Fixture tree reserves EXITVM.COM for the gate harness.'
     }
-    if (Test-Path -LiteralPath (Join-Path $cDrive 'GATE.OUT')) {
+    if (Test-Path -LiteralPath (Join-Path $stagingRoot 'GATE.OUT')) {
         throw 'Fixture tree reserves GATE.OUT for the gate harness.'
     }
     [IO.File]::WriteAllBytes($exitPath, (Get-ExitVmBytes))
     if ($Workload.metric -eq 'frames') {
-        $id1 = Join-Path $cDrive 'ID1'
+        $id1 = Join-Path $stagingRoot 'ID1'
         if (-not (Test-Path -LiteralPath $id1 -PathType Container)) {
             throw "Quake workload $($Workload.id) is missing its ID1 directory."
         }
@@ -358,16 +419,30 @@ function Stage-WorkloadProfile {
         if (Test-Path -LiteralPath $gateConfig) {
             throw 'Fixture tree reserves ID1\GATEEND.CFG for the gate harness.'
         }
-        if (@(Get-ChildItem -LiteralPath $cDrive -Filter 'QCONSOLE.LOG' -File -Recurse -Force).Count -ne 0) {
+        if (@(Get-ChildItem -LiteralPath $stagingRoot -Filter 'QCONSOLE.LOG' -File -Recurse -Force).Count -ne 0) {
             throw 'Quake fixture tree must not contain a stale QCONSOLE.LOG.'
         }
         $ascii = New-Object Text.ASCIIEncoding
         [IO.File]::WriteAllText($gateConfig, (New-QuakeGateConfig -ExpectedFrames $Workload.expected), $ascii)
     }
-    $autoexecPath = Join-Path $cDrive 'AUTOEXEC.BAT'
+    $autoexecPath = Join-Path $stagingRoot 'AUTOEXEC.BAT'
     $asciiEncoding = New-Object Text.ASCIIEncoding
     [IO.File]::WriteAllText($autoexecPath, (New-AutoexecText -Workload $Workload), $asciiEncoding)
-    return [pscustomobject]@{ profile_root = $ProfileRoot; c_drive = $cDrive; executable = $guestExecutable }
+    $stageResult = Invoke-WorkloadImageTool -ImageTool $ImageTool -Arguments @('stage', $imagePath, $stagingRoot) -Timeout 300
+    if ($stageResult.exit_code -ne 0) {
+        throw "Workload image staging failed: $($stageResult.stderr.Trim())"
+    }
+    if (-not (Test-Path -LiteralPath $imagePath -PathType Leaf)) {
+        throw 'Workload image tool did not create the selected image.'
+    }
+    Write-WorkloadProfileSettings -Path $settingsPath -ImagePath $imagePath
+    Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+    return [pscustomobject]@{
+        profile_root = $ProfileRoot
+        image_path = $imagePath
+        settings_path = $settingsPath
+        executable = $Workload.executable
+    }
 }
 
 function ConvertTo-ProcessArgument {
@@ -501,18 +576,27 @@ function Get-TextFileSource {
 
 function Get-MetricSources {
     param(
-        [Parameter(Mandatory = $true)][string]$CDrive,
+        [Parameter(Mandatory = $true)][string]$ImagePath,
+        [Parameter(Mandatory = $true)][string]$ImageTool,
+        [Parameter(Mandatory = $true)][string]$ObservationRoot,
         [Parameter(Mandatory = $true)]$ProcessResult,
         [Parameter(Mandatory = $true)][string]$Metric
     )
     $sources = @()
-    if ($Metric -eq 'frames') {
-        foreach ($log in Get-ChildItem -LiteralPath $CDrive -Filter 'QCONSOLE.LOG' -File -Recurse -Force | Sort-Object LastWriteTimeUtc -Descending) {
-            $sources += [pscustomobject]@{ name = $log.FullName; text = [IO.File]::ReadAllText($log.FullName) }
+    New-Item -ItemType Directory -Path $ObservationRoot -Force | Out-Null
+    $guestPaths = if ($Metric -eq 'frames') { @('QCONSOLE.LOG', 'GATE.OUT') } else { @('GATE.OUT') }
+    foreach ($guestPath in $guestPaths) {
+        $hostPath = Join-Path $ObservationRoot $guestPath
+        $observation = Invoke-WorkloadImageTool -ImageTool $ImageTool -Arguments @(
+            'observe', $ImagePath, $guestPath, $hostPath
+        ) -Timeout 120
+        if ($observation.exit_code -eq 3) { continue }
+        if ($observation.exit_code -ne 0) {
+            throw "Workload image observation failed for $guestPath`: $($observation.stderr.Trim())"
         }
+        $source = Get-TextFileSource -Name $guestPath -Path $hostPath
+        if ($null -ne $source) { $sources += $source }
     }
-    $gate = Get-TextFileSource -Name 'GATE.OUT' -Path (Join-Path $CDrive 'GATE.OUT')
-    if ($null -ne $gate) { $sources += $gate }
     $sources += [pscustomobject]@{ name = 'stdout'; text = $ProcessResult.stdout }
     $sources += [pscustomobject]@{ name = 'stderr'; text = $ProcessResult.stderr }
     return $sources
@@ -549,13 +633,16 @@ function Invoke-WorkloadGates {
         [Parameter(Mandatory = $true)][string]$Workloads,
         [Parameter(Mandatory = $true)][string]$Emulator,
         [Parameter(Mandatory = $true)][string]$Output,
-        [Parameter(Mandatory = $true)][int]$Timeout
+        [Parameter(Mandatory = $true)][int]$Timeout,
+        [string]$ImageTool = '',
+        [ValidateRange(1, 64)][int]$Threads = [Environment]::ProcessorCount
     )
     $repositoryRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
     $manifestData = Read-WorkloadManifest -Path $Manifest
     $seedRoot = Resolve-ExistingDirectory -Path $DosSeed -Label 'DOS seed'
     $workloadRootPath = Resolve-ExistingDirectory -Path $Workloads -Label 'Workload root'
     $emulatorFile = Resolve-ExistingFile -Path $Emulator -Label 'RETVRN99 executable'
+    $sidecarFile = Resolve-ExistingFile -Path (Join-Path (Split-Path -Parent $emulatorFile) 'retvrn99-fat32.exe') -Label 'RETVRN99-FAT32 executable'
     Assert-NoReparseTree -Root $seedRoot -Label 'DOS seed'
     $outputPath = Assert-SafeOutputRoot -Path $Output -RepositoryRoot $repositoryRoot -ProtectedPaths @(
         $manifestData.path, $seedRoot, $workloadRootPath, $emulatorFile
@@ -584,6 +671,12 @@ function Invoke-WorkloadGates {
     $runName = '{0}-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ'), [Guid]::NewGuid().ToString('N')
     $runRoot = Join-Path $outputPath $runName
     New-Item -ItemType Directory -Path $runRoot | Out-Null
+    $imageToolFile = if ([string]::IsNullOrWhiteSpace($ImageTool)) {
+        Build-WorkloadImageTool -RepositoryRoot $repositoryRoot -OutputDirectory (Join-Path $runRoot 'tools') -Threads $Threads
+    }
+    else {
+        Resolve-ExistingFile -Path $ImageTool -Label 'Workload image tool'
+    }
     $started = [DateTime]::UtcNow
     $allPassed = $true
     $workloadReports = @()
@@ -608,7 +701,7 @@ function Invoke-WorkloadGates {
             $processResult = $null
             $amplification = $null
             try {
-                $staged = Stage-WorkloadProfile -ProfileRoot $profileRoot -DosSeed $seedRoot -WorkloadDirectory $entry.fixture_path -Workload $workload
+                $staged = Stage-WorkloadProfile -ProfileRoot $profileRoot -DosSeed $seedRoot -WorkloadDirectory $entry.fixture_path -Workload $workload -ImageTool $imageToolFile
                 $emulatorArguments = @(
                     '--console', '--test-device', '--strict-io',
                     "--seconds:$Timeout", "--result-json:$resultPath",
@@ -623,7 +716,7 @@ function Invoke-WorkloadGates {
                 if ($processResult.exit_code -ne 0 -or [int]$diskResult.exit_code -ne 0) { throw 'Emulator returned a non-zero exit code.' }
                 if ([string]$diskResult.stop_reason -ne 'test_exit' -or [int]$diskResult.test_exit_code -ne 0) { throw 'Guest did not complete through Test_Exit with code zero.' }
                 if ([int64]$diskResult.unclassified_io -ne 0 -or [int64]$diskResult.unclassified_mmio -ne 0) { throw 'Run reported unclassified I/O or MMIO.' }
-                $sources = Get-MetricSources -CDrive $staged.c_drive -ProcessResult $processResult -Metric $workload.metric
+                $sources = Get-MetricSources -ImagePath $staged.image_path -ImageTool $imageToolFile -ObservationRoot (Join-Path $repetitionRoot 'guest-observations') -ProcessResult $processResult -Metric $workload.metric
                 $metric = if ($workload.metric -eq 'gametics') { Parse-DoomTimedemo -Sources $sources } else { Parse-QuakeTimedemo -Sources $sources }
                 if ([int64]$metric.value -ne [int64]$workload.expected) {
                     throw "Expected $($workload.expected) $($workload.metric), observed $($metric.value)."
@@ -673,6 +766,8 @@ function Invoke-WorkloadGates {
         completed_utc = [DateTime]::UtcNow.ToString('o'); repository_root = $repositoryRoot
         manifest_path = $manifestData.path; manifest_sha256 = $manifestHash
         emulator_path = $emulatorFile; emulator_sha256 = Get-FileSha256 -Path $emulatorFile
+        sidecar_path = $sidecarFile; sidecar_sha256 = Get-FileSha256 -Path $sidecarFile
+        workload_image_tool = $imageToolFile; workload_image_tool_sha256 = Get-FileSha256 -Path $imageToolFile
         dos_seed_path = $seedRoot; dos_seed_tree_sha256 = $seedHash.sha256
         output_root = $runRoot; performance_gated = $allPassed; wall_time_gated = $false
         workloads = $workloadReports
@@ -684,7 +779,7 @@ function Invoke-WorkloadGates {
 
 if ($MyInvocation.InvocationName -ne '.') {
     try {
-        $outcome = Invoke-WorkloadGates -Manifest $ManifestPath -DosSeed $DosSeedPath -Workloads $WorkloadRoot -Emulator $EmulatorPath -Output $OutputRoot -Timeout $TimeoutSeconds
+        $outcome = Invoke-WorkloadGates -Manifest $ManifestPath -DosSeed $DosSeedPath -Workloads $WorkloadRoot -Emulator $EmulatorPath -Output $OutputRoot -Timeout $TimeoutSeconds -ImageTool $ImageToolPath -Threads $ThreadCount
         Write-Host "Workload gate report: $($outcome.report_path)"
         if (-not $outcome.passed) { exit 1 }
     }

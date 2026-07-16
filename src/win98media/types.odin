@@ -20,16 +20,19 @@ Diagnostic :: enum {
 	Create_File_Failed,
 	Write_Failed,
 	Template_Missing,
+	Malformed_El_Torito,
+	El_Torito_Read_Failed,
 }
 
 Media_Info :: struct {
-	volume_identifier:     string,
-	setup_executable:      string,
-	has_msbatch_template: bool,
-	logical_block_size:    u32,
-	win98_file_count:      u32,
-	win98_total_bytes:     u64,
-	allocator:             runtime.Allocator,
+	volume_identifier:        string,
+	setup_executable:         string,
+	has_msbatch_template:     bool,
+	logical_block_size:       u32,
+	win98_file_count:         u32,
+	win98_total_bytes:        u64,
+	has_embedded_boot_floppy: bool,
+	allocator:                runtime.Allocator,
 }
 
 media_info_destroy :: proc(info: ^Media_Info) {

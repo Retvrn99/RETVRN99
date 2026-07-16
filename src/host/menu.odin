@@ -3,8 +3,45 @@ package host
 
 import imgui "../../vendor_local/imgui"
 import config "../vmconfig"
+import "core:fmt"
+import "core:path/filepath"
 
 MENU_ROLL_SECONDS :: f32(0.18)
+MENU_ACTIVITY_HOLD_SECONDS :: f32(0.15)
+MENU_STORAGE_LED_RADIUS :: f32(3)
+MENU_STORAGE_LED_GAP :: f32(4)
+MENU_STORAGE_ICON_SIZE :: f32(17)
+MENU_STORAGE_ITEM_GAP :: f32(12)
+MENU_STORAGE_RIGHT_INSET :: f32(8)
+MENU_STORAGE_ITEM_WIDTH ::
+	MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP + MENU_STORAGE_ICON_SIZE
+MENU_STORAGE_TOTAL_WIDTH :: MENU_STORAGE_ITEM_WIDTH * 3 + MENU_STORAGE_ITEM_GAP * 2
+
+MENU_LED_IDLE :: u32(0xFF305830)
+MENU_LED_ACTIVE :: u32(0xFF00D838)
+
+MENU_TOP_LEVEL_ORDER :: [6]cstring{"Machine", "Hard Drive", "Media", "Emulation", "Tools", "Help"}
+MENU_CREATE_HARD_DRIVE_LABEL :: "Create Hard Drive..."
+MENU_INSTALL_WINDOWS_98_LABEL :: "Install Windows 98..."
+MENU_ABANDON_WINDOWS_98_LABEL :: "Abandon Windows 98 Installation..."
+
+WELCOME_PANEL_TITLE :: "Welcome to RETVRN99"
+WELCOME_PANEL_FIRST_TIME :: "It looks like this is your first time running RETVRN99."
+WELCOME_PANEL_QUICK_START :: "Quick start"
+WELCOME_PANEL_QUICK_START_TEXT :: "Choose Tools > Install Windows 98 and follow the steps."
+WELCOME_PANEL_ADVANCED :: "Advanced setup"
+WELCOME_PANEL_ADVANCED_FIRST :: "Create or select a hard drive, mount bootable media from the Media menu,"
+WELCOME_PANEL_ADVANCED_SECOND :: "then choose Machine > Start."
+WELCOME_PANEL_DOCUMENTATION :: "For the full guide, choose Help > Documentation."
+
+RECOVERY_PANEL_TITLE :: "Hard drive unavailable"
+RECOVERY_PANEL_MESSAGE :: "The selected hard drive could not be opened."
+RECOVERY_PANEL_ACTION :: "Choose Hard Drive > Select Hard Drive to select another image."
+
+INSTALL_RECOVERY_PANEL_TITLE :: "Windows 98 installation recovery"
+INSTALL_RECOVERY_PANEL_MESSAGE :: "The saved Windows 98 installation state is invalid or no longer bound."
+INSTALL_RECOVERY_PANEL_LOCK :: "Hard-drive and media tools remain disabled to preserve recovery evidence."
+INSTALL_RECOVERY_PANEL_ACTION :: "Choose Tools > Abandon Windows 98 Installation... to retain the evidence and clear the invalid state."
 
 Menu_Action :: enum {
 	None,
@@ -13,31 +50,108 @@ Menu_Action :: enum {
 	Reset,
 	Toggle_Pause,
 	Power_Off,
+	Select_Hard_Drive,
+	Browse_C_Drive,
+	Create_Hard_Drive,
 	Mount_Floppy,
 	Eject_Floppy,
 	Mount_Cdrom,
 	Eject_Cdrom,
 	Install_Windows_98,
-	Finish_Windows_98_Installation,
+	Abandon_Windows_98_Installation,
 	Set_Cpu_Mode,
 	Set_Window_Scale,
 	Toggle_Fullscreen,
 	Set_Visual_Shader,
+	Open_Documentation,
 	Open_Github,
 	Open_Third_Party,
 }
 
+Hard_Drive_Status :: enum {
+	Unknown,
+	None_Configured,
+	Ready,
+	Missing,
+	Invalid,
+	Unavailable,
+}
+
+Menu_Center_Panel :: enum {
+	None,
+	Welcome,
+	Hard_Drive_Unavailable,
+	Install_State_Recovery,
+}
+
 Menu_State :: struct {
-	machine_running:   bool,
-	user_paused:       bool,
-	cpu_mode:          config.Cpu_Mode,
-	window_scale:      int,
-	fullscreen:        bool,
-	menu_reveal:       f32,
-	visual_shader:     Visual_Shader,
-	shaders_available: bool,
-	show_hotkeys:      bool,
-	show_about:        bool,
+	machine_running:           bool,
+	user_paused:               bool,
+	install_active:            bool,
+	install_recovery_required: bool,
+	storage_actions_blocked:   bool,
+	hard_drive_status:         Hard_Drive_Status,
+	hard_drive_path:           string,
+	hard_drive_diagnostic:     string,
+	floppy_mounted:            bool,
+	cdrom_mounted:             bool,
+	floppy_active:             bool,
+	hard_drive_active:         bool,
+	dvd_rom_active:            bool,
+	cpu_mode:                  config.Cpu_Mode,
+	window_scale:              int,
+	fullscreen:                bool,
+	menu_reveal:               f32,
+	visual_shader:             Visual_Shader,
+	shaders_available:         bool,
+	show_hotkeys:              bool,
+	show_about:                bool,
+}
+
+Activity_Light_State :: struct {
+	generation:         u64,
+	session_generation: u64,
+	remaining_seconds:  f32,
+	initialized:        bool,
+}
+
+activity_light_step :: proc(
+	light: ^Activity_Light_State,
+	generation: u64,
+	session_generation: u64,
+	machine_running: bool,
+	elapsed_seconds: f32,
+) -> bool {
+	if light == nil {return false}
+	if !machine_running {
+		light.generation = generation
+		light.session_generation = session_generation
+		light.remaining_seconds = 0
+		light.initialized = true
+		return false
+	}
+	if light.session_generation != session_generation {
+		light.session_generation = session_generation
+		light.generation = generation
+		light.initialized = true
+		light.remaining_seconds = generation != 0 ? MENU_ACTIVITY_HOLD_SECONDS : 0
+		return light.remaining_seconds > 0
+	}
+	changed := light.initialized && light.generation != generation
+	if !light.initialized {
+		light.initialized = true
+		changed = generation != 0
+	}
+	light.generation = generation
+	if changed {
+		light.remaining_seconds = MENU_ACTIVITY_HOLD_SECONDS
+	} else {
+		light.remaining_seconds = max(
+			f32(0),
+			light.remaining_seconds - max(f32(0), elapsed_seconds),
+		)
+	}
+	return light.remaining_seconds > 0
 }
 
 menu_reveal_step :: proc(current, target, elapsed_seconds: f32) -> f32 {
@@ -57,21 +171,88 @@ menu_machine_label :: proc(st: ^Menu_State) -> cstring {
 	return st != nil && st.machine_running ? "Stop" : "Start"
 }
 
+menu_select_hard_drive_label :: proc(st: ^Menu_State) -> cstring {
+	if st != nil && st.machine_running {
+		return "Select Hard Drive... (Stop machine first)"
+	}
+	return "Select Hard Drive..."
+}
+
+menu_browse_c_drive_label :: proc(st: ^Menu_State) -> cstring {
+	if st != nil && st.machine_running {
+		return "Browse C drive... (Stop machine first)"
+	}
+	return "Browse C drive..."
+}
+
+menu_current_hard_drive_label :: proc(st: ^Menu_State) -> cstring {
+	if st == nil || len(st.hard_drive_path) == 0 {return "Current: None"}
+	return fmt.ctprintf("Current: %s", filepath.base(st.hard_drive_path))
+}
+
+menu_action_visible :: proc(st: ^Menu_State, action: Menu_Action) -> bool {
+	if action == .Abandon_Windows_98_Installation {
+		return st != nil && menu_install_storage_locked(st)
+	}
+	return true
+}
+
+menu_center_panel :: proc(st: ^Menu_State) -> Menu_Center_Panel {
+	if st == nil || st.machine_running {return .None}
+	if st.install_recovery_required {return .Install_State_Recovery}
+	switch st.hard_drive_status {
+	case .None_Configured:
+		return .Welcome
+	case .Missing, .Invalid, .Unavailable:
+		return .Hard_Drive_Unavailable
+	case .Unknown, .Ready:
+		return .None
+	}
+	return .None
+}
+
 menu_action_enabled :: proc(st: ^Menu_State, action: Menu_Action) -> bool {
 	if st == nil {return false}
+	install_locked := menu_install_storage_locked(st)
 	#partial switch action {
 	case .Start:
-		return !st.machine_running
+		return !st.machine_running && !st.install_recovery_required && !st.storage_actions_blocked
 	case .Stop:
 		return st.machine_running
-	case .Toggle_Pause:
+	case .Reset, .Toggle_Pause:
 		return st.machine_running
+	case .Select_Hard_Drive:
+		return !st.machine_running && !install_locked && !st.storage_actions_blocked
+	case .Browse_C_Drive:
+		return(
+			!st.machine_running &&
+			!install_locked &&
+			!st.storage_actions_blocked &&
+			st.hard_drive_status == .Ready &&
+			len(st.hard_drive_path) > 0 \
+		)
+	case .Create_Hard_Drive, .Install_Windows_98:
+		return !st.machine_running && !install_locked && !st.storage_actions_blocked
+	case .Abandon_Windows_98_Installation:
+		return !st.machine_running && install_locked && !st.storage_actions_blocked
+	case .Mount_Floppy:
+		return !install_locked && !st.storage_actions_blocked && !st.floppy_mounted
+	case .Eject_Floppy:
+		return !install_locked && !st.storage_actions_blocked && st.floppy_mounted
+	case .Mount_Cdrom:
+		return !install_locked && !st.storage_actions_blocked && !st.cdrom_mounted
+	case .Eject_Cdrom:
+		return !install_locked && !st.storage_actions_blocked && st.cdrom_mounted
 	case .Set_Window_Scale:
 		return !st.fullscreen
 	case .Set_Visual_Shader:
 		return st.shaders_available
 	}
 	return true
+}
+
+menu_install_storage_locked :: proc(st: ^Menu_State) -> bool {
+	return st != nil && (st.install_active || st.install_recovery_required)
 }
 
 // Dear ImGui deliberately removes the usual frame padding from vertical menu
@@ -87,7 +268,87 @@ menu_end :: proc() {
 	imgui.EndMenu()
 }
 
-menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
+menu_storage_indicator_left :: proc(window_x, window_width: f32) -> f32 {
+	return window_x + window_width - MENU_STORAGE_RIGHT_INSET - MENU_STORAGE_TOTAL_WIDTH
+}
+
+menu_storage_indicators_fit :: proc(menu_content_right, indicator_left: f32) -> bool {
+	return indicator_left >= menu_content_right + MENU_STORAGE_ITEM_GAP
+}
+
+@(private = "file")
+menu_draw_activity_led :: proc(draw: ^imgui.DrawList, center: imgui.Vec2, active: bool) {
+	fill := imgui.ColorConvertFloat4ToU32(theme_color(active ? MENU_LED_ACTIVE : MENU_LED_IDLE))
+	outline := imgui.ColorConvertFloat4ToU32(theme_color(THEME_SHADOW))
+	imgui.DrawList_AddCircleFilled(draw, center, MENU_STORAGE_LED_RADIUS, fill)
+	imgui.DrawList_AddCircle(draw, center, MENU_STORAGE_LED_RADIUS, outline, 0, 1)
+}
+
+menu_storage_icon_rect :: proc(
+	icon_width, icon_height: int,
+	slot_x, center_y: f32,
+) -> (
+	min_point, max_point: imgui.Vec2,
+) {
+	if icon_width <= 0 || icon_height <= 0 {return {}, {}}
+	scale := min(
+		MENU_STORAGE_ICON_SIZE / f32(icon_width),
+		MENU_STORAGE_ICON_SIZE / f32(icon_height),
+	)
+	draw_width := f32(icon_width) * scale
+	draw_height := f32(icon_height) * scale
+	min_point = {
+		slot_x + (MENU_STORAGE_ICON_SIZE - draw_width) * 0.5,
+		center_y - draw_height * 0.5,
+	}
+	max_point = {min_point.x + draw_width, min_point.y + draw_height}
+	return
+}
+
+@(private = "file")
+menu_draw_storage_icon :: proc(
+	draw: ^imgui.DrawList,
+	icon: Storage_Icon_Texture,
+	slot_x, center_y: f32,
+) {
+	if draw == nil || icon.texture == nil || icon.width <= 0 || icon.height <= 0 {return}
+	min_point, max_point := menu_storage_icon_rect(icon.width, icon.height, slot_x, center_y)
+	texture_ref := imgui.TextureRef {
+		_TexID = imgui.TextureID(uintptr(icon.texture)),
+	}
+	imgui.DrawList_AddImage(draw, texture_ref, min_point, max_point)
+}
+
+@(private = "file")
+menu_draw_storage_indicators :: proc(st: ^Menu_State, icons: Storage_Icon_Textures) {
+	if st == nil {return}
+	draw := imgui.GetWindowDrawList()
+	window_pos := imgui.GetWindowPos()
+	window_size := imgui.GetWindowSize()
+	x := menu_storage_indicator_left(window_pos.x, window_size.x)
+	if !menu_storage_indicators_fit(imgui.GetCursorScreenPos().x, x) {return}
+	center_y := window_pos.y + window_size.y * 0.5
+
+	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.floppy_active)
+	icon_x := x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
+	menu_draw_storage_icon(draw, icons.floppy, icon_x, center_y)
+	x += MENU_STORAGE_ITEM_WIDTH + MENU_STORAGE_ITEM_GAP
+
+	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.hard_drive_active)
+	icon_x = x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
+	menu_draw_storage_icon(draw, icons.hard_drive, icon_x, center_y)
+	x += MENU_STORAGE_ITEM_WIDTH + MENU_STORAGE_ITEM_GAP
+
+	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.dvd_rom_active)
+	icon_x = x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
+	menu_draw_storage_icon(draw, icons.dvd_rom, icon_x, center_y)
+}
+
+menu_draw :: proc(
+	st: ^Menu_State,
+	info: Menu_Info,
+	storage_icons: Storage_Icon_Textures,
+) -> Menu_Action {
 	action := Menu_Action.None
 	viewport := imgui.GetMainViewport()
 	if st.menu_reveal > 0 {
@@ -126,9 +387,15 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 		)
 		imgui.PopStyleColor(2)
 		if bar_open && imgui.BeginMenuBar() {
-			if menu_begin("Machine") {
-				if imgui.MenuItem(menu_machine_label(st)) {
-					action = st.machine_running ? .Stop : .Start
+			if menu_begin(MENU_TOP_LEVEL_ORDER[0]) {
+				machine_action := st.machine_running ? Menu_Action.Stop : .Start
+				if imgui.MenuItem(
+					menu_machine_label(st),
+					nil,
+					false,
+					menu_action_enabled(st, machine_action),
+				) {
+					action = machine_action
 				}
 				if imgui.MenuItem(
 					"Pause",
@@ -138,12 +405,59 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 				) {
 					action = .Toggle_Pause
 				}
+				if imgui.MenuItem("Reset", nil, false, menu_action_enabled(st, .Reset)) {
+					action = .Reset
+				}
 				imgui.Separator()
 				if imgui.MenuItem("Exit") {action = .Power_Off}
 				menu_end()
 			}
 
-			if menu_begin("Emulation") {
+			if menu_begin(MENU_TOP_LEVEL_ORDER[1]) {
+				if imgui.MenuItem(
+					menu_select_hard_drive_label(st),
+					nil,
+					false,
+					menu_action_enabled(st, .Select_Hard_Drive),
+				) {
+					action = .Select_Hard_Drive
+				}
+				if imgui.MenuItem(
+					menu_browse_c_drive_label(st),
+					nil,
+					false,
+					menu_action_enabled(st, .Browse_C_Drive),
+				) {
+					action = .Browse_C_Drive
+				}
+				imgui.Separator()
+				_ = imgui.MenuItem(menu_current_hard_drive_label(st), nil, false, false)
+				if len(st.hard_drive_path) > 0 {
+					imgui.SetItemTooltip("%s", fmt.ctprintf("%s", st.hard_drive_path))
+				}
+				menu_end()
+			}
+
+			if menu_begin(MENU_TOP_LEVEL_ORDER[2]) {
+				floppy_label: cstring = st.floppy_mounted ? "Eject Floppy" : "Mount Floppy..."
+				floppy_action := st.floppy_mounted ? Menu_Action.Eject_Floppy : .Mount_Floppy
+				if imgui.MenuItem(
+					floppy_label,
+					nil,
+					false,
+					menu_action_enabled(st, floppy_action),
+				) {
+					action = floppy_action
+				}
+				cdrom_label: cstring = st.cdrom_mounted ? "Eject CD-ROM" : "Mount CD-ROM..."
+				cdrom_action := st.cdrom_mounted ? Menu_Action.Eject_Cdrom : .Mount_Cdrom
+				if imgui.MenuItem(cdrom_label, nil, false, menu_action_enabled(st, cdrom_action)) {
+					action = cdrom_action
+				}
+				menu_end()
+			}
+
+			if menu_begin(MENU_TOP_LEVEL_ORDER[3]) {
 				if menu_begin("Speed") {
 					if imgui.MenuItem("GSW886 @700MHz", nil, st.cpu_mode == .GSW_886) {
 						st.cpu_mode = .GSW_886
@@ -188,16 +502,44 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 				menu_end()
 			}
 
-			if menu_begin("Tools") {
-				if imgui.MenuItem("Install Windows 98") {action = .Install_Windows_98}
+			if menu_begin(MENU_TOP_LEVEL_ORDER[4]) {
+				if imgui.MenuItem(
+					MENU_CREATE_HARD_DRIVE_LABEL,
+					nil,
+					false,
+					menu_action_enabled(st, .Create_Hard_Drive),
+				) {
+					action = .Create_Hard_Drive
+				}
+				if imgui.MenuItem(
+					MENU_INSTALL_WINDOWS_98_LABEL,
+					nil,
+					false,
+					menu_action_enabled(st, .Install_Windows_98),
+				) {
+					action = .Install_Windows_98
+				}
+				if menu_action_visible(st, .Abandon_Windows_98_Installation) {
+					if imgui.MenuItem(
+						MENU_ABANDON_WINDOWS_98_LABEL,
+						nil,
+						false,
+						menu_action_enabled(st, .Abandon_Windows_98_Installation),
+					) {
+						action = .Abandon_Windows_98_Installation
+					}
+				}
 				menu_end()
 			}
 
-			if menu_begin("Help") {
+			if menu_begin(MENU_TOP_LEVEL_ORDER[5]) {
+				if imgui.MenuItem("Documentation") {action = .Open_Documentation}
+				imgui.Separator()
 				if imgui.MenuItem("Github") {action = .Open_Github}
 				if imgui.MenuItem("About...") {st.show_about = true}
 				menu_end()
 			}
+			menu_draw_storage_indicators(st, storage_icons)
 			imgui.EndMenuBar()
 		}
 		imgui.End()
@@ -207,6 +549,58 @@ menu_draw :: proc(st: ^Menu_State, info: Menu_Info) -> Menu_Action {
 	center := imgui.Vec2 {
 		viewport.Pos.x + viewport.Size.x * 0.5,
 		viewport.Pos.y + viewport.Size.y * 0.5,
+	}
+
+	center_panel := menu_center_panel(st)
+	if center_panel == .Welcome {
+		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
+		if imgui.Begin(
+			WELCOME_PANEL_TITLE,
+			nil,
+			{.AlwaysAutoResize, .NoCollapse, .NoSavedSettings},
+		) {
+			menu_text(WELCOME_PANEL_FIRST_TIME)
+			imgui.Separator()
+			menu_text(WELCOME_PANEL_QUICK_START)
+			menu_text(WELCOME_PANEL_QUICK_START_TEXT)
+			imgui.Separator()
+			menu_text(WELCOME_PANEL_ADVANCED)
+			menu_text(WELCOME_PANEL_ADVANCED_FIRST)
+			menu_text(WELCOME_PANEL_ADVANCED_SECOND)
+			imgui.Separator()
+			menu_text(WELCOME_PANEL_DOCUMENTATION)
+		}
+		imgui.End()
+	} else if center_panel == .Hard_Drive_Unavailable {
+		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
+		if imgui.Begin(
+			RECOVERY_PANEL_TITLE,
+			nil,
+			{.AlwaysAutoResize, .NoCollapse, .NoSavedSettings},
+		) {
+			menu_text(RECOVERY_PANEL_MESSAGE)
+			if len(st.hard_drive_path) > 0 {menu_text(st.hard_drive_path)}
+			if len(st.hard_drive_diagnostic) > 0 {
+				imgui.Separator()
+				menu_text(st.hard_drive_diagnostic)
+			}
+			imgui.Separator()
+			menu_text(RECOVERY_PANEL_ACTION)
+		}
+		imgui.End()
+	} else if center_panel == .Install_State_Recovery {
+		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
+		if imgui.Begin(
+			INSTALL_RECOVERY_PANEL_TITLE,
+			nil,
+			{.AlwaysAutoResize, .NoCollapse, .NoSavedSettings},
+		) {
+			menu_text(INSTALL_RECOVERY_PANEL_MESSAGE)
+			menu_text(INSTALL_RECOVERY_PANEL_LOCK)
+			imgui.Separator()
+			menu_text(INSTALL_RECOVERY_PANEL_ACTION)
+		}
+		imgui.End()
 	}
 
 	if st.show_hotkeys {

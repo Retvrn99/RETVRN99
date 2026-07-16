@@ -31,63 +31,66 @@ Fdc_Phase :: enum {
 }
 
 Fdc :: struct {
-	img:          Floppy_Img,
-	has_media:    bool,
-	dskchg:       bool,
-	dor:          u8,
-	ccr:          u8,
-	phase:        Fdc_Phase,
-	cmd:          u8,
-	params:       [8]u8,
-	params_need:  int,
-	params_got:   int,
-	result:       [10]u8,
-	result_len:   int,
-	result_pos:   int,
-	pcn:          [4]u8,
-	specify_1:    u8,
-	specify_2:    u8,
-	configure:    u8,
-	pretrack:     u8,
-	last_eot:     u8,
-	locked:       bool,
-	int_pending:  bool,
-	int_st0:      u8,
-	reset_sense:  int, // SENSE INTERRUPTs pending after reset (4-drive poll)
-	now_tick:          u64,
-	next_tick:         u64,
-	deadline_pending:  bool,
-	rw_write:          bool,
-	rw_mt:             bool,
-	rw_unit:           u8,
-	rw_c, rw_h, rw_s:  int,
-	rw_eot:            int,
-	rw_pos:            int,
-	rw_buf:            [FLOPPY_SECTOR]u8,
+	img:                 Floppy_Img,
+	has_media:           bool,
+	dskchg:              bool,
+	dor:                 u8,
+	ccr:                 u8,
+	phase:               Fdc_Phase,
+	cmd:                 u8,
+	params:              [8]u8,
+	params_need:         int,
+	params_got:          int,
+	result:              [10]u8,
+	result_len:          int,
+	result_pos:          int,
+	pcn:                 [4]u8,
+	specify_1:           u8,
+	specify_2:           u8,
+	configure:           u8,
+	pretrack:            u8,
+	last_eot:            u8,
+	locked:              bool,
+	int_pending:         bool,
+	int_st0:             u8,
+	reset_sense:         int, // SENSE INTERRUPTs pending after reset (4-drive poll)
+	now_tick:            u64,
+	next_tick:           u64,
+	deadline_pending:    bool,
+	rw_write:            bool,
+	rw_mt:               bool,
+	rw_unit:             u8,
+	rw_c, rw_h, rw_s:    int,
+	rw_eot:              int,
+	rw_pos:              int,
+	rw_buf:              [FLOPPY_SECTOR]u8,
+	activity_generation: u64,
 	// IRQ6 toward the PIC
-	irq:          proc(ctx: rawptr),
-	irq_ctx:      rawptr,
+	irq:                 proc(ctx: rawptr),
+	irq_ctx:             rawptr,
 	// DMA channel 2: installed by machine to avoid importing that package
-	dma_to_mem:   proc(ctx: rawptr, data: []u8) -> int,
-	dma_from_mem: proc(ctx: rawptr, buf: []u8) -> int,
-	dma_tc:       proc(ctx: rawptr) -> bool,
-	dma_ctx:      rawptr,
+	dma_to_mem:          proc(ctx: rawptr, data: []u8) -> int,
+	dma_from_mem:        proc(ctx: rawptr, buf: []u8) -> int,
+	dma_tc:              proc(ctx: rawptr) -> bool,
+	dma_ctx:             rawptr,
 }
 
 fdc_init :: proc(f: ^Fdc) {
-	f^ = {configure = 0x20}
+	f^ = {
+		configure = 0x20,
+	}
 }
 
 fdc_set_media :: proc(f: ^Fdc, raw: []u8) -> bool {
-	if f.has_media { fdc_eject_media(f) }
-	if !floppy_img_load(&f.img, raw) { return false }
+	if f.has_media {fdc_eject_media(f)}
+	if !floppy_img_load(&f.img, raw) {return false}
 	f.has_media = true
 	f.dskchg = true
 	return true
 }
 
 fdc_eject_media :: proc(f: ^Fdc) {
-	if !f.has_media { return }
+	if !f.has_media {return}
 	f.deadline_pending = false
 	if f.phase == .Exec {f.phase = .Idle}
 	floppy_img_eject(&f.img)
@@ -97,8 +100,8 @@ fdc_eject_media :: proc(f: ^Fdc) {
 
 @(private = "file")
 fdc_raise_irq :: proc(f: ^Fdc) {
-	if f.dor & FDC_DOR_IRQ == 0 { return }
-	if f.irq != nil { f.irq(f.irq_ctx) }
+	if f.dor & FDC_DOR_IRQ == 0 {return}
+	if f.irq != nil {f.irq(f.irq_ctx)}
 }
 
 @(private = "file")
@@ -120,7 +123,8 @@ fdc_reset :: proc(f: ^Fdc) {
 
 fdc_out :: proc(f: ^Fdc, port: u16, v: u8) {
 	switch port {
-	case 0x3F2: // DOR
+	case 0x3F2:
+		// DOR
 		old := f.dor
 		f.dor = v
 		if v & FDC_DOR_RESET == 0 {
@@ -129,11 +133,13 @@ fdc_out :: proc(f: ^Fdc, port: u16, v: u8) {
 		} else if old & FDC_DOR_RESET == 0 {
 			fdc_reset(f)
 		}
-	case 0x3F4: // DSR: bit7 = software reset, self-clearing
-		if v & 0x80 != 0 && f.dor & FDC_DOR_RESET != 0 { fdc_reset(f) }
+	case 0x3F4:
+		// DSR: bit7 = software reset, self-clearing
+		if v & 0x80 != 0 && f.dor & FDC_DOR_RESET != 0 {fdc_reset(f)}
 	case 0x3F5:
 		fdc_fifo_write(f, v)
-	case 0x3F7: // CCR: data rate
+	case 0x3F7:
+		// CCR: data rate
 		f.ccr = v
 	}
 }
@@ -146,7 +152,8 @@ fdc_in :: proc(f: ^Fdc, port: u16) -> u8 {
 		return fdc_msr(f)
 	case 0x3F5:
 		return fdc_fifo_read(f)
-	case 0x3F7: // DIR: bit7 = media change
+	case 0x3F7:
+		// DIR: bit7 = media change
 		return f.dskchg ? 0x80 : 0x00
 	}
 	return 0xFF // SRA/SRB/TDR not modeled
@@ -154,7 +161,7 @@ fdc_in :: proc(f: ^Fdc, port: u16) -> u8 {
 
 @(private = "file")
 fdc_msr :: proc(f: ^Fdc) -> u8 {
-	if f.dor & FDC_DOR_RESET == 0 { return 0 }
+	if f.dor & FDC_DOR_RESET == 0 {return 0}
 	switch f.phase {
 	case .Idle:
 		return FDC_MSR_RQM
@@ -171,18 +178,27 @@ fdc_msr :: proc(f: ^Fdc) -> u8 {
 // parameter count; -1 = invalid command
 @(private = "file")
 fdc_param_count :: proc(cmd: u8) -> int {
-	if cmd == 0x10 { return 0 } // VERSION takes no bit mask
-	if cmd & 0x7F == 0x14 { return 0 } // LOCK/UNLOCK
+	if cmd == 0x10 {return 0} 	// VERSION takes no bit mask
+	if cmd & 0x7F == 0x14 {return 0} 	// LOCK/UNLOCK
 	switch cmd & 0x1F {
-	case 0x03: return 2 // SPECIFY
-	case 0x0E: return 0 // DUMPREG
-	case 0x13: return 3 // CONFIGURE
-	case 0x07: return 1 // RECALIBRATE
-	case 0x08: return 0 // SENSE INTERRUPT
-	case 0x0F: return 2 // SEEK
-	case 0x06: return 8 // READ (MT/MFM/SK masked off)
-	case 0x05: return 8 // WRITE
-	case 0x0A: return 1 // READ ID
+	case 0x03:
+		return 2 // SPECIFY
+	case 0x0E:
+		return 0 // DUMPREG
+	case 0x13:
+		return 3 // CONFIGURE
+	case 0x07:
+		return 1 // RECALIBRATE
+	case 0x08:
+		return 0 // SENSE INTERRUPT
+	case 0x0F:
+		return 2 // SEEK
+	case 0x06:
+		return 8 // READ (MT/MFM/SK masked off)
+	case 0x05:
+		return 8 // WRITE
+	case 0x0A:
+		return 1 // READ ID
 	}
 	return -1
 }
@@ -207,17 +223,17 @@ fdc_fifo_write :: proc(f: ^Fdc, v: u8) {
 	case .Param:
 		f.params[f.params_got] = v
 		f.params_got += 1
-		if f.params_got >= f.params_need { fdc_execute(f) }
+		if f.params_got >= f.params_need {fdc_execute(f)}
 	case .Exec, .Result: // out-of-phase write: ignored
 	}
 }
 
 @(private = "file")
 fdc_fifo_read :: proc(f: ^Fdc) -> u8 {
-	if f.phase != .Result { return 0xFF }
+	if f.phase != .Result {return 0xFF}
 	v := f.result[f.result_pos]
 	f.result_pos += 1
-	if f.result_pos >= f.result_len { f.phase = .Idle }
+	if f.result_pos >= f.result_len {f.phase = .Idle}
 	return v
 }
 
@@ -235,41 +251,52 @@ fdc_finish_result :: proc(f: ^Fdc, bytes: []u8, with_irq: bool) {
 	f.result_len = len(bytes)
 	f.result_pos = 0
 	f.phase = .Result
-	if with_irq { fdc_raise_irq(f) }
+	if with_irq {fdc_raise_irq(f)}
 }
 
 @(private = "file")
 fdc_execute :: proc(f: ^Fdc) {
 	f.phase = .Exec
 	switch {
-	case f.cmd == 0x10: // VERSION
+	case f.cmd == 0x10:
+		// VERSION
 		fdc_finish_result(f, []u8{FDC_VERSION_82077}, false)
-	case f.cmd & 0x7F == 0x14: // LOCK/UNLOCK
+	case f.cmd & 0x7F == 0x14:
+		// LOCK/UNLOCK
 		f.locked = f.cmd & 0x80 != 0
 		fdc_finish_result(f, []u8{f.locked ? u8(0x10) : u8(0)}, false)
-	case f.cmd & 0x1F == 0x03: // SPECIFY
+	case f.cmd & 0x1F == 0x03:
+		// SPECIFY
 		f.specify_1 = f.params[0]
 		f.specify_2 = f.params[1]
 		f.phase = .Idle
-	case f.cmd & 0x1F == 0x0E: // DUMPREG
+	case f.cmd & 0x1F == 0x0E:
+		// DUMPREG
 		fdc_dumpreg(f)
-	case f.cmd & 0x1F == 0x13: // CONFIGURE
+	case f.cmd & 0x1F == 0x13:
+		// CONFIGURE
 		f.configure = f.params[1] & 0x7F
 		f.pretrack = f.params[2]
 		f.phase = .Idle
-	case f.cmd & 0x1F == 0x07: // RECALIBRATE
+	case f.cmd & 0x1F == 0x07:
+		// RECALIBRATE
 		f.pcn[f.params[0] & 3] = 0
 		fdc_seek_done(f, f.params[0] & 3)
-	case f.cmd & 0x1F == 0x0F: // SEEK
+	case f.cmd & 0x1F == 0x0F:
+		// SEEK
 		f.pcn[f.params[0] & 3] = f.params[1]
 		fdc_seek_done(f, f.params[0] & 3)
-	case f.cmd & 0x1F == 0x08: // SENSE INTERRUPT
+	case f.cmd & 0x1F == 0x08:
+		// SENSE INTERRUPT
 		fdc_sense_interrupt(f)
-	case f.cmd & 0x1F == 0x0A: // READ ID
+	case f.cmd & 0x1F == 0x0A:
+		// READ ID
 		fdc_read_id(f)
-	case f.cmd & 0x1F == 0x06: // READ
+	case f.cmd & 0x1F == 0x06:
+		// READ
 		fdc_rw(f, false)
-	case f.cmd & 0x1F == 0x05: // WRITE
+	case f.cmd & 0x1F == 0x05:
+		// WRITE
 		fdc_rw(f, true)
 	case:
 		fdc_finish_invalid(f)
@@ -278,24 +305,28 @@ fdc_execute :: proc(f: ^Fdc) {
 
 @(private = "file")
 fdc_dumpreg :: proc(f: ^Fdc) {
-	fdc_finish_result(f, []u8{
-		f.pcn[0],
-		f.pcn[1],
-		f.pcn[2],
-		f.pcn[3],
-		f.specify_1,
-		f.specify_2,
-		f.last_eot,
-		f.locked ? u8(0x80) : u8(0),
-		f.configure,
-		f.pretrack,
-	}, false)
+	fdc_finish_result(
+		f,
+		[]u8 {
+			f.pcn[0],
+			f.pcn[1],
+			f.pcn[2],
+			f.pcn[3],
+			f.specify_1,
+			f.specify_2,
+			f.last_eot,
+			f.locked ? u8(0x80) : u8(0),
+			f.configure,
+			f.pretrack,
+		},
+		false,
+	)
 }
 
 // the step pulse clears DSKCHG when media is present
 @(private = "file")
 fdc_seek_done :: proc(f: ^Fdc, unit_head: u8) {
-	if f.has_media { f.dskchg = false }
+	if f.has_media {f.dskchg = false}
 	f.int_st0 = FDC_ST0_SEEK_END | unit_head
 	f.int_pending = true
 	f.phase = .Idle
@@ -320,9 +351,11 @@ fdc_sense_interrupt :: proc(f: ^Fdc) {
 fdc_read_id :: proc(f: ^Fdc) {
 	unit_head := f.params[0] & 7
 	if !f.has_media {
-		fdc_finish_result(f, []u8{
-			FDC_ST0_ABNORMAL | unit_head, FDC_ST1_MISSING_AM, 0, 0, 0, 0, 0,
-		}, true)
+		fdc_finish_result(
+			f,
+			[]u8{FDC_ST0_ABNORMAL | unit_head, FDC_ST1_MISSING_AM, 0, 0, 0, 0, 0},
+			true,
+		)
 		return
 	}
 	head := (unit_head >> 2) & 1
@@ -343,10 +376,19 @@ fdc_rw :: proc(f: ^Fdc, is_write: bool) {
 
 	_, chs_ok := floppy_img_offset(f.rw_c, f.rw_h, f.rw_s)
 	if !f.has_media || !chs_ok {
-		fdc_finish_result(f, []u8{
-			FDC_ST0_ABNORMAL | (f.params[0] & 7), FDC_ST1_NO_DATA, 0,
-			f.params[1], f.params[2], f.params[3], f.params[4],
-		}, true)
+		fdc_finish_result(
+			f,
+			[]u8 {
+				FDC_ST0_ABNORMAL | (f.params[0] & 7),
+				FDC_ST1_NO_DATA,
+				0,
+				f.params[1],
+				f.params[2],
+				f.params[3],
+				f.params[4],
+			},
+			true,
+		)
 		return
 	}
 	if !fdc_prepare_sector(f) {return}
@@ -363,15 +405,19 @@ fdc_schedule_unit :: proc(f: ^Fdc) {
 fdc_prepare_sector :: proc(f: ^Fdc) -> bool {
 	sec, ok := floppy_img_sector(&f.img, f.rw_c, f.rw_h, f.rw_s)
 	if !ok {
-		fdc_finish_result(f, []u8{
-			FDC_ST0_ABNORMAL | u8(f.rw_h) << 2 | f.rw_unit,
-			FDC_ST1_NO_DATA,
-			0,
-			u8(f.rw_c),
-			u8(f.rw_h),
-			u8(f.rw_s),
-			f.params[4],
-		}, true)
+		fdc_finish_result(
+			f,
+			[]u8 {
+				FDC_ST0_ABNORMAL | u8(f.rw_h) << 2 | f.rw_unit,
+				FDC_ST1_NO_DATA,
+				0,
+				u8(f.rw_c),
+				u8(f.rw_h),
+				u8(f.rw_s),
+				f.params[4],
+			},
+			true,
+		)
 		return false
 	}
 	f.rw_pos = 0
@@ -382,15 +428,19 @@ fdc_prepare_sector :: proc(f: ^Fdc) -> bool {
 @(private = "file")
 fdc_finish_rw :: proc(f: ^Fdc, st0, st1: u8) {
 	f.deadline_pending = false
-	fdc_finish_result(f, []u8{
-		st0 | u8(f.rw_h) << 2 | f.rw_unit,
-		st1,
-		0,
-		u8(f.rw_c),
-		u8(f.rw_h),
-		u8(f.rw_s),
-		f.params[4],
-	}, true)
+	fdc_finish_result(
+		f,
+		[]u8 {
+			st0 | u8(f.rw_h) << 2 | f.rw_unit,
+			st1,
+			0,
+			u8(f.rw_c),
+			u8(f.rw_h),
+			u8(f.rw_s),
+			f.params[4],
+		},
+		true,
+	)
 }
 
 @(private = "file")
@@ -424,6 +474,7 @@ fdc_transfer_unit :: proc(f: ^Fdc) {
 		fdc_schedule_unit(f)
 		return
 	}
+	f.activity_generation += 1
 	f.rw_pos += transferred
 	if f.rw_pos < FLOPPY_SECTOR {
 		if f.dma_tc != nil && f.dma_tc(f.dma_ctx) {fdc_finish_rw(f, 0, 0); return}

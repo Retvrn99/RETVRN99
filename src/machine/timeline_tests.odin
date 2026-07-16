@@ -89,7 +89,7 @@ test_rate_phase_randomized_split_invariance :: proc(t: ^testing.T) {
 	rates := [?]u64{0, 1, 75, 44_100, 1_193_182, MASTER_CLOCK_HZ - 1, MASTER_CLOCK_HZ, 12_000_000_000}
 	state := u64(0xA076_1D64_78BD_642F)
 
-	for trial in 0..<512 {
+	for _ in 0..<512 {
 		rate := rates[int(timeline_test_random(&state) % u64(len(rates)))]
 		total_ticks := timeline_test_random(&state) % 1_000_000_000_000
 		remainder := timeline_test_random(&state) % MASTER_CLOCK_HZ

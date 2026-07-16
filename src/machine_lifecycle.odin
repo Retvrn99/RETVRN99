@@ -3,39 +3,61 @@ package main
 
 import "acceptance"
 import "core:fmt"
-import "fat32"
+import "fat32session"
 import "host"
 import "machine"
 import "profile"
 import sdl3 "vendor:sdl3"
 
 vm_open_volume :: proc(c: ^Vm_Ctx) -> bool {
-	if c == nil || !c.attach {return c != nil}
+	return vm_open_volume_with_adapter(c, fat32session.DEFAULT_ADAPTER)
+}
+
+vm_open_volume_with_adapter :: proc(
+	c: ^Vm_Ctx,
+	adapter: fat32session.Adapter_Kind,
+) -> bool {
+	if c == nil {return false}
+	c.volume_open_error = {}
+	if !c.attach {return true}
 	if vm_volume_ready(c) {return true}
-	if c.volume != nil {return false}
-	vol := fat32.volume_open(c.paths.c_drive, VOLUME_MB)
-	if vol == nil {return false}
-	vol.fail_ctx = c.shared
-	vol.on_fail = proc(ctx: rawptr, msg: string) {
-		vm_log((^Shared)(ctx), fmt.tprintf("disk: writes frozen: %s", msg))
+	if c.fat_session != nil {return false}
+	session, open_error := fat32session.open_machine(
+		c.hard_drive_path,
+		c.machine_session_id,
+		adapter,
+	)
+	if open_error.code != .None {
+		c.volume_open_error = open_error
+		vm_log(
+			c.shared,
+			fmt.tprintf(
+				"disk: FAT32 session open failed: %s",
+				fat32session.error_text(&open_error),
+			),
+		)
+		return false
 	}
-	c.volume = vol
-	c.bd = fat32.volume_block_device(vol)
+	c.fat_session = session
 	return true
+}
+
+vm_volume_open_failure_message :: proc(c: ^Vm_Ctx, operation: string) -> string {
+	if c == nil || c.volume_open_error.code == .None {
+		return fmt.tprintf("%s failed: hard-drive storage could not be opened", operation)
+	}
+	return fmt.tprintf(
+		"%s failed: hard-drive storage error %v: %s",
+		operation,
+		c.volume_open_error.code,
+		fat32session.error_text(&c.volume_open_error),
+	)
 }
 
 vm_volume_ready :: proc(c: ^Vm_Ctx) -> bool {
 	if c == nil {return false}
 	if !c.attach {return true}
-	return(
-		c.volume != nil &&
-		!c.volume.frozen &&
-		c.bd.ctx == rawptr(c.volume) &&
-		c.bd.sector_count > 0 &&
-		c.bd.read != nil &&
-		c.bd.write != nil &&
-		c.bd.flush != nil \
-	)
+	return fat32session.session_ready(c.fat_session)
 }
 
 vm_ensure_volume :: proc(c: ^Vm_Ctx) -> bool {
@@ -44,28 +66,89 @@ vm_ensure_volume :: proc(c: ^Vm_Ctx) -> bool {
 }
 
 vm_close_volume :: proc(c: ^Vm_Ctx) -> bool {
-	if c == nil || c.volume == nil {return true}
-	if !fat32.volume_close(c.volume) {
-		vm_log(c.shared, "disk: reconciliation failed; staged C: writes retained")
+	if c == nil || c.fat_session == nil {return true}
+	close_error := fat32session.close(c.fat_session, .Commit)
+	if close_error.outcome == .Completed {
+		c.fat_session = nil
+		vm_log(
+			c.shared,
+			fmt.tprintf(
+				"disk: close completed with a companion cleanup warning: %s",
+				fat32session.error_text(&close_error),
+			),
+		)
+		return true
+	}
+	if close_error.code != .None {
+		vm_log(
+			c.shared,
+			fmt.tprintf(
+				"disk: close failed; FAT32 session retained: %s",
+				fat32session.error_text(&close_error),
+			),
+		)
 		return false
 	}
-	c.volume = nil
-	c.bd = {}
+	c.fat_session = nil
 	return true
+}
+
+vm_release_failed_boot_volume :: proc(c: ^Vm_Ctx) -> bool {
+	if c == nil || c.fat_session == nil {return true}
+	if vm_close_volume(c) {return true}
+	retain_error := fat32session.close(c.fat_session, .Retain)
+	c.fat_session = nil
+	if retain_error.code != .None {
+		vm_log(
+			c.shared,
+			fmt.tprintf(
+				"disk: failed boot session released with recovery evidence: %s",
+				fat32session.error_text(&retain_error),
+			),
+		)
+		return false
+	}
+	vm_log(c.shared, "disk: failed boot session retained for recovery and released")
+	return true
+}
+
+machine_session_release_after_failed_reset :: proc(
+	session: ^^fat32session.Machine_Session,
+) -> bool {
+	if session == nil || session^ == nil {return true}
+	close_error := fat32session.close(session^, .Commit)
+	if close_error.code == .None || close_error.outcome == .Completed {
+		session^ = nil
+		return true
+	}
+	retain_error := fat32session.close(session^, .Retain)
+	session^ = nil
+	return retain_error.code == .None
+}
+
+vm_volume_terminal_error :: proc(c: ^Vm_Ctx) -> (fat32session.Session_Error, bool) {
+	if c == nil || c.fat_session == nil {return {}, false}
+	return fat32session.session_terminal_error(c.fat_session)
 }
 
 vm_close_then_shutdown :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: ^bool) -> bool {
 	if c == nil {return false}
 	if machine_live != nil && machine_live^ {
-		if c.volume != nil {
+		if c.fat_session != nil {
 			disk_attached := m != nil && m.has_disk
-			if !fat32.volume_flush(c.volume) ||
-			   (disk_attached && !machine.machine_detach_disk(m)) {
-				vm_log(c.shared, "disk: reconciliation failed; staged C: writes retained")
+			_, barrier_error := fat32session.barrier(c.fat_session, .Clean_Close)
+			if barrier_error.code != .None || (disk_attached && !machine.machine_detach_disk(m)) {
+				vm_log(
+					c.shared,
+					fmt.tprintf(
+						"disk: clean-close barrier failed: %s",
+						fat32session.error_text(&barrier_error),
+					),
+				)
 				return false
 			}
 			if !vm_close_volume(c) {
-				if disk_attached {machine.machine_attach_disk(m, c.bd)}
+				if disk_attached {machine.machine_attach_disk(m, fat32session.block_device(c.fat_session))}
 				return false
 			}
 		}
@@ -76,11 +159,51 @@ vm_close_then_shutdown :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: ^b
 	return vm_close_volume(c)
 }
 
+vm_start_machine :: proc(
+	c: ^Vm_Ctx,
+	m: ^machine.Machine,
+	machine_live: ^bool,
+	clock_running: bool = true,
+) -> bool {
+	if c == nil || m == nil || machine_live == nil || machine_live^ {return false}
+	selected_image_path := c.attach ? c.hard_drive_path : ""
+	install_gate := install_image_boot_gate_loaded(
+		&c.install_state,
+		selected_image_path,
+		c.install_state_diagnostic,
+	)
+	if !install_gate.allowed {
+		vm_log(
+			c.shared,
+			fmt.tprintf(
+				"Windows 98: start blocked: %s",
+				install_image_boot_diagnostic_text(&install_gate),
+			),
+		)
+		return false
+	}
+	if !vm_ensure_volume(c) {return false}
+	if !vm_boot(c, m, clock_running) {
+		_ = vm_release_failed_boot_volume(c)
+		return false
+	}
+	machine_live^ = true
+	return true
+}
+
+vm_begin_volume_maintenance :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: ^bool) -> bool {
+	if c == nil || m == nil || machine_live == nil {return false}
+	return vm_close_then_shutdown(c, m, machine_live)
+}
+
+vm_end_volume_maintenance :: proc(c: ^Vm_Ctx) -> bool {
+	return c != nil && c.fat_session == nil
+}
+
 Vm_Reinitialize_Diagnostic :: enum {
 	None,
 	Invalid_State,
-	Reconciliation_Failed,
-	Install_Cleanup_Failed,
+	Durability_Failed,
 	Volume_Open_Failed,
 	Machine_Init_Failed,
 }
@@ -93,19 +216,22 @@ vm_reinitialize_machine :: proc(
 	install_state_changed: bool = false,
 ) -> Vm_Reinitialize_Diagnostic {
 	if c == nil || m == nil || machine_live == nil {return .Invalid_State}
-	if !vm_close_then_shutdown(c, m, machine_live) {return .Reconciliation_Failed}
+	if !machine_live^ || (c.attach && c.fat_session == nil) {return .Invalid_State}
+	if c.attach {
+		_, reset_error := fat32session.barrier(c.fat_session, .Reset)
+		if reset_error.code != .None {return .Durability_Failed}
+		if m.has_disk && !machine.machine_detach_disk(m) {return .Durability_Failed}
+	}
+	vm_shutdown(c, m)
+	machine_live^ = false
 	if install_state_changed && !profile.install_state_active(&c.install_state) {
+		_ = vm_release_failed_boot_volume(c)
 		return .Invalid_State
 	}
-	if cleanup := install_failed_boot_sentinel_cleanup(
-		c.paths.c_drive,
-		install_state_changed,
-	); cleanup != .None {
-		vm_log(c.shared, fmt.tprintf("Windows 98: failed-boot sentinel cleanup failed (%v)", cleanup))
-		return .Install_Cleanup_Failed
+	if !vm_boot(c, m, clock_running) {
+		_ = vm_release_failed_boot_volume(c)
+		return .Machine_Init_Failed
 	}
-	if !vm_ensure_volume(c) {return .Volume_Open_Failed}
-	if !vm_boot(c, m, clock_running) {return .Machine_Init_Failed}
 	machine_live^ = true
 	return .None
 }
@@ -156,7 +282,7 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine, clock_running: bool = true) -> 
 	if !machine.load_roms(&m.vm) {
 		return false
 	}
-	if c.attach {machine.machine_attach_disk(m, c.bd)}
+	if c.attach {machine.machine_attach_disk(m, fat32session.block_device(c.fat_session))}
 	if c.floppy != nil {_ = machine.machine_mount_floppy(m, c.floppy)}
 	if c.cdrom_path != "" {
 		if machine.machine_attach_cdrom(m, c.cdrom_path) {
@@ -201,7 +327,7 @@ console_reinitialize_machine :: proc(
 	m: ^machine.Machine,
 	guard: ^Vm_Guard,
 	machine_live: ^bool,
-	vol: ^^fat32.Volume,
+	session: ^^fat32session.Machine_Session,
 	paths: ^profile.Paths,
 	settings: profile.Settings,
 	cmos: []u8,
@@ -215,7 +341,7 @@ console_reinitialize_machine :: proc(
 		m,
 		guard,
 		machine_live,
-		vol,
+		session,
 		paths,
 		settings,
 		cmos,
@@ -233,7 +359,7 @@ console_reinitialize_machine_with_ram :: proc(
 	m: ^machine.Machine,
 	guard: ^Vm_Guard,
 	machine_live: ^bool,
-	vol: ^^fat32.Volume,
+	session: ^^fat32session.Machine_Session,
 	paths: ^profile.Paths,
 	settings: profile.Settings,
 	cmos: []u8,
@@ -248,22 +374,16 @@ console_reinitialize_machine_with_ram :: proc(
 	   guard == nil ||
 	   machine_live == nil ||
 	   !machine_live^ ||
-	   vol == nil ||
+	   session == nil ||
 	   paths == nil ||
 	   options == nil {
 		return false
 	}
-	if vol^ != nil {
-		disk_attached := m.has_disk
-		if !fat32.volume_flush(vol^) || (disk_attached && !machine.machine_detach_disk(m)) {
-			return false
-		}
-		block_device := fat32.volume_block_device(vol^)
-		if !fat32.volume_close(vol^) {
-			if disk_attached {machine.machine_attach_disk(m, block_device)}
-			return false
-		}
-		vol^ = nil
+	if attach && session^ == nil {return false}
+	if session^ != nil {
+		_, reset_error := fat32session.barrier(session^, .Reset)
+		if reset_error.code != .None {return false}
+		if m.has_disk && !machine.machine_detach_disk(m) {return false}
 	}
 	reinitialized := false
 	success := false
@@ -290,18 +410,12 @@ console_reinitialize_machine_with_ram :: proc(
 				hardware_trace = nil
 			}
 		}
+		_ = machine_session_release_after_failed_reset(session)
 		machine_live^ = false
 	}
 	machine.machine_destroy(m)
 	machine_live^ = false
 	m^ = {}
-	if cleanup := install_failed_boot_sentinel_cleanup(
-		paths.c_drive,
-		install_state_changed,
-	); cleanup != .None {
-		fmt.eprintfln("Windows 98: failed-boot sentinel cleanup failed (%v)", cleanup)
-		return false
-	}
 	if !machine.machine_init(m, ram_size) {return false}
 	reinitialized = true
 	if hardware_trace != nil {
@@ -315,18 +429,10 @@ console_reinitialize_machine_with_ram :: proc(
 	machine.machine_set_cpu_mode(m, settings.cpu_mode)
 	machine.bus_set_strict_io(&m.bus, options.strict_io)
 	machine.machine_set_diagnostic_tracing(m, options.strict_io)
-	machine.machine_set_bus_diagnostic_tracing(
-		m,
-		options.setup_diagnostics == .Hardware,
-	)
+	machine.machine_set_bus_diagnostic_tracing(m, options.setup_diagnostics == .Hardware)
 	if options.test_device {machine.machine_enable_test_device(m)}
 	if attach {
-		vol^ = fat32.volume_open(paths.c_drive, VOLUME_MB)
-		if vol^ == nil {return false}
-		vol^^.on_fail = proc(ctx: rawptr, msg: string) {
-			fmt.printfln("disk: writes frozen: %s", msg)
-		}
-		machine.machine_attach_disk(m, fat32.volume_block_device(vol^))
+		machine.machine_attach_disk(m, fat32session.block_device(session^))
 	}
 	if cdrom_path != "" && !machine.machine_attach_cdrom(m, cdrom_path) {return false}
 	if len(floppy) > 0 && !machine.machine_mount_floppy(m, floppy) {return false}

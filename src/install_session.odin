@@ -99,12 +99,14 @@ install_session_finish :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 		copy(c.cmos[:], finish.cmos[:])
 		c.has_cmos = true
 	}
+	c.install_state_diagnostic = .None
 	if live {
 		m.cmos.ram[0x38] = finish.cmos[0x38]
 		m.cmos.ram[0x3D] = finish.cmos[0x3D]
 		machine.machine_set_cpu_mode(m, c.cpu_mode)
 	}
 	publish_install_state(c.shared, false)
+	publish_install_recovery_state(c.shared, false)
 	if finish.restored_boot_order {
 		vm_log(c.shared, "Windows 98: installation session finished; original boot order restored")
 	} else if finish.have_cmos {

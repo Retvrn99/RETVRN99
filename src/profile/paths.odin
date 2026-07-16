@@ -8,7 +8,7 @@ PROFILE_DIRECTORY :: ".retvrn99"
 
 Paths :: struct {
 	root:          string,
-	c_drive:       string,
+	default_image: string,
 	settings:      string,
 	cmos:          string,
 	install:       string,
@@ -25,12 +25,12 @@ paths_from_root :: proc(root: string, allocator := context.allocator) -> (Paths,
 		root = clean_root,
 	}
 	path: string
-	path, cerr = filepath.join({paths.root, "c_drive"}, allocator)
+	path, cerr = filepath.join({paths.root, "c_drive.img"}, allocator)
 	if cerr != nil {
 		paths_destroy(&paths, allocator)
 		return {}, os.Error(cerr)
 	}
-	paths.c_drive = path
+	paths.default_image = path
 	path, cerr = filepath.join({paths.root, "settings.json"}, allocator)
 	if cerr != nil {
 		paths_destroy(&paths, allocator)
@@ -81,7 +81,7 @@ paths_destroy :: proc(paths: ^Paths, allocator := context.allocator) {
 		return
 	}
 	delete(paths.root, allocator)
-	delete(paths.c_drive, allocator)
+	delete(paths.default_image, allocator)
 	delete(paths.settings, allocator)
 	delete(paths.cmos, allocator)
 	delete(paths.install, allocator)

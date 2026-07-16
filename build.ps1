@@ -2,7 +2,9 @@
 
 param(
     [switch]$Firmware,
-    [string]$WslDistro = "Debian"
+    [string]$WslDistro = "Debian",
+    [ValidateRange(1, 64)]
+    [int]$ThreadCount = [Environment]::ProcessorCount
 )
 
 if ($Firmware) {
@@ -12,4 +14,7 @@ if ($Firmware) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-odin build src -out:retvrn99.exe -debug
+odin build src\fat32_helper -out:retvrn99-fat32.exe -debug -thread-count:$ThreadCount
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+odin build src -out:retvrn99.exe -debug -thread-count:$ThreadCount
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

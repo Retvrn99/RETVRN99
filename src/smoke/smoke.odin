@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package main
 
-// Headless M1 smoke test: boot MS-DOS 7.1 from ~/.retvrn99/c_drive, wait for
+// Headless M1 smoke test: boot MS-DOS 7.1 from the selected FAT32 image, wait for
 // the C:\> prompt, type DIR, and expect a known filename in the text grid.
 // Exits 0 on success, 1 on failure, 0 with a SKIP note when WHPX or the
 // user-provided DOS files are absent.
 
-import "../fat32"
+import "../fat32session"
 import "../hosttime"
 import "../hv"
 import "../machine"
@@ -15,7 +15,6 @@ import "../vga"
 import "../vmconfig"
 import "core:fmt"
 import "core:os"
-import "core:path/filepath"
 import "core:strings"
 import "core:sync"
 import "core:thread"
@@ -46,23 +45,14 @@ run_smoke :: proc() -> (result: int) {
 	paths, perr := profile.paths_default()
 	if perr != nil {return smoke_fail("profile path resolution")}
 	defer profile.paths_destroy(&paths)
-	switch profile.dos_seed_prepare(paths.c_drive) {
-	case .Missing, .Preserved, .Updated:
-	case .Path_Failed,
-	     .Read_Failed,
-	     .Create_Directory_Failed,
-	     .Temporary_Path_Failed,
-	     .Write_Failed,
-	     .Replace_Failed:
-		return smoke_fail("DOS seed MSDOS.SYS preparation")
-	}
-	io_sys, _ := filepath.join({paths.c_drive, "IO.SYS"})
-	if !os.exists(io_sys) {
-		fmt.printfln("SKIP: %s not found (user-provided MS-DOS 7.1 files required)", io_sys)
+	settings, settings_diagnostic, _ := profile.settings_load(paths.settings)
+	defer profile.settings_destroy(&settings)
+	if settings_diagnostic != .None || settings.hard_drive_path == "" {
+		fmt.println("SKIP: no hard-drive image is selected")
 		return 0
 	}
 
-	vol: ^fat32.Volume
+	session: ^fat32session.Machine_Session
 	m := new(machine.Machine)
 	if !machine.machine_init(m, vmconfig.GSW_RAM_BYTES) {
 		free(m)
@@ -70,21 +60,38 @@ run_smoke :: proc() -> (result: int) {
 	}
 	defer {
 		machine.machine_destroy(m)
-		if vol != nil && !fat32.volume_close(vol) {
-			fmt.eprintln("disk: close failed; staged C: writes remain retained")
-			if result == 0 {result = 1}
+		if session != nil {
+			if close_error := fat32session.close(session, .Commit); close_error.code != .None {
+				fmt.eprintfln("disk: close failed: %s", fat32session.error_text(&close_error))
+				if close_error.outcome != .Completed {
+					_ = fat32session.close(session, .Retain)
+				}
+				if result == 0 {result = 1}
+			}
 		}
 		free(m)
 	}
-	settings, _ := profile.settings_load(paths.settings)
 	machine.machine_set_cpu_mode(m, settings.cpu_mode)
 	if !machine.load_roms(&m.vm) {return smoke_fail("load_roms")}
-	vol = fat32.volume_open(paths.c_drive, 2048)
-	if vol == nil {return smoke_fail("volume_open")}
-	vol.on_fail = proc(ctx: rawptr, msg: string) {
-		fmt.printfln("disk: writes frozen: %s", msg)
+	open_error: fat32session.Session_Error
+	session, open_error = fat32session.open_machine(
+		settings.hard_drive_path,
+		"smoke",
+		.In_Process,
+	)
+	if open_error.code != .None {return smoke_fail(fat32session.error_text(&open_error))}
+	boot_files, observe_error := fat32session.observe(
+		session,
+		[]fat32session.Probe{{kind = .Stat, path = "IO.SYS"}},
+		context.temp_allocator,
+	)
+	if observe_error.code != .None || len(boot_files.items) != 1 || boot_files.items[0].type != .Regular {
+		fat32session.observation_batch_destroy(&boot_files, context.temp_allocator)
+		fmt.println("SKIP: IO.SYS is absent from the selected image")
+		return 0
 	}
-	machine.machine_attach_disk(m, fat32.volume_block_device(vol))
+	fat32session.observation_batch_destroy(&boot_files, context.temp_allocator)
+	machine.machine_attach_disk(m, fat32session.block_device(session))
 
 	wd := Watchdog {
 		vm = &m.vm,
