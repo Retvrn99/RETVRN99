@@ -7,6 +7,7 @@ import sdl3 "vendor:sdl3"
 GSW3D_TRIANGLE_VERTEX_COUNT :: 3
 GSW3D_TRIANGLE_VERTEX_BYTES :: u32(60)
 GSW3D_TRIANGLE_PIPELINE_CAPACITY :: 2
+GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT :: 2
 
 GSW3D_TRIANGLE_VERTEX_SPIRV := #load("../../assets/shaders/gsw3d-triangle.vert.spv")
 GSW3D_TRIANGLE_FRAGMENT_SPIRV := #load("../../assets/shaders/gsw3d-triangle.frag.spv")
@@ -27,6 +28,35 @@ Gsw3d_Triangle_Pipeline :: struct {
 	pipeline: ^sdl3.GPUGraphicsPipeline,
 }
 
+Gsw3d_Triangle_Completion :: struct {
+	token:      u64,
+	generation: u64,
+}
+
+Gsw3d_Triangle_Flight :: struct {
+	completion: Gsw3d_Triangle_Completion,
+	fence:      ^sdl3.GPUFence,
+	discarded:  bool,
+}
+
+Gsw3d_Triangle_Query_Fence_Proc :: proc(ctx: rawptr, fence: ^sdl3.GPUFence) -> bool
+Gsw3d_Triangle_Wait_Fences_Proc :: proc(ctx: rawptr, fences: []^sdl3.GPUFence) -> bool
+Gsw3d_Triangle_Release_Fence_Proc :: proc(ctx: rawptr, fence: ^sdl3.GPUFence)
+
+Gsw3d_Triangle_Fence_Ops :: struct {
+	ctx:     rawptr,
+	query:   Gsw3d_Triangle_Query_Fence_Proc,
+	wait:    Gsw3d_Triangle_Wait_Fences_Proc,
+	release: Gsw3d_Triangle_Release_Fence_Proc,
+}
+
+Gsw3d_Triangle_Metrics :: struct {
+	submissions:    u64,
+	completions:    u64,
+	capacity_waits: u64,
+	max_in_flight:  u32,
+}
+
 Gsw3d_Triangle_Renderer :: struct {
 	gpu:             ^sdl3.GPUDevice,
 	vertex_shader:   ^sdl3.GPUShader,
@@ -34,6 +64,12 @@ Gsw3d_Triangle_Renderer :: struct {
 	vertex_buffer:   ^sdl3.GPUBuffer,
 	transfer_buffer: ^sdl3.GPUTransferBuffer,
 	pipelines:       [GSW3D_TRIANGLE_PIPELINE_CAPACITY]Gsw3d_Triangle_Pipeline,
+	flights:         [GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT]Gsw3d_Triangle_Flight,
+	flight_head:     int,
+	flight_count:    int,
+	next_token:      u64,
+	fence_ops:       Gsw3d_Triangle_Fence_Ops,
+	metrics:         Gsw3d_Triangle_Metrics,
 	live:            bool,
 }
 
@@ -41,6 +77,30 @@ Gsw3d_Triangle_Renderer :: struct {
 	size_of(Gsw3d_Triangle_Vertex) == GSW3D_TRIANGLE_VERTEX_BYTES / GSW3D_TRIANGLE_VERTEX_COUNT,
 )
 #assert(size_of(Gsw3d_Triangle_Uniforms) == 16)
+
+@(private = "file")
+gsw3d_triangle_sdl_query_fence :: proc(ctx: rawptr, fence: ^sdl3.GPUFence) -> bool {
+	return ctx != nil && fence != nil && sdl3.QueryGPUFence((^sdl3.GPUDevice)(ctx), fence)
+}
+
+@(private = "file")
+gsw3d_triangle_sdl_wait_fences :: proc(ctx: rawptr, fences: []^sdl3.GPUFence) -> bool {
+	return(
+		ctx != nil &&
+		len(fences) > 0 &&
+		sdl3.WaitForGPUFences((^sdl3.GPUDevice)(ctx), true, raw_data(fences), u32(len(fences))) \
+	)
+}
+
+@(private = "file")
+gsw3d_triangle_sdl_release_fence :: proc(ctx: rawptr, fence: ^sdl3.GPUFence) {
+	if ctx != nil && fence != nil {sdl3.ReleaseGPUFence((^sdl3.GPUDevice)(ctx), fence)}
+}
+
+@(private = "file")
+gsw3d_triangle_fence_ops_valid :: proc(ops: Gsw3d_Triangle_Fence_Ops) -> bool {
+	return ops.ctx != nil && ops.query != nil && ops.wait != nil && ops.release != nil
+}
 
 gsw3d_triangle_format_supported :: proc(format: sdl3.GPUTextureFormat) -> bool {
 	return format == .B8G8R8A8_UNORM || format == .R8G8B8A8_UNORM
@@ -74,6 +134,149 @@ gsw3d_triangle_proof_vertices :: proc() -> [GSW3D_TRIANGLE_VERTEX_COUNT]Gsw3d_Tr
 	}
 }
 
+@(private = "file")
+gsw3d_triangle_next_token :: proc(renderer: ^Gsw3d_Triangle_Renderer) -> u64 {
+	renderer.next_token += 1
+	if renderer.next_token == 0 {renderer.next_token = 1}
+	return renderer.next_token
+}
+
+@(private = "package")
+gsw3d_triangle_track_fence :: proc(
+	renderer: ^Gsw3d_Triangle_Renderer,
+	fence: ^sdl3.GPUFence,
+	generation: u64,
+) -> (
+	token: u64,
+	ok: bool,
+) {
+	if renderer == nil ||
+	   fence == nil ||
+	   generation == 0 ||
+	   renderer.flight_count < 0 ||
+	   renderer.flight_count >= GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT {return 0, false}
+	token = gsw3d_triangle_next_token(renderer)
+	tail := (renderer.flight_head + renderer.flight_count) % GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT
+	renderer.flights[tail] = {
+		completion = {token = token, generation = generation},
+		fence = fence,
+	}
+	renderer.flight_count += 1
+	renderer.metrics.submissions += 1
+	renderer.metrics.max_in_flight = max(
+		renderer.metrics.max_in_flight,
+		u32(renderer.flight_count),
+	)
+	return token, true
+}
+
+@(private = "file")
+gsw3d_triangle_retire_head :: proc(
+	renderer: ^Gsw3d_Triangle_Renderer,
+) -> (
+	completion: Gsw3d_Triangle_Completion,
+	publish: bool,
+	ok: bool,
+) {
+	if renderer == nil ||
+	   renderer.flight_count <= 0 ||
+	   renderer.flight_count > GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT ||
+	   !gsw3d_triangle_fence_ops_valid(renderer.fence_ops) {return {}, false, false}
+	flight := renderer.flights[renderer.flight_head]
+	if flight.fence == nil {return {}, false, false}
+	renderer.fence_ops.release(renderer.fence_ops.ctx, flight.fence)
+	renderer.flights[renderer.flight_head] = {}
+	renderer.flight_head = (renderer.flight_head + 1) % GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT
+	renderer.flight_count -= 1
+	renderer.metrics.completions += 1
+	return flight.completion, !flight.discarded, true
+}
+
+gsw3d_triangle_poll :: proc(
+	renderer: ^Gsw3d_Triangle_Renderer,
+	completed: []Gsw3d_Triangle_Completion,
+) -> (
+	count: int,
+	ok: bool,
+) {
+	if renderer == nil ||
+	   !renderer.live ||
+	   len(completed) < GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT ||
+	   !gsw3d_triangle_fence_ops_valid(renderer.fence_ops) {return 0, false}
+	for renderer.flight_count > 0 {
+		flight := &renderer.flights[renderer.flight_head]
+		if flight.fence == nil {return count, false}
+		if !renderer.fence_ops.query(renderer.fence_ops.ctx, flight.fence) {break}
+		completion, publish, retired := gsw3d_triangle_retire_head(renderer)
+		if !retired {return count, false}
+		if publish {
+			completed[count] = completion
+			count += 1
+		}
+	}
+	return count, true
+}
+
+gsw3d_triangle_wait_oldest :: proc(
+	renderer: ^Gsw3d_Triangle_Renderer,
+) -> (
+	completion: Gsw3d_Triangle_Completion,
+	publish: bool,
+	ok: bool,
+) {
+	if renderer == nil ||
+	   !renderer.live ||
+	   renderer.flight_count <= 0 ||
+	   !gsw3d_triangle_fence_ops_valid(renderer.fence_ops) {return {}, false, false}
+	flight := renderer.flights[renderer.flight_head]
+	if flight.fence == nil {return {}, false, false}
+	fences := [1]^sdl3.GPUFence{flight.fence}
+	renderer.metrics.capacity_waits += 1
+	if !renderer.fence_ops.wait(renderer.fence_ops.ctx, fences[:]) {return {}, false, false}
+	return gsw3d_triangle_retire_head(renderer)
+}
+
+gsw3d_triangle_discard_other_generations :: proc(
+	renderer: ^Gsw3d_Triangle_Renderer,
+	generation: u64,
+) {
+	if renderer == nil {return}
+	for offset in 0 ..< renderer.flight_count {
+		index := (renderer.flight_head + offset) % GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT
+		if generation == 0 || renderer.flights[index].completion.generation != generation {
+			renderer.flights[index].discarded = true
+		}
+	}
+}
+
+@(private = "file")
+gsw3d_triangle_release_all_fences :: proc(renderer: ^Gsw3d_Triangle_Renderer) {
+	if renderer == nil || !gsw3d_triangle_fence_ops_valid(renderer.fence_ops) {return}
+	for renderer.flight_count > 0 {
+		_, _, ok := gsw3d_triangle_retire_head(renderer)
+		if !ok {break}
+	}
+}
+
+gsw3d_triangle_wait_all :: proc(renderer: ^Gsw3d_Triangle_Renderer) -> bool {
+	if renderer == nil || !renderer.live || !gsw3d_triangle_fence_ops_valid(renderer.fence_ops) {
+		return false
+	}
+	if renderer.flight_count == 0 {return true}
+	fences: [GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT]^sdl3.GPUFence
+	for offset in 0 ..< renderer.flight_count {
+		index := (renderer.flight_head + offset) % GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT
+		fences[offset] = renderer.flights[index].fence
+		if fences[offset] == nil {return false}
+	}
+	if !renderer.fence_ops.wait(
+		renderer.fence_ops.ctx,
+		fences[:renderer.flight_count],
+	) {return false}
+	gsw3d_triangle_release_all_fences(renderer)
+	return renderer.flight_count == 0
+}
+
 gsw3d_triangle_renderer_init :: proc(
 	renderer: ^Gsw3d_Triangle_Renderer,
 	gpu: ^sdl3.GPUDevice,
@@ -83,6 +286,12 @@ gsw3d_triangle_renderer_init :: proc(
 	if renderer == nil || gpu == nil || renderer.live || renderer.gpu != nil {return false}
 	renderer^ = {
 		gpu = gpu,
+		fence_ops = {
+			ctx = gpu,
+			query = gsw3d_triangle_sdl_query_fence,
+			wait = gsw3d_triangle_sdl_wait_fences,
+			release = gsw3d_triangle_sdl_release_fence,
+		},
 	}
 	defer if !ok {gsw3d_triangle_renderer_destroy(renderer)}
 
@@ -123,6 +332,10 @@ gsw3d_triangle_renderer_init :: proc(
 gsw3d_triangle_renderer_destroy :: proc(renderer: ^Gsw3d_Triangle_Renderer) {
 	if renderer == nil {return}
 	if renderer.gpu != nil {
+		if renderer.live && renderer.flight_count > 0 && !gsw3d_triangle_wait_all(renderer) {
+			_ = sdl3.WaitForGPUIdle(renderer.gpu)
+			gsw3d_triangle_release_all_fences(renderer)
+		}
 		for cached in renderer.pipelines {
 			if cached.pipeline != nil {
 				sdl3.ReleaseGPUGraphicsPipeline(renderer.gpu, cached.pipeline)
@@ -202,34 +415,40 @@ gsw3d_triangle_pipeline :: proc(
 	return pipeline
 }
 
-gsw3d_triangle_render_sync :: proc(
+gsw3d_triangle_render_async :: proc(
 	renderer: ^Gsw3d_Triangle_Renderer,
 	target: ^sdl3.GPUTexture,
 	format: sdl3.GPUTextureFormat,
 	width, height: u32,
 	vertices: ^[GSW3D_TRIANGLE_VERTEX_COUNT]Gsw3d_Triangle_Vertex,
+	generation: u64,
 	clear_color: sdl3.FColor = {16.0 / 255.0, 16.0 / 255.0, 24.0 / 255.0, 1},
-) -> bool {
+) -> (
+	token: u64,
+	ok: bool,
+) {
 	if renderer == nil ||
 	   !renderer.live ||
 	   target == nil ||
 	   vertices == nil ||
-	   !gsw3d_triangle_target_valid(format, width, height) {return false}
+	   generation == 0 ||
+	   renderer.flight_count >= GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT ||
+	   !gsw3d_triangle_target_valid(format, width, height) {return 0, false}
 	pipeline := gsw3d_triangle_pipeline(renderer, format)
-	if pipeline == nil {return false}
+	if pipeline == nil {return 0, false}
 
 	mapped := sdl3.MapGPUTransferBuffer(renderer.gpu, renderer.transfer_buffer, true)
-	if mapped == nil {return false}
+	if mapped == nil {return 0, false}
 	mem.copy(mapped, vertices, int(GSW3D_TRIANGLE_VERTEX_BYTES))
 	sdl3.UnmapGPUTransferBuffer(renderer.gpu, renderer.transfer_buffer)
 
 	command_buffer := sdl3.AcquireGPUCommandBuffer(renderer.gpu)
-	if command_buffer == nil {return false}
+	if command_buffer == nil {return 0, false}
 	submitted := false
 	defer if !submitted {_ = sdl3.CancelGPUCommandBuffer(command_buffer)}
 
 	copy_pass := sdl3.BeginGPUCopyPass(command_buffer)
-	if copy_pass == nil {return false}
+	if copy_pass == nil {return 0, false}
 	sdl3.UploadToGPUBuffer(
 		copy_pass,
 		sdl3.GPUTransferBufferLocation{renderer.transfer_buffer, 0},
@@ -253,7 +472,7 @@ gsw3d_triangle_render_sync :: proc(
 		},
 	}
 	render_pass := sdl3.BeginGPURenderPass(command_buffer, raw_data(target_info[:]), 1, nil)
-	if render_pass == nil {return false}
+	if render_pass == nil {return 0, false}
 	sdl3.BindGPUGraphicsPipeline(render_pass, pipeline)
 	bindings := [1]sdl3.GPUBufferBinding{{renderer.vertex_buffer, 0}}
 	sdl3.BindGPUVertexBuffers(render_pass, 0, raw_data(bindings[:]), 1)
@@ -262,12 +481,12 @@ gsw3d_triangle_render_sync :: proc(
 
 	submitted = true
 	fence := sdl3.SubmitGPUCommandBufferAndAcquireFence(command_buffer)
-	if fence == nil {return false}
-	defer sdl3.ReleaseGPUFence(renderer.gpu, fence)
-	if sdl3.QueryGPUFence(renderer.gpu, fence) {return true}
-	fences := [1]^sdl3.GPUFence{fence}
-	return(
-		sdl3.WaitForGPUFences(renderer.gpu, true, raw_data(fences[:]), 1) &&
-		sdl3.QueryGPUFence(renderer.gpu, fence) \
-	)
+	if fence == nil {return 0, false}
+	tracked: bool
+	token, tracked = gsw3d_triangle_track_fence(renderer, fence, generation)
+	if !tracked {
+		sdl3.ReleaseGPUFence(renderer.gpu, fence)
+		return 0, false
+	}
+	return token, true
 }

@@ -33,18 +33,49 @@ host_gsw3d_proof_clear_color :: proc(color: u32) -> sdl3.FColor {
 	return {to_float(color >> 16), to_float(color >> 8), to_float(color), to_float(color >> 24)}
 }
 
-host_gsw3d_proof_draw :: proc(ctx: rawptr, draw: ^Gsw3d_Proof_Draw) -> bool {
+@(private = "file")
+host_gsw3d_proof_publish_completions :: proc(
+	h: ^Host,
+	completed: []Gsw3d_Triangle_Completion,
+) -> bool {
+	if h == nil {return false}
+	for completion in completed {
+		if !gsw3d_proof_backend_complete(&h.gsw3d_backend, completion) {return false}
+	}
+	return true
+}
+
+@(private = "file")
+host_gsw3d_proof_poll_gpu :: proc(h: ^Host) -> bool {
+	if h == nil {return false}
+	completed: [GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT]Gsw3d_Triangle_Completion
+	count, ok := gsw3d_triangle_poll(&h.gsw3d_triangle, completed[:])
+	return ok && host_gsw3d_proof_publish_completions(h, completed[:count])
+}
+
+host_gsw3d_proof_draw :: proc(ctx: rawptr, draw: ^Gsw3d_Proof_Draw) -> (u64, bool) {
 	h := (^Host)(ctx)
-	if h == nil || draw == nil || draw.surface_id != GSW3D_PROOF_TARGET_ID {return false}
+	if h == nil ||
+	   draw == nil ||
+	   draw.surface_id != GSW3D_PROOF_TARGET_ID ||
+	   draw.generation == 0 ||
+	   !host_gsw3d_proof_poll_gpu(h) {return 0, false}
+	if h.gsw3d_triangle.flight_count >= GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT {
+		completion, publish, waited := gsw3d_triangle_wait_oldest(&h.gsw3d_triangle)
+		if !waited || (publish && !gsw3d_proof_backend_complete(&h.gsw3d_backend, completion)) {
+			return 0, false
+		}
+	}
 	target, format, width, height, ok := host_gpu_surface_render_target(h, draw.surface_id)
-	if !ok || width != GSW3D_PROOF_WIDTH || height != GSW3D_PROOF_HEIGHT {return false}
-	return gsw3d_triangle_render_sync(
+	if !ok || width != GSW3D_PROOF_WIDTH || height != GSW3D_PROOF_HEIGHT {return 0, false}
+	return gsw3d_triangle_render_async(
 		&h.gsw3d_triangle,
 		target,
 		format,
 		width,
 		height,
 		&draw.vertices,
+		draw.generation,
 		host_gsw3d_proof_clear_color(draw.clear),
 	)
 }
@@ -78,6 +109,7 @@ host_gsw3d_proof_present :: proc(ctx: rawptr, present: ^Gsw3d_Proof_Present) -> 
 host_gsw3d_proof_reset :: proc(ctx: rawptr, generation: u64) -> bool {
 	h := (^Host)(ctx)
 	if h == nil {return false}
+	gsw3d_triangle_discard_other_generations(&h.gsw3d_triangle, generation)
 	if host_gpu_surface_texture(h, GSW3D_PROOF_TARGET_ID) != nil &&
 	   !host_gpu_surface_destroy(h, GSW3D_PROOF_TARGET_ID) {return false}
 	if h.gpu_present.surface_id == GSW3D_PROOF_TARGET_ID {h.gpu_present = {}}
@@ -115,6 +147,7 @@ host_gsw3d_proof_machine_backend :: proc(h: ^Host) -> (vga.Gsw3d_Backend, bool) 
 
 host_gsw3d_proof_drain :: proc(h: ^Host) -> Gsw3d_Bridge_Drain_Result {
 	if h == nil || !h.gsw3d_proof_enabled {return {}}
+	if !host_gsw3d_proof_poll_gpu(h) {return {failed = 1}}
 	return gsw3d_proof_backend_drain(
 		&h.gsw3d_backend,
 		&h.gsw3d_executor,

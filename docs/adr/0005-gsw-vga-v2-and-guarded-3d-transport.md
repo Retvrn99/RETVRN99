@@ -33,12 +33,17 @@ are not implemented. A renderer must provide both transport-independent packet
 validation and execution callbacks before the device advertises SVGA9 or direct
 presentation.
 
-The initial backend contract completes each work item synchronously on the
-render worker, so the asynchronous-fence capability remains unadvertised.
-Direct present is capped at two queued frames and carries only a surface ID,
-source and destination rectangles, and interval. No 3D capability is visible in
-production until a real host renderer is attached and passes the capability and
-rendering tests.
+The backend contract supports synchronous work and an explicit asynchronous
+completion opt-in. An asynchronous backend returns a nonzero opaque ticket,
+unique among its outstanding GPU work, and exposes a thread-safe
+cached-completion callback; zero means the work is CPU-complete. The transport
+retains all results in a 64-entry logical
+FIFO, polls callbacks without its mutex, and retires guest fences strictly in
+submission order. It advertises asynchronous fences only when both halves of
+that contract are installed. Direct present remains capped at two queued frames
+and carries only a surface ID, source and destination rectangles, and interval.
+No 3D capability is visible in production until a real host renderer is attached
+and passes the capability and rendering tests.
 
 Resource upload is a separate GSW descriptor rather than VMware guest-memory
 DMA. It names an already-defined resource and a registered guest region, copies
@@ -63,6 +68,15 @@ thread drains the bridge; no GSW mutex or shared UI mutex is held across GPU
 work. Short bounded follow-up waits let one drain service a serialized
 submit/upload/present sequence without adding one display frame of latency per
 operation.
+
+The proof renderer retains at most two physical SDL GPU fences. The UI thread
+queries and releases completed fences without waiting in the normal draw path,
+then publishes their generation-scoped tickets to the transport. A third draw
+waits only for the oldest slot as bounded backpressure. Reset discards stale
+generation tickets while leaving submitted GPU work to finish safely; final
+renderer destruction may wait once for the remaining slots. Thus BUSY,
+`wait_idle`, and guest fence registers remain tied to physical completion rather
+than command submission.
 
 The first renderer proof accepts one captured, hash-locked SVGA9 frame profile:
 a 640x480 X8R8G8B8 render target, a 60-byte POSITIONT/D3DCOLOR vertex buffer,
@@ -92,8 +106,10 @@ extension instead of weakening the v1 bounds.
 - Captured descriptor, definition, vertex, and render streams lock the first
   SVGA9 grammar profile to exact SHA-256 fixtures and an end-to-end fence order.
 - The proof renderer deliberately supports only RHW 1 POSITIONT vertices. General
-  reciprocal-W, more fixed-function state, shaders, formats, and asynchronous
-  physical-fence completion remain capability gates.
+  reciprocal-W, more fixed-function state, shaders, and formats remain
+  capability gates.
+- A bounded logical completion FIFO and two physical frame slots prevent a
+  completed present or later draw from overtaking an earlier GPU submission.
 - The fixture, SPIR-V checks, Vulkan smoke test, and physical fence prove packet
   acceptance and submission. A deterministic rendered-pixel CRC remains a
   separate debug acceptance gate for color swizzle, orientation, and composition.

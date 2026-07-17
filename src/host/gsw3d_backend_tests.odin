@@ -24,6 +24,7 @@ Gsw3d_Proof_Test_Ops :: struct {
 	fail_draw:    bool,
 	fail_present: bool,
 	fail_reset:   bool,
+	draw_token:   u64,
 	surface:      Gsw3d_Proof_Surface,
 	draw:         Gsw3d_Proof_Draw,
 	present:      Gsw3d_Proof_Present,
@@ -52,11 +53,11 @@ gsw3d_proof_test_destroy_surface :: proc(ctx: rawptr, surface_id: u32) -> bool {
 }
 
 @(private = "file")
-gsw3d_proof_test_draw :: proc(ctx: rawptr, draw: ^Gsw3d_Proof_Draw) -> bool {
+gsw3d_proof_test_draw :: proc(ctx: rawptr, draw: ^Gsw3d_Proof_Draw) -> (u64, bool) {
 	state := (^Gsw3d_Proof_Test_Ops)(ctx)
 	gsw3d_proof_test_record(state, .Draw)
 	if draw != nil {state.draw = draw^}
-	return !state.fail_draw
+	return state.draw_token, !state.fail_draw
 }
 
 @(private = "file")
@@ -291,7 +292,14 @@ host_gsw3d_proof_test_golden_frame_marshals_in_order :: proc(t: ^testing.T) {
 	backend: Gsw3d_Proof_Backend
 	if !testing.expect(t, gsw3d_proof_backend_init(&backend, &bridge)) {return}
 	descriptor := gsw3d_proof_backend_descriptor(&backend)
-	state: Gsw3d_Proof_Test_Ops
+	if !testing.expect(
+		t,
+		descriptor.capabilities & vga.GSW3D_BACKEND_ASYNC_COMPLETION != 0 &&
+		descriptor.completion != nil,
+	) {return}
+	state := Gsw3d_Proof_Test_Ops {
+		draw_token = 41,
+	}
 	executor: Gsw3d_Proof_Executor
 	if !testing.expect(
 		t,
@@ -370,6 +378,7 @@ host_gsw3d_proof_test_golden_frame_marshals_in_order :: proc(t: ^testing.T) {
 		&render,
 	)
 	if !testing.expect(t, result && drained) {return}
+	testing.expect_value(t, render.backend_token, u64(41))
 
 	present := vga.Gsw3d_Work {
 		kind = .Direct_Present,
@@ -444,6 +453,7 @@ host_gsw3d_proof_test_golden_frame_marshals_in_order :: proc(t: ^testing.T) {
 	)
 	testing.expect_value(t, state.draw.surface_id, GSW3D_PROOF_TARGET_ID)
 	testing.expect_value(t, state.draw.clear, GSW3D_PROOF_CLEAR_COLOR)
+	testing.expect_value(t, state.draw.generation, u64(1))
 	testing.expect_value(t, state.draw.vertices, gsw3d_triangle_proof_vertices())
 	testing.expect_value(t, state.present.surface_id, GSW3D_PROOF_TARGET_ID)
 	testing.expect_value(t, state.present.interval, u32(1))
@@ -556,6 +566,32 @@ host_gsw3d_proof_test_vertices_upload_and_present_are_bounded :: proc(t: ^testin
 		context_id = 2,
 	}
 	testing.expect(t, !gsw3d_proof_execute_work(&executor, &wrong_context))
+}
+
+@(test)
+host_gsw3d_proof_test_physical_completions_are_consumed_once_and_generation_scoped :: proc(
+	t: ^testing.T,
+) {
+	backend := Gsw3d_Proof_Backend {
+		device_generation = 4,
+	}
+	testing.expect(t, gsw3d_proof_backend_complete(&backend, {token = 17, generation = 4}))
+	testing.expect_value(
+		t,
+		gsw3d_proof_backend_completion(&backend, 17),
+		vga.Gsw3d_Backend_Completion_State.Complete,
+	)
+	testing.expect_value(
+		t,
+		gsw3d_proof_backend_completion(&backend, 17),
+		vga.Gsw3d_Backend_Completion_State.Pending,
+	)
+	testing.expect(t, gsw3d_proof_backend_complete(&backend, {token = 18, generation = 3}))
+	testing.expect_value(
+		t,
+		gsw3d_proof_backend_completion(&backend, 18),
+		vga.Gsw3d_Backend_Completion_State.Pending,
+	)
 }
 
 @(test)

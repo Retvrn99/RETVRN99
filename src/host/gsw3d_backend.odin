@@ -14,6 +14,7 @@ GSW3D_PROOF_HEIGHT :: u32(480)
 GSW3D_PROOF_VERTEX_BYTES :: 60
 GSW3D_PROOF_CLEAR_COLOR :: u32(0xff10_1018)
 GSW3D_PROOF_MAX_BRIDGE_BUDGET :: u64(4 * 1024 * 1024)
+GSW3D_PROOF_COMPLETION_CAPACITY :: 64
 
 Gsw3d_Proof_Resource_Kind :: enum u8 {
 	Invalid,
@@ -31,6 +32,7 @@ Gsw3d_Proof_Surface :: struct {
 Gsw3d_Proof_Draw :: struct {
 	surface_id: u32,
 	clear:      u32,
+	generation: u64,
 	vertices:   [GSW3D_TRIANGLE_VERTEX_COUNT]Gsw3d_Triangle_Vertex,
 }
 
@@ -43,7 +45,7 @@ Gsw3d_Proof_Present :: struct {
 
 Gsw3d_Proof_Create_Surface_Proc :: proc(ctx: rawptr, surface: Gsw3d_Proof_Surface) -> bool
 Gsw3d_Proof_Destroy_Surface_Proc :: proc(ctx: rawptr, surface_id: u32) -> bool
-Gsw3d_Proof_Draw_Proc :: proc(ctx: rawptr, draw: ^Gsw3d_Proof_Draw) -> bool
+Gsw3d_Proof_Draw_Proc :: proc(ctx: rawptr, draw: ^Gsw3d_Proof_Draw) -> (u64, bool)
 Gsw3d_Proof_Present_Proc :: proc(ctx: rawptr, present: ^Gsw3d_Proof_Present) -> bool
 Gsw3d_Proof_Reset_Proc :: proc(ctx: rawptr, generation: u64) -> bool
 
@@ -79,6 +81,12 @@ Gsw3d_Proof_Executor :: struct {
 	live:       bool,
 }
 
+Gsw3d_Proof_Completed_Token :: struct {
+	live:       bool,
+	token:      u64,
+	generation: u64,
+}
+
 Gsw3d_Proof_Backend :: struct {
 	bridge:             ^Gsw3d_Bridge,
 	mu:                 sync.Mutex,
@@ -87,6 +95,7 @@ Gsw3d_Proof_Backend :: struct {
 	stopped:            bool,
 	cleanup_required:   bool,
 	cleanup_generation: u64,
+	completed:          [GSW3D_PROOF_COMPLETION_CAPACITY]Gsw3d_Proof_Completed_Token,
 }
 
 @(private = "file")
@@ -340,7 +349,8 @@ gsw3d_proof_read_vertices :: proc(
 }
 
 @(private = "file")
-gsw3d_proof_render :: proc(executor: ^Gsw3d_Proof_Executor) -> bool {
+gsw3d_proof_render :: proc(executor: ^Gsw3d_Proof_Executor, work: ^vga.Gsw3d_Work) -> bool {
+	if work == nil || work.generation != executor.generation {return false}
 	target := gsw3d_proof_find_resource(executor, GSW3D_PROOF_TARGET_ID)
 	buffer := gsw3d_proof_find_resource(executor, GSW3D_PROOF_VERTEX_BUFFER_ID)
 	if target == nil || target.kind != .Surface {return false}
@@ -349,9 +359,12 @@ gsw3d_proof_render :: proc(executor: ^Gsw3d_Proof_Executor) -> bool {
 	draw := Gsw3d_Proof_Draw {
 		surface_id = target.id,
 		clear      = GSW3D_PROOF_CLEAR_COLOR,
+		generation = work.generation,
 		vertices   = vertices,
 	}
-	if !executor.ops.draw(executor.ops.ctx, &draw) {return false}
+	token, drawn := executor.ops.draw(executor.ops.ctx, &draw)
+	if !drawn {return false}
+	work.backend_token = token
 	target.rendered = true
 	return true
 }
@@ -366,6 +379,7 @@ gsw3d_proof_execute_work :: proc(executor: ^Gsw3d_Proof_Executor, work: ^vga.Gsw
 	if executor == nil || !executor.live || work == nil || work.generation != executor.generation {
 		return false
 	}
+	work.backend_token = 0
 	switch work.kind {
 	case .Create_Context:
 		if work.context_id != GSW3D_PROOF_CONTEXT_ID ||
@@ -388,7 +402,7 @@ gsw3d_proof_execute_work :: proc(executor: ^Gsw3d_Proof_Executor, work: ^vga.Gsw
 		if gsw3d_proof_definitions_valid(
 			work.batch,
 		) {return gsw3d_proof_define_resources(executor)}
-		if gsw3d_proof_render_valid(work.batch) {return gsw3d_proof_render(executor)}
+		if gsw3d_proof_render_valid(work.batch) {return gsw3d_proof_render(executor, work)}
 		return gsw3d_proof_destroy_resources(executor, work.batch)
 	case .Direct_Present:
 		expected := vga.Gsw3d_Rect {
@@ -571,6 +585,48 @@ gsw3d_proof_next_generation :: proc(generation: u64) -> u64 {
 	return next != 0 ? next : 1
 }
 
+gsw3d_proof_backend_complete :: proc(
+	backend: ^Gsw3d_Proof_Backend,
+	completion: Gsw3d_Triangle_Completion,
+) -> bool {
+	if backend == nil || completion.token == 0 || completion.generation == 0 {return false}
+	sync.lock(&backend.mu)
+	defer sync.unlock(&backend.mu)
+	if backend.stopped || completion.generation != backend.device_generation {return true}
+	free_entry: ^Gsw3d_Proof_Completed_Token
+	for &entry in backend.completed {
+		if entry.live &&
+		   entry.token == completion.token {return entry.generation == completion.generation}
+		if !entry.live && free_entry == nil {free_entry = &entry}
+	}
+	if free_entry == nil {return false}
+	free_entry^ = {
+		live       = true,
+		token      = completion.token,
+		generation = completion.generation,
+	}
+	return true
+}
+
+@(private = "package")
+gsw3d_proof_backend_completion :: proc(
+	ctx: rawptr,
+	token: u64,
+) -> vga.Gsw3d_Backend_Completion_State {
+	backend := (^Gsw3d_Proof_Backend)(ctx)
+	if backend == nil || token == 0 {return .Failed}
+	sync.lock(&backend.mu)
+	defer sync.unlock(&backend.mu)
+	if backend.stopped || backend.device_generation == 0 {return .Failed}
+	for &entry in backend.completed {
+		if entry.live && entry.token == token && entry.generation == backend.device_generation {
+			entry = {}
+			return .Complete
+		}
+	}
+	return .Pending
+}
+
 @(private = "file")
 gsw3d_proof_backend_cancel :: proc(ctx: rawptr, generation: u64, stopping: bool) {
 	backend := (^Gsw3d_Proof_Backend)(ctx)
@@ -582,6 +638,7 @@ gsw3d_proof_backend_cancel :: proc(ctx: rawptr, generation: u64, stopping: bool)
 	}
 	old_session := backend.bridge_generation
 	backend.bridge_generation = 0
+	backend.completed = {}
 	if stopping {
 		backend.stopped = true
 		backend.cleanup_generation = generation
@@ -612,6 +669,7 @@ gsw3d_proof_backend_init :: proc(backend: ^Gsw3d_Proof_Backend, bridge: ^Gsw3d_B
 	backend.bridge_generation = 0
 	backend.device_generation = 1
 	backend.stopped = false
+	backend.completed = {}
 	if restarting {
 		backend.cleanup_required = true
 		backend.cleanup_generation = 1
@@ -638,7 +696,8 @@ gsw3d_proof_backend_descriptor :: proc(backend: ^Gsw3d_Proof_Backend) -> vga.Gsw
 		ctx = backend,
 		capabilities = vga.GSW3D_BACKEND_SVGA9 |
 		vga.GSW3D_BACKEND_DIRECT_PRESENT |
-		vga.GSW3D_BACKEND_RESOURCE_UPLOAD,
+		vga.GSW3D_BACKEND_RESOURCE_UPLOAD |
+		vga.GSW3D_BACKEND_ASYNC_COMPLETION,
 		present_intervals = u32(1) << 1,
 		validate_svga9 = gsw3d_proof_validate_svga9,
 		resource_size = gsw3d_proof_resource_size,
@@ -646,5 +705,6 @@ gsw3d_proof_backend_descriptor :: proc(backend: ^Gsw3d_Proof_Backend) -> vga.Gsw
 		upload = gsw3d_proof_backend_upload,
 		reset = gsw3d_proof_backend_reset,
 		cancel = gsw3d_proof_backend_cancel,
+		completion = gsw3d_proof_backend_completion,
 	}
 }

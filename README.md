@@ -24,8 +24,9 @@ The virtual machine currently exposes:
 - A 1.44 MB floppy drive and an ATAPI 10x DVD / 52x CD-ROM drive.
 - The guest-visible GSW VGA device, with legacy VGA and Bochs VBE available
   while the Windows GSW driver is being finished. Its guarded v2 transport and
-  host-resident SDL_GPU path have an exact developer triangle profile, but the
-  normal guest persona still advertises no 3D acceleration.
+  host-resident SDL_GPU path have an exact developer triangle profile with
+  ticketed physical completion and two frames in flight, but the normal guest
+  persona still advertises no 3D acceleration.
 - PC-speaker and CD-audio output, plus fixed-resource Sound Blaster 16 digital
   audio at `220h`/IRQ5/DMA1+5 and an OPL3-compatible device at `388h`, including
   the Sound Blaster FM aliases at `220h`-`223h`. The OPL
@@ -69,7 +70,8 @@ to start the machine as soon as the window is ready:
 
 Renderer developers can add `--gsw3d-proof` to attach the hash-locked
 640x480 POSITIONT/D3DCOLOR transport profile. It accepts only the captured
-triangle command stream and is not a game-compatible acceleration mode.
+triangle command stream, retains at most two physical GPU submissions, and is
+not a game-compatible acceleration mode.
 
 The default profile is `%USERPROFILE%\.retvrn99`. To keep a machine separate,
 pass another profile directory:

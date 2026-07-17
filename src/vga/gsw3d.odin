@@ -19,6 +19,7 @@ GSW3D_MAX_RESOURCES :: 1024
 GSW3D_MAX_QUEUED_WORK :: 64
 GSW3D_MAX_QUEUED_PRESENTS :: 2
 GSW3D_MAX_QUEUED_OWNED_BYTES :: u64(16 * 1024 * 1024)
+GSW3D_COMPLETION_FIFO_CAPACITY :: GSW3D_MAX_QUEUED_WORK
 GSW3D_MAX_SHADER_BYTES :: 64 * 1024
 GSW3D_PRESENT_INTERVAL_MAX :: u32(4)
 GSW3D_PRESENT_INTERVAL_MASK :: u32((1 << (GSW3D_PRESENT_INTERVAL_MAX + 1)) - 1)
@@ -42,6 +43,7 @@ GSW3D_REG_END :: u32(0x180)
 GSW3D_BACKEND_SVGA9 :: u32(1 << 0)
 GSW3D_BACKEND_DIRECT_PRESENT :: u32(1 << 1)
 GSW3D_BACKEND_RESOURCE_UPLOAD :: u32(1 << 2)
+GSW3D_BACKEND_ASYNC_COMPLETION :: u32(1 << 3)
 
 GSW3D_STATUS_READY :: u32(1 << 0)
 GSW3D_STATUS_BUSY :: u32(1 << 1)
@@ -100,14 +102,25 @@ Gsw3d_Work :: struct {
 	source:             Gsw3d_Rect,
 	destination:        Gsw3d_Rect,
 	interval:           u32,
+	backend_token:      u64,
 	batch:              []u8,
 	upload:             []u8,
+}
+
+Gsw3d_Backend_Completion_State :: enum u8 {
+	Pending,
+	Complete,
+	Failed,
 }
 
 Gsw3d_Execute_Proc :: proc(ctx: rawptr, work: ^Gsw3d_Work) -> bool
 Gsw3d_Upload_Proc :: proc(ctx: rawptr, work: ^Gsw3d_Work) -> bool
 Gsw3d_Reset_Proc :: proc(ctx: rawptr, generation: u64) -> bool
 Gsw3d_Cancel_Proc :: proc(ctx: rawptr, generation: u64, stopping: bool)
+Gsw3d_Backend_Completion_Proc :: proc(
+	ctx: rawptr,
+	backend_token: u64,
+) -> Gsw3d_Backend_Completion_State
 Gsw3d_Validate_Svga9_Proc :: proc(ctx: rawptr, batch: []u8) -> bool
 Gsw3d_Resource_Size_Proc :: proc(ctx: rawptr, format, width, height, depth: u32) -> (u64, bool)
 
@@ -121,6 +134,17 @@ Gsw3d_Backend :: struct {
 	upload:            Gsw3d_Upload_Proc,
 	reset:             Gsw3d_Reset_Proc,
 	cancel:            Gsw3d_Cancel_Proc,
+	completion:        Gsw3d_Backend_Completion_Proc,
+}
+
+@(private = "file")
+Gsw3d_Completion_Record :: struct {
+	sequence:      u64,
+	generation:    u64,
+	backend_token: u64,
+	fence:         u64,
+	kind:          Gsw3d_Work_Kind,
+	status:        Gsw3d_Backend_Completion_State,
 }
 
 Gsw3d_Region :: struct {
@@ -169,38 +193,44 @@ Gsw3d_Metrics :: struct {
 }
 
 Gsw3d :: struct {
-	allocator:          runtime.Allocator,
-	ring_gpa:           u64,
-	ring_size:          u32,
-	ring_head:          u32,
-	ring_tail:          u32,
-	status:             u32,
-	error:              Gsw3d_Error,
-	completed_fence:    u64,
-	regions:            [GSW3D_MAX_REGIONS]Gsw3d_Region,
-	contexts:           [GSW3D_MAX_CONTEXTS]Gsw3d_Context,
-	resources:          [GSW3D_MAX_RESOURCES]Gsw3d_Resource,
-	backend:            Gsw3d_Backend,
-	metrics:            Gsw3d_Metrics,
-	mu:                 sync.Mutex,
-	work_ready:         sync.Cond,
-	idle:               sync.Cond,
-	worker:             ^thread.Thread,
-	queue:              [GSW3D_MAX_QUEUED_WORK]^Gsw3d_Work,
-	queue_head:         int,
-	queue_tail:         int,
-	queue_count:        int,
-	queued_presents:    int,
-	owned_work_bytes:   u64,
-	active:             bool,
-	stopping:           bool,
-	poisoned:           bool,
-	generation:         u64,
-	reset_pending:      bool,
-	reset_completed:    bool,
-	pending_fence:      u64,
-	pending_completion: bool,
-	pending_error:      Gsw3d_Error,
+	allocator:                  runtime.Allocator,
+	ring_gpa:                   u64,
+	ring_size:                  u32,
+	ring_head:                  u32,
+	ring_tail:                  u32,
+	status:                     u32,
+	error:                      Gsw3d_Error,
+	completed_fence:            u64,
+	regions:                    [GSW3D_MAX_REGIONS]Gsw3d_Region,
+	contexts:                   [GSW3D_MAX_CONTEXTS]Gsw3d_Context,
+	resources:                  [GSW3D_MAX_RESOURCES]Gsw3d_Resource,
+	backend:                    Gsw3d_Backend,
+	metrics:                    Gsw3d_Metrics,
+	mu:                         sync.Mutex,
+	work_ready:                 sync.Cond,
+	idle:                       sync.Cond,
+	worker:                     ^thread.Thread,
+	queue:                      [GSW3D_MAX_QUEUED_WORK]^Gsw3d_Work,
+	queue_head:                 int,
+	queue_tail:                 int,
+	queue_count:                int,
+	queued_presents:            int,
+	owned_work_bytes:           u64,
+	active:                     bool,
+	stopping:                   bool,
+	poisoned:                   bool,
+	generation:                 u64,
+	reset_pending:              bool,
+	reset_completed:            bool,
+	pending_fence:              u64,
+	pending_completion:         bool,
+	pending_error:              Gsw3d_Error,
+	completions:                [GSW3D_COMPLETION_FIFO_CAPACITY]Gsw3d_Completion_Record,
+	completion_head:            int,
+	completion_tail:            int,
+	completion_count:           int,
+	completion_sequence:        u64,
+	completion_failure_pending: bool,
 }
 
 @(private = "file")
@@ -233,10 +263,61 @@ gsw3d_work_free :: proc(d: ^Gsw3d, work: ^Gsw3d_Work) {
 }
 
 @(private = "file")
+gsw3d_async_completion_enabled :: proc(d: ^Gsw3d) -> bool {
+	return d != nil && d.backend.capabilities & GSW3D_BACKEND_ASYNC_COMPLETION != 0
+}
+
+@(private = "file")
+gsw3d_completion_clear_locked :: proc(d: ^Gsw3d) {
+	for &record in d.completions {record = {}}
+	d.completion_head = 0
+	d.completion_tail = 0
+	d.completion_count = 0
+	d.completion_failure_pending = false
+}
+
+@(private = "file")
+gsw3d_completion_push_locked :: proc(d: ^Gsw3d, work: ^Gsw3d_Work, ok: bool) -> bool {
+	if d == nil || work == nil || d.completion_count >= GSW3D_COMPLETION_FIFO_CAPACITY {
+		return false
+	}
+	status := Gsw3d_Backend_Completion_State.Pending
+	backend_token := work.backend_token
+	if work.kind == .Transport_Barrier || work.kind == .Reset {
+		backend_token = 0
+		status = ok ? .Complete : .Failed
+	} else if !ok {
+		status = .Failed
+	} else if backend_token == 0 {
+		status = .Complete
+	}
+	d.completion_sequence += 1
+	if d.completion_sequence == 0 {d.completion_sequence = 1}
+	d.completions[d.completion_tail] = {
+		sequence      = d.completion_sequence,
+		generation    = work.generation,
+		backend_token = backend_token,
+		fence         = work.fence,
+		kind          = work.kind,
+		status        = status,
+	}
+	d.completion_tail = (d.completion_tail + 1) % GSW3D_COMPLETION_FIFO_CAPACITY
+	d.completion_count += 1
+	if status == .Failed {d.completion_failure_pending = true}
+	return true
+}
+
+@(private = "file")
 gsw3d_worker_proc :: proc(d: ^Gsw3d) {
 	for {
 		sync.lock(&d.mu)
-		for d.queue_count == 0 && !d.stopping {sync.cond_wait(&d.work_ready, &d.mu)}
+		for !d.stopping &&
+		    (d.queue_count == 0 ||
+				    gsw3d_async_completion_enabled(d) &&
+					    (d.completion_count >= GSW3D_COMPLETION_FIFO_CAPACITY ||
+							    d.completion_failure_pending)) {
+			sync.cond_wait(&d.work_ready, &d.mu)
+		}
 		if d.stopping {
 			sync.unlock(&d.mu)
 			return
@@ -248,7 +329,7 @@ gsw3d_worker_proc :: proc(d: ^Gsw3d) {
 		d.active = true
 		sync.unlock(&d.mu)
 
-		// Backend callbacks complete host effects before the worker advances the FIFO.
+		// Callbacks enqueue host effects; async tickets retire only after backend completion.
 		ok := false
 		switch work.kind {
 		case .Transport_Barrier:
@@ -264,17 +345,28 @@ gsw3d_worker_proc :: proc(d: ^Gsw3d) {
 		sync.lock(&d.mu)
 		if work.kind == .Direct_Present {d.queued_presents -= 1}
 		d.owned_work_bytes -= gsw3d_work_owned_bytes(work)
-		if work.generation == d.generation {
-			d.pending_completion = true
-			if ok {
-				if work.kind == .Reset {d.reset_completed = true}
-				if work.fence != 0 {d.pending_fence = work.fence}
+		if work.generation == d.generation && !d.poisoned {
+			if gsw3d_async_completion_enabled(d) {
+				if !gsw3d_completion_push_locked(d, work, ok) {
+					d.poisoned = true
+					d.reset_completed = false
+					d.pending_completion = true
+					d.pending_error = .Backend_Failure
+					d.metrics.backend_failures += 1
+					gsw3d_cancel_queued(d)
+				}
 			} else {
-				d.poisoned = true
-				d.reset_completed = false
-				d.pending_error = .Backend_Failure
-				d.metrics.backend_failures += 1
-				gsw3d_cancel_queued(d)
+				d.pending_completion = true
+				if ok {
+					if work.kind == .Reset {d.reset_completed = true}
+					if work.fence != 0 {d.pending_fence = work.fence}
+				} else {
+					d.poisoned = true
+					d.reset_completed = false
+					d.pending_error = .Backend_Failure
+					d.metrics.backend_failures += 1
+					gsw3d_cancel_queued(d)
+				}
 			}
 		}
 		d.active = false
@@ -286,9 +378,13 @@ gsw3d_worker_proc :: proc(d: ^Gsw3d) {
 
 gsw3d_attach_backend :: proc(d: ^Gsw3d, backend: Gsw3d_Backend) -> bool {
 	known_caps :=
-		GSW3D_BACKEND_SVGA9 | GSW3D_BACKEND_DIRECT_PRESENT | GSW3D_BACKEND_RESOURCE_UPLOAD
+		GSW3D_BACKEND_SVGA9 |
+		GSW3D_BACKEND_DIRECT_PRESENT |
+		GSW3D_BACKEND_RESOURCE_UPLOAD |
+		GSW3D_BACKEND_ASYNC_COMPLETION
 	upload_supported := backend.capabilities & GSW3D_BACKEND_RESOURCE_UPLOAD != 0
 	present_supported := backend.capabilities & GSW3D_BACKEND_DIRECT_PRESENT != 0
+	async_completion := backend.capabilities & GSW3D_BACKEND_ASYNC_COMPLETION != 0
 	if d == nil ||
 	   backend.execute == nil ||
 	   backend.reset == nil ||
@@ -297,6 +393,7 @@ gsw3d_attach_backend :: proc(d: ^Gsw3d, backend: Gsw3d_Backend) -> bool {
 	   backend.capabilities & GSW3D_BACKEND_SVGA9 == 0 ||
 	   upload_supported != (backend.upload != nil && backend.resource_size != nil) ||
 	   (backend.upload == nil) != (backend.resource_size == nil) ||
+	   async_completion != (backend.completion != nil) ||
 	   present_supported != (backend.present_intervals != 0) ||
 	   backend.present_intervals &~ GSW3D_PRESENT_INTERVAL_MASK != 0 ||
 	   backend.capabilities &~ known_caps != 0 ||
@@ -321,6 +418,9 @@ gsw_vga_set_3d_backend :: proc(g: ^Gsw_Vga, backend: Gsw3d_Backend) -> bool {
 	}
 	if backend.capabilities & GSW3D_BACKEND_RESOURCE_UPLOAD != 0 {
 		g.capabilities |= GSW_CAP_RESOURCE_UPLOAD
+	}
+	if backend.capabilities & GSW3D_BACKEND_ASYNC_COMPLETION != 0 {
+		g.capabilities |= GSW_CAP_ASYNC_FENCES
 	}
 	return true
 }
@@ -348,6 +448,7 @@ gsw3d_reset :: proc(d: ^Gsw3d) {
 	d.generation += 1
 	if d.generation == 0 {d.generation = 1}
 	gsw3d_cancel_queued(d)
+	gsw3d_completion_clear_locked(d)
 	d.poisoned = false
 	d.pending_completion = false
 	d.pending_error = .None
@@ -394,6 +495,7 @@ gsw3d_destroy :: proc(d: ^Gsw3d) {
 		if d.generation == 0 {d.generation = 1}
 		d.stopping = true
 		gsw3d_cancel_queued(d)
+		gsw3d_completion_clear_locked(d)
 		sync.unlock(&d.mu)
 		d.backend.cancel(d.backend.ctx, old_generation, true)
 		sync.cond_broadcast(&d.work_ready)
@@ -406,7 +508,7 @@ gsw3d_wait_idle :: proc(d: ^Gsw3d, timeout: time.Duration) -> bool {
 	if d == nil {return false}
 	sync.lock(&d.mu)
 	defer sync.unlock(&d.mu)
-	for d.queue_count != 0 || d.active {
+	for d.queue_count != 0 || d.active || d.completion_count != 0 {
 		if !sync.cond_wait_with_timeout(&d.idle, &d.mu, timeout) {return false}
 	}
 	return true
@@ -989,8 +1091,87 @@ gsw3d_process :: proc(d: ^Gsw3d, ram: []u8) {
 	}
 }
 
+@(private = "file")
+gsw3d_poll_backend_completions :: proc(d: ^Gsw3d) {
+	if d == nil || !gsw3d_async_completion_enabled(d) || d.backend.completion == nil {return}
+	snapshots: [GSW3D_COMPLETION_FIFO_CAPACITY]Gsw3d_Completion_Record
+	states: [GSW3D_COMPLETION_FIFO_CAPACITY]Gsw3d_Backend_Completion_State
+	snapshot_count := 0
+
+	sync.lock(&d.mu)
+	for offset in 0 ..< d.completion_count {
+		index := (d.completion_head + offset) % GSW3D_COMPLETION_FIFO_CAPACITY
+		record := d.completions[index]
+		if record.status == .Pending && record.backend_token != 0 {
+			snapshots[snapshot_count] = record
+			snapshot_count += 1
+		}
+	}
+	sync.unlock(&d.mu)
+
+	for index in 0 ..< snapshot_count {
+		state := d.backend.completion(d.backend.ctx, snapshots[index].backend_token)
+		if state != .Pending && state != .Complete && state != .Failed {state = .Failed}
+		states[index] = state
+	}
+
+	changed := false
+	sync.lock(&d.mu)
+	for snapshot_index in 0 ..< snapshot_count {
+		snapshot := snapshots[snapshot_index]
+		for offset in 0 ..< d.completion_count {
+			index := (d.completion_head + offset) % GSW3D_COMPLETION_FIFO_CAPACITY
+			record := &d.completions[index]
+			if record.sequence != snapshot.sequence ||
+			   record.generation != snapshot.generation ||
+			   record.backend_token != snapshot.backend_token ||
+			   record.status != .Pending {continue}
+			if states[snapshot_index] != .Pending {
+				record.status = states[snapshot_index]
+				changed = true
+				if record.status == .Failed {d.completion_failure_pending = true}
+			}
+			break
+		}
+	}
+
+	for d.completion_count > 0 {
+		record := d.completions[d.completion_head]
+		if record.status == .Pending {break}
+		if record.status == .Failed {
+			d.poisoned = true
+			d.reset_completed = false
+			d.pending_completion = true
+			d.pending_error = .Backend_Failure
+			d.metrics.backend_failures += 1
+			gsw3d_cancel_queued(d)
+			gsw3d_completion_clear_locked(d)
+			changed = true
+			break
+		}
+		d.pending_completion = true
+		if record.kind == .Reset {d.reset_completed = true}
+		if record.fence != 0 {d.pending_fence = record.fence}
+		d.completions[d.completion_head] = {}
+		d.completion_head = (d.completion_head + 1) % GSW3D_COMPLETION_FIFO_CAPACITY
+		d.completion_count -= 1
+		changed = true
+	}
+	if d.completion_count == 0 {
+		d.completion_head = 0
+		d.completion_tail = 0
+		d.completion_failure_pending = false
+	}
+	sync.unlock(&d.mu)
+	if changed {
+		sync.cond_broadcast(&d.work_ready)
+		sync.cond_broadcast(&d.idle)
+	}
+}
+
 gsw3d_poll :: proc(d: ^Gsw3d) -> bool {
 	if d == nil {return false}
+	gsw3d_poll_backend_completions(d)
 	sync.lock(&d.mu)
 	completion := d.pending_completion
 	notify := false
@@ -1017,7 +1198,7 @@ gsw3d_poll :: proc(d: ^Gsw3d) -> bool {
 		d.status &~= GSW3D_STATUS_READY
 		d.status |= GSW3D_STATUS_ERROR
 	}
-	busy := d.queue_count != 0 || d.active || d.reset_pending
+	busy := d.queue_count != 0 || d.active || d.completion_count != 0 || d.reset_pending
 	if busy {d.status |= GSW3D_STATUS_BUSY} else {d.status &~= GSW3D_STATUS_BUSY | GSW3D_STATUS_QUEUE_FULL}
 	sync.unlock(&d.mu)
 	return notify
