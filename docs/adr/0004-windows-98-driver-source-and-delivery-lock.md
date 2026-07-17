@@ -16,10 +16,11 @@ build systems, and old Windows driver toolchains. A moving branch, an
 unreviewed compiler, or an unverified binary copied into Setup would make the
 guest boundary neither reproducible nor auditable.
 
-The repository does not yet contain a reviewed GSW display or sound INF, a
-Windows 98 driver binary, a DirectX 9 redistributable, or a compatibility-layer
-payload. Source selection and delivery ordering must therefore be representable
-without making an install-ready claim.
+The repository now contains a reviewed bounded GSW display INF and adaptation
+source, but no compiled Windows 98 driver binary, sound INF, DirectX 9
+redistributable, compatibility-layer payload, or install-ready package. Source
+selection and delivery ordering must remain representable without extending
+the bounded build proof into an install-ready claim.
 
 ## Decision
 
@@ -47,13 +48,55 @@ Unix time in each Win16 driver's `VS_FIXEDFILEINFO.dwFileDateLS`, so the bounded
 NE-resource normalizer zeros only `dwFileDateMS` and `dwFileDateLS`. The four
 corresponding normalized DRVs were byte-identical across both builds.
 
-`drivers/win98/build-plan.json` nevertheless remains `blocked` until a reviewed
-plan names hash-verified local toolchain executables, literal argument arrays,
-canonical planned source working directories, the GSW-derived source recipe,
-the explicit Win16 normalization operation, and exact adapted output sizes and
-SHA-256 values. The build script invokes executables directly rather than
-evaluating shell command strings. It performs no network operation and cannot
-consume a `reference-only` source row.
+`drivers/win98/derived-source-plan.json` separates immutable upstream source
+from RETVRN99 adaptations. A schema-2 ready recipe identifies one canonical
+planned upstream, a disjoint output directory, ordered patches pinned by size
+and SHA-256, complete overlay directories pinned by the canonical tree
+descriptor, and the exact descriptor of the combined result. Preparation
+materializes exact Git blob bytes, recursively expands only initialized
+superproject-pinned gitlinks, and verifies provenance before and after. Each
+patch explicitly names the regular text paths whose canonical CRLF bytes must
+be converted to LF; undeclared blobs are unchanged, and unsafe, missing,
+duplicate, reparse-point, NUL-containing, or isolated-CR inputs are rejected.
+The preparer prevents unapproved overlay replacement, rejects overlapping
+recipe destinations, scans each result again before publication, and
+atomically creates a previously absent output root.
+
+The plan may instead be `draft` solely to bootstrap the combined descriptor.
+Draft recipes already require exact patch and overlay descriptors, but omit the
+not-yet-known output descriptor. `-DescribeRecipe` builds the tree in bounded
+private scratch, scans it twice, emits the candidate descriptor, and deletes
+the tree. Draft mode cannot publish an output or be consumed by the builder.
+`-DescribeTree` similarly emits a double-scanned descriptor for an existing
+overlay without changing it.
+
+`drivers/win98/build-plan.json` is now `ready` for the bounded
+VMDisp9x-derived GSW mini display-driver build. The schema-2 plan pins the ready
+derived-source plan, toolchain lock, and upstream lock themselves. The builder
+snapshots those exact linked bytes before use and rejects an alternate
+upstream-lock path. It names a hash-verified local toolchain executable, a
+literal argument array, a derived-recipe working directory, one explicit
+Win16 normalization operation, and exact adapted output sizes and SHA-256
+values. Every DRV output must be normalized exactly once. A `build`-origin
+output must be absent before its producing step, while a `derived`-origin
+output must already match and remain unchanged.
+
+The builder re-verifies the complete toolchain, prepares private derived
+scratch, installs the locked Watcom environment only for the child build, and
+launches pinned `wmake.exe` with literal arguments. The reviewed makefile
+controls its Open Watcom subprocesses; the locked `binnt` and `binw` paths are
+prepended to the retained caller `PATH`. It validates every normalized output
+before atomically publishing the build root, performs no network operation,
+and cannot consume a `reference-only` source row. Two independent builds on
+2026-07-17 produced byte-identical declared artifacts matching the plan:
+`gswmini.drv` (14,404 bytes,
+`8ae871b002f60b4ba5d25834849c4534192339ecbf19f096ce0a80ec55aec096`),
+`gswmini.vxd` (29,557 bytes,
+`d4127232095fb7683c2ab43af4fbb3add5a955253a188afb06ed86d6dcabe27f`),
+and `gswmini.inf` (3,108 bytes,
+`f8d665e757af2af4732d78a8b8d1fc0c40040b4f9d009b344e12b6bdae8af944`).
+This proof covers deterministic derivation and compilation, not Windows 98
+installation, device operation, or an installable package.
 
 `drivers/win98/payload-inventory.schema.tsv` and
 `drivers/win98/payload-manifest.schema.tsv` contain only staging schemas. There
@@ -100,7 +143,8 @@ DirectX runtime precedes the compatibility layer so the runtime cannot replace
 the final GSW compatibility files. No RunOnce command is emitted while those
 payloads are unavailable.
 
-VMDisp9x, VMHAL9x, Mesa9x, and Wine9x are planned inputs subject to later
+The pinned VMDisp9x revision now has a reviewed RETVRN99 adaptation and bounded
+build proof. VMHAL9x, Mesa9x, and Wine9x remain planned inputs subject to later
 license and adaptation review. SoftGPU, `libs/vkd3d-shader`, and the VMware
 SVGA Device Developer Kit mirror are reference-only at this decision point.
 Changing a disposition requires a separate review; a lock update alone does
@@ -116,8 +160,13 @@ not approve source copying or binary distribution.
   mismatch, incomplete selected package, inventory mismatch, or output hash
   mismatch stops the workflow; an unrelated absent checkout does not block a
   scoped build or staging operation.
-- Adding the first payload requires a reviewed build plan, a populated payload
-  manifest, license notices, INF/content validation, and Setup integration.
+- Adding the first staged payload still requires a populated inventory and
+  manifest, license notices, complete package provenance, INF/content
+  validation, and Setup integration.
+- Draft descriptors, failed builds, and verified but unstaged build roots do
+  not create an install-ready payload claim. The GSW VGA wrapper still requires
+  the complete closed `gsw-vga` inventory, manifest, and VMDisp9x plus VMHAL9x
+  provenance before it can stage anything.
 - The plan preserves a lean RETVRN99-specific architecture while keeping useful
   Windows 9x compatibility knowledge traceable.
 

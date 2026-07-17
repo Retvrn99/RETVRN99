@@ -1,0 +1,92 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 2,
+  "status": "ready",
+  "reason": "",
+  "recipes": [
+    {
+      "name": "vmdisp9x-gsw",
+      "upstream_name": "vmdisp9x",
+      "source_directory": "vmdisp9x",
+      "destination_directory": "vmdisp9x-gsw",
+      "patches": [
+        {
+          "relative_path": "derived/vmdisp9x-gsw/patches/0001-gsw-vxd-shutdown.patch",
+          "bytes": 565,
+          "sha256": "6c28e39962e4efc5f4620692ce5b40c7753a32f183f93f4c49215d8437c7286c",
+          "normalize_lf_paths": [
+            "vxd_main.c"
+          ]
+        },
+        {
+          "relative_path": "derived/vmdisp9x-gsw/patches/0002-gsw-release-profile.patch",
+          "bytes": 391,
+          "sha256": "3104f7cd9b33f1cb22759e0c71717a2ed6cd05bffb81ec1bb15cb9ad729f6bd3",
+          "normalize_lf_paths": [
+            "makefile"
+          ]
+        },
+        {
+          "relative_path": "derived/vmdisp9x-gsw/patches/0003-gsw-no-directdraw-claim.patch",
+          "bytes": 958,
+          "sha256": "ac88a8ee5ba8e9a24ec21a5e672586a5e604311c154d9bad10e13d04d85370ea",
+          "normalize_lf_paths": [
+            "dddrv.c"
+          ]
+        },
+        {
+          "relative_path": "derived/vmdisp9x-gsw/patches/0004-gsw-bootstrap-escapes.patch",
+          "bytes": 3265,
+          "sha256": "80355dd40a133054102506e7ca0a4d2fc6131e1a6108c3e622f2930a216d3251",
+          "normalize_lf_paths": [
+            "control.c"
+          ]
+        },
+        {
+          "relative_path": "derived/vmdisp9x-gsw/patches/0005-gsw-vxd-lifecycle.patch",
+          "bytes": 10243,
+          "sha256": "03fe9e48bc106265df1535cfc38c24b4a266e1e579e5d0608b5632665c42734e",
+          "normalize_lf_paths": [
+            "3d_accel.h",
+            "vxd.h",
+            "vxd_fbhda.c",
+            "vxd_fbhda_dd.c",
+            "vxd_main.c",
+            "vxd_mouse.c",
+            "vxd_vdd.c",
+            "vxd_vdd.h",
+            "vxd_wram.c",
+            "wram.h"
+          ]
+        }
+      ],
+      "overlays": [
+        {
+          "relative_path": "derived/vmdisp9x-gsw/overlay",
+          "destination_relative_path": ".",
+          "replace_existing": false,
+          "tree": {
+            "file_count": 11,
+            "directory_count": 1,
+            "total_entries": 12,
+            "aggregate_bytes": 28126,
+            "maximum_file_bytes": 13055,
+            "maximum_path_bytes": 16,
+            "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+            "sha256": "05bfb13ab488096feffd2d50a7d3638d085cbe79376484a8cfe408acb1acd07a"
+          }
+        }
+      ],
+      "output_tree": {
+        "file_count": 150,
+        "directory_count": 7,
+        "total_entries": 157,
+        "aggregate_bytes": 1313800,
+        "maximum_file_bytes": 113466,
+        "maximum_path_bytes": 26,
+        "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+        "sha256": "5e273b754a9d3c658a61a6e228e925daaea923e30a65a1cf50999c54663f6fd2"
+      }
+    }
+  ]
+}

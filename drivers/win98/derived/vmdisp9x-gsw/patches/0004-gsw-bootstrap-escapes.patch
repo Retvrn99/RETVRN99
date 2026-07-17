@@ -1,0 +1,120 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/control.c b/control.c
+index 05f17c0..d5862f7 100644
+--- a/control.c
++++ b/control.c
+@@ -90,6 +90,7 @@ typedef struct _opengl_icd_t
+ 
+ #define OPENGL_ICD_SIZE sizeof(opengl_icd_t)
+ 
++#ifndef GSW_BOOTSTRAP
+ /* software OpenGL (Mesa3D softpipe/llvmpipe) */
+ const static opengl_icd_t software_icd = {
+   0x2,
+@@ -118,6 +119,7 @@ const static opengl_icd_t virgl_icd = {
+   0x1,
+   "VIRGL"
+ };
++#endif
+ 
+ /* VIDEOPARAMETERS */
+ static VIDEOPARAMETERS_t tvsetup = {
+@@ -189,6 +191,38 @@ LONG WINAPI __loadds Control(LPVOID lpDevice, UINT function,
+   
+   dbg_printf("Control (16bit): %d (0x%x)\n", function, function);
+   
++#ifdef GSW_BOOTSTRAP
++  if(function == QUERYESCSUPPORT)
++  {
++    WORD function_code;
++    if(lpInput == NULL)
++      return 0;
++    function_code = *((LPWORD)lpInput);
++    if(function_code == OPENGL_GETINFO || function_code == DCICOMMAND)
++      return 0;
++  }
++  else if(function == OPENGL_GETINFO)
++  {
++    if(lpOutput != NULL)
++      _fmemset(lpOutput, 0, OPENGL_ICD_SIZE);
++    return 0;
++  }
++  else if(function == DCICOMMAND)
++  {
++    DCICMD_t __far *command = lpInput;
++    if(command != NULL && command->dwVersion == DD_VERSION)
++    {
++      if(command->dwCommand == DDCREATEDRIVEROBJECT && lpOutput != NULL)
++        *((DWORD __far *)lpOutput) = 0;
++      else if(command->dwCommand == DDGET32BITDRIVERNAME)
++        DDGet32BitDriverName((DD32BITDRIVERDATA_t __far *)lpOutput);
++      else if(command->dwCommand == DDVERSIONINFO && lpOutput != NULL)
++        _fmemset(lpOutput, 0, sizeof(DDVERSIONDATA_t));
++    }
++    return 0;
++  }
++#endif
++
+   switch(function)
+   {
+     case QUERYESCSUPPORT:
+@@ -198,13 +232,21 @@ LONG WINAPI __loadds Control(LPVOID lpDevice, UINT function,
+       switch(function_code)
+       {
+         case OPENGL_GETINFO:
++#ifdef GSW_BOOTSTRAP
++          rc = 0;
++          break;
++#endif
+         case OP_FBHDA_SETUP:
+         case MOUSETRAILS:
+         case VIDEOPARAMETERS:
+           rc = 1;
+           break;
+         case DCICOMMAND:
++#ifdef GSW_BOOTSTRAP
++          rc = 0;
++#else
+           rc = DD_HAL_VERSION;
++#endif
+           break;
+         case QUERYESCSUPPORT:
+         case QUERYDIBSUPPORT:
+@@ -218,6 +260,9 @@ LONG WINAPI __loadds Control(LPVOID lpDevice, UINT function,
+     } /* QUERYESCSUPPORT */
+     case OPENGL_GETINFO: /* input: NULL, output: opengl_icd_t */
+     {
++#ifdef GSW_BOOTSTRAP
++      rc = 0;
++#else
+       if((hda->flags & FB_ACCEL_VMSVGA3D) && ((hda->flags & FB_FORCE_SOFTWARE) == 0))
+       {
+         _fmemcpy(lpOutput, &vmwsvga_icd, OPENGL_ICD_SIZE);
+@@ -239,13 +284,18 @@ LONG WINAPI __loadds Control(LPVOID lpDevice, UINT function,
+       	{
+         	_fmemcpy(lpOutput, &software_icd, OPENGL_ICD_SIZE);
+         	rc = 1;
+         }
+       }
++#endif
+       break;
+     } /* OPENGL_GETINFO */
+     case DCICOMMAND: /* input ptr DCICMD */
+     {
+       DCICMD_t __far *lpDCICMD = lpInput;
++#ifdef GSW_BOOTSTRAP
++      (void)lpDCICMD;
++      rc = 0;
++#else
+       if(lpDCICMD != NULL)
+       {
+         if(lpDCICMD->dwVersion == DD_VERSION)
+@@ -329,6 +379,7 @@ LONG WINAPI __loadds Control(LPVOID lpDevice, UINT function,
+ 				}
+ #endif
+       }
++#endif
+       break;
+     } /* DCICOMMAND */
+     case MOUSETRAILS:

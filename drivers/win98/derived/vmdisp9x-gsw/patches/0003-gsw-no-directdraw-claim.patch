@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/dddrv.c b/dddrv.c
+index 51d31aa..a598f41 100644
+--- a/dddrv.c
++++ b/dddrv.c
+@@ -37,6 +37,7 @@ Copyright (c) 2023 Jaroslav Hensl <emulator@emulace.cz>
+ #include "3d_accel.h"
+ #include "vmdahal.h"
+ 
++#ifndef GSW_BOOTSTRAP
+ const static DD32BITDRIVERDATA_t drv_vmhal9x = {
+ 	"vmhal9x.dll",
+ 	"DriverInit",
+@@ -49,6 +50,7 @@ const static DD32BITDRIVERDATA_t drv_vmhal486 = {
+ 	"DriverInit",
+ 	0
+ };
++#endif
+ 
+ /*
+  * pre-declare our HAL fns
+@@ -623,6 +625,12 @@ BOOL DDCreateDriverObject(int bReset)
+ 
+ BOOL DDGet32BitDriverName(DD32BITDRIVERDATA_t __far *dd32)
+ {
++#ifdef GSW_BOOTSTRAP
++	if(dd32 != NULL)
++		_fmemset(dd32, 0, sizeof(*dd32));
++	return FALSE;
++#else
++
+ 	if(drv_is_p2())
+ 	{
+ 		_fmemcpy(dd32, &drv_vmhal9x, sizeof(drv_vmhal9x));
+@@ -641,6 +649,7 @@ BOOL DDGet32BitDriverName(DD32BITDRIVERDATA_t __far *dd32)
+ 	}
+ 	
+ 	return FALSE;
++#endif
+ }
+ 
+ BOOL DDNewCallbackFns(DCICMD_t __far *lpDCICMD)

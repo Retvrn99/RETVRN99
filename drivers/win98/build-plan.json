@@ -1,8 +1,64 @@
 {
   "_spdx": "GPL-3.0-only",
-  "schema": 1,
-  "status": "blocked",
-  "reason": "The toolchain is locked, but no reviewed GSW-derived source recipe, normalization step, or deterministic adapted output set is committed.",
-  "toolchains": [],
-  "steps": []
+  "schema": 2,
+  "status": "ready",
+  "reason": "",
+  "derived_source_plan": {
+    "relative_path": "derived-source-plan.json",
+    "sha256": "a919c2ff1fa5867908765044dea2094aac6e3379006c287df8c44b517a0c5273"
+  },
+  "toolchain_lock": {
+    "relative_path": "toolchain.lock.json",
+    "sha256": "faedd2ffd829418028a51474a6716ffa4fb381442bbb88fe1fec7ab62181c4fd"
+  },
+  "upstream_lock": {
+    "relative_path": "upstream.lock.tsv",
+    "sha256": "489dfb0a17b4b6698af83c32de628eb7d60d49b71e0f01a2d9957b5e44bdb0d8"
+  },
+  "toolchains": [
+    {
+      "name": "open-watcom-wmake",
+      "relative_path": "binnt/wmake.exe",
+      "sha256": "3b428e1ba24ea461d8a2250b54076f05d93b6b07ff78d58b87149897bccd6f2c"
+    }
+  ],
+  "steps": [
+    {
+      "name": "build-vmdisp9x-gsw",
+      "recipe": "vmdisp9x-gsw",
+      "toolchain": "open-watcom-wmake",
+      "working_directory": ".",
+      "arguments": [
+        "-f",
+        "gsw.mak",
+        "gsw"
+      ],
+      "normalizations": [
+        {
+          "kind": "win16-version-date",
+          "relative_path": "gswmini.drv"
+        }
+      ],
+      "outputs": [
+        {
+          "relative_path": "gswmini.drv",
+          "origin": "build",
+          "bytes": 14404,
+          "sha256": "8ae871b002f60b4ba5d25834849c4534192339ecbf19f096ce0a80ec55aec096"
+        },
+        {
+          "relative_path": "gswmini.vxd",
+          "origin": "build",
+          "bytes": 29557,
+          "sha256": "d4127232095fb7683c2ab43af4fbb3add5a955253a188afb06ed86d6dcabe27f"
+        },
+        {
+          "relative_path": "gswmini.inf",
+          "origin": "derived",
+          "bytes": 3108,
+          "sha256": "f8d665e757af2af4732d78a8b8d1fc0c40040b4f9d009b344e12b6bdae8af944"
+        }
+      ]
+    }
+  ]
 }

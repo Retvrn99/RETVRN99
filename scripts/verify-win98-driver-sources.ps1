@@ -67,6 +67,102 @@ function Invoke-GitText {
     return ($output -join [Environment]::NewLine).Trim()
 }
 
+function Invoke-GitLines {
+    param(
+        [Parameter(Mandatory = $true)][string]$Checkout,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    $output = @(& git -c core.quotePath=false -C $Checkout @Arguments)
+    if ($LASTEXITCODE -ne 0) {
+        throw "git $($Arguments -join ' ') failed for '$Checkout'."
+    }
+    return $output
+}
+
+function Get-ContainedGitPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    if ([IO.Path]::IsPathRooted($RelativePath) -or $RelativePath.Contains('\')) {
+        throw "Unsafe tracked git path '$RelativePath'."
+    }
+    foreach ($component in $RelativePath.Split('/')) {
+        if ([string]::IsNullOrWhiteSpace($component) -or
+            $component -in @('.', '..') -or
+            $component -match '[\x00-\x1f:*?"<>|]' -or
+            $component.EndsWith('.') -or
+            $component.EndsWith(' ') -or
+            $component -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$') {
+            throw "Unsafe tracked git path component '$component'."
+        }
+    }
+    $rootPath = Get-FullPath $Root
+    $rootPrefix = $rootPath.TrimEnd([char[]]'\/') + [IO.Path]::DirectorySeparatorChar
+    $candidate = [IO.Path]::GetFullPath((Join-Path $rootPath (
+        $RelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+    )))
+    if (-not $candidate.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Tracked git path '$RelativePath' escapes its checkout."
+    }
+    return $candidate
+}
+
+function Assert-PinnedSubmodules {
+    param(
+        [Parameter(Mandatory = $true)][string]$Checkout,
+        [Parameter(Mandatory = $true)][string]$SourceName,
+        [int]$Depth = 0,
+        [ref]$Count
+    )
+
+    if ($Depth -gt 8) {
+        throw "Pinned source '$SourceName' exceeds the recursive submodule depth bound."
+    }
+    $gitlinks = @()
+    foreach ($line in @(Invoke-GitLines $Checkout @('ls-files', '--cached', '--stage'))) {
+        if ($line -notmatch '^(?<mode>[0-9]{6}) (?<hash>[0-9a-f]{40}) 0\t(?<path>.+)$') {
+            throw "Pinned source '$SourceName' has an unsafe or unsupported git index record."
+        }
+        if ($Matches.mode -eq '160000') {
+            $gitlinks += [pscustomobject]@{
+                Hash = $Matches.hash
+                RelativePath = $Matches.path
+            }
+        }
+        elseif ($Matches.mode -notin @('100644', '100755', '120000')) {
+            throw "Pinned source '$SourceName' has unsupported git mode $($Matches.mode)."
+        }
+    }
+    if ($gitlinks.Count -gt 0 -and
+        -not (Test-Path -LiteralPath (Join-Path $Checkout '.gitmodules') -PathType Leaf)) {
+        throw "Pinned source '$SourceName' has a gitlink without a tracked .gitmodules file."
+    }
+    foreach ($gitlink in $gitlinks) {
+        $Count.Value++
+        if ($Count.Value -gt 64) {
+            throw "Pinned source '$SourceName' exceeds the recursive submodule count bound."
+        }
+        $submodule = Get-ContainedGitPath $Checkout $gitlink.RelativePath
+        if (-not (Test-Path -LiteralPath $submodule -PathType Container) -or
+            -not (Test-Path -LiteralPath (Join-Path $submodule '.git'))) {
+            throw "Pinned source '$SourceName' has an unavailable submodule '$($gitlink.RelativePath)'."
+        }
+        $head = Invoke-GitText $submodule @('rev-parse', 'HEAD')
+        if ($head -cne $gitlink.Hash) {
+            throw "Pinned source '$SourceName' has a mismatched submodule '$($gitlink.RelativePath)'."
+        }
+        $status = Invoke-GitText $submodule @('status', '--porcelain=v1', '--untracked-files=all')
+        if ($status.Length -ne 0) {
+            throw "Pinned source '$SourceName' has a dirty submodule '$($gitlink.RelativePath)'."
+        }
+        Assert-PinnedSubmodules -Checkout $submodule -SourceName $SourceName `
+            -Depth ($Depth + 1) -Count $Count
+    }
+}
+
 $lockPath = Get-FullPath $LockFile
 $sourceRootPath = Get-FullPath $SourceRoot
 if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
@@ -183,20 +279,9 @@ foreach ($entry in $selectedEntries) {
     if ($status.Length -ne 0) {
         throw "Pinned source '$($entry.name)' has local changes."
     }
-    $trackedGitmodules = Invoke-GitText $checkout @(
-        'ls-tree', '--name-only', 'HEAD', '--', '.gitmodules'
-    )
-    if ($trackedGitmodules.Length -ne 0) {
-        if (-not (Test-Path -LiteralPath (Join-Path $checkout '.gitmodules') -PathType Leaf)) {
-            throw "Pinned source '$($entry.name)' is missing its tracked .gitmodules file."
-        }
-        $submodules = Invoke-GitText $checkout @('submodule', 'status', '--recursive')
-        foreach ($line in @($submodules -split "`r?`n")) {
-            if ($line.Length -gt 0 -and $line[0] -in @('-', '+', 'U')) {
-                throw "Pinned source '$($entry.name)' has an unavailable or mismatched submodule: $line"
-            }
-        }
-    }
+    $submoduleCount = 0
+    Assert-PinnedSubmodules -Checkout $checkout -SourceName $entry.name `
+        -Count ([ref]$submoduleCount)
 }
 
 Write-Output "Verified $($selectedEntries.Count) immutable Windows 98 source checkouts."

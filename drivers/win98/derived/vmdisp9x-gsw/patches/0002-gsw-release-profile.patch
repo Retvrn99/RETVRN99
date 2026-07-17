@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/makefile b/makefile
+index 55389ec..bb91c46 100644
+--- a/makefile
++++ b/makefile
+@@ -39,7 +39,9 @@ FLAGS = -DDRV_VER_BUILD=$(VER_BUILD)
+ #FLAGS += -DHWBLT
+ 
+ # Set DBGPRINT to add debug printf logging.
++!ifndef RETVRN99_GSW_RELEASE
+ DBGPRINT = 1
++!endif
+ 
+ # Generate code for i486, otherwise is code generated for Pentium Pro
+ #I486 = 1

@@ -155,6 +155,16 @@ gsw_vga_execute_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 			gsw_pixel_write(g.framebuffer, offset, bytes, result)
 		}
 	}
+	gsw_vga_note_surface_write(
+		g,
+		destination_base,
+		destination_pitch,
+		destination_x,
+		destination_y,
+		destination_width,
+		destination_height,
+		bytes,
+	)
 	g.metrics.blits += 1
 	g.metrics.software_pixels += u64(destination_width) * u64(destination_height)
 	return true

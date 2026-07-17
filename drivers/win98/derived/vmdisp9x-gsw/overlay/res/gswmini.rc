@@ -1,0 +1,46 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+
+#include "windows.h"
+#include <ver.h>
+
+#ifdef DEBUG
+#define GSW_FILE_FLAGS VS_FF_DEBUG
+#else
+#define GSW_FILE_FLAGS 0
+#endif
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,2,0,0
+PRODUCTVERSION 0,2,0,0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS GSW_FILE_FLAGS
+FILEOS VOS_DOS_WINDOWS16
+FILETYPE VFT_DRV
+FILESUBTYPE VFT2_DRV_DISPLAY
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName", "RETVRN99 Project\0"
+            VALUE "FileDescription", "RETVRN99 GSW-VGA Windows 9x Display Minidriver\0"
+            VALUE "FileVersion", "0.2.0.0\0"
+            VALUE "InternalName", "GSWMINI\0"
+            VALUE "LegalCopyright", "Copyright \251 The OS/2 Museum 2012-2025; RETVRN99 contributors 2026\0"
+            VALUE "OriginalFilename", "gswmini.drv\0"
+            VALUE "ProductName", "RETVRN99 GSW-VGA\0"
+            VALUE "ProductVersion", "0.2.0.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04E4
+    END
+END
+
+1          oembin  PRELOAD         config.bin
+2          oembin                  colortab.bin
+3          oembin  PRELOAD         fonts.bin
+fonts      oembin                  fonts.bin
+
+2003       oembin  PRELOAD         fonts120.bin

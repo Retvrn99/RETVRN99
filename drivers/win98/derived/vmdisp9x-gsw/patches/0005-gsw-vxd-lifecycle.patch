@@ -1,0 +1,449 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/3d_accel.h b/3d_accel.h
+index 07af47f..1b24ec9 100644
+--- a/3d_accel.h
++++ b/3d_accel.h
+@@ -276,6 +276,7 @@ DWORD FBHDA_period();
+ void mouse_buffer(void __far* __far* pBuf, DWORD __far* pLinear);
+ #else
+ void *mouse_buffer();
++void mouse_release();
+ #endif
+ BOOL mouse_load();
+ void mouse_move(int x, int y);
+@@ -513,6 +514,7 @@ typedef struct _FBHDA_DD_surface_t
+ typedef void (__stdcall *FBHDA_DD_watch_callback_t)(void *flat, DWORD action);
+ 
+ void FBHDA_DD_init(); /* internal only */
++void FBHDA_DD_release(); /* internal only */
+ 
+ BOOL FBHDA_DD_surface_get(void *flat, FBHDA_DD_surface_t *info);
+ BOOL FBHDA_DD_surface_set(void *flat, FBHDA_DD_surface_t *info);
+diff --git a/vxd.h b/vxd.h
+index 17fa543..ca06b12 100644
+--- a/vxd.h
++++ b/vxd.h
+@@ -11,7 +11,10 @@
+ #define VXD_DEVICE_VBE_ID  0x4333*/
+ #define VXD_DEVICE_VMDISP9X_ID  0x4333
+ 
+-#if defined(SVGA)
++#if defined(GSW)
++#define VXD_DEVICE_ID VXD_DEVICE_VMDISP9X_ID
++#define VXD_DEVICE_NAME "GSWVXD"
++#elif defined(SVGA)
+ #define VXD_DEVICE_ID VXD_DEVICE_VMDISP9X_ID
+ #define VXD_DEVICE_NAME "VMWSVXD"
+ #elif defined(QEMU)
+diff --git a/vxd_fbhda.c b/vxd_fbhda.c
+index 0e61868..8b34b25 100644
+--- a/vxd_fbhda.c
++++ b/vxd_fbhda.c
+@@ -61,7 +61,7 @@ BOOL FBHDA_init_hw()
+ 		hda_sem = Create_Semaphore(1);
+ 		if(hda_sem == 0)
+ 		{
+-			_PageFree(hda, 0);
++			hda = NULL;
+ 			return FALSE;
+ 		}
+ 
+@@ -74,15 +74,15 @@ BOOL FBHDA_init_hw()
+ 
+ void FBHDA_release_hw()
+ {
+-	if(hda)
+-	{
+-		_PageFree(hda, 0);
+-	}
++	FBHDA_DD_release();
+ 
+ 	if(hda_sem)
+ 	{
+ 		Destroy_Semaphore(hda_sem);
++		hda_sem = 0;
+ 	}
++	hda = NULL;
++	fb_lock_cnt = 0;
+ }
+ 
+ FBHDA_t *FBHDA_setup()
+diff --git a/vxd_fbhda_dd.c b/vxd_fbhda_dd.c
+index 7207686..2072ef0 100644
+--- a/vxd_fbhda_dd.c
++++ b/vxd_fbhda_dd.c
+@@ -311,6 +311,25 @@ void FBHDA_DD_init()
+ 	}
+ }
+ 
++void FBHDA_DD_release()
++{
++	if(hda != NULL && hda->dd_fifo != NULL)
++	{
++		_PageFree(hda->dd_fifo, 0);
++		hda->dd_fifo = NULL;
++		hda->dd_fifo_length = 0;
++		hda->dd_fifo_top = 0;
++	}
++	if(surfaces_tlb != NULL)
++	{
++		_PageFree(surfaces_tlb, 0);
++		surfaces_tlb = NULL;
++	}
++	surfaces_tlb_size = 0;
++	surfaces_tlb_length = 0;
++	uid_seq = 1;
++}
++
+ BOOL FBHDA_DD_surface_get(void *flat, FBHDA_DD_surface_t *info)
+ {
+ 	surface_t *s;
+diff --git a/vxd_main.c b/vxd_main.c
+index 7c2ddc4..1f3d0b2 100644
+--- a/vxd_main.c
++++ b/vxd_main.c
+@@ -46,6 +46,7 @@ THE SOFTWARE.
+ #include "3d_accel.h"
+ #ifdef GSW
+ # include "gsw_transport.h"
++# include "wram.h"
+ #endif
+ 
+ #include "vxd_vdd.h"
+@@ -66,7 +67,7 @@ BOOL VESA_check_int10h(DWORD vm, PCRS_32 regs);
+ 
+ void VXD_control();
+ void VXD_API_entry();
+-void __stdcall Device_Init_proc(DWORD VM);
++BOOL __stdcall Device_Init_proc(DWORD VM);
+ void __stdcall Device_Exit_proc(DWORD VM);
+ void __stdcall Device_Init_Complete(DWORD VM);
+ void __stdcall win32_destroy_process_proc(DWORD pid);
+@@ -112,6 +113,22 @@ DWORD ThisVM = 0;
+ void *DeviceCTX = NULL;
+ DWORD is_qemu = FALSE;
+ 
++#ifdef GSW
++static DWORD gsw_saved_dispatch[0x31];
++static BOOL gsw_dispatch_installed = FALSE;
++
++static void GSW_remove_io_handler(DWORD port)
++{
++	_asm
++	{
++		push edx
++		mov edx, [port]
++	}
++	VMMCall(Remove_IO_Handler);
++	_asm pop edx
++}
++#endif
++
+ void __stdcall port_info(DWORD p_eax, DWORD p_ecx, DWORD p_edx)
+ {
+ 	dbg_printf("virtual_0x1ce eax=%lX ecx=%lX edx=%lX\n", p_eax, p_ecx, p_edx);
+@@ -276,9 +293,15 @@ void __declspec(naked) VXD_control()
+ 		control_1: 
+ 		cmp eax,Device_Init
+ 		jnz control_2
++			pushad
+ 			push ebx ; VM handle
+ 		  call Device_Init_proc
++			test eax,eax
+ 			popad
++			jnz control_1_ok
++			stc
++			ret
++		control_1_ok:
+ 			clc
+ 			ret
+ 		control_2:
+@@ -296,7 +319,12 @@ void __declspec(naked) VXD_control()
+ 			pushad
+ 			push ebx ; VM handle
+ 		  call Device_Init_proc
+-		  popad
++			test eax,eax
++			popad
++			jnz control_3_ok
++			stc
++			ret
++		control_3_ok:
+ 			clc
+ 			ret
+ 		control_4:
+@@ -305,7 +333,10 @@ void __declspec(naked) VXD_control()
+ 			jmp Device_IO_Control_entry
+ 		control_5:
+ 		cmp eax,System_Exit
++		jz control_exit
++		cmp eax,Sys_Dynamic_Device_Exit
+ 		jnz control_6
++		control_exit:
+ 			pushad
+ 			push ebx ; VM handle
+ 		  call Device_Exit_proc
+@@ -605,6 +636,7 @@ void __declspec(naked) VXD_API_entry()
+ const char reg_path[] = "Software\\vmdisp9x\\driver";
+ extern DWORD gamma_quirk;
+ 
++#ifndef GSW
+ static void configure_FBHDA()
+ {
+ 	FBHDA_t *fbhda;
+@@ -667,6 +699,7 @@ static void configure_FBHDA()
+ 		}
+ 	}
+ }
++#endif
+ 
+ /* generate all entry pro VDD function */
+ #define VDDFUNC(_fnname, _procname) void __declspec(naked) _procname ## _entry() { \
+@@ -712,16 +745,22 @@ static void configure_FBHDA()
+ #undef VDDFUNC
+ #undef VDDFUNCRET
+ 
++#ifdef GSW
++#define VDDFUNC(id, procname) gsw_saved_dispatch[id] = DispatchTable[id]; DispatchTable[id] = (DWORD)(procname ## _entry);
++#else
+ #define VDDFUNC(id, procname) DispatchTable[id] = (DWORD)(procname ## _entry);
++#endif
+ #define VDDFUNCRET VDDFUNC
+ 
+ /* init device and fill dispatch table */
+-void Device_Init_proc(DWORD VM)
++BOOL Device_Init_proc(DWORD VM)
+ {
+ 	critical_section_enter();
+ 	dbg_printf(dbg_Device_Init_proc);
+ 
++#ifndef GSW
+ 	VMMCall(_Allocate_Device_CB_Area);
++#endif
+  	ThisVM = VM;
+  	DeviceCTX = _GetCurrentContext();
+ 
+@@ -731,7 +770,15 @@ void Device_Init_proc(DWORD VM)
+ #endif
+ 
+ #ifdef VBE
++# ifdef GSW
++	if(!VBE_init_hw())
++	{
++		critical_section_leave();
++		return FALSE;
++	}
++# else
+ 	VBE_init_hw();
++# endif
+ #endif
+ 
+ #ifdef VESA
+@@ -761,12 +808,25 @@ void Device_Init_proc(DWORD VM)
+ 
+ 	/* register miniVDD functions */
+ 	VDD_Get_Mini_Dispatch_Table();
++#ifdef GSW
++	if(DispatchTable == NULL || DispatchTableLength < 0x31)
++	{
++		Device_Exit_proc(VM);
++		critical_section_leave();
++		return FALSE;
++	}
++	#include "vxd_vdd_list.h"
++	gsw_dispatch_installed = TRUE;
++#else
+ 	if(DispatchTableLength >= 0x31)
+ 	{
+ 		#include "vxd_vdd_list.h"
+ 	}
++#endif
+ 
++#ifndef GSW
+ 	configure_FBHDA();
++#endif
+ #ifdef SVGA
+ 	vxd_hstats_update();
+ #endif
+@@ -774,9 +834,25 @@ void Device_Init_proc(DWORD VM)
+ 	critical_section_leave();
+ 	dbg_printf("Device_Init_proc DONE\n");
+ 	dbg_printf("Address=0x%lX\n", port_info);
++	return TRUE;
+ }
+ #undef VDDFUNC
+-#undef VDDNAKED
++#undef VDDFUNCRET
++
++#ifdef GSW
++static void GSW_restore_vdd_dispatch(void)
++{
++	if(!gsw_dispatch_installed || DispatchTable == NULL || DispatchTableLength < 0x31)
++		return;
++
++#define VDDFUNC(id, procname) DispatchTable[id] = gsw_saved_dispatch[id];
++#define VDDFUNCRET VDDFUNC
++#include "vxd_vdd_list.h"
++#undef VDDFUNCRET
++#undef VDDFUNC
++	gsw_dispatch_installed = FALSE;
++}
++#endif
+ 
+ static DWORD io_open_cnt = 0;
+ 
+@@ -1056,7 +1132,18 @@ void Device_Init_Complete(DWORD VM)
+ void Device_Exit_proc(DWORD VM)
+ {
+ #ifdef GSW
++	GSW_restore_vdd_dispatch();
++	if(is_qemu)
++	{
++		GSW_remove_io_handler(0x1ce);
++		GSW_remove_io_handler(0x1cf);
++		is_qemu = FALSE;
++	}
++	VDD_release_mappings();
++	mouse_release();
+ 	GSW_transport_shutdown();
++	FBHDA_release_hw();
++	wram_release();
+ #endif
+ 
+ #ifdef SVGA
+diff --git a/vxd_mouse.c b/vxd_mouse.c
+index 8a53f62..bdf36bd 100644
+--- a/vxd_mouse.c
++++ b/vxd_mouse.c
+@@ -58,6 +58,15 @@ void *mouse_buffer()
+ 	return mouse_buffer_mem;
+ }
+ 
++void mouse_release()
++{
++	if(mouse_buffer_mem != NULL)
++	{
++		_PageFree(mouse_buffer_mem, 0);
++		mouse_buffer_mem = NULL;
++	}
++}
++
+ static void mouse_notify_accel()
+ {
+ 	hda->flags |= FB_MOUSE_NO_BLIT;
+diff --git a/vxd_vdd.c b/vxd_vdd.c
+index 82103f5..f7defb4 100644
+--- a/vxd_vdd.c
++++ b/vxd_vdd.c
+@@ -94,7 +94,8 @@ DWORD map_pm16(DWORD vm, DWORD linear, DWORD size)
+ 	
+ 	//_Allocate_LDT_Selector(vm, hi, low, 1, 0, &selector, NULL);
+ 	_Allocate_GDT_Selector(hi, low, 0, &selector, NULL);
+-	VDD_Register_Extra_Screen_Selector(selector);
++	if(selector != 0)
++		VDD_Register_Extra_Screen_Selector(selector);
+ 	
+ 	dbg_printf(dbg_map_pm16_sel, selector);
+ 	
+@@ -149,7 +150,18 @@ See also VDD_REGISTER_DISPLAY_DRIVER_INFO.
+ **/
+ VDDPROC(REGISTER_DISPLAY_DRIVER, register_display_driver)
+ {
++	void *mouse;
++
+ 	dbg_printf("register: ebx = %ld, ecx = %ld, VM = %lX\n", state->Client_EBX, state->Client_ECX, ThisVM);
++	if(hda == NULL)
++	{
++		state->Client_EAX = 0;
++		state->Client_EDX = 0;
++		state->Client_ECX = 0;
++		state->Client_ESI = 0;
++		VDD_NC;
++		return;
++	}
+ 	
+ 	if(hda->vram_pm16 == 0)
+ 	{
+@@ -160,10 +172,21 @@ VDDPROC(REGISTER_DISPLAY_DRIVER, register_display_driver)
+ 	{
+ 		hda_pm16 = map_pm16(state->Client_EBX, (DWORD)hda, sizeof(FBHDA_t));
+ 	}
+-	
++	if(hda->vram_pm16 == 0 || hda_pm16 == 0)
++	{
++		state->Client_EAX = 0;
++		state->Client_EDX = 0;
++		state->Client_ECX = 0;
++		state->Client_ESI = 0;
++		VDD_NC;
++		return;
++	}
++
+ 	if(mouse_pm16 == 0)
+ 	{
+-		mouse_pm16 = map_pm16(state->Client_EBX, (DWORD)mouse_buffer(), MOUSE_BUFFER_SIZE);
++		mouse = mouse_buffer();
++		if(mouse != NULL)
++			mouse_pm16 = map_pm16(state->Client_EBX, (DWORD)mouse, MOUSE_BUFFER_SIZE);
+ 	}
+ 	
+ 	/* RETURN:
+@@ -180,6 +203,12 @@ VDDPROC(REGISTER_DISPLAY_DRIVER, register_display_driver)
+ 	VDD_CY;
+ }
+ 
++void VDD_release_mappings(void)
++{
++	hda_pm16 = 0;
++	mouse_pm16 = 0;
++}
++
+ /**
+ GET_CHIP_ID (Function 42) 
+ Call With
+diff --git a/vxd_vdd.h b/vxd_vdd.h
+index 0fb33d0..5d982b7 100644
+--- a/vxd_vdd.h
++++ b/vxd_vdd.h
+@@ -106,6 +106,8 @@ void dbg_printf( const char *s, ... );
+ #undef VDDFUNC
+ #undef VDDFUNCRET
+ 
++void VDD_release_mappings(void);
++
+ #define VDDPROC(_fnname, _procname) void _procname ## _proc(DWORD vm, PCRS_32 state, DWORD extra_eax, DWORD extra_ecx, DWORD extra_edx)
+ #define VDDPROCRET(_fnname, _procname) DWORD _procname ## _proc(DWORD vm, PCRS_32 state, DWORD extra_eax, DWORD extra_ecx, DWORD extra_edx)
+ 
+diff --git a/vxd_wram.c b/vxd_wram.c
+index acae60c..b451cb9 100644
+--- a/vxd_wram.c
++++ b/vxd_wram.c
+@@ -82,6 +82,15 @@ BOOL wram_init(DWORD bytes)
+ 	return TRUE;
+ }
+ 
++void wram_release()
++{
++	if(wram != NULL)
++	{
++		_PageFree(wram, 0);
++		wram = NULL;
++	}
++}
++
+ static DWORD readpx8(DWORD x, DWORD y)
+ {
+ 	BYTE index = ((BYTE*)wram)[wram->regs.s.fbstart + wram->regs.s.pitch*y + x];
+diff --git a/wram.h b/wram.h
+index 6eac21f..1a7d9ef 100644
+--- a/wram.h
++++ b/wram.h
+@@ -169,6 +169,7 @@ typedef struct _blit_t
+ extern wram_t *wram;
+ 
+ BOOL wram_init(DWORD bytes);
++void wram_release();
+ void wram_blit(blit_t *blit);
+ void wram_clear_target(blit_t *blit);
+ void wram_clear();

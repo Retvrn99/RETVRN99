@@ -7,3 +7,4 @@ vendor_local/seabios/**/*.jpg binary
 vendor_local/seabios/**/*.png binary
 tools/seabios/*.sh text eol=lf
 tools/vgabios/*.sh text eol=lf
+drivers/win98/derived/vmdisp9x-gsw/patches/*.patch -whitespace

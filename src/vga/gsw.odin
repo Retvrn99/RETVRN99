@@ -174,6 +174,95 @@ gsw_format_bytes :: proc(format: Gsw_Pixel_Format) -> int {
 	return 0
 }
 
+@(private = "package")
+gsw_vga_present_valid :: proc(
+	framebuffer_bytes: int,
+	offset, width, height, pitch: u32,
+	format: Gsw_Pixel_Format,
+) -> bool {
+	bytes := gsw_format_bytes(format)
+	if bytes == 0 || pitch == 0 || pitch % u32(bytes) != 0 || offset % u32(bytes) != 0 {
+		return false
+	}
+	_, valid := gsw_surface_rect(framebuffer_bytes, offset, pitch, 0, 0, width, height, bytes)
+	if !valid || width > DISPI_MAX_XRES || height > DISPI_MAX_YRES {return false}
+	virtual_width := pitch / u32(bytes)
+	x_offset := offset % pitch / u32(bytes)
+	y_offset := offset / pitch
+	return(
+		virtual_width <= u32(max(u16)) &&
+		x_offset <= u32(max(u16)) &&
+		y_offset <= u32(max(u16)) &&
+		x_offset <= virtual_width &&
+		width <= virtual_width - x_offset \
+	)
+}
+
+@(private = "package")
+gsw_surface_rows_overlap :: proc(
+	first_start, first_pitch, first_row_bytes: u64,
+	first_height: u32,
+	second_start, second_pitch, second_row_bytes: u64,
+	second_height: u32,
+) -> bool {
+	first_row, second_row: u32
+	for first_row < first_height && second_row < second_height {
+		first := first_start + u64(first_row) * first_pitch
+		second := second_start + u64(second_row) * second_pitch
+		first_end := first + first_row_bytes
+		second_end := second + second_row_bytes
+		if first < second_end && second < first_end {return true}
+		if first_end <= second {
+			first_row += 1
+		} else {
+			second_row += 1
+		}
+	}
+	return false
+}
+
+@(private = "package")
+gsw_vga_note_surface_write :: proc(
+	g: ^Gsw_Vga,
+	base, pitch, x, y, width, height: u32,
+	bytes: int,
+) {
+	if g == nil || g.scanout == nil || !vga_vbe_lfb_enabled(g.scanout) {return}
+	changed_start, valid := gsw_surface_rect(
+		len(g.framebuffer),
+		base,
+		pitch,
+		x,
+		y,
+		width,
+		height,
+		bytes,
+	)
+	if !valid {return}
+
+	visible_bpp := int(g.scanout.dispi[DISPI_INDEX_BPP])
+	visible_bytes := (visible_bpp + 7) / 8
+	if visible_bpp == 4 || visible_bytes <= 0 {return}
+	visible_pitch := u64(vga_vbe_pitch(g.scanout))
+	visible_width := u64(g.scanout.dispi[DISPI_INDEX_XRES])
+	visible_height := u64(g.scanout.dispi[DISPI_INDEX_YRES])
+	visible_start :=
+		u64(g.scanout.dispi[DISPI_INDEX_Y_OFFSET]) * visible_pitch +
+		u64(g.scanout.dispi[DISPI_INDEX_X_OFFSET]) * u64(visible_bytes)
+	if gsw_surface_rows_overlap(
+		changed_start,
+		u64(pitch),
+		u64(width) * u64(bytes),
+		height,
+		visible_start,
+		visible_pitch,
+		visible_width * u64(visible_bytes),
+		u32(visible_height),
+	) {
+		vga_note_content_change(g.scanout)
+	}
+}
+
 @(private = "file")
 gsw_ring_valid :: proc(g: ^Gsw_Vga, ram: []u8) -> bool {
 	return(
@@ -241,9 +330,7 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		height := gsw_rd32(command, 20)
 		pitch := gsw_rd32(command, 24)
 		format := Gsw_Pixel_Format(gsw_rd32(command, 28))
-		bytes := gsw_format_bytes(format)
-		_, valid := gsw_surface_rect(len(g.framebuffer), 0, pitch, 0, 0, width, height, bytes)
-		if !valid || width > DISPI_MAX_XRES || height > DISPI_MAX_YRES {return false}
+		if !gsw_vga_present_valid(len(g.framebuffer), 0, width, height, pitch, format) {return false}
 		g.width, g.height, g.pitch, g.format = width, height, pitch, format
 	case .Present:
 		offset, width, height, pitch, format := u32(0), g.width, g.height, g.pitch, g.format
@@ -257,7 +344,8 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 			pitch = gsw_rd32(command, 28)
 			format = Gsw_Pixel_Format(gsw_rd32(command, 32))
 		}
-		if g.scanout != nil &&
+		if !gsw_vga_present_valid(len(g.framebuffer), offset, width, height, pitch, format) ||
+		   g.scanout != nil &&
 		   !vga_gsw_present_surface(g.scanout, offset, width, height, pitch, format) {
 			return false
 		}
@@ -282,6 +370,7 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 				gsw_vga_pixel(g.framebuffer[pixel:pixel + bytes], format, color)
 			}
 		}
+		gsw_vga_note_surface_write(g, offset, pitch, 0, 0, width, height, bytes)
 		g.metrics.fills += 1
 		g.metrics.software_pixels += u64(width) * u64(height)
 	case .Copy:
@@ -329,6 +418,7 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 			row := y * int(row_bytes)
 			copy(g.framebuffer[dst:dst + int(row_bytes)], snapshot[row:row + int(row_bytes)])
 		}
+		gsw_vga_note_surface_write(g, destination, destination_pitch, 0, 0, width, height, bytes)
 		g.metrics.copies += 1
 		g.metrics.software_pixels += u64(width) * u64(height)
 	case .Set_Palette:
@@ -342,12 +432,15 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 			return false
 		}
 		if g.scanout != nil {
+			eight_bit_dac := g.scanout.dispi[DISPI_INDEX_ENABLE] & DISPI_8BIT_DAC != 0
 			for i in 0 ..< int(count) {
 				color := gsw_rd32(command, 24 + i * 4)
 				index := (int(start) + i) * 3
-				g.scanout.dac[index + 0] = u8(color >> 16) >> 2
-				g.scanout.dac[index + 1] = u8(color >> 8) >> 2
-				g.scanout.dac[index + 2] = u8(color) >> 2
+				red, green, blue := u8(color >> 16), u8(color >> 8), u8(color)
+				if !eight_bit_dac {red >>= 2; green >>= 2; blue >>= 2}
+				g.scanout.dac[index + 0] = red
+				g.scanout.dac[index + 1] = green
+				g.scanout.dac[index + 2] = blue
 			}
 			vga_note_content_change(g.scanout)
 		}
@@ -384,9 +477,9 @@ gsw_vga_process :: proc(g: ^Gsw_Vga, ram: []u8) {
 		if !executed {gsw_vga_fail(g); return}
 		g.metrics.commands += 1
 		processed += 1
-		g.completed_fence = fence
 		g.ring_head = (g.ring_head + length) & (g.ring_size - 1)
-		if g.completed_fence != 0 {
+		if fence != 0 {
+			g.completed_fence = fence
 			g.irq_status |= GSW_VGA_IRQ_2D
 			gsw_vga_sync_irq(g)
 		}

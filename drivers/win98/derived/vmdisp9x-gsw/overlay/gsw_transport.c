@@ -1,0 +1,507 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+
+#include "winhack.h"
+#include "vmm.h"
+#include "vxd_lib.h"
+#include "pci.h"
+#include "gsw_transport.h"
+#include "code32.h"
+
+typedef char GSWHeaderSizeCheck[(sizeof(GSWCommandHeader) == 16) ? 1 : -1];
+typedef char GSWSetModeSizeCheck[(sizeof(GSWSetModeCommand) == 32) ? 1 : -1];
+typedef char GSWPresentSizeCheck[(sizeof(GSWPresentCommand) == 40) ? 1 : -1];
+typedef char GSWFillSizeCheck[(sizeof(GSWFillCommand) == 40) ? 1 : -1];
+typedef char GSWCopySizeCheck[(sizeof(GSWCopyCommand) == 44) ? 1 : -1];
+
+static PCIAddress gsw_pci_address;
+static volatile DWORD *gsw_registers = NULL;
+static volatile BYTE *gsw_ring = NULL;
+static DWORD gsw_ring_physical = 0;
+static DWORD gsw_ring_tail = 0;
+static DWORD gsw_fence_low = 1;
+static DWORD gsw_fence_high = 0;
+static DWORD gsw_framebuffer_linear = 0;
+static DWORD gsw_framebuffer_size = 0;
+static DWORD gsw_capabilities = 0;
+static DWORD gsw_semaphore = 0;
+static WORD gsw_original_pci_command = 0;
+static BOOL gsw_pci_command_saved = FALSE;
+static BOOL gsw_is_ready = FALSE;
+
+static DWORD gsw_register_read(DWORD offset)
+{
+	return gsw_registers[offset >> 2];
+}
+
+static void gsw_register_write(DWORD offset, DWORD value)
+{
+	gsw_registers[offset >> 2] = value;
+}
+
+static DWORD gsw_bytes_per_pixel(DWORD bpp)
+{
+	switch(bpp)
+	{
+		case 8:  return 1;
+		case 15:
+		case 16: return 2;
+		case 24: return 3;
+		case 32: return 4;
+	}
+	return 0;
+}
+
+static DWORD gsw_pixel_format(DWORD bpp)
+{
+	switch(bpp)
+	{
+		case 8:  return GSW_PIXEL_FORMAT_INDEXED_8;
+		case 15: return GSW_PIXEL_FORMAT_RGB_555;
+		case 16: return GSW_PIXEL_FORMAT_RGB_565;
+		case 24: return GSW_PIXEL_FORMAT_RGB_888;
+		case 32: return GSW_PIXEL_FORMAT_XRGB_8888;
+	}
+	return 0;
+}
+
+static BOOL gsw_surface_valid(
+	DWORD offset,
+	DWORD pitch,
+	DWORD width,
+	DWORD height,
+	DWORD bpp
+)
+{
+	DWORD bytes;
+	DWORD row_bytes;
+	DWORD remaining;
+
+	bytes = gsw_bytes_per_pixel(bpp);
+	if(bytes == 0 || width == 0 || height == 0 || pitch == 0)
+		return FALSE;
+	if(offset % bytes != 0 || pitch % bytes != 0)
+		return FALSE;
+	if(width > 0xFFFFFFFFUL / bytes)
+		return FALSE;
+
+	row_bytes = width * bytes;
+	if(row_bytes > pitch || offset > gsw_framebuffer_size)
+		return FALSE;
+
+	remaining = gsw_framebuffer_size - offset;
+	if(row_bytes > remaining)
+		return FALSE;
+	if(height - 1 > (remaining - row_bytes) / pitch)
+		return FALSE;
+
+	return TRUE;
+}
+
+static BOOL gsw_scanout_valid(
+	DWORD offset,
+	DWORD pitch,
+	DWORD width,
+	DWORD height,
+	DWORD bpp
+)
+{
+	DWORD bytes;
+	DWORD row_bytes;
+	DWORD row_offset;
+
+	if(width > GSW_VGA_MAX_WIDTH || height > GSW_VGA_MAX_HEIGHT ||
+	   !gsw_surface_valid(offset, pitch, width, height, bpp))
+		return FALSE;
+
+	bytes = gsw_bytes_per_pixel(bpp);
+	row_bytes = width * bytes;
+	row_offset = offset % pitch;
+	return row_bytes <= pitch - row_offset &&
+	       pitch / bytes <= 0xFFFFUL && offset / pitch <= 0xFFFFUL;
+}
+
+static void gsw_advance_fence(void)
+{
+	gsw_fence_low++;
+	if(gsw_fence_low == 0)
+	{
+		gsw_fence_high++;
+		if(gsw_fence_high == 0)
+			gsw_fence_low = 1;
+	}
+}
+
+static void gsw_ring_copy(DWORD offset, const BYTE *source, DWORD length)
+{
+	DWORD i;
+	for(i = 0; i < length; i++)
+		gsw_ring[(offset + i) & (GSW_VGA_RING_BYTES - 1)] = source[i];
+}
+
+static void gsw_recover_failed_submission(void)
+{
+	DWORD head;
+
+	if(gsw_registers == NULL)
+		return;
+
+	head = gsw_register_read(GSW_VGA_REG_RING_HEAD) & (GSW_VGA_RING_BYTES - 1);
+	gsw_ring_tail = head;
+	gsw_register_write(GSW_VGA_REG_RING_TAIL, head);
+	gsw_register_write(GSW_VGA_REG_STATUS, GSW_VGA_STATUS_ERROR);
+	gsw_register_write(GSW_VGA_REG_IRQ_STATUS, GSW_VGA_IRQ_2D);
+}
+
+static BOOL gsw_submit(void *command, DWORD length)
+{
+	GSWCommandHeader *header;
+	DWORD new_tail;
+	DWORD status;
+	BOOL success;
+
+	if(!gsw_is_ready || command == NULL || length < sizeof(GSWCommandHeader) ||
+	   length >= GSW_VGA_RING_BYTES || (length & 3) != 0)
+		return FALSE;
+
+	Wait_Semaphore(gsw_semaphore, 0);
+	success = FALSE;
+
+	status = gsw_register_read(GSW_VGA_REG_STATUS);
+	if((status & GSW_VGA_STATUS_READY) == 0 ||
+	   (status & GSW_VGA_STATUS_ERROR) != 0 ||
+	   gsw_register_read(GSW_VGA_REG_RING_HEAD) != gsw_ring_tail ||
+	   gsw_register_read(GSW_VGA_REG_RING_TAIL) != gsw_ring_tail)
+		goto done;
+
+	header = (GSWCommandHeader *)command;
+	header->version = GSW_VGA_COMMAND_VERSION_2;
+	header->length = length;
+	header->fence_low = gsw_fence_low;
+	header->fence_high = gsw_fence_high;
+
+	gsw_ring_copy(gsw_ring_tail, (const BYTE *)command, length);
+	new_tail = (gsw_ring_tail + length) & (GSW_VGA_RING_BYTES - 1);
+	gsw_register_write(GSW_VGA_REG_RING_TAIL, new_tail);
+	gsw_register_write(GSW_VGA_REG_DOORBELL, 1);
+
+	status = gsw_register_read(GSW_VGA_REG_STATUS);
+	if((status & GSW_VGA_STATUS_ERROR) != 0 ||
+	   gsw_register_read(GSW_VGA_REG_RING_HEAD) != new_tail ||
+	   gsw_register_read(GSW_VGA_REG_RING_TAIL) != new_tail ||
+	   gsw_register_read(GSW_VGA_REG_FENCE_LOW) != gsw_fence_low ||
+	   gsw_register_read(GSW_VGA_REG_FENCE_HIGH) != gsw_fence_high)
+		goto done;
+
+	gsw_register_write(GSW_VGA_REG_IRQ_STATUS, GSW_VGA_IRQ_2D);
+	gsw_ring_tail = new_tail;
+	gsw_advance_fence();
+	success = TRUE;
+
+done:
+	if(!success)
+		gsw_recover_failed_submission();
+	Signal_Semaphore(gsw_semaphore);
+	return success;
+}
+
+BOOL GSW_transport_init(void)
+{
+	DWORD bar0_raw;
+	DWORD bar1_raw;
+	DWORD bar0;
+	DWORD bar1;
+	DWORD bar0_size;
+	DWORD bar1_size;
+	DWORD capability;
+	DWORD capability_info;
+	DWORD vram_megabytes;
+	DWORD command;
+	DWORD original_command;
+	DWORD ring_linear;
+
+	if(gsw_is_ready)
+		return TRUE;
+
+	if(!PCI_FindDevice(GSW_PCI_VENDOR_ID, GSW_PCI_DEVICE_ID, &gsw_pci_address))
+		return FALSE;
+
+	capability = PCI_ConfigRead32(&gsw_pci_address, GSW_PCI_CAPABILITY_OFFSET);
+	capability_info = PCI_ConfigRead32(&gsw_pci_address, GSW_PCI_CAPABILITY_OFFSET + 4);
+	vram_megabytes = PCI_ConfigRead16(&gsw_pci_address, GSW_PCI_CAPABILITY_OFFSET + 8);
+	if(capability != GSW_PCI_CAPABILITY_SIGNATURE ||
+	   (capability_info & 0xFFFF) < GSW_PCI_CAPABILITY_VERSION ||
+	   (capability_info >> 16) < GSW_PCI_CAPABILITY_LENGTH ||
+	   vram_megabytes == 0 || vram_megabytes > 256)
+		return FALSE;
+
+	bar0_raw = PCI_ConfigRead32(&gsw_pci_address, 0x10);
+	bar1_raw = PCI_ConfigRead32(&gsw_pci_address, 0x14);
+	if((bar0_raw & (PCI_CONF_BAR_IO | PCI_CONF_BAR_64BIT)) != 0 ||
+	   (bar1_raw & (PCI_CONF_BAR_IO | PCI_CONF_BAR_64BIT)) != 0)
+		return FALSE;
+
+	bar0 = PCI_GetBARAddr(&gsw_pci_address, 0);
+	bar1 = PCI_GetBARAddr(&gsw_pci_address, 1);
+	original_command = PCI_ConfigRead16(&gsw_pci_address, 4);
+	PCI_ConfigWrite16(&gsw_pci_address, 4, (WORD)(original_command & ~0x0002));
+	bar0_size = PCI_GetBARSize(&gsw_pci_address, 0);
+	bar1_size = PCI_GetBARSize(&gsw_pci_address, 1);
+	PCI_ConfigWrite16(&gsw_pci_address, 4, (WORD)original_command);
+	if(bar0 == 0 || bar1 == 0 || bar0_size != GSW_VGA_CONTROL_BYTES ||
+	   bar1_size != vram_megabytes * 1024UL * 1024UL)
+		return FALSE;
+
+	gsw_original_pci_command = (WORD)original_command;
+	gsw_pci_command_saved = TRUE;
+	PCI_ConfigWrite16(&gsw_pci_address, 4, (WORD)(original_command | 0x0003));
+	command = PCI_ConfigRead16(&gsw_pci_address, 4);
+	if((command & 0x0003) != 0x0003)
+	{
+		GSW_transport_shutdown();
+		return FALSE;
+	}
+
+	gsw_registers = (volatile DWORD *)_MapPhysToLinear(bar0, GSW_VGA_CONTROL_BYTES, 0);
+	if(gsw_registers == NULL)
+	{
+		GSW_transport_shutdown();
+		return FALSE;
+	}
+
+	if(gsw_register_read(GSW_VGA_REG_ID) != GSW_VGA_ID ||
+	   gsw_register_read(GSW_VGA_REG_VERSION) != GSW_VGA_INTERFACE_VERSION)
+	{
+		GSW_transport_shutdown();
+		return FALSE;
+	}
+
+	gsw_capabilities = gsw_register_read(GSW_VGA_REG_CAPABILITIES);
+	if((gsw_capabilities & (GSW_VGA_CAP_2D | GSW_VGA_CAP_SURFACE_OFFSET)) !=
+	   (GSW_VGA_CAP_2D | GSW_VGA_CAP_SURFACE_OFFSET))
+	{
+		GSW_transport_shutdown();
+		return FALSE;
+	}
+
+	gsw_framebuffer_size = bar1_size;
+	gsw_framebuffer_linear = _MapPhysToLinear(bar1, bar1_size, 0);
+	if(gsw_framebuffer_linear == 0)
+	{
+		GSW_transport_shutdown();
+		return FALSE;
+	}
+
+	ring_linear = _PageAllocate(
+		RoundToPages(GSW_VGA_RING_BYTES),
+		PG_SYS,
+		0,
+		0,
+		PAGE_ALLOC_MIN,
+		PAGE_ALLOC_MAX,
+		&gsw_ring_physical,
+		PAGECONTIG | PAGEUSEALIGN | PAGEFIXED | PAGEZEROINIT
+	);
+	if(ring_linear == 0)
+	{
+		GSW_transport_shutdown();
+		return FALSE;
+	}
+	if((gsw_ring_physical & (GSW_VGA_RING_BYTES - 1)) != 0)
+	{
+		_PageFree((PVOID)ring_linear, 0);
+		gsw_ring_physical = 0;
+		GSW_transport_shutdown();
+		return FALSE;
+	}
+	gsw_ring = (volatile BYTE *)ring_linear;
+
+	gsw_semaphore = Create_Semaphore(1);
+	if(gsw_semaphore == 0)
+	{
+		_PageFree((PVOID)ring_linear, 0);
+		gsw_ring = NULL;
+		gsw_ring_physical = 0;
+		GSW_transport_shutdown();
+		return FALSE;
+	}
+
+	gsw_ring_tail = 0;
+	gsw_fence_low = 1;
+	gsw_fence_high = 0;
+	gsw_register_write(GSW_VGA_REG_IRQ_ENABLE, 0);
+	gsw_register_write(GSW_VGA_REG_IRQ_STATUS, GSW_VGA_IRQ_2D);
+	gsw_register_write(GSW_VGA_REG_STATUS, GSW_VGA_STATUS_ERROR);
+	gsw_register_write(GSW_VGA_REG_RING_GPA_LOW, gsw_ring_physical);
+	gsw_register_write(GSW_VGA_REG_RING_GPA_HIGH, 0);
+	gsw_register_write(GSW_VGA_REG_RING_SIZE, GSW_VGA_RING_BYTES);
+	gsw_register_write(GSW_VGA_REG_RING_HEAD, 0);
+	gsw_register_write(GSW_VGA_REG_RING_TAIL, 0);
+
+	if((gsw_register_read(GSW_VGA_REG_STATUS) & GSW_VGA_STATUS_READY) == 0)
+	{
+		GSW_transport_shutdown();
+		return FALSE;
+	}
+
+	gsw_is_ready = TRUE;
+	return TRUE;
+}
+
+void GSW_transport_shutdown(void)
+{
+	gsw_is_ready = FALSE;
+	if(gsw_registers != NULL)
+	{
+		gsw_register_write(GSW_VGA_REG_IRQ_ENABLE, 0);
+		gsw_register_write(GSW_VGA_REG_RING_HEAD, 0);
+		gsw_register_write(GSW_VGA_REG_RING_TAIL, 0);
+		gsw_register_write(GSW_VGA_REG_RING_GPA_LOW, 0);
+		gsw_register_write(GSW_VGA_REG_RING_GPA_HIGH, 0);
+		gsw_register_write(GSW_VGA_REG_RING_SIZE, 0);
+	}
+	if(gsw_semaphore != 0)
+	{
+		Destroy_Semaphore(gsw_semaphore);
+		gsw_semaphore = 0;
+	}
+	if(gsw_ring != NULL)
+	{
+		_PageFree((PVOID)gsw_ring, 0);
+		gsw_ring = NULL;
+	}
+	gsw_ring_physical = 0;
+	gsw_ring_tail = 0;
+	gsw_fence_low = 1;
+	gsw_fence_high = 0;
+	gsw_framebuffer_linear = 0;
+	gsw_framebuffer_size = 0;
+	gsw_capabilities = 0;
+	gsw_registers = NULL;
+	if(gsw_pci_command_saved)
+	{
+		PCI_ConfigWrite16(&gsw_pci_address, 4, gsw_original_pci_command);
+		gsw_pci_command_saved = FALSE;
+	}
+	gsw_original_pci_command = 0;
+	memset(&gsw_pci_address, 0, sizeof(gsw_pci_address));
+}
+
+BOOL GSW_transport_ready(void)
+{
+	return gsw_is_ready;
+}
+
+void *GSW_transport_framebuffer(void)
+{
+	return gsw_is_ready ? (void *)gsw_framebuffer_linear : NULL;
+}
+
+DWORD GSW_transport_framebuffer_bytes(void)
+{
+	return gsw_is_ready ? gsw_framebuffer_size : 0;
+}
+
+DWORD GSW_transport_capabilities(void)
+{
+	return gsw_is_ready ? gsw_capabilities : 0;
+}
+
+BOOL GSW_transport_mode_valid(DWORD width, DWORD height, DWORD pitch, DWORD bpp)
+{
+	return gsw_is_ready && gsw_scanout_valid(0, pitch, width, height, bpp);
+}
+
+BOOL GSW_transport_set_mode(DWORD width, DWORD height, DWORD pitch, DWORD bpp)
+{
+	GSWSetModeCommand command;
+
+	if(!GSW_transport_mode_valid(width, height, pitch, bpp))
+		return FALSE;
+
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_SET_MODE;
+	command.width = width;
+	command.height = height;
+	command.pitch = pitch;
+	command.format = gsw_pixel_format(bpp);
+	return gsw_submit(&command, sizeof(command));
+}
+
+BOOL GSW_transport_present(
+	DWORD offset,
+	DWORD width,
+	DWORD height,
+	DWORD pitch,
+	DWORD bpp
+)
+{
+	GSWPresentCommand command;
+
+	if(!gsw_is_ready || !gsw_scanout_valid(offset, pitch, width, height, bpp))
+		return FALSE;
+
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_PRESENT;
+	command.offset = offset;
+	command.width = width;
+	command.height = height;
+	command.pitch = pitch;
+	command.format = gsw_pixel_format(bpp);
+	return gsw_submit(&command, sizeof(command));
+}
+
+BOOL GSW_transport_fill(
+	DWORD offset,
+	DWORD pitch,
+	DWORD width,
+	DWORD height,
+	DWORD color,
+	DWORD bpp
+)
+{
+	GSWFillCommand command;
+
+	if(!gsw_is_ready || !gsw_surface_valid(offset, pitch, width, height, bpp) ||
+	   height > GSW_VGA_MAX_SOFTWARE_PIXELS / width)
+		return FALSE;
+
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_FILL;
+	command.offset = offset;
+	command.pitch = pitch;
+	command.width = width;
+	command.height = height;
+	command.color = color;
+	command.format = gsw_pixel_format(bpp);
+	return gsw_submit(&command, sizeof(command));
+}
+
+BOOL GSW_transport_copy(
+	DWORD source,
+	DWORD destination,
+	DWORD source_pitch,
+	DWORD destination_pitch,
+	DWORD width,
+	DWORD height,
+	DWORD bpp
+)
+{
+	GSWCopyCommand command;
+
+	if(!gsw_is_ready ||
+	   !gsw_surface_valid(source, source_pitch, width, height, bpp) ||
+	   !gsw_surface_valid(destination, destination_pitch, width, height, bpp) ||
+	   height > GSW_VGA_MAX_SOFTWARE_PIXELS / width)
+		return FALSE;
+
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_COPY;
+	command.source = source;
+	command.destination = destination;
+	command.source_pitch = source_pitch;
+	command.destination_pitch = destination_pitch;
+	command.width = width;
+	command.height = height;
+	command.format = gsw_pixel_format(bpp);
+	return gsw_submit(&command, sizeof(command));
+}

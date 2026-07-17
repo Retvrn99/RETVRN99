@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/vxd_main.c b/vxd_main.c
+index 7747531..a4b47c3 100644
+--- a/vxd_main.c
++++ b/vxd_main.c
+@@ -44,6 +44,10 @@ Copyright (c) 2024 Jaroslav Hensl <emulator@emulace.cz>
+ #include "vxd_lib.h"
+ 
+ #include "3d_accel.h"
++#ifdef GSW
++# include "gsw_transport.h"
++#endif
++
+ #include "vxd_vdd.h"
+ 
+ #ifdef SVGA
+@@ -1051,6 +1055,10 @@ void Device_Init_Complete(DWORD VM)
+ /* shutdown procedure */
+ void Device_Exit_proc(DWORD VM)
+ {
++#ifdef GSW
++	GSW_transport_shutdown();
++#endif
++
+ #ifdef SVGA
+ 	SVGA_HW_disable();
+ #endif

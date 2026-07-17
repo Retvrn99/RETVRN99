@@ -63,7 +63,9 @@ vga_gsw_present_surface :: proc(
 	offset, width, height, pitch: u32,
 	format: Gsw_Pixel_Format,
 ) -> bool {
-	if v == nil || width == 0 || height == 0 {return false}
+	if v == nil || !gsw_vga_present_valid(len(v.vram), offset, width, height, pitch, format) {
+		return false
+	}
 	bpp, bytes: u16
 	switch format {
 	case .Indexed_8:
@@ -99,7 +101,9 @@ vga_gsw_present_surface :: proc(
 	candidate[DISPI_INDEX_VIRT_WIDTH] = u16(virtual_width)
 	candidate[DISPI_INDEX_X_OFFSET] = u16(x_offset)
 	candidate[DISPI_INDEX_Y_OFFSET] = u16(y_offset)
-	candidate[DISPI_INDEX_ENABLE] = DISPI_ENABLED | DISPI_LFB_ENABLED | DISPI_NOCLEARMEM
+	candidate[DISPI_INDEX_ENABLE] =
+		candidate[DISPI_INDEX_ENABLE] & DISPI_8BIT_DAC |
+		DISPI_ENABLED | DISPI_LFB_ENABLED | DISPI_NOCLEARMEM
 	if !dispi_mode_valid(&candidate) {return false}
 	v.dispi = candidate
 	v.video_on = true
