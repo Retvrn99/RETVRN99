@@ -73,6 +73,12 @@ Renderer developers can add `--gsw3d-proof` to attach the hash-locked
 triangle command stream, retains at most two physical GPU submissions, and is
 not a game-compatible acceleration mode.
 
+Run `odin run tools\gsw3d-proof-smoke -thread-count:8` to render the proof
+through Vulkan, download the idle offscreen target, and validate repeated raw
+and SDL compositor CRCs plus orientation and channel-order anchors. This
+developer gate is the only GSW3D texture readback path; normal presentation
+remains host-resident.
+
 The default profile is `%USERPROFILE%\.retvrn99`. To keep a machine separate,
 pass another profile directory:
 

@@ -78,6 +78,14 @@ renderer destruction may wait once for the remaining slots. Thus BUSY,
 `wait_idle`, and guest fence registers remain tied to physical completion rather
 than command submission.
 
+A separate developer smoke tool performs synchronous readback only after the
+tracked physical queue is empty. It normalizes BGRA and RGBA textures without
+flipping rows, validates asymmetric 3x3 color anchors, and requires two raw
+target CRCs and two SDL compositor CRCs to repeat on the active Vulkan device.
+The full-frame CRC is deliberately not pinned across GPU implementations because
+edge coverage and interpolation rounding may differ. No readback call is present
+in the production render or presentation loop.
+
 The first renderer proof accepts one captured, hash-locked SVGA9 frame profile:
 a 640x480 X8R8G8B8 render target, a 60-byte POSITIONT/D3DCOLOR vertex buffer,
 the required fixed-function state, one non-indexed triangle, and a full-surface
@@ -110,9 +118,9 @@ extension instead of weakening the v1 bounds.
   capability gates.
 - A bounded logical completion FIFO and two physical frame slots prevent a
   completed present or later draw from overtaking an earlier GPU submission.
-- The fixture, SPIR-V checks, Vulkan smoke test, and physical fence prove packet
-  acceptance and submission. A deterministic rendered-pixel CRC remains a
-  separate debug acceptance gate for color swizzle, orientation, and composition.
+- The fixture, SPIR-V checks, physical fences, and readback smoke prove packet
+  acceptance, submission, deterministic same-device pixels, color swizzle,
+  orientation, and composition through the SDL renderer wrapper.
 - SVGA9 rendering, shader translation, and guest drivers remain separate
   proof-gated deliveries.
 
