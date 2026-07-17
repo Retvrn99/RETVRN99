@@ -24,9 +24,10 @@ The virtual machine currently exposes:
 - A 1.44 MB floppy drive and an ATAPI 10x DVD / 52x CD-ROM drive.
 - The guest-visible GSW VGA device, with legacy VGA and Bochs VBE available
   while the Windows GSW driver is being finished. Its guarded v2 transport and
-  host-resident SDL_GPU path have an exact developer triangle profile with
-  ticketed physical completion and two frames in flight, but the normal guest
-  persona still advertises no 3D acceleration.
+  host-resident SDL_GPU path have an exact, bounded developer triangle grammar
+  with dynamic full-surface targets, ticketed physical completion, and two
+  frames in flight, but the normal guest persona still advertises no 3D
+  acceleration.
 - PC-speaker and CD-audio output, plus fixed-resource Sound Blaster 16 digital
   audio at `220h`/IRQ5/DMA1+5 and an OPL3-compatible device at `388h`, including
   the Sound Blaster FM aliases at `220h`-`223h`. The OPL
@@ -68,15 +69,17 @@ to start the machine as soon as the window is ready:
 .\retvrn99.exe --start
 ```
 
-Renderer developers can add `--gsw3d-proof` to attach the hash-locked
-640x480 POSITIONT/D3DCOLOR transport profile. It accepts only the captured
-triangle command stream, retains at most two physical GPU submissions, and is
-not a game-compatible acceleration mode.
+Renderer developers can add `--gsw3d-proof` to attach the guarded
+POSITIONT/D3DCOLOR transport profile. It preserves the captured command and
+fixed-function state grammar while allowing bounded target dimensions, clear
+RGB, and three already-validated vertices. It retains at most two physical GPU
+submissions and is not a game-compatible acceleration mode.
 
 Run `odin run tools\gsw3d-proof-smoke -thread-count:8` to render the proof
-through Vulkan, download the idle offscreen target, and validate repeated raw
-and SDL compositor CRCs plus orientation and channel-order anchors. This
-developer gate is the only GSW3D texture readback path; normal presentation
+through Vulkan at 640x480 and 1600x1200, exercise mixed-size frames in flight,
+download the idle offscreen targets, and validate repeated CRCs plus orientation
+and channel-order anchors. The 640x480 path also crosses the SDL compositor.
+This developer gate is the only GSW3D texture readback path; normal presentation
 remains host-resident.
 
 The default profile is `%USERPROFILE%\.retvrn99`. To keep a machine separate,

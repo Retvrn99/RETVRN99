@@ -9,9 +9,8 @@ host_gsw3d_proof_create_surface :: proc(ctx: rawptr, surface: Gsw3d_Proof_Surfac
 	h := (^Host)(ctx)
 	if h == nil ||
 	   surface.id != GSW3D_PROOF_TARGET_ID ||
-	   surface.format != 1 ||
-	   surface.width != GSW3D_PROOF_WIDTH ||
-	   surface.height != GSW3D_PROOF_HEIGHT {return false}
+	   surface.format != vga.GSW3D_SVGA9_PROFILE_TARGET_FORMAT ||
+	   !vga.gsw3d_svga9_profile_extent_valid(surface.width, surface.height) {return false}
 	return host_gpu_surface_create(
 		h,
 		{id = surface.id, width = surface.width, height = surface.height, format = .Bgra8_Unorm},
@@ -67,7 +66,10 @@ host_gsw3d_proof_draw :: proc(ctx: rawptr, draw: ^Gsw3d_Proof_Draw) -> (u64, boo
 		}
 	}
 	target, format, width, height, ok := host_gpu_surface_render_target(h, draw.surface_id)
-	if !ok || width != GSW3D_PROOF_WIDTH || height != GSW3D_PROOF_HEIGHT {return 0, false}
+	if !ok ||
+	   width != draw.width ||
+	   height != draw.height ||
+	   !vga.gsw3d_svga9_profile_extent_valid(width, height) {return 0, false}
 	return gsw3d_triangle_render_async(
 		&h.gsw3d_triangle,
 		target,
@@ -82,7 +84,20 @@ host_gsw3d_proof_draw :: proc(ctx: rawptr, draw: ^Gsw3d_Proof_Draw) -> (u64, boo
 
 host_gsw3d_proof_present :: proc(ctx: rawptr, present: ^Gsw3d_Proof_Present) -> bool {
 	h := (^Host)(ctx)
-	if h == nil || present == nil {return false}
+	if h == nil ||
+	   present == nil ||
+	   present.surface_id != GSW3D_PROOF_TARGET_ID ||
+	   present.interval != 1 ||
+	   present.source.x != 0 ||
+	   present.source.y != 0 ||
+	   present.destination.x != 0 ||
+	   present.destination.y != 0 ||
+	   present.source.width != present.destination.width ||
+	   present.source.height != present.destination.height ||
+	   !vga.gsw3d_svga9_profile_extent_valid(
+			   present.destination.width,
+			   present.destination.height,
+		   ) {return false}
 	return host_gpu_surface_present(
 		h,
 		{
@@ -99,8 +114,8 @@ host_gsw3d_proof_present :: proc(ctx: rawptr, present: ^Gsw3d_Proof_Present) -> 
 				present.destination.width,
 				present.destination.height,
 			},
-			canvas_width = GSW3D_PROOF_WIDTH,
-			canvas_height = GSW3D_PROOF_HEIGHT,
+			canvas_width = present.destination.width,
+			canvas_height = present.destination.height,
 			interval = present.interval,
 		},
 	)

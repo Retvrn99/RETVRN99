@@ -114,9 +114,12 @@ gsw3d_proof_test_surface :: proc(
 }
 
 @(private = "file")
-gsw3d_proof_test_definitions :: proc() -> [128]u8 {
+gsw3d_proof_test_definitions :: proc(
+	width: u32 = GSW3D_PROOF_WIDTH,
+	height: u32 = GSW3D_PROOF_HEIGHT,
+) -> [128]u8 {
 	data: [128]u8
-	gsw3d_proof_test_surface(data[:], 0, 1, 0x40, 1, 640, 480, 1)
+	gsw3d_proof_test_surface(data[:], 0, 1, 0x40, 1, width, height, 1)
 	gsw3d_proof_test_surface(data[:], 64, 2, 0x12, 37, 60, 1, 1)
 	return data
 }
@@ -146,14 +149,18 @@ gsw3d_proof_test_vertices :: proc() -> [60]u8 {
 }
 
 @(private = "file")
-gsw3d_proof_test_render :: proc() -> [360]u8 {
+gsw3d_proof_test_render :: proc(
+	width: u32 = GSW3D_PROOF_WIDTH,
+	height: u32 = GSW3D_PROOF_HEIGHT,
+	clear_color: u32 = GSW3D_PROOF_CLEAR_COLOR,
+) -> [360]u8 {
 	data: [360]u8
 	gsw3d_proof_test_command(data[:], 0, 1050, 20)
 	render_target := [?]u32{1, 2, 1, 0, 0}
 	for value, index in render_target {gsw3d_proof_test_wr32(data[:], 8 + index * 4, value)}
 
 	gsw3d_proof_test_command(data[:], 28, 1055, 20)
-	viewport := [?]u32{1, 0, 0, 640, 480}
+	viewport := [?]u32{1, 0, 0, width, height}
 	for value, index in viewport {gsw3d_proof_test_wr32(data[:], 36 + index * 4, value)}
 
 	gsw3d_proof_test_command(data[:], 56, 1049, 60)
@@ -165,7 +172,7 @@ gsw3d_proof_test_render :: proc() -> [360]u8 {
 	for value, index in texture_states {gsw3d_proof_test_wr32(data[:], 132 + index * 4, value)}
 
 	gsw3d_proof_test_command(data[:], 196, 1057, 36)
-	clear := [?]u32{1, 1, 0xff10_1018, 0x3f80_0000, 0, 0, 0, 640, 480}
+	clear := [?]u32{1, 1, clear_color, 0x3f80_0000, 0, 0, 0, width, height}
 	for value, index in clear {gsw3d_proof_test_wr32(data[:], 204 + index * 4, value)}
 
 	gsw3d_proof_test_command(data[:], 240, 1063, 112)
@@ -452,6 +459,8 @@ host_gsw3d_proof_test_golden_frame_marshals_in_order :: proc(t: ^testing.T) {
 		Gsw3d_Proof_Surface{1, 1, GSW3D_PROOF_WIDTH, GSW3D_PROOF_HEIGHT},
 	)
 	testing.expect_value(t, state.draw.surface_id, GSW3D_PROOF_TARGET_ID)
+	testing.expect_value(t, state.draw.width, GSW3D_PROOF_WIDTH)
+	testing.expect_value(t, state.draw.height, GSW3D_PROOF_HEIGHT)
 	testing.expect_value(t, state.draw.clear, GSW3D_PROOF_CLEAR_COLOR)
 	testing.expect_value(t, state.draw.generation, u64(1))
 	testing.expect_value(t, state.draw.vertices, gsw3d_triangle_proof_vertices())
@@ -481,10 +490,128 @@ host_gsw3d_proof_test_pure_whitelist_rejects_semantic_drift :: proc(t: ^testing.
 	size, ok := gsw3d_proof_resource_size(nil, 1, 640, 480, 1)
 	testing.expect(t, ok)
 	testing.expect_value(t, size, u64(1_228_800))
-	_, ok = gsw3d_proof_resource_size(nil, 1, 641, 480, 1)
+	size, ok = gsw3d_proof_resource_size(nil, 1, 641, 480, 1)
+	testing.expect(t, ok)
+	testing.expect_value(t, size, u64(1_230_720))
+	_, ok = gsw3d_proof_resource_size(nil, 1, vga.GSW3D_SVGA9_PROFILE_MAX_DIMENSION + 1, 1, 1)
+	testing.expect(t, !ok)
+	_, ok = gsw3d_proof_resource_size(nil, 1, 0, 480, 1)
 	testing.expect(t, !ok)
 	_, ok = gsw3d_proof_resource_size(nil, 37, 61, 1, 1)
 	testing.expect(t, !ok)
+}
+
+@(test)
+host_gsw3d_proof_test_dynamic_extent_is_consistent_across_frame :: proc(t: ^testing.T) {
+	WIDTH :: u32(1_600)
+	HEIGHT :: u32(1_200)
+	GUEST_CLEAR :: u32(0x1212_3456)
+	CANONICAL_CLEAR :: u32(0xff12_3456)
+
+	state := Gsw3d_Proof_Test_Ops {
+		draw_token = 73,
+	}
+	executor: Gsw3d_Proof_Executor
+	if !testing.expect(
+		t,
+		gsw3d_proof_executor_init(&executor, gsw3d_proof_test_ops(&state)),
+	) {return}
+
+	create := vga.Gsw3d_Work {
+		kind       = .Create_Context,
+		generation = 1,
+		context_id = GSW3D_PROOF_CONTEXT_ID,
+	}
+	if !testing.expect(t, gsw3d_proof_execute_work(&executor, &create)) {return}
+
+	definitions := gsw3d_proof_test_definitions(WIDTH, HEIGHT)
+	define := vga.Gsw3d_Work {
+		kind       = .Submit_Svga9,
+		generation = 1,
+		context_id = GSW3D_PROOF_CONTEXT_ID,
+		batch      = definitions[:],
+	}
+	if !testing.expect(t, gsw3d_proof_execute_work(&executor, &define)) {return}
+	testing.expect_value(
+		t,
+		state.surface,
+		Gsw3d_Proof_Surface{GSW3D_PROOF_TARGET_ID, 1, WIDTH, HEIGHT},
+	)
+
+	vertices := gsw3d_proof_test_vertices()
+	gsw3d_proof_test_wr32(vertices[:], 0, 0x4448_0000)
+	gsw3d_proof_test_wr32(vertices[:], 20, 0x44af_0000)
+	gsw3d_proof_test_wr32(vertices[:], 24, 0x447a_0000)
+	gsw3d_proof_test_wr32(vertices[:], 40, 0x4348_0000)
+	gsw3d_proof_test_wr32(vertices[:], 44, 0x447a_0000)
+	upload := vga.Gsw3d_Work {
+		kind          = .Resource_Upload,
+		generation    = 1,
+		resource_id   = GSW3D_PROOF_VERTEX_BUFFER_ID,
+		region_id     = 1,
+		source_offset = 0x80,
+		upload        = vertices[:],
+	}
+	if !testing.expect(t, gsw3d_proof_upload_work(&executor, &upload)) {return}
+
+	mismatched_render_bytes := gsw3d_proof_test_render(WIDTH, HEIGHT - 1, GUEST_CLEAR)
+	mismatched_render := vga.Gsw3d_Work {
+		kind       = .Submit_Svga9,
+		generation = 1,
+		context_id = GSW3D_PROOF_CONTEXT_ID,
+		batch      = mismatched_render_bytes[:],
+	}
+	testing.expect(t, !gsw3d_proof_execute_work(&executor, &mismatched_render))
+	testing.expect_value(t, state.event_count, 1)
+
+	render_bytes := gsw3d_proof_test_render(WIDTH, HEIGHT, GUEST_CLEAR)
+	render := vga.Gsw3d_Work {
+		kind       = .Submit_Svga9,
+		generation = 1,
+		context_id = GSW3D_PROOF_CONTEXT_ID,
+		batch      = render_bytes[:],
+	}
+	if !testing.expect(t, gsw3d_proof_execute_work(&executor, &render)) {return}
+	testing.expect_value(t, render.backend_token, u64(73))
+	testing.expect_value(t, state.draw.surface_id, GSW3D_PROOF_TARGET_ID)
+	testing.expect_value(t, state.draw.width, WIDTH)
+	testing.expect_value(t, state.draw.height, HEIGHT)
+	testing.expect_value(t, state.draw.clear, CANONICAL_CLEAR)
+	testing.expect_value(t, state.draw.generation, u64(1))
+	expected_vertices := gsw3d_triangle_proof_vertices()
+	expected_vertices[0].position.x = 800
+	expected_vertices[1].position.x = 1400
+	expected_vertices[1].position.y = 1000
+	expected_vertices[2].position.x = 200
+	expected_vertices[2].position.y = 1000
+	testing.expect_value(t, state.draw.vertices, expected_vertices)
+
+	present := vga.Gsw3d_Work {
+		kind = .Direct_Present,
+		generation = 1,
+		context_id = GSW3D_PROOF_CONTEXT_ID,
+		surface_id = GSW3D_PROOF_TARGET_ID,
+		source = {width = WIDTH, height = HEIGHT},
+		destination = {width = GSW3D_PROOF_WIDTH, height = GSW3D_PROOF_HEIGHT},
+		interval = 1,
+	}
+	testing.expect(t, !gsw3d_proof_execute_work(&executor, &present))
+	testing.expect_value(t, state.event_count, 2)
+
+	present.destination = {
+		width  = WIDTH,
+		height = HEIGHT,
+	}
+	if !testing.expect(t, gsw3d_proof_execute_work(&executor, &present)) {return}
+	testing.expect_value(t, state.event_count, 3)
+	testing.expect_value(t, state.present.surface_id, GSW3D_PROOF_TARGET_ID)
+	testing.expect_value(t, state.present.source, vga.Gsw3d_Rect{width = WIDTH, height = HEIGHT})
+	testing.expect_value(
+		t,
+		state.present.destination,
+		vga.Gsw3d_Rect{width = WIDTH, height = HEIGHT},
+	)
+	testing.expect_value(t, state.present.interval, u32(1))
 }
 
 @(test)

@@ -86,13 +86,19 @@ The full-frame CRC is deliberately not pinned across GPU implementations because
 edge coverage and interpolation rounding may differ. No readback call is present
 in the production render or presentation loop.
 
-The first renderer proof accepts one captured, hash-locked SVGA9 frame profile:
-a 640x480 X8R8G8B8 render target, a 60-byte POSITIONT/D3DCOLOR vertex buffer,
-the required fixed-function state, one non-indexed triangle, and a full-surface
-interval-one direct present. It renders into the resident target with raw
-SDL_GPU buffers, SPIR-V shaders, and a physical GPU fence, with no guest or CPU
-readback. This exact profile is a developer gate, not a production capability
-claim; the normal guest persona continues to advertise no 3D support.
+The first renderer proof is rooted in one captured, hash-locked SVGA9 frame
+profile: a 640x480 X8R8G8B8 render target, a 60-byte POSITIONT/D3DCOLOR vertex
+buffer, the required fixed-function state, one non-indexed triangle, and a
+full-surface interval-one direct present. Its typed parser keeps every opcode,
+format, state, resource ID, draw field, and command boundary exact while
+allowing only a bounded target extent, matching full-target viewport and clear
+rectangle, clear RGB, and three finite in-bounds vertices with RHW 1. Target
+dimensions are limited to 8192 per axis and 256 MiB of X8R8G8B8 storage.
+
+The proof renders into the resident target with raw SDL_GPU buffers, SPIR-V
+shaders, and a physical GPU fence, with no guest or CPU readback. This bounded
+profile is a developer gate, not a production capability claim; the normal
+guest persona continues to advertise no 3D support.
 
 For this proof, the direct-present canvas is exactly the render surface's width
 and height, and both rectangles must remain inside it. Supporting an independent
@@ -112,15 +118,18 @@ extension instead of weakening the v1 bounds.
   backend synchronously marshals GSW worker requests to the UI thread, and reset
   or destruction cancels bridge waiters before joining the worker.
 - Captured descriptor, definition, vertex, and render streams lock the first
-  SVGA9 grammar profile to exact SHA-256 fixtures and an end-to-end fence order.
+  SVGA9 grammar profile to exact SHA-256 fixtures. Mutation tests freeze every
+  invariant word while explicit tests cover the few parameterized fields and
+  the end-to-end fence order.
 - The proof renderer deliberately supports only RHW 1 POSITIONT vertices. General
   reciprocal-W, more fixed-function state, shaders, and formats remain
   capability gates.
 - A bounded logical completion FIFO and two physical frame slots prevent a
   completed present or later draw from overtaking an earlier GPU submission.
-- The fixture, SPIR-V checks, physical fences, and readback smoke prove packet
-  acceptance, submission, deterministic same-device pixels, color swizzle,
-  orientation, and composition through the SDL renderer wrapper.
+- The fixture, SPIR-V checks, physical fences, and mixed-resolution readback
+  smoke prove packet acceptance, submission, per-frame target dimensions,
+  deterministic same-device pixels, color swizzle, orientation, and composition
+  through the SDL renderer wrapper.
 - SVGA9 rendering, shader translation, and guest drivers remain separate
   proof-gated deliveries.
 
@@ -129,6 +138,7 @@ extension instead of weakening the v1 bounds.
 - [GSW VGA transport](../../src/vga/gsw.odin)
 - [GSW 2D commands](../../src/vga/gsw2d.odin)
 - [Guarded GSW3D queue](../../src/vga/gsw3d.odin)
+- [Typed SVGA9 proof profile](../../src/vga/gsw3d_svga9_profile.odin)
 - [Host-resident SDL GPU surfaces](../../src/host/gpu_surface.odin)
 - [Main-thread GSW3D bridge](../../src/host/gsw3d_bridge.odin)
 - [Raw SDL GPU triangle renderer](../../src/host/gsw3d_triangle.odin)

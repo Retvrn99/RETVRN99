@@ -6,12 +6,12 @@ import "core:sync"
 
 GSW3D_PROOF_CONTEXT_CAPACITY :: 4
 GSW3D_PROOF_RESOURCE_CAPACITY :: 4
-GSW3D_PROOF_TARGET_ID :: u32(1)
-GSW3D_PROOF_VERTEX_BUFFER_ID :: u32(2)
-GSW3D_PROOF_CONTEXT_ID :: u32(1)
+GSW3D_PROOF_TARGET_ID :: vga.GSW3D_SVGA9_PROFILE_TARGET_ID
+GSW3D_PROOF_VERTEX_BUFFER_ID :: vga.GSW3D_SVGA9_PROFILE_BUFFER_ID
+GSW3D_PROOF_CONTEXT_ID :: vga.GSW3D_SVGA9_PROFILE_CONTEXT_ID
 GSW3D_PROOF_WIDTH :: u32(640)
 GSW3D_PROOF_HEIGHT :: u32(480)
-GSW3D_PROOF_VERTEX_BYTES :: 60
+GSW3D_PROOF_VERTEX_BYTES :: int(vga.GSW3D_SVGA9_PROFILE_VERTEX_BYTES)
 GSW3D_PROOF_CLEAR_COLOR :: u32(0xff10_1018)
 GSW3D_PROOF_MAX_BRIDGE_BUDGET :: u64(4 * 1024 * 1024)
 GSW3D_PROOF_COMPLETION_CAPACITY :: 64
@@ -31,6 +31,8 @@ Gsw3d_Proof_Surface :: struct {
 
 Gsw3d_Proof_Draw :: struct {
 	surface_id: u32,
+	width:      u32,
+	height:     u32,
 	clear:      u32,
 	generation: u64,
 	vertices:   [GSW3D_TRIANGLE_VERTEX_COUNT]Gsw3d_Triangle_Vertex,
@@ -114,124 +116,21 @@ gsw3d_proof_rd32 :: proc(data: []u8, offset: int) -> (u32, bool) {
 	return value, true
 }
 
-@(private = "file")
-gsw3d_proof_words_equal :: proc(data: []u8, offset: int, expected: []u32) -> bool {
-	if offset < 0 || offset > len(data) || len(expected) > (len(data) - offset) / 4 {return false}
-	for wanted, index in expected {
-		value, ok := gsw3d_proof_rd32(data, offset + index * 4)
-		if !ok || value != wanted {return false}
-	}
-	return true
-}
-
-@(private = "file")
-gsw3d_proof_command :: proc(batch: []u8, offset: int, opcode, body_size: u32) -> bool {
-	if offset < 0 || offset > len(batch) || len(batch) - offset < 8 + int(body_size) {return false}
-	header := [?]u32{opcode, body_size}
-	return gsw3d_proof_words_equal(batch, offset, header[:])
-}
-
-@(private = "file")
-gsw3d_proof_definitions_valid :: proc(batch: []u8) -> bool {
-	if len(batch) != 128 ||
-	   !gsw3d_proof_command(batch, 0, 1070, 56) ||
-	   !gsw3d_proof_command(batch, 64, 1070, 56) {return false}
-	target := [?]u32{1, 0x40, 1, 1, 0, 0, 0, 0, 0, 0, 0, 640, 480, 1}
-	buffer := [?]u32{2, 0x12, 37, 1, 0, 0, 0, 0, 0, 0, 0, 60, 1, 1}
-	return(
-		gsw3d_proof_words_equal(batch, 8, target[:]) &&
-		gsw3d_proof_words_equal(batch, 72, buffer[:]) \
-	)
-}
-
-@(private = "file")
-gsw3d_proof_render_valid :: proc(batch: []u8) -> bool {
-	if len(batch) != 360 {return false}
-	headers := [?][3]u32 {
-		{0, 1050, 20},
-		{28, 1055, 20},
-		{56, 1049, 60},
-		{124, 1051, 64},
-		{196, 1057, 36},
-		{240, 1063, 112},
-	}
-	for header in headers {
-		if !gsw3d_proof_command(batch, int(header[0]), header[1], header[2]) {return false}
-	}
-	render_target := [?]u32{1, 2, 1, 0, 0}
-	viewport := [?]u32{1, 0, 0, 640, 480}
-	render_states := [?]u32{1, 1, 0, 2, 0, 5, 0, 9, 0, 35, 1, 47, 15, 30, 2}
-	texture_states := [?]u32{1, 0, 1, 0xffff_ffff, 0, 2, 2, 0, 3, 3, 0, 5, 2, 0, 6, 3}
-	clear := [?]u32{1, 1, GSW3D_PROOF_CLEAR_COLOR, 0x3f80_0000, 0, 0, 0, 640, 480}
-	draw := [?]u32 {
-		1,
-		2,
-		1,
-		3,
-		0,
-		9,
-		0,
-		2,
-		0,
-		20,
-		0,
-		0,
-		4,
-		0,
-		10,
-		0,
-		2,
-		16,
-		20,
-		0,
-		0,
-		1,
-		1,
-		0xffff_ffff,
-		0,
-		0,
-		0,
-		0,
-	}
-	return(
-		gsw3d_proof_words_equal(batch, 8, render_target[:]) &&
-		gsw3d_proof_words_equal(batch, 36, viewport[:]) &&
-		gsw3d_proof_words_equal(batch, 64, render_states[:]) &&
-		gsw3d_proof_words_equal(batch, 132, texture_states[:]) &&
-		gsw3d_proof_words_equal(batch, 204, clear[:]) &&
-		gsw3d_proof_words_equal(batch, 248, draw[:]) \
-	)
-}
-
-@(private = "file")
-gsw3d_proof_destroy_batch :: proc(batch: []u8, destroyed: ^[2]bool = nil) -> bool {
-	if len(batch) == 0 || len(batch) > 24 || len(batch) % 12 != 0 {return false}
-	seen: [2]bool
-	for offset := 0; offset < len(batch); offset += 12 {
-		if !gsw3d_proof_command(batch, offset, 1041, 4) {return false}
-		id, ok := gsw3d_proof_rd32(batch, offset + 8)
-		if !ok || id < GSW3D_PROOF_TARGET_ID || id > GSW3D_PROOF_VERTEX_BUFFER_ID {return false}
-		index := int(id - 1)
-		if seen[index] {return false}
-		seen[index] = true
-	}
-	if destroyed != nil {destroyed^ = seen}
-	return true
-}
-
 gsw3d_proof_validate_svga9 :: proc(ctx: rawptr, batch: []u8) -> bool {
-	return(
-		gsw3d_proof_definitions_valid(batch) ||
-		gsw3d_proof_render_valid(batch) ||
-		gsw3d_proof_destroy_batch(batch) \
-	)
+	_, ok := vga.gsw3d_svga9_profile_parse(batch)
+	return ok
 }
 
 gsw3d_proof_resource_size :: proc(ctx: rawptr, format, width, height, depth: u32) -> (u64, bool) {
-	if format == 1 && width == 640 && height == 480 && depth == 1 {
-		return 640 * 480 * 4, true
+	if format == vga.GSW3D_SVGA9_PROFILE_TARGET_FORMAT &&
+	   depth == 1 &&
+	   vga.gsw3d_svga9_profile_extent_valid(width, height) {
+		return u64(width) * u64(height) * 4, true
 	}
-	if format == 37 && width == 60 && height == 1 && depth == 1 {return 60, true}
+	if format == vga.GSW3D_SVGA9_PROFILE_BUFFER_FORMAT &&
+	   width == vga.GSW3D_SVGA9_PROFILE_VERTEX_BYTES &&
+	   height == 1 &&
+	   depth == 1 {return u64(vga.GSW3D_SVGA9_PROFILE_VERTEX_BYTES), true}
 	return 0, false
 }
 
@@ -266,7 +165,12 @@ gsw3d_proof_resources_empty :: proc(executor: ^Gsw3d_Proof_Executor) -> bool {
 }
 
 @(private = "file")
-gsw3d_proof_define_resources :: proc(executor: ^Gsw3d_Proof_Executor) -> bool {
+gsw3d_proof_define_resources :: proc(
+	executor: ^Gsw3d_Proof_Executor,
+	profile: vga.Gsw3d_Svga9_Profile_Command,
+) -> bool {
+	if profile.kind != .Define ||
+	   !vga.gsw3d_svga9_profile_extent_valid(profile.width, profile.height) {return false}
 	if !gsw3d_proof_resources_empty(executor) {return false}
 	next := executor.resources
 	next[0] = {
@@ -275,9 +179,9 @@ gsw3d_proof_define_resources :: proc(executor: ^Gsw3d_Proof_Executor) -> bool {
 		kind = .Surface,
 		surface = {
 			id = GSW3D_PROOF_TARGET_ID,
-			format = 1,
-			width = GSW3D_PROOF_WIDTH,
-			height = GSW3D_PROOF_HEIGHT,
+			format = vga.GSW3D_SVGA9_PROFILE_TARGET_FORMAT,
+			width = profile.width,
+			height = profile.height,
 		},
 	}
 	next[1] = {
@@ -294,18 +198,22 @@ gsw3d_proof_define_resources :: proc(executor: ^Gsw3d_Proof_Executor) -> bool {
 }
 
 @(private = "file")
-gsw3d_proof_destroy_resources :: proc(executor: ^Gsw3d_Proof_Executor, batch: []u8) -> bool {
-	destroyed: [2]bool
-	if !gsw3d_proof_destroy_batch(batch, &destroyed) {return false}
-	for remove, index in destroyed {
-		if remove && gsw3d_proof_find_resource(executor, u32(index + 1)) == nil {return false}
+gsw3d_proof_destroy_resources :: proc(
+	executor: ^Gsw3d_Proof_Executor,
+	profile: vga.Gsw3d_Svga9_Profile_Command,
+) -> bool {
+	if profile.kind != .Destroy {return false}
+	for remove, index in profile.destroyed {
+		id := GSW3D_PROOF_TARGET_ID + u32(index)
+		if remove && gsw3d_proof_find_resource(executor, id) == nil {return false}
 	}
-	if destroyed[0] && !executor.ops.destroy_surface(executor.ops.ctx, GSW3D_PROOF_TARGET_ID) {
+	if profile.destroyed[0] &&
+	   !executor.ops.destroy_surface(executor.ops.ctx, GSW3D_PROOF_TARGET_ID) {
 		return false
 	}
-	for remove, index in destroyed {
+	for remove, index in profile.destroyed {
 		if !remove {continue}
-		resource := gsw3d_proof_find_resource(executor, u32(index + 1))
+		resource := gsw3d_proof_find_resource(executor, GSW3D_PROOF_TARGET_ID + u32(index))
 		resource^ = {}
 	}
 	return true
@@ -318,15 +226,19 @@ gsw3d_proof_bits_finite :: proc(bits: u32) -> bool {
 
 @(private = "file")
 gsw3d_proof_read_vertices :: proc(
-	resource: ^Gsw3d_Proof_Resource,
+	resource, target: ^Gsw3d_Proof_Resource,
 ) -> (
 	[3]Gsw3d_Triangle_Vertex,
 	bool,
 ) {
 	vertices: [3]Gsw3d_Triangle_Vertex
 	if resource == nil ||
+	   target == nil ||
 	   resource.kind != .Buffer ||
-	   resource.initialized != (u64(1) << GSW3D_PROOF_VERTEX_BYTES) - 1 {return vertices, false}
+	   target.kind != .Surface ||
+	   !vga.gsw3d_svga9_profile_extent_valid(target.surface.width, target.surface.height) ||
+	   resource.initialized !=
+		   (u64(1) << u64(GSW3D_PROOF_VERTEX_BYTES)) - 1 {return vertices, false}
 	for &vertex, vertex_index in vertices {
 		base := vertex_index * 20
 		for axis in 0 ..< 4 {
@@ -338,9 +250,9 @@ gsw3d_proof_read_vertices :: proc(
 		if !ok {return {}, false}
 		vertex.color = color
 		if vertex.position.x < 0 ||
-		   vertex.position.x > f32(GSW3D_PROOF_WIDTH) ||
+		   vertex.position.x > f32(target.surface.width) ||
 		   vertex.position.y < 0 ||
-		   vertex.position.y > f32(GSW3D_PROOF_HEIGHT) ||
+		   vertex.position.y > f32(target.surface.height) ||
 		   vertex.position.z < 0 ||
 		   vertex.position.z > 1 ||
 		   vertex.position.w != 1 {return {}, false}
@@ -349,16 +261,27 @@ gsw3d_proof_read_vertices :: proc(
 }
 
 @(private = "file")
-gsw3d_proof_render :: proc(executor: ^Gsw3d_Proof_Executor, work: ^vga.Gsw3d_Work) -> bool {
-	if work == nil || work.generation != executor.generation {return false}
+gsw3d_proof_render :: proc(
+	executor: ^Gsw3d_Proof_Executor,
+	work: ^vga.Gsw3d_Work,
+	profile: vga.Gsw3d_Svga9_Profile_Command,
+) -> bool {
+	if work == nil ||
+	   profile.kind != .Render ||
+	   work.generation != executor.generation {return false}
 	target := gsw3d_proof_find_resource(executor, GSW3D_PROOF_TARGET_ID)
 	buffer := gsw3d_proof_find_resource(executor, GSW3D_PROOF_VERTEX_BUFFER_ID)
-	if target == nil || target.kind != .Surface {return false}
-	vertices, ok := gsw3d_proof_read_vertices(buffer)
+	if target == nil ||
+	   target.kind != .Surface ||
+	   target.surface.width != profile.width ||
+	   target.surface.height != profile.height {return false}
+	vertices, ok := gsw3d_proof_read_vertices(buffer, target)
 	if !ok {return false}
 	draw := Gsw3d_Proof_Draw {
 		surface_id = target.id,
-		clear      = GSW3D_PROOF_CLEAR_COLOR,
+		width      = profile.width,
+		height     = profile.height,
+		clear      = profile.clear,
 		generation = work.generation,
 		vertices   = vertices,
 	}
@@ -399,16 +322,20 @@ gsw3d_proof_execute_work :: proc(executor: ^Gsw3d_Proof_Executor, work: ^vga.Gsw
 	case .Submit_Svga9:
 		if work.context_id != GSW3D_PROOF_CONTEXT_ID ||
 		   gsw3d_proof_find_context(executor, work.context_id) == nil {return false}
-		if gsw3d_proof_definitions_valid(
-			work.batch,
-		) {return gsw3d_proof_define_resources(executor)}
-		if gsw3d_proof_render_valid(work.batch) {return gsw3d_proof_render(executor, work)}
-		return gsw3d_proof_destroy_resources(executor, work.batch)
-	case .Direct_Present:
-		expected := vga.Gsw3d_Rect {
-			width  = GSW3D_PROOF_WIDTH,
-			height = GSW3D_PROOF_HEIGHT,
+		profile, parsed := vga.gsw3d_svga9_profile_parse(work.batch)
+		if !parsed {return false}
+		switch profile.kind {
+		case .Define:
+			return gsw3d_proof_define_resources(executor, profile)
+		case .Render:
+			return gsw3d_proof_render(executor, work, profile)
+		case .Destroy:
+			return gsw3d_proof_destroy_resources(executor, profile)
+		case .Invalid:
+			return false
 		}
+		return false
+	case .Direct_Present:
 		target := gsw3d_proof_find_resource(executor, work.surface_id)
 		if work.context_id != GSW3D_PROOF_CONTEXT_ID ||
 		   gsw3d_proof_find_context(executor, work.context_id) == nil ||
@@ -416,8 +343,12 @@ gsw3d_proof_execute_work :: proc(executor: ^Gsw3d_Proof_Executor, work: ^vga.Gsw
 		   target == nil ||
 		   target.kind != .Surface ||
 		   !target.rendered ||
-		   !gsw3d_proof_rect_equal(work.source, expected) ||
-		   !gsw3d_proof_rect_equal(work.destination, expected) ||
+		   !vga.gsw3d_svga9_profile_extent_valid(target.surface.width, target.surface.height) ||
+		   !gsw3d_proof_rect_equal(
+				   work.source,
+				   vga.Gsw3d_Rect{width = target.surface.width, height = target.surface.height},
+			   ) ||
+		   !gsw3d_proof_rect_equal(work.destination, work.source) ||
 		   work.interval != 1 {return false}
 		present := Gsw3d_Proof_Present {
 			surface_id  = work.surface_id,
@@ -445,8 +376,9 @@ gsw3d_proof_upload_work :: proc(executor: ^Gsw3d_Proof_Executor, work: ^vga.Gsw3
 	resource := gsw3d_proof_find_resource(executor, work.resource_id)
 	if resource == nil ||
 	   resource.kind != .Buffer ||
-	   work.destination_offset > GSW3D_PROOF_VERTEX_BYTES ||
-	   u64(len(work.upload)) > GSW3D_PROOF_VERTEX_BYTES - work.destination_offset {return false}
+	   work.destination_offset > u64(GSW3D_PROOF_VERTEX_BYTES) ||
+	   u64(len(work.upload)) >
+		   u64(GSW3D_PROOF_VERTEX_BYTES) - work.destination_offset {return false}
 	if len(work.upload) == 0 {return false}
 	start := int(work.destination_offset)
 	copy(resource.bytes[start:start + len(work.upload)], work.upload)
