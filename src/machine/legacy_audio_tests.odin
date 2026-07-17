@@ -46,6 +46,22 @@ test_machine_sb16_dma_irq5_and_opl_timer_share_guest_audio_clock :: proc(t: ^tes
 	machine_advance_time_ns(m, 80_000)
 	testing.expect_value(t, legacy_audio_test_in(m, 0x388), u8(0xC0))
 
+	// Sound Blaster FM aliases expose both OPL3 address banks.
+	testing.expect(t, legacy_audio_test_out(m, 0x220, 0x04))
+	testing.expect(t, legacy_audio_test_out(m, 0x221, 0x80))
+	testing.expect_value(t, legacy_audio_test_in(m, 0x220), u8(0))
+	testing.expect(t, legacy_audio_test_out(m, 0x220, 0x02))
+	testing.expect(t, legacy_audio_test_out(m, 0x221, 0xFF))
+	testing.expect(t, legacy_audio_test_out(m, 0x220, 0x04))
+	testing.expect(t, legacy_audio_test_out(m, 0x221, 0x01))
+	machine_advance_time_ns(m, 80_000)
+	testing.expect_value(t, legacy_audio_test_in(m, 0x220), u8(0xC0))
+	testing.expect(t, legacy_audio_test_out(m, 0x222, 0x05))
+	testing.expect(t, legacy_audio_test_out(m, 0x223, 0x01))
+	testing.expect(t, legacy_audio_test_out(m, 0x222, 0x20))
+	testing.expect(t, legacy_audio_test_out(m, 0x223, 0x55))
+	testing.expect_value(t, m.opl3.registers[1][0x20], u8(0x55))
+
 	// DMA1, single-transfer, device reads memory. Channel 4 is the cascade.
 	m.vm.ram[0x2000] = 0x00
 	m.vm.ram[0x2001] = 0xFF

@@ -10,25 +10,29 @@ WIN_H :: TEXT_H * DEFAULT_WINDOW_SCALE + MENU_BAR_H
 HOST_GPU_DRIVER :: "vulkan"
 
 Host :: struct {
-	win:            ^sdl3.Window,
-	ren:            ^sdl3.Renderer,
-	gpu:            ^sdl3.GPUDevice,
-	tex:            ^sdl3.Texture,
-	shader:         ^sdl3.GPUShader,
-	shader_state:   ^sdl3.GPURenderState,
-	tex_width:      int,
-	tex_height:     int,
-	aspect_width:   int,
-	aspect_height:  int,
-	window_scale:   int,
-	fullscreen:     bool,
-	menu_reveal:    f32,
-	visual_shader:  Visual_Shader,
-	storage_icons:  Storage_Icon_Textures,
-	has_frame:      bool,
-	vsync:          bool, // presents are paced by the display; else the UI loop sleeps
-	mouse_captured: bool,
-	mouse_buttons:  u8,
+	win:                 ^sdl3.Window,
+	ren:                 ^sdl3.Renderer,
+	gpu:                 ^sdl3.GPUDevice,
+	tex:                 ^sdl3.Texture,
+	gpu_surfaces:        [HOST_GPU_SURFACE_CAPACITY]Host_Gpu_Surface,
+	gpu_surface_bytes:   u64,
+	gpu_present:         Host_Gpu_Present,
+	gpu_direct_presents: u64,
+	shader:              ^sdl3.GPUShader,
+	shader_state:        ^sdl3.GPURenderState,
+	tex_width:           int,
+	tex_height:          int,
+	aspect_width:        int,
+	aspect_height:       int,
+	window_scale:        int,
+	fullscreen:          bool,
+	menu_reveal:         f32,
+	visual_shader:       Visual_Shader,
+	storage_icons:       Storage_Icon_Textures,
+	has_frame:           bool,
+	vsync:               bool, // presents are paced by the display; else the UI loop sleeps
+	mouse_captured:      bool,
+	mouse_buttons:       u8,
 }
 
 host_init :: proc(h: ^Host) -> (ok: bool) {
@@ -79,6 +83,7 @@ host_destroy :: proc(h: ^Host) {
 	if h.mouse_captured {_ = sdl3.SetWindowRelativeMouseMode(h.win, false)}
 	host_shader_destroy(h)
 	if h.tex != nil {sdl3.DestroyTexture(h.tex)}
+	host_gpu_surfaces_destroy(h)
 	storage_icon_textures_destroy(&h.storage_icons)
 	if h.ren != nil {sdl3.DestroyRenderer(h.ren)}
 	if h.gpu != nil {sdl3.DestroyGPUDevice(h.gpu)}

@@ -127,6 +127,7 @@ host_upload_frame :: proc(h: ^Host, frame: ^vga.Display_Frame) -> bool {
 	sdl3.UnlockTexture(h.tex)
 	h.aspect_width = frame.aspect_width > 0 ? frame.aspect_width : frame.width
 	h.aspect_height = frame.aspect_height > 0 ? frame.aspect_height : frame.height
+	h.gpu_present = {}
 	h.has_frame = true
 	return true
 }
@@ -134,7 +135,8 @@ host_upload_frame :: proc(h: ^Host, frame: ^vga.Display_Frame) -> bool {
 host_render_guest :: proc(h: ^Host) {
 	sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
 	sdl3.RenderClear(h.ren)
-	if h.tex != nil && h.has_frame {
+	texture, source, has_source, gpu_present := host_active_texture(h)
+	if texture != nil && h.has_frame {
 		output_width, output_height := WIN_W, WIN_H
 		w, hh: c.int
 		if sdl3.GetRenderOutputSize(h.ren, &w, &hh) {
@@ -148,8 +150,16 @@ host_render_guest :: proc(h: ^Host) {
 			output_height,
 			f32(MENU_BAR_H) * h.menu_reveal,
 		)
-		shader_active := host_shader_begin(h)
-		sdl3.RenderTexture(h.ren, h.tex, nil, &dst)
+		if gpu_present != nil {dst = host_gpu_present_destination(dst, gpu_present^)}
+		source_width, source_height := h.tex_width, h.tex_height
+		if has_source {
+			source_width = int(source.w)
+			source_height = int(source.h)
+		}
+		shader_active := host_shader_begin(h, source_width, source_height)
+		source_ptr: Maybe(^sdl3.FRect)
+		if has_source {source_ptr = &source}
+		sdl3.RenderTexture(h.ren, texture, source_ptr, &dst)
 		if shader_active {host_shader_end(h)}
 	}
 }
@@ -170,6 +180,7 @@ render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	pixels := ([^]u32)(raw)[:pitch_px * TEXT_H]
 	render_snapshot(pixels, pitch_px, snap)
 	sdl3.UnlockTexture(h.tex)
+	h.gpu_present = {}
 	h.aspect_width = 4
 	h.aspect_height = 3
 	h.has_frame = true

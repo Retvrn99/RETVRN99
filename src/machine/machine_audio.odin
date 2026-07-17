@@ -185,6 +185,13 @@ machine_audio_advance_to :: proc(m: ^Machine, tick: u64) {
 machine_sb16_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
 	machine_sync_device(m, .Audio)
+	if port >= sound.SB16_BASE_PORT && port <= sound.SB16_BASE_PORT + 3 {
+		value, _ := sound.opl3_read_port(
+			&m.opl3,
+			sound.OPL3_BASE_PORT + port - sound.SB16_BASE_PORT,
+		)
+		return u32(value)
+	}
 	value, _ := sound.sb16_read_port(&m.sb16, port)
 	machine_audio_refresh_sb16_dreq(m)
 	return u32(value)
@@ -194,7 +201,15 @@ machine_sb16_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_sb16_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	machine_sync_device(m, .Audio)
-	_ = sound.sb16_write_port(&m.sb16, port, u8(val))
+	if port >= sound.SB16_BASE_PORT && port <= sound.SB16_BASE_PORT + 3 {
+		_ = sound.opl3_write_port(
+			&m.opl3,
+			sound.OPL3_BASE_PORT + port - sound.SB16_BASE_PORT,
+			u8(val),
+		)
+	} else {
+		_ = sound.sb16_write_port(&m.sb16, port, u8(val))
+	}
 	now := master_timeline_now(m.timeline)
 	machine_audio_publish_sources(m, now)
 	machine_audio_forward_sb16_irq(m)

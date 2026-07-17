@@ -40,6 +40,19 @@ source and destination rectangles, and interval. No 3D capability is visible in
 production until a real host renderer is attached and passes the capability and
 rendering tests.
 
+Resource upload is a separate GSW descriptor rather than VMware guest-memory
+DMA. It names an already-defined resource and a registered guest region, copies
+the bounded source bytes at doorbell time, and carries only byte offsets to the
+backend. Its capability is visible only when the backend supplies both the
+upload callback and a pure format-size callback; the transport uses that sizing
+contract to reject destination ranges outside the declared resource before any
+host write. Direct-present intervals remain part of the v1 command and are
+filtered through a backend-advertised interval mask. The SDL GPU host seam keeps
+persistent color surfaces in a 256 MiB bounded table, atomically replaces reused
+surface IDs, and wraps them for the existing 2D compositor, so direct
+presentation does not require a framebuffer readback. Atomic replacement counts
+both the old and new texture against the budget until the swap succeeds.
+
 ## Consequences
 
 - Existing v1 guests remain compatible while v2 DirectDraw work can proceed.
@@ -47,12 +60,18 @@ rendering tests.
   VMware hardware compatibility.
 - A later native GSW packet generation can coexist with the frozen, tested
   SVGA9 subset.
-- Safe resource upload, a Vulkan-backed SDL GPU renderer, shader translation,
-  and guest drivers remain separate proof-gated deliveries.
+- The bounded upload transport and no-readback SDL GPU surface/presentation
+  seam are available without enabling production 3D capabilities.
+- SDL surface lifecycle and presentation calls remain main-thread-only. A host
+  backend must synchronously marshal GSW worker requests to the UI thread before
+  any production 3D capability can be attached.
+- SVGA9 rendering, shader translation, and guest drivers remain separate
+  proof-gated deliveries.
 
 ## References
 
 - [GSW VGA transport](../../src/vga/gsw.odin)
 - [GSW 2D commands](../../src/vga/gsw2d.odin)
 - [Guarded GSW3D queue](../../src/vga/gsw3d.odin)
+- [Host-resident SDL GPU surfaces](../../src/host/gpu_surface.odin)
 - [Windows 98 driver source lock](0004-windows-98-driver-source-and-delivery-lock.md)

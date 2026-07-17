@@ -11,13 +11,17 @@ GSW3D_COMMAND_VERSION :: u16(1)
 GSW3D_RING_MIN_SIZE :: u32(256)
 GSW3D_RING_MAX_SIZE :: u32(1024 * 1024)
 GSW3D_MAX_BATCH_BYTES :: u32(4 * 1024 * 1024)
+GSW3D_MAX_RESOURCE_UPLOAD_BYTES :: u32(4 * 1024 * 1024)
 GSW3D_MAX_COMMAND_BYTES :: u32(1024 * 1024)
 GSW3D_MAX_REGIONS :: 256
 GSW3D_MAX_CONTEXTS :: 128
+GSW3D_MAX_RESOURCES :: 1024
 GSW3D_MAX_QUEUED_WORK :: 64
 GSW3D_MAX_QUEUED_PRESENTS :: 2
-GSW3D_MAX_QUEUED_BATCH_BYTES :: u64(16 * 1024 * 1024)
+GSW3D_MAX_QUEUED_OWNED_BYTES :: u64(16 * 1024 * 1024)
 GSW3D_MAX_SHADER_BYTES :: 64 * 1024
+GSW3D_PRESENT_INTERVAL_MAX :: u32(4)
+GSW3D_PRESENT_INTERVAL_MASK :: u32((1 << (GSW3D_PRESENT_INTERVAL_MAX + 1)) - 1)
 
 GSW3D_REG_PACKET_FORMAT :: u32(0x100)
 GSW3D_REG_CAPABILITIES :: u32(0x104)
@@ -31,11 +35,13 @@ GSW3D_REG_STATUS :: u32(0x120)
 GSW3D_REG_FENCE_LOW :: u32(0x124)
 GSW3D_REG_FENCE_HIGH :: u32(0x128)
 GSW3D_REG_ERROR :: u32(0x12C)
+GSW3D_REG_PRESENT_INTERVALS :: u32(0x130)
 GSW3D_REG_FIRST :: GSW3D_REG_PACKET_FORMAT
 GSW3D_REG_END :: u32(0x180)
 
 GSW3D_BACKEND_SVGA9 :: u32(1 << 0)
 GSW3D_BACKEND_DIRECT_PRESENT :: u32(1 << 1)
+GSW3D_BACKEND_RESOURCE_UPLOAD :: u32(1 << 2)
 
 GSW3D_STATUS_READY :: u32(1 << 0)
 GSW3D_STATUS_BUSY :: u32(1 << 1)
@@ -54,6 +60,7 @@ Gsw3d_Error :: enum u32 {
 	Queue_Full,
 	Backend_Unavailable,
 	Backend_Failure,
+	Invalid_Resource,
 }
 
 Gsw3d_Opcode :: enum u16 {
@@ -63,6 +70,7 @@ Gsw3d_Opcode :: enum u16 {
 	Destroy_Context   = 4,
 	Submit            = 5,
 	Direct_Present    = 6,
+	Resource_Upload   = 7,
 }
 
 Gsw3d_Work_Kind :: enum u8 {
@@ -72,6 +80,7 @@ Gsw3d_Work_Kind :: enum u8 {
 	Destroy_Context,
 	Submit_Svga9,
 	Direct_Present,
+	Resource_Upload,
 }
 
 Gsw3d_Rect :: struct {
@@ -79,27 +88,37 @@ Gsw3d_Rect :: struct {
 }
 
 Gsw3d_Work :: struct {
-	kind:        Gsw3d_Work_Kind,
-	generation:  u64,
-	fence:       u64,
-	context_id:  u32,
-	surface_id:  u32,
-	source:      Gsw3d_Rect,
-	destination: Gsw3d_Rect,
-	interval:    u32,
-	batch:       []u8,
+	kind:               Gsw3d_Work_Kind,
+	generation:         u64,
+	fence:              u64,
+	context_id:         u32,
+	surface_id:         u32,
+	resource_id:        u32,
+	region_id:          u32,
+	source_offset:      u64,
+	destination_offset: u64,
+	source:             Gsw3d_Rect,
+	destination:        Gsw3d_Rect,
+	interval:           u32,
+	batch:              []u8,
+	upload:             []u8,
 }
 
 Gsw3d_Execute_Proc :: proc(ctx: rawptr, work: ^Gsw3d_Work) -> bool
+Gsw3d_Upload_Proc :: proc(ctx: rawptr, work: ^Gsw3d_Work) -> bool
 Gsw3d_Reset_Proc :: proc(ctx: rawptr) -> bool
 Gsw3d_Validate_Svga9_Proc :: proc(ctx: rawptr, batch: []u8) -> bool
+Gsw3d_Resource_Size_Proc :: proc(ctx: rawptr, format, width, height, depth: u32) -> (u64, bool)
 
 Gsw3d_Backend :: struct {
-	ctx:            rawptr,
-	capabilities:   u32,
-	validate_svga9: Gsw3d_Validate_Svga9_Proc,
-	execute:        Gsw3d_Execute_Proc,
-	reset:          Gsw3d_Reset_Proc,
+	ctx:               rawptr,
+	capabilities:      u32,
+	present_intervals: u32,
+	validate_svga9:    Gsw3d_Validate_Svga9_Proc,
+	resource_size:     Gsw3d_Resource_Size_Proc,
+	execute:           Gsw3d_Execute_Proc,
+	upload:            Gsw3d_Upload_Proc,
+	reset:             Gsw3d_Reset_Proc,
 }
 
 Gsw3d_Region :: struct {
@@ -114,6 +133,12 @@ Gsw3d_Context :: struct {
 	id:   u32,
 }
 
+Gsw3d_Resource :: struct {
+	live: bool,
+	id:   u32,
+	size: u64,
+}
+
 Gsw3d_Metrics :: struct {
 	descriptors:        u64,
 	malformed:          u64,
@@ -122,6 +147,8 @@ Gsw3d_Metrics :: struct {
 	contexts_created:   u64,
 	regions_registered: u64,
 	presents:           u64,
+	uploads:            u64,
+	upload_bytes:       u64,
 	backend_failures:   u64,
 	resets:             u64,
 }
@@ -137,6 +164,7 @@ Gsw3d :: struct {
 	completed_fence:    u64,
 	regions:            [GSW3D_MAX_REGIONS]Gsw3d_Region,
 	contexts:           [GSW3D_MAX_CONTEXTS]Gsw3d_Context,
+	resources:          [GSW3D_MAX_RESOURCES]Gsw3d_Resource,
 	backend:            Gsw3d_Backend,
 	metrics:            Gsw3d_Metrics,
 	mu:                 sync.Mutex,
@@ -148,9 +176,10 @@ Gsw3d :: struct {
 	queue_tail:         int,
 	queue_count:        int,
 	queued_presents:    int,
-	owned_batch_bytes:  u64,
+	owned_work_bytes:   u64,
 	active:             bool,
 	stopping:           bool,
+	poisoned:           bool,
 	generation:         u64,
 	reset_pending:      bool,
 	reset_completed:    bool,
@@ -175,9 +204,16 @@ gsw3d_init :: proc(d: ^Gsw3d) {
 }
 
 @(private = "file")
+gsw3d_work_owned_bytes :: proc(work: ^Gsw3d_Work) -> u64 {
+	if work == nil {return 0}
+	return u64(len(work.batch)) + u64(len(work.upload))
+}
+
+@(private = "file")
 gsw3d_work_free :: proc(d: ^Gsw3d, work: ^Gsw3d_Work) {
 	if work == nil {return}
 	if work.batch != nil {delete(work.batch, d.allocator)}
+	if work.upload != nil {delete(work.upload, d.allocator)}
 	free(work, d.allocator)
 }
 
@@ -197,6 +233,7 @@ gsw3d_worker_proc :: proc(d: ^Gsw3d) {
 		d.active = true
 		sync.unlock(&d.mu)
 
+		// Backend callbacks complete host effects before the worker advances the FIFO.
 		ok := false
 		switch work.kind {
 		case .Transport_Barrier:
@@ -204,21 +241,25 @@ gsw3d_worker_proc :: proc(d: ^Gsw3d) {
 		case .Reset:
 			ok = d.backend.reset != nil && d.backend.reset(d.backend.ctx)
 		case .Create_Context, .Destroy_Context, .Submit_Svga9, .Direct_Present:
-			// A synchronous backend returns only after host effects complete.
-			// A future token API will advertise asynchronous fences.
 			ok = d.backend.execute != nil && d.backend.execute(d.backend.ctx, work)
+		case .Resource_Upload:
+			ok = d.backend.upload != nil && d.backend.upload(d.backend.ctx, work)
 		}
 
 		sync.lock(&d.mu)
 		if work.kind == .Direct_Present {d.queued_presents -= 1}
-		if work.batch != nil {d.owned_batch_bytes -= u64(len(work.batch))}
+		d.owned_work_bytes -= gsw3d_work_owned_bytes(work)
 		if work.generation == d.generation {
 			d.pending_completion = true
-			if work.kind == .Reset {d.reset_completed = true}
-			if work.fence != 0 {d.pending_fence = work.fence}
-			if !ok {
+			if ok {
+				if work.kind == .Reset {d.reset_completed = true}
+				if work.fence != 0 {d.pending_fence = work.fence}
+			} else {
+				d.poisoned = true
+				d.reset_completed = false
 				d.pending_error = .Backend_Failure
 				d.metrics.backend_failures += 1
+				gsw3d_cancel_queued(d)
 			}
 		}
 		d.active = false
@@ -229,12 +270,19 @@ gsw3d_worker_proc :: proc(d: ^Gsw3d) {
 }
 
 gsw3d_attach_backend :: proc(d: ^Gsw3d, backend: Gsw3d_Backend) -> bool {
-	known_caps := GSW3D_BACKEND_SVGA9 | GSW3D_BACKEND_DIRECT_PRESENT
+	known_caps :=
+		GSW3D_BACKEND_SVGA9 | GSW3D_BACKEND_DIRECT_PRESENT | GSW3D_BACKEND_RESOURCE_UPLOAD
+	upload_supported := backend.capabilities & GSW3D_BACKEND_RESOURCE_UPLOAD != 0
+	present_supported := backend.capabilities & GSW3D_BACKEND_DIRECT_PRESENT != 0
 	if d == nil ||
 	   backend.execute == nil ||
 	   backend.reset == nil ||
 	   backend.validate_svga9 == nil ||
 	   backend.capabilities & GSW3D_BACKEND_SVGA9 == 0 ||
+	   upload_supported != (backend.upload != nil && backend.resource_size != nil) ||
+	   (backend.upload == nil) != (backend.resource_size == nil) ||
+	   present_supported != (backend.present_intervals != 0) ||
+	   backend.present_intervals &~ GSW3D_PRESENT_INTERVAL_MASK != 0 ||
 	   backend.capabilities &~ known_caps != 0 ||
 	   d.worker != nil {
 		return false
@@ -255,6 +303,9 @@ gsw_vga_set_3d_backend :: proc(g: ^Gsw_Vga, backend: Gsw3d_Backend) -> bool {
 	if backend.capabilities & GSW3D_BACKEND_DIRECT_PRESENT != 0 {
 		g.capabilities |= GSW_CAP_DIRECT_PRESENT
 	}
+	if backend.capabilities & GSW3D_BACKEND_RESOURCE_UPLOAD != 0 {
+		g.capabilities |= GSW_CAP_RESOURCE_UPLOAD
+	}
 	return true
 }
 
@@ -266,7 +317,7 @@ gsw3d_cancel_queued :: proc(d: ^Gsw3d) {
 		d.queue_head = (d.queue_head + 1) % GSW3D_MAX_QUEUED_WORK
 		d.queue_count -= 1
 		if work.kind == .Direct_Present {d.queued_presents -= 1}
-		if work.batch != nil {d.owned_batch_bytes -= u64(len(work.batch))}
+		d.owned_work_bytes -= gsw3d_work_owned_bytes(work)
 		gsw3d_work_free(d, work)
 	}
 	d.queue_head, d.queue_tail = 0, 0
@@ -280,6 +331,7 @@ gsw3d_reset :: proc(d: ^Gsw3d) {
 	d.generation += 1
 	if d.generation == 0 {d.generation = 1}
 	gsw3d_cancel_queued(d)
+	d.poisoned = false
 	d.pending_completion = false
 	d.pending_error = .None
 	d.pending_fence = 0
@@ -295,6 +347,7 @@ gsw3d_reset :: proc(d: ^Gsw3d) {
 	if reset_work != nil {sync.cond_signal(&d.work_ready)}
 	for &region in d.regions {region = {}}
 	for &entry in d.contexts {entry = {}}
+	for &resource in d.resources {resource = {}}
 	d.ring_head = d.ring_tail
 	d.error = .None
 	d.completed_fence = 0
@@ -379,6 +432,24 @@ gsw3d_find_context :: proc(d: ^Gsw3d, id: u32) -> ^Gsw3d_Context {
 gsw3d_free_context :: proc(d: ^Gsw3d) -> ^Gsw3d_Context {
 	for &entry in d.contexts {if !entry.live {return &entry}}
 	return nil
+}
+
+@(private = "file")
+gsw3d_find_resource_in :: proc(resources: []Gsw3d_Resource, id: u32) -> ^Gsw3d_Resource {
+	for &resource in resources {if resource.live && resource.id == id {return &resource}}
+	return nil
+}
+
+@(private = "file")
+gsw3d_free_resource_in :: proc(resources: []Gsw3d_Resource) -> ^Gsw3d_Resource {
+	for &resource in resources {if !resource.live {return &resource}}
+	return nil
+}
+
+@(private = "package")
+gsw3d_find_resource :: proc(d: ^Gsw3d, id: u32) -> ^Gsw3d_Resource {
+	if d == nil {return nil}
+	return gsw3d_find_resource_in(d.resources[:], id)
 }
 
 @(private = "file")
@@ -507,13 +578,70 @@ gsw3d_validate_svga9_batch :: proc(batch: []u8, context_id: u32 = 0) -> bool {
 }
 
 @(private = "file")
+gsw3d_defined_resource_size :: proc(backend: ^Gsw3d_Backend, body: []u8) -> (u64, bool) {
+	if backend.resource_size == nil {return 0, true}
+	format := gsw_rd32(body, 8)
+	levels: u32
+	for face in 0 ..< 6 {levels += gsw_rd32(body, 12 + face * 4)}
+	total: u64
+	for level in 0 ..< int(levels) {
+		offset := 44 + level * 12
+		width := gsw_rd32(body, offset)
+		height := gsw_rd32(body, offset + 4)
+		depth := gsw_rd32(body, offset + 8)
+		size, ok := backend.resource_size(backend.ctx, format, width, height, depth)
+		if !ok || size == 0 || total > ~u64(0) - size {return 0, false}
+		total += size
+	}
+	return total, total != 0
+}
+
+@(private = "file")
+gsw3d_apply_resource_lifetimes :: proc(
+	resources: []Gsw3d_Resource,
+	backend: ^Gsw3d_Backend,
+	batch: []u8,
+) -> bool {
+	offset := 0
+	for offset < len(batch) {
+		if len(batch) - offset < 8 {return false}
+		opcode := gsw_rd32(batch, offset)
+		body_size := int(gsw_rd32(batch, offset + 4))
+		if body_size < 4 || body_size > len(batch) - offset - 8 {return false}
+		body := batch[offset + 8:offset + 8 + body_size]
+		resource_id := gsw_rd32(body, 0)
+		switch opcode {
+		case 1041:
+			resource := gsw3d_find_resource_in(resources, resource_id)
+			if resource == nil {return false}
+			resource^ = {}
+		case 1070:
+			resource_size, ok := gsw3d_defined_resource_size(backend, body)
+			if !ok {return false}
+			resource := gsw3d_find_resource_in(resources, resource_id)
+			if resource == nil {resource = gsw3d_free_resource_in(resources)}
+			if resource == nil {return false}
+			resource^ = {
+				live = true,
+				id   = resource_id,
+				size = resource_size,
+			}
+		}
+		offset += 8 + body_size
+	}
+	return offset == len(batch)
+}
+
+@(private = "file")
 gsw3d_queue_owned :: proc(d: ^Gsw3d, work: ^Gsw3d_Work) -> bool {
 	sync.lock(&d.mu)
-	batch_bytes := work.batch == nil ? u64(0) : u64(len(work.batch))
+	owned_bytes := gsw3d_work_owned_bytes(work)
 	full :=
+		d.poisoned ||
 		d.queue_count == GSW3D_MAX_QUEUED_WORK ||
 		work.kind == .Direct_Present && d.queued_presents >= GSW3D_MAX_QUEUED_PRESENTS ||
-		batch_bytes > GSW3D_MAX_QUEUED_BATCH_BYTES - d.owned_batch_bytes
+		d.owned_work_bytes > GSW3D_MAX_QUEUED_OWNED_BYTES ||
+		owned_bytes > GSW3D_MAX_QUEUED_OWNED_BYTES - d.owned_work_bytes
 	if full {
 		sync.unlock(&d.mu)
 		return false
@@ -523,7 +651,7 @@ gsw3d_queue_owned :: proc(d: ^Gsw3d, work: ^Gsw3d_Work) -> bool {
 	d.queue_tail = (d.queue_tail + 1) % GSW3D_MAX_QUEUED_WORK
 	d.queue_count += 1
 	if work.kind == .Direct_Present {d.queued_presents += 1}
-	d.owned_batch_bytes += batch_bytes
+	d.owned_work_bytes += owned_bytes
 	sync.unlock(&d.mu)
 	sync.cond_signal(&d.work_ready)
 	return true
@@ -531,7 +659,6 @@ gsw3d_queue_owned :: proc(d: ^Gsw3d, work: ^Gsw3d_Work) -> bool {
 
 @(private = "file")
 gsw3d_queue_transport_barrier :: proc(d: ^Gsw3d, fence: u64) -> bool {
-	if fence == 0 {return true}
 	work := gsw3d_work_new(d, .Transport_Barrier, fence, 0)
 	if gsw3d_queue_owned(d, work) {return true}
 	gsw3d_work_free(d, work)
@@ -646,11 +773,59 @@ gsw3d_execute_descriptor :: proc(d: ^Gsw3d, descriptor, ram: []u8) -> Gsw3d_Exec
 			d.error = .Invalid_Batch
 			return .Invalid
 		}
+		next_resources := d.resources
+		if !gsw3d_apply_resource_lifetimes(next_resources[:], &d.backend, batch) {
+			delete(batch, d.allocator)
+			d.error = .Invalid_Resource
+			return .Invalid
+		}
 		work := gsw3d_work_new(d, .Submit_Svga9, fence, context_id)
 		work.batch = batch
 		if !gsw3d_queue_owned(d, work) {gsw3d_work_free(d, work); return .Retry}
+		d.resources = next_resources
 		d.metrics.batches += 1
 		d.metrics.batch_bytes += u64(length)
+	case .Resource_Upload:
+		if len(descriptor) != 48 || gsw_rd32(descriptor, 44) != 0 {return .Invalid}
+		if d.backend.capabilities & GSW3D_BACKEND_RESOURCE_UPLOAD == 0 || d.backend.upload == nil {
+			d.error = .Backend_Unavailable
+			return .Invalid
+		}
+		resource_id := gsw_rd32(descriptor, 16)
+		region_id := gsw_rd32(descriptor, 20)
+		source_offset := gsw_rd64(descriptor, 24)
+		destination_offset := gsw_rd64(descriptor, 32)
+		length := gsw_rd32(descriptor, 40)
+		resource := gsw3d_find_resource(d, resource_id)
+		if resource_id == 0 || resource == nil {
+			d.error = .Invalid_Resource
+			return .Invalid
+		}
+		region := gsw3d_find_region(d, region_id)
+		if region == nil ||
+		   length == 0 ||
+		   length > GSW3D_MAX_RESOURCE_UPLOAD_BYTES ||
+		   source_offset > region.size ||
+		   u64(length) > region.size - source_offset {
+			d.error = .Invalid_Region
+			return .Invalid
+		}
+		if destination_offset > resource.size || u64(length) > resource.size - destination_offset {
+			d.error = .Invalid_Resource
+			return .Invalid
+		}
+		start := region.gpa + source_offset
+		payload := make([]u8, int(length), d.allocator)
+		copy(payload, ram[int(start):int(start + u64(length))])
+		work := gsw3d_work_new(d, .Resource_Upload, fence, 0)
+		work.resource_id = resource_id
+		work.region_id = region_id
+		work.source_offset = source_offset
+		work.destination_offset = destination_offset
+		work.upload = payload
+		if !gsw3d_queue_owned(d, work) {gsw3d_work_free(d, work); return .Retry}
+		d.metrics.uploads += 1
+		d.metrics.upload_bytes += u64(length)
 	case .Direct_Present:
 		if len(descriptor) != 64 ||
 		   d.backend.capabilities & GSW3D_BACKEND_DIRECT_PRESENT == 0 ||
@@ -674,12 +849,17 @@ gsw3d_execute_descriptor :: proc(d: ^Gsw3d, descriptor, ram: []u8) -> Gsw3d_Exec
 			height = gsw_rd32(descriptor, 52),
 		}
 		work.interval = gsw_rd32(descriptor, 56)
-		if work.surface_id == 0 ||
-		   work.source.width == 0 ||
+		if work.surface_id == 0 || gsw3d_find_resource(d, work.surface_id) == nil {
+			d.error = .Invalid_Resource
+			gsw3d_work_free(d, work)
+			return .Invalid
+		}
+		if work.source.width == 0 ||
 		   work.source.height == 0 ||
 		   work.destination.width == 0 ||
 		   work.destination.height == 0 ||
-		   work.interval > 4 {
+		   work.interval > GSW3D_PRESENT_INTERVAL_MAX ||
+		   d.backend.present_intervals & (u32(1) << work.interval) == 0 {
 			gsw3d_work_free(d, work)
 			return .Invalid
 		}
@@ -695,14 +875,22 @@ gsw3d_execute_descriptor :: proc(d: ^Gsw3d, descriptor, ram: []u8) -> Gsw3d_Exec
 gsw3d_process :: proc(d: ^Gsw3d, ram: []u8) {
 	sync.lock(&d.mu)
 	reset_pending := d.reset_pending
+	poisoned := d.poisoned
 	sync.unlock(&d.mu)
 	if reset_pending {
+		if poisoned {gsw3d_fail(d, .Backend_Failure, false)}
 		d.status |= GSW3D_STATUS_RESET | GSW3D_STATUS_BUSY
 		return
 	}
+	if poisoned {gsw3d_fail(d, .Backend_Failure, false); return}
 	if !gsw3d_ring_valid(d, ram) {gsw3d_fail(d, .Invalid_Ring); return}
 	d.status &~= GSW3D_STATUS_QUEUE_FULL
+	if d.error == .Queue_Full {d.error = .None}
 	for gsw3d_ring_available(d) > 0 {
+		sync.lock(&d.mu)
+		poisoned = d.poisoned
+		sync.unlock(&d.mu)
+		if poisoned {gsw3d_fail(d, .Backend_Failure, false); return}
 		available := gsw3d_ring_available(d)
 		if available < 16 {gsw3d_fail(d, .Malformed_Descriptor); return}
 		header: [16]u8
@@ -727,8 +915,15 @@ gsw3d_process :: proc(d: ^Gsw3d, ram: []u8) {
 			gsw3d_fail(d, d.error)
 			return
 		case .Retry:
-			d.error = .Queue_Full
-			d.status |= GSW3D_STATUS_QUEUE_FULL
+			sync.lock(&d.mu)
+			poisoned = d.poisoned
+			sync.unlock(&d.mu)
+			if poisoned {
+				gsw3d_fail(d, .Backend_Failure, false)
+			} else {
+				d.error = .Queue_Full
+				d.status |= GSW3D_STATUS_QUEUE_FULL
+			}
 			return
 		case .Success:
 		}
@@ -756,8 +951,14 @@ gsw3d_poll :: proc(d: ^Gsw3d) -> bool {
 	if d.reset_completed {
 		d.reset_completed = false
 		d.reset_pending = false
+		d.poisoned = false
 		d.status &~= GSW3D_STATUS_RESET
 		d.status |= GSW3D_STATUS_READY
+	}
+	if d.poisoned {
+		d.error = .Backend_Failure
+		d.status &~= GSW3D_STATUS_READY
+		d.status |= GSW3D_STATUS_ERROR
 	}
 	busy := d.queue_count != 0 || d.active || d.reset_pending
 	if busy {d.status |= GSW3D_STATUS_BUSY} else {d.status &~= GSW3D_STATUS_BUSY | GSW3D_STATUS_QUEUE_FULL}
@@ -790,6 +991,8 @@ gsw3d_register_read :: proc(d: ^Gsw3d, offset: u32) -> (u32, bool) {
 		return u32(d.completed_fence >> 32), true
 	case GSW3D_REG_ERROR:
 		return u32(d.error), true
+	case GSW3D_REG_PRESENT_INTERVALS:
+		return d.backend.present_intervals, true
 	}
 	return 0, true
 }
@@ -812,8 +1015,13 @@ gsw3d_register_write :: proc(d: ^Gsw3d, offset, value: u32, ram: []u8) -> bool {
 	case GSW3D_REG_STATUS:
 		if value & GSW3D_STATUS_RESET != 0 {gsw3d_reset(d)}
 		if value & GSW3D_STATUS_ERROR != 0 {
-			d.error = .None
-			d.status &~= GSW3D_STATUS_ERROR
+			sync.lock(&d.mu)
+			poisoned := d.poisoned
+			sync.unlock(&d.mu)
+			if !poisoned {
+				d.error = .None
+				d.status &~= GSW3D_STATUS_ERROR
+			}
 		}
 	}
 	return true

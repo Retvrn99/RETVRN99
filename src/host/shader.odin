@@ -79,11 +79,11 @@ host_set_visual_shader :: proc(h: ^Host, style: Visual_Shader) -> bool {
 	return true
 }
 
-host_shader_begin :: proc(h: ^Host) -> bool {
+host_shader_begin :: proc(h: ^Host, source_width, source_height: int) -> bool {
 	if h == nil || h.shader_state == nil || h.visual_shader == .None {return false}
 	uniforms := Crt_Uniforms {
-		source_width  = f32(max(1, h.tex_width)),
-		source_height = f32(max(1, h.tex_height)),
+		source_width  = f32(max(1, source_width)),
+		source_height = f32(max(1, source_height)),
 		style         = h.visual_shader == .Subtle ? 1 : 2,
 		time_seconds  = f32(sdl3.GetTicks()) / 1000.0,
 	}

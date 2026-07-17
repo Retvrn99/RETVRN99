@@ -1,22 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package audio
 
-import "core:math"
-
-// Timer, register-bank, and channel routing behavior adapted from IzarraVM
-// commit b88a9fe68a8109f26632ff2802262cc38a6a5ad9. The compact tone generator is
-// deliberately a foundation: it preserves OPL3 frequency and stereo routing
-// while full operator envelopes, modulation, rhythm, and four-op synthesis are
-// added independently.
+// Register, timer and synthesis behavior adapted from IzarraVM commit
+// b88a9fe68a8109f26632ff2802262cc38a6a5ad9. RETVRN99 retains its master-clock
+// scheduler so native 49,716 Hz output is deterministically integrated into the
+// 48 kHz host mixer.
 
 OPL3_BASE_PORT :: u16(0x388)
 OPL3_LAST_PORT :: u16(0x38B)
 OPL3_NATIVE_HZ :: u64(49_716)
 OPL3_TIMER1_TICKS :: AUDIO_MASTER_CLOCK_HZ * 80 / 1_000_000
 OPL3_TIMER2_TICKS :: AUDIO_MASTER_CLOCK_HZ * 320 / 1_000_000
-OPL3_SINE_SIZE :: 1_024
-
-OPL3_CARRIER_SLOTS := [9]u8{3, 4, 5, 11, 12, 13, 19, 20, 21}
 
 Opl3_Timer :: struct {
 	step_ticks: u64,
@@ -27,26 +21,28 @@ Opl3_Timer :: struct {
 }
 
 Opl3 :: struct {
-	registers:        [2][256]u8,
-	address:          [2]u8,
-	timer1:           Opl3_Timer,
-	timer2:           Opl3_Timer,
-	now_tick:         u64,
-	phases:           [18]u32,
-	sine:             [OPL3_SINE_SIZE]i16,
-	sample_scheduled: bool,
-	next_sample_tick: u64,
-	sample_remainder: u64,
-	current_frame:    Audio_Frame,
+	registers:           [2][256]u8,
+	address:             u16,
+	timer1:              Opl3_Timer,
+	timer2:              Opl3_Timer,
+	now_tick:            u64,
+	operators:           [36]Opl3_Operator,
+	eg_counter:          u32,
+	noise:               u32,
+	global_sample_index: u64,
+	synthesis_dirty:     bool,
+	sample_scheduled:    bool,
+	next_sample_tick:    u64,
+	current_frame:       Audio_Frame,
 }
 
 opl3_init :: proc(opl: ^Opl3) {
 	opl^ = {}
 	opl.timer1.step_ticks = OPL3_TIMER1_TICKS
 	opl.timer2.step_ticks = OPL3_TIMER2_TICKS
-	for index in 0 ..< OPL3_SINE_SIZE {
-		angle := 2.0 * math.PI * f64(index) / f64(OPL3_SINE_SIZE)
-		opl.sine[index] = i16(math.round(math.sin(angle) * 32_767.0))
+	opl.noise = 1
+	for index in 0 ..< len(opl.operators) {
+		opl3_operator_init(&opl.operators[index])
 	}
 }
 
@@ -63,28 +59,50 @@ opl3_channel_active :: proc(opl: ^Opl3, channel: int) -> bool {
 }
 
 opl3_any_channel_active :: proc(opl: ^Opl3) -> bool {
+	if opl.synthesis_dirty {return true}
 	count := opl3_enabled(opl) ? 18 : 9
+	rhythm := opl3_rhythm_enabled(opl)
+	four_op_mask := opl3_four_op_mask(opl)
 	for channel in 0 ..< count {
+		if rhythm && channel >= 6 && channel <= 8 {continue}
+		if opl3_four_op_secondary(channel, four_op_mask) {continue}
 		if opl3_channel_active(opl, channel) {return true}
+	}
+	if rhythm && opl.registers[0][0xBD] & 0x1F != 0 {return true}
+	operator_count := opl3_enabled(opl) ? 36 : 18
+	for index in 0 ..< operator_count {
+		if opl3_operator_audible(&opl.operators[index]) {return true}
 	}
 	return false
 }
 
+opl3_native_index_at_tick :: proc(tick: u64) -> u64 {
+	numerator := (u128(tick) + 1) * u128(OPL3_NATIVE_HZ) - 1
+	return u64(numerator / u128(AUDIO_MASTER_CLOCK_HZ))
+}
+
+opl3_native_tick_for_index :: proc(index: u64) -> u64 {
+	tick := u128(index) * u128(AUDIO_MASTER_CLOCK_HZ) / u128(OPL3_NATIVE_HZ)
+	return tick > u128(~u64(0)) ? ~u64(0) : u64(tick)
+}
+
+opl3_advance_globals_to :: proc(opl: ^Opl3, target_tick: u64) {
+	target_index := opl3_native_index_at_tick(target_tick)
+	if target_index <= opl.global_sample_index {return}
+	steps := target_index - opl.global_sample_index
+	opl.eg_counter += u32(steps)
+	opl.noise = opl3_advance_noise_steps(opl.noise, steps)
+	opl.global_sample_index = target_index
+}
+
 opl3_schedule_first_sample :: proc(opl: ^Opl3) {
-	delta := max(AUDIO_MASTER_CLOCK_HZ / OPL3_NATIVE_HZ, u64(1))
-	opl.sample_remainder = AUDIO_MASTER_CLOCK_HZ % OPL3_NATIVE_HZ
-	opl.next_sample_tick = opl.now_tick + min(delta, ~u64(0) - opl.now_tick)
+	index := max(opl.global_sample_index, opl3_native_index_at_tick(opl.now_tick)) + 1
+	opl.next_sample_tick = opl3_native_tick_for_index(index)
 	opl.sample_scheduled = true
 }
 
 opl3_schedule_next_sample :: proc(opl: ^Opl3) {
-	delta := AUDIO_MASTER_CLOCK_HZ / OPL3_NATIVE_HZ
-	opl.sample_remainder += AUDIO_MASTER_CLOCK_HZ % OPL3_NATIVE_HZ
-	if opl.sample_remainder >= OPL3_NATIVE_HZ {
-		opl.sample_remainder -= OPL3_NATIVE_HZ
-		delta += 1
-	}
-	opl.next_sample_tick += min(max(delta, u64(1)), ~u64(0) - opl.next_sample_tick)
+	opl.next_sample_tick = opl3_native_tick_for_index(opl.global_sample_index + 1)
 	opl.sample_scheduled = true
 }
 
@@ -132,6 +150,7 @@ opl3_advance_control_to :: proc(opl: ^Opl3, target_tick: u64) {
 	elapsed := target_tick - opl.now_tick
 	opl3_timer_advance(&opl.timer1, elapsed, opl.registers[0][0x02])
 	opl3_timer_advance(&opl.timer2, elapsed, opl.registers[0][0x03])
+	opl3_advance_globals_to(opl, target_tick)
 	opl.now_tick = target_tick
 }
 
@@ -166,6 +185,12 @@ opl3_write_register :: proc(opl: ^Opl3, bank: int, index, value: u8) {
 		}
 	}
 	opl.registers[bank][index] = value
+	if index >= 0xB0 && index <= 0xB8 ||
+	   bank == 0 && index == 0xBD ||
+	   bank == 1 && (index == 0x04 || index == 0x05) {
+		opl.synthesis_dirty = true
+		opl3_sync_key_states(opl)
+	}
 	opl3_refresh_sample_clock(opl)
 }
 
@@ -182,13 +207,15 @@ opl3_read_port :: proc(opl: ^Opl3, port: u16) -> (u8, bool) {
 opl3_write_port :: proc(opl: ^Opl3, port: u16, value: u8) -> bool {
 	switch port {
 	case 0x388:
-		opl.address[0] = value
-	case 0x389:
-		opl3_write_register(opl, 0, opl.address[0], value)
+		opl.address = u16(value)
 	case 0x38A:
-		opl.address[1] = value
-	case 0x38B:
-		opl3_write_register(opl, 1, opl.address[1], value)
+		if opl3_enabled(opl) || value == 0x05 {
+			opl.address = 0x100 | u16(value)
+		} else {
+			opl.address = u16(value)
+		}
+	case 0x389, 0x38B:
+		opl3_write_register(opl, int(opl.address >> 8), u8(opl.address), value)
 	case:
 		return false
 	}
@@ -221,36 +248,20 @@ opl3_next_deadline :: proc(opl: ^Opl3) -> (u64, bool) {
 
 opl3_render_sample :: proc(opl: ^Opl3) -> (Audio_Frame, bool) {
 	if !opl.sample_scheduled {return {}, false}
-	left, right: i64
-	channel_count := opl3_enabled(opl) ? 18 : 9
-	for channel in 0 ..< channel_count {
-		if !opl3_channel_active(opl, channel) {continue}
-		bank := channel / 9
-		local := channel % 9
-		register_b := opl.registers[bank][0xB0 + local]
-		f_number := u32(opl.registers[bank][0xA0 + local]) | u32(register_b & 0x03) << 8
-		block := uint((register_b >> 2) & 0x07)
-		increment := u32(u64(f_number) << (block + 12))
-		opl.phases[channel] += increment
-		sine := i32(opl.sine[int(opl.phases[channel] >> 22)])
-		level := opl.registers[bank][0x40 + OPL3_CARRIER_SLOTS[local]] & 0x3F
-		amplitude := i32(63 - level) * 128
-		sample := i64(sine * amplitude / 32_768)
-		if opl3_enabled(opl) {
-			pan := opl.registers[bank][0xC0 + local]
-			if pan & 0x10 != 0 {left += sample}
-			if pan & 0x20 != 0 {right += sample}
-		} else {
-			left += sample
-			right += sample
-		}
-	}
+	opl3_advance_globals_to(opl, opl.next_sample_tick)
+	left, right := opl3_synthesize_sample(opl)
+	opl.synthesis_dirty = false
 	opl.current_frame = {
-		left  = audio_clamp_i16(left),
-		right = audio_clamp_i16(right),
+		left  = audio_clamp_i16(i64(left)),
+		right = audio_clamp_i16(i64(right)),
 	}
+	frame := opl.current_frame
 	opl3_schedule_next_sample(opl)
-	return opl.current_frame, true
+	if !opl3_any_channel_active(opl) {
+		opl.sample_scheduled = false
+		opl.current_frame = {}
+	}
+	return frame, true
 }
 
 opl3_current_output :: proc(opl: ^Opl3) -> Audio_Frame {

@@ -179,6 +179,7 @@ gsw3d_test_submission_is_copied_before_worker_parse :: proc(t: ^testing.T) {
 			{
 				ctx = &backend,
 				capabilities = GSW3D_BACKEND_SVGA9 | GSW3D_BACKEND_DIRECT_PRESENT,
+				present_intervals = GSW3D_PRESENT_INTERVAL_MASK,
 				validate_svga9 = gsw3d_test_backend_validate,
 				execute = gsw3d_test_backend_execute,
 				reset = gsw3d_test_backend_reset,
