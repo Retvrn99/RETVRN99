@@ -69,8 +69,64 @@ if ($toolchains.Count -eq 0 -or $steps.Count -eq 0) {
 
 $sourceRootPath = Get-FullPath $SourceRoot
 $toolchainRootPath = Get-FullPath $ToolchainRoot
+$lockPath = Get-FullPath $LockFile
+if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+    throw "Upstream lock not found: $lockPath"
+}
+$lockLines = @(
+    Get-Content -LiteralPath $lockPath |
+        Where-Object { $_.Trim().Length -gt 0 -and -not $_.TrimStart().StartsWith('#') }
+)
+if ($lockLines.Count -lt 2) {
+    throw 'The upstream lock must contain a header and at least one source row.'
+}
+$lockEntries = @($lockLines | ConvertFrom-Csv -Delimiter "`t")
+$lockColumns = @($lockEntries[0].PSObject.Properties.Name)
+foreach ($column in @('name', 'source_directory', 'disposition')) {
+    if ($lockColumns -notcontains $column) {
+        throw "The upstream lock is missing '$column'."
+    }
+}
+$lockedSources = @{}
+foreach ($source in $lockEntries) {
+    $sourceDirectory = [string]$source.source_directory
+    if ([string]::IsNullOrWhiteSpace($sourceDirectory)) {
+        throw "Upstream '$($source.name)' has no source directory."
+    }
+    $directoryKey = $sourceDirectory.ToLowerInvariant()
+    if ($lockedSources.ContainsKey($directoryKey)) {
+        throw "Duplicate source directory '$sourceDirectory'."
+    }
+    $lockedSources[$directoryKey] = [PSCustomObject]@{
+        Name = [string]$source.name
+        SourceDirectory = $sourceDirectory
+        Disposition = [string]$source.disposition
+    }
+}
+
+$requiredSourceNames = @{}
+foreach ($step in $steps) {
+    $stepSourceDirectory = [string]$step.source_directory
+    if ($stepSourceDirectory -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+        throw "Build step '$($step.name)' has an invalid source directory."
+    }
+    $directoryKey = $stepSourceDirectory.ToLowerInvariant()
+    if (-not $lockedSources.ContainsKey($directoryKey)) {
+        throw "Build step '$($step.name)' does not reference a locked source."
+    }
+    $lockedSource = $lockedSources[$directoryKey]
+    if ($stepSourceDirectory -cne $lockedSource.SourceDirectory) {
+        throw "Build step '$($step.name)' must use canonical source directory '$($lockedSource.SourceDirectory)'."
+    }
+    if ([string]::IsNullOrWhiteSpace($lockedSource.Name) -or
+        $lockedSource.Disposition -cne 'planned') {
+        throw "Build step '$($step.name)' must reference exactly one named planned source."
+    }
+    $requiredSourceNames[$lockedSource.Name] = $true
+}
+$sourceAllowlist = @($requiredSourceNames.Keys | Sort-Object)
 & (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
-    -SourceRoot $sourceRootPath -LockFile $LockFile
+    -SourceRoot $sourceRootPath -LockFile $lockPath -SourceName $sourceAllowlist
 if ($LASTEXITCODE -ne 0) {
     throw 'Pinned Windows 98 source verification failed.'
 }
@@ -95,16 +151,6 @@ foreach ($toolchain in $toolchains) {
     $verifiedToolchains[$toolchain.name] = $executable
 }
 
-$lockPath = Get-FullPath $LockFile
-$lockLines = @(
-    Get-Content -LiteralPath $lockPath |
-        Where-Object { $_.Trim().Length -gt 0 -and -not $_.TrimStart().StartsWith('#') }
-)
-$lockedSources = @{}
-foreach ($source in @($lockLines | ConvertFrom-Csv -Delimiter "`t")) {
-    $lockedSources[$source.source_directory.ToLowerInvariant()] = $true
-}
-
 $validatedSteps = @()
 $seenSteps = @{}
 foreach ($step in $steps) {
@@ -118,10 +164,16 @@ foreach ($step in $steps) {
     if ($step.source_directory -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
         throw "Build step '$($step.name)' has an invalid source directory."
     }
-    if (-not $lockedSources.ContainsKey($step.source_directory.ToLowerInvariant())) {
+    $directoryKey = ([string]$step.source_directory).ToLowerInvariant()
+    if (-not $lockedSources.ContainsKey($directoryKey)) {
         throw "Build step '$($step.name)' does not reference a locked source."
     }
-    $checkout = Get-ContainedPath $sourceRootPath $step.source_directory "Build step '$($step.name)'"
+    $lockedSource = $lockedSources[$directoryKey]
+    if ([string]$step.source_directory -cne $lockedSource.SourceDirectory -or
+        $lockedSource.Disposition -cne 'planned') {
+        throw "Build step '$($step.name)' does not reference its canonical planned source."
+    }
+    $checkout = Get-ContainedPath $sourceRootPath $lockedSource.SourceDirectory "Build step '$($step.name)'"
     $workingDirectory = Get-ContainedPath $checkout $step.working_directory "Build step '$($step.name)' working directory"
     if (-not (Test-Path -LiteralPath $workingDirectory -PathType Container)) {
         throw "Build working directory not found: $workingDirectory"

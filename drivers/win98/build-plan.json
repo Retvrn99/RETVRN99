@@ -2,7 +2,7 @@
   "_spdx": "GPL-3.0-only",
   "schema": 1,
   "status": "blocked",
-  "reason": "No reviewed Windows 98 toolchain and deterministic output recipe is committed.",
+  "reason": "The toolchain is locked, but no reviewed GSW-derived source recipe, normalization step, or deterministic adapted output set is committed.",
   "toolchains": [],
   "steps": []
 }

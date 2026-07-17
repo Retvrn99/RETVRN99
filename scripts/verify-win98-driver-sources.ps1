@@ -5,7 +5,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SourceRoot,
 
-    [string]$LockFile
+    [string]$LockFile,
+
+    [string[]]$SourceName
 )
 
 Set-StrictMode -Version Latest
@@ -139,7 +141,28 @@ foreach ($entry in $entries) {
     $checkoutPaths[$entry.name] = $checkout
 }
 
-foreach ($entry in $entries) {
+$selectedEntries = $entries
+if ($PSBoundParameters.ContainsKey('SourceName')) {
+    if ($null -eq $SourceName -or $SourceName.Count -eq 0) {
+        throw 'SourceName must contain at least one allowlisted upstream name.'
+    }
+    $requestedNames = @{}
+    foreach ($name in $SourceName) {
+        if ([string]::IsNullOrWhiteSpace($name) -or $name -notmatch '^[a-z0-9][a-z0-9-]*$') {
+            throw "Invalid requested upstream name '$name'."
+        }
+        if ($requestedNames.ContainsKey($name)) {
+            throw "Duplicate requested upstream name '$name'."
+        }
+        if (-not $seenNames.ContainsKey($name)) {
+            throw "Unknown requested upstream name '$name'."
+        }
+        $requestedNames[$name] = $true
+    }
+    $selectedEntries = @($entries | Where-Object { $requestedNames.ContainsKey($_.name) })
+}
+
+foreach ($entry in $selectedEntries) {
     $checkout = $checkoutPaths[$entry.name]
     if (-not (Test-Path -LiteralPath $checkout -PathType Container)) {
         throw "Pinned checkout is absent for '$($entry.name)': $checkout"
@@ -176,4 +199,4 @@ foreach ($entry in $entries) {
     }
 }
 
-Write-Output "Verified $($entries.Count) immutable Windows 98 source checkouts."
+Write-Output "Verified $($selectedEntries.Count) immutable Windows 98 source checkouts."

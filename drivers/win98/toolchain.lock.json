@@ -1,0 +1,35 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "name": "open-watcom-c-win32-1.9",
+  "archive": {
+    "relative_path": "downloads/open-watcom-c-win32-1.9.exe",
+    "bytes": 84012543,
+    "sha256": "040c910aba304fdb5f39b8fe508cd3c772b1da1f91a58179fa0895e0b2bf190b",
+    "md5": "6316f454f732b0705ebfe2a278dc1e59"
+  },
+  "extracted": {
+    "relative_path": "open-watcom-1.9",
+    "file_count": 3460,
+    "directory_count": 152,
+    "total_entries": 3612,
+    "aggregate_bytes": 196660542,
+    "maximum_file_bytes": 5632911,
+    "maximum_path_bytes": 47,
+    "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+    "sha256": "ff1c5c2b42e9826c563a6385aa1046fe4d0306d3526e90a12749781d3a7dd67b"
+  },
+  "environment": {
+    "watcom_root": ".",
+    "edpath": "eddat",
+    "include": [
+      "h/nt",
+      "h/win",
+      "h"
+    ],
+    "path_prefixes": [
+      "binnt",
+      "binw"
+    ]
+  }
+}

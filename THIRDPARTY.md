@@ -26,3 +26,10 @@ The exact Windows 98 driver and graphics source candidates in
 of those repositories or their binary outputs are vendored or distributed by
 this lock. Their upstream licenses remain applicable if a later change adapts
 or distributes their material.
+
+The Windows 98 driver build feasibility proof uses the official Open Watcom
+C/C++ 1.9 archive and extracted toolchain pinned by
+`drivers/win98/toolchain.lock.json`. Neither the archive nor its extraction is
+vendored or distributed by RETVRN99. The lock records integrity and build
+environment metadata only; Open Watcom's own license remains applicable to a
+locally acquired copy.

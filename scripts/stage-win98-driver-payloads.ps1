@@ -16,7 +16,10 @@ param(
 
     [string]$PayloadInventory,
 
-    [string]$LockFile
+    [string]$LockFile,
+
+    [AllowEmptyCollection()]
+    [string[]]$PackageId
 )
 
 Set-StrictMode -Version Latest
@@ -183,10 +186,45 @@ if (-not (Test-Path -LiteralPath $payloadRootPath -PathType Container)) {
     throw "Payload root not found: $payloadRootPath"
 }
 $packageRules = @{
-    'gsw-vga' = @{ HardwareId = 'PCI\VEN_FFFE&DEV_0002'; RunOnceOrder = 0 }
-    'gsw-sound' = @{ HardwareId = 'PCI\VEN_FFFE&DEV_0003'; RunOnceOrder = 0 }
-    'directx9-runtime' = @{ HardwareId = ''; RunOnceOrder = 100 }
-    'gsw-dx9-compat' = @{ HardwareId = ''; RunOnceOrder = 200 }
+    'gsw-vga' = @{
+        HardwareId = 'PCI\VEN_FFFE&DEV_0002'
+        RunOnceOrder = 0
+        SourceDirectories = @('vmdisp9x', 'vmhal9x')
+    }
+    'gsw-sound' = @{
+        HardwareId = 'PCI\VEN_FFFE&DEV_0003'
+        RunOnceOrder = 0
+        SourceDirectories = @()
+    }
+    'directx9-runtime' = @{
+        HardwareId = ''
+        RunOnceOrder = 100
+        SourceDirectories = @()
+    }
+    'gsw-dx9-compat' = @{
+        HardwareId = ''
+        RunOnceOrder = 200
+        SourceDirectories = @('mesa9x', 'wine9x')
+    }
+}
+$packageSelectionExplicit = $PSBoundParameters.ContainsKey('PackageId')
+$requestedPackages = @()
+if ($packageSelectionExplicit) {
+    if (@($PackageId).Count -eq 0) {
+        throw 'PackageId was explicitly supplied without any package IDs.'
+    }
+    $seenRequestedPackages = @{}
+    foreach ($requestedPackage in @($PackageId)) {
+        if ([string]::IsNullOrWhiteSpace($requestedPackage) -or
+            $packageRules.Keys -cnotcontains $requestedPackage) {
+            throw "Unknown or invalid selected Windows 98 payload package '$requestedPackage'."
+        }
+        if ($seenRequestedPackages.ContainsKey($requestedPackage)) {
+            throw "Duplicate selected Windows 98 payload package '$requestedPackage'."
+        }
+        $seenRequestedPackages[$requestedPackage] = $true
+        $requestedPackages += $requestedPackage
+    }
 }
 $maxPayloadRows = 128
 $maxPayloadBytes = [int64](512 * 1024 * 1024)
@@ -220,17 +258,15 @@ foreach ($column in $inventoryRequiredColumns) {
     }
 }
 
-$expectedDestinations = @{}
+$reviewedDestinations = @{}
 $expectedAliases = @{}
-$packageKinds = @{}
-foreach ($packageId in $packageRules.Keys) {
-    $packageKinds[$packageId] = @{ INF = 0; Catalog = 0; Binary = 0; Component = 0 }
-}
+$packageKindCounts = @{}
+$declaredPackages = @{}
 foreach ($inventoryEntry in $inventoryEntries) {
-    $packageId = [string]$inventoryEntry.package_id
+    $reviewedPackageId = [string]$inventoryEntry.package_id
     $kind = [string]$inventoryEntry.kind
-    if ($packageRules.Keys -cnotcontains $packageId) {
-        throw "Unknown reviewed payload package '$packageId'."
+    if ($packageRules.Keys -cnotcontains $reviewedPackageId) {
+        throw "Unknown reviewed payload package '$reviewedPackageId'."
     }
     if ($kind -cnotin @('INF', 'Catalog', 'Binary', 'Component')) {
         throw "Reviewed payload '$($inventoryEntry.destination_relative_path)' has an invalid kind."
@@ -239,10 +275,10 @@ foreach ($inventoryEntry in $inventoryEntries) {
     if (-not [int]::TryParse($inventoryEntry.run_once_order, [ref]$runOnceOrder)) {
         throw "Reviewed payload '$($inventoryEntry.destination_relative_path)' has invalid ordering metadata."
     }
-    $rule = $packageRules[$packageId]
+    $rule = $packageRules[$reviewedPackageId]
     if ($inventoryEntry.hardware_id -cne $rule.HardwareId -or
         $runOnceOrder -ne $rule.RunOnceOrder) {
-        throw "Reviewed payload package '$packageId' violates its PCI ID or RunOnce order."
+        throw "Reviewed payload package '$reviewedPackageId' violates its PCI ID or RunOnce order."
     }
     $inventoryDestination = [string]$inventoryEntry.destination_relative_path
     [void](Get-ContainedPath $payloadRootPath $inventoryDestination 'Reviewed payload destination')
@@ -250,10 +286,10 @@ foreach ($inventoryEntry in $inventoryEntries) {
         throw "Reviewed payload '$inventoryDestination' has an extension inconsistent with kind '$kind'."
     }
     $destinationKey = $inventoryDestination.Replace('/', '\').ToLowerInvariant()
-    if ($expectedDestinations.ContainsKey($destinationKey)) {
+    if ($reviewedDestinations.ContainsKey($destinationKey)) {
         throw "Duplicate reviewed payload destination '$inventoryDestination'."
     }
-    foreach ($priorKey in @($expectedDestinations.Keys)) {
+    foreach ($priorKey in @($reviewedDestinations.Keys)) {
         if ($destinationKey.StartsWith($priorKey + '\', [StringComparison]::OrdinalIgnoreCase) -or
             $priorKey.StartsWith($destinationKey + '\', [StringComparison]::OrdinalIgnoreCase)) {
             throw "Reviewed payload destination '$inventoryDestination' conflicts with an ancestor path."
@@ -275,26 +311,57 @@ foreach ($inventoryEntry in $inventoryEntries) {
             Destination = $inventoryDestination
         }
     }
-    $expectedDestinations[$destinationKey] = [PSCustomObject]@{
-        PackageId = $packageId
+    $reviewedDestinations[$destinationKey] = [PSCustomObject]@{
+        PackageId = $reviewedPackageId
         Kind = $kind
         Destination = $inventoryDestination
         HardwareId = [string]$inventoryEntry.hardware_id
         RunOnceOrder = $runOnceOrder
     }
-    $packageKinds[$packageId][$kind] += 1
+    $declaredPackages[$reviewedPackageId] = $true
+    $countKey = "$reviewedPackageId|$kind"
+    $kindCount = 0
+    if ($packageKindCounts.ContainsKey($countKey)) {
+        $kindCount = [int]($packageKindCounts[$countKey])
+    }
+    $packageKindCounts[$countKey] = $kindCount + 1
 }
-foreach ($packageId in @('gsw-vga', 'gsw-sound')) {
-    $kinds = $packageKinds[$packageId]
-    if ($kinds.INF -ne 1 -or $kinds.Binary -lt 1 -or
-        $kinds.Catalog -gt 1 -or $kinds.Component -ne 0) {
-        throw "Reviewed PnP package '$packageId' must contain exactly one INF, at least one binary, at most one catalog, and no RunOnce component."
+$selectedPackageIds = if ($packageSelectionExplicit) {
+    @($requestedPackages)
+}
+else {
+    @($declaredPackages.Keys | Sort-Object)
+}
+$selectedPackages = @{}
+foreach ($selectedPackageId in $selectedPackageIds) {
+    if (-not $declaredPackages.ContainsKey($selectedPackageId)) {
+        throw "Selected Windows 98 payload package '$selectedPackageId' is not declared in the reviewed inventory."
+    }
+    $selectedPackages[$selectedPackageId] = $true
+}
+foreach ($selectedPackageId in @($selectedPackageIds | Where-Object { $_ -in @('gsw-vga', 'gsw-sound') })) {
+    $infCount = [int]($packageKindCounts["$selectedPackageId|INF"])
+    $binaryCount = [int]($packageKindCounts["$selectedPackageId|Binary"])
+    $catalogCount = [int]($packageKindCounts["$selectedPackageId|Catalog"])
+    $componentCount = [int]($packageKindCounts["$selectedPackageId|Component"])
+    if ($infCount -ne 1 -or $binaryCount -lt 1 -or
+        $catalogCount -gt 1 -or $componentCount -ne 0) {
+        throw "Reviewed PnP package '$selectedPackageId' must contain exactly one INF, at least one binary, at most one catalog, and no RunOnce component."
     }
 }
-foreach ($packageId in @('directx9-runtime', 'gsw-dx9-compat')) {
-    $kinds = $packageKinds[$packageId]
-    if ($kinds.Component -lt 1 -or $kinds.INF -ne 0 -or $kinds.Catalog -ne 0) {
-        throw "Reviewed RunOnce package '$packageId' must contain a component and no INF or catalog."
+foreach ($selectedPackageId in @($selectedPackageIds | Where-Object { $_ -in @('directx9-runtime', 'gsw-dx9-compat') })) {
+    $componentCount = [int]($packageKindCounts["$selectedPackageId|Component"])
+    $infCount = [int]($packageKindCounts["$selectedPackageId|INF"])
+    $catalogCount = [int]($packageKindCounts["$selectedPackageId|Catalog"])
+    if ($componentCount -lt 1 -or $infCount -ne 0 -or $catalogCount -ne 0) {
+        throw "Reviewed RunOnce package '$selectedPackageId' must contain a component and no INF or catalog."
+    }
+}
+$expectedDestinations = @{}
+foreach ($destinationKey in $reviewedDestinations.Keys) {
+    $reviewed = $reviewedDestinations[$destinationKey]
+    if ($selectedPackages.ContainsKey($reviewed.PackageId)) {
+        $expectedDestinations[$destinationKey] = $reviewed
     }
 }
 
@@ -305,6 +372,9 @@ $aggregateBytes = [int64]0
 foreach ($entry in $entries) {
     if ($packageRules.Keys -cnotcontains [string]$entry.package_id) {
         throw "Unknown Windows 98 payload package '$($entry.package_id)'."
+    }
+    if (-not $selectedPackages.ContainsKey([string]$entry.package_id)) {
+        throw "Windows 98 payload package '$($entry.package_id)' is not selected for staging."
     }
     if ([string]$entry.kind -cnotin @('INF', 'Catalog', 'Binary', 'Component')) {
         throw "Payload '$($entry.source_relative_path)' has an invalid kind."
@@ -364,9 +434,9 @@ foreach ($entry in $entries) {
         Bytes = $expectedBytes
     }
 }
-foreach ($packageId in $packageRules.Keys) {
-    if (-not $seenPackages.ContainsKey($packageId)) {
-        throw "Required Windows 98 payload package '$packageId' is absent."
+foreach ($selectedPackageId in $selectedPackageIds) {
+    if (-not $seenPackages.ContainsKey($selectedPackageId)) {
+        throw "Required Windows 98 payload package '$selectedPackageId' is absent."
     }
 }
 if ($seenDestinations.Count -ne $expectedDestinations.Count) {
@@ -374,10 +444,52 @@ if ($seenDestinations.Count -ne $expectedDestinations.Count) {
     throw "Payload manifest is incomplete; missing reviewed destination '$($expectedDestinations[$missing[0]].Destination)'."
 }
 
-& (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
-    -SourceRoot $SourceRoot -LockFile $LockFile
-if ($LASTEXITCODE -ne 0) {
-    throw 'Pinned Windows 98 source verification failed.'
+$requiredSourceDirectories = @(
+    @(
+        foreach ($selectedPackageId in $selectedPackageIds) {
+            foreach ($sourceDirectory in $packageRules[$selectedPackageId].SourceDirectories) {
+                $sourceDirectory
+            }
+        }
+    ) | Sort-Object -Unique
+)
+if ($requiredSourceDirectories.Count -gt 0) {
+    $lockPath = Get-FullPath $LockFile
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw "Upstream lock not found: $lockPath"
+    }
+    $lockLines = @(
+        Get-Content -LiteralPath $lockPath |
+            Where-Object { $_.Trim().Length -gt 0 -and -not $_.TrimStart().StartsWith('#') }
+    )
+    if ($lockLines.Count -lt 2) {
+        throw 'The upstream lock must contain a header and at least one source row.'
+    }
+    $lockEntries = @($lockLines | ConvertFrom-Csv -Delimiter "`t")
+    $lockColumns = @($lockEntries[0].PSObject.Properties.Name)
+    foreach ($column in @('name', 'source_directory', 'disposition')) {
+        if ($lockColumns -notcontains $column) {
+            throw "The upstream lock is missing '$column'."
+        }
+    }
+    $requiredSourceNames = @()
+    foreach ($requiredSourceDirectory in $requiredSourceDirectories) {
+        $matches = @(
+            $lockEntries |
+                Where-Object { $_.source_directory -ceq $requiredSourceDirectory }
+        )
+        if ($matches.Count -ne 1 -or
+            [string]::IsNullOrWhiteSpace($matches[0].name) -or
+            $matches[0].disposition -cne 'planned') {
+            throw "Required upstream source directory '$requiredSourceDirectory' must have exactly one planned, named lock row."
+        }
+        $requiredSourceNames += [string]$matches[0].name
+    }
+    & (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
+        -SourceRoot $SourceRoot -LockFile $lockPath -SourceName $requiredSourceNames
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Pinned Windows 98 source verification failed.'
+    }
 }
 
 $outputPath = Get-FullPath $OutputDirectory
