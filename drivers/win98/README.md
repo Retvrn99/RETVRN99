@@ -110,3 +110,21 @@ unsupported DirectDraw operations return to the runtime software path.
 Guided Setup integration remains a separate acceptance boundary: the staged
 package is not silently injected into user media, and the user's installation
 media is never modified or redistributed.
+
+## GSW3D guest smoke
+
+The standalone Windows 98 proof client has a separate locked build closure and
+does not change the five-file VGA package:
+
+```powershell
+.\scripts\invoke-win98-gsw3d-smoke-pipeline.ps1 `
+    -SourceRoot D:\src\retvrn99-win98 `
+    -ToolchainRoot D:\src\retvrn99-win98\toolchains `
+    -OutputRoot D:\src\retvrn99-win98\proof\gsw3d-smoke
+```
+
+Run `gsw3d-smoke.exe` only inside a licensed Windows 98 guest with the GSW-VGA
+driver active and the host started with the guarded proof backend. A passing
+run writes `GSW3D_SMOKE PASS` to the console and `GSW3D.LOG`. Normal production
+hosts return `GSW3D_SMOKE UNAVAILABLE`; the tool is not an OpenGL or Mesa
+capability claim.

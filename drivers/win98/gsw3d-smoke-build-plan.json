@@ -1,0 +1,50 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 3,
+  "status": "ready",
+  "reason": "",
+  "derived_source_plan": {
+    "relative_path": "gsw3d-smoke-derived-source-plan.json",
+    "sha256": "e5264c0d81a55abc220f08a06aa5818640be5201760724dbd63e07bfb7fe25b3"
+  },
+  "toolchain_locks": [
+    {
+      "name": "mingw32",
+      "relative_path": "mingw32-toolchain.lock.json",
+      "sha256": "db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12"
+    }
+  ],
+  "upstream_lock": {
+    "relative_path": "upstream.lock.tsv",
+    "sha256": "f9532d1d9997746f523aead2a0e985ca25a190cf142efd5306e9a43476ae3e48"
+  },
+  "toolchains": [
+    {
+      "name": "mingw32-gcc",
+      "lock": "mingw32",
+      "relative_path": "bin/gcc.exe",
+      "sha256": "0c79d47814364067e560ba4d26849126388a44fc5765d33df00c1fdd582c89a9"
+    }
+  ],
+  "steps": [
+    {
+      "name": "build-gsw3d-smoke",
+      "recipe": "gsw3d-smoke",
+      "toolchain": "mingw32-gcc",
+      "working_directory": "gsw3d-smoke",
+      "arguments": [
+        "-std=gnu99", "-Wall", "-Wextra", "-Werror", "-Os", "-pipe",
+        "-ffreestanding", "-fno-builtin", "-fno-ident", "-fomit-frame-pointer",
+        "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-stack-protector",
+        "-DNDEBUG", "-march=pentium2", "-mtune=core2", "-static", "-nostdlib",
+        "-nodefaultlibs", "-I.", "main.c", "-lkernel32", "-lgcc",
+        "-Wl,--entry,_mainCRTStartup,--no-insert-timestamp,--disable-dynamicbase,--disable-nxcompat,--subsystem,console:4.0,--image-base,0x00400000,--strip-all",
+        "-o", "gsw3d-smoke.exe"
+      ],
+      "normalizations": [],
+      "outputs": [
+        {"relative_path":"gsw3d-smoke/gsw3d-smoke.exe","origin":"build","bytes":6656,"sha256":"8a17fe6372a1293e1b27d8397969400b9170f339ccd4be39e11b3bc28c7ae9dd"}
+      ]
+    }
+  ]
+}

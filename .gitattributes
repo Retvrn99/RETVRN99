@@ -21,3 +21,4 @@ drivers/win98/derived/**/overlay/**/*.mk text eol=lf
 drivers/win98/derived/**/overlay/**/*.rc text eol=lf
 drivers/win98/derived/**/overlay/**/*.txt text eol=lf
 drivers/win98/derived/shared/**/*.h text eol=lf
+drivers/win98/guest-tools/**/*.c text eol=lf
