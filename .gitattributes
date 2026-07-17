@@ -7,4 +7,17 @@ vendor_local/seabios/**/*.jpg binary
 vendor_local/seabios/**/*.png binary
 tools/seabios/*.sh text eol=lf
 tools/vgabios/*.sh text eol=lf
-drivers/win98/derived/vmdisp9x-gsw/patches/*.patch -whitespace
+drivers/win98/*.json text eol=lf
+drivers/win98/*.tsv text eol=lf
+drivers/win98/derived/**/patches/*.patch text eol=lf -whitespace
+drivers/win98/derived/**/overlay/**/*.asm text eol=lf
+drivers/win98/derived/**/overlay/**/*.c text eol=lf
+drivers/win98/derived/**/overlay/**/*.def text eol=lf
+drivers/win98/derived/**/overlay/**/*.h text eol=lf
+drivers/win98/derived/**/overlay/**/*.inf text eol=lf
+drivers/win98/derived/**/overlay/**/*.mak text eol=lf
+drivers/win98/derived/**/overlay/**/*.md text eol=lf
+drivers/win98/derived/**/overlay/**/*.mk text eol=lf
+drivers/win98/derived/**/overlay/**/*.rc text eol=lf
+drivers/win98/derived/**/overlay/**/*.txt text eol=lf
+drivers/win98/derived/shared/**/*.h text eol=lf

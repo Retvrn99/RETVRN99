@@ -1,0 +1,27 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 2,
+  "name": "msys2-mingw32-gcc-15.2.0-rev13",
+  "archive": {
+    "relative_path": "downloads/msys2-mingw32-gcc15.2.0-20260717.zip",
+    "bytes": 70420517,
+    "sha256": "ef21b4f3d5fec33ed4852349646e9c6a2a6b4d1e2e68805a5f71ddd7ff52cb29",
+    "md5": "83e675d6758e08fb8e1830b8e714a18c"
+  },
+  "extracted": {
+    "relative_path": "msys2-mingw32-gcc15.2.0-20260717",
+    "file_count": 6436,
+    "directory_count": 280,
+    "total_entries": 6716,
+    "aggregate_bytes": 533999105,
+    "maximum_file_bytes": 39952195,
+    "maximum_path_bytes": 103,
+    "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+    "sha256": "08491a4bf273920ff9078f444addffe7e08f0d0b77d34d74cc2c742c84bb614a"
+  },
+  "environment": {
+    "path_prefixes": [
+      "bin"
+    ]
+  }
+}

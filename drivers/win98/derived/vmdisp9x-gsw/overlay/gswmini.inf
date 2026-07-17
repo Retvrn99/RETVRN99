@@ -15,6 +15,8 @@ GSW.Copy=11
 [SourceDisksFiles]
 gswmini.drv=1
 gswmini.vxd=1
+gswhal9x.dll=1
+gswdd32.dll=1
 
 [Manufacturer]
 %Manufacturer%=GSW
@@ -30,6 +32,8 @@ AddReg=GSW.AddReg,GSW.Modes
 [GSW.Copy]
 gswmini.drv,,,0x00000004
 gswmini.vxd,,,0x00000004
+gswhal9x.dll,,,0x00000004
+gswdd32.dll,,,0x00000004
 
 [GSW.DelReg]
 HKR,,Ver

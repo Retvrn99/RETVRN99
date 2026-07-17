@@ -16,11 +16,10 @@ build systems, and old Windows driver toolchains. A moving branch, an
 unreviewed compiler, or an unverified binary copied into Setup would make the
 guest boundary neither reproducible nor auditable.
 
-The repository now contains a reviewed bounded GSW display INF and adaptation
-source, but no compiled Windows 98 driver binary, sound INF, DirectX 9
-redistributable, compatibility-layer payload, or install-ready package. Source
-selection and delivery ordering must remain representable without extending
-the bounded build proof into an install-ready claim.
+The repository contains reviewed GSW display, mini-VDD, DirectDraw HAL, bridge,
+and INF adaptation sources. Compiled payloads remain external to Git. Source
+selection, deterministic compilation, staging, and actual guest acceptance are
+separate claims and must remain independently provable.
 
 ## Decision
 
@@ -40,6 +39,11 @@ path, size, and per-file-hash digest. It also fixes the relative `WATCOM`,
 `EDPATH`, `INCLUDE`, and `PATH` layout. The verifier rejects added, removed, or
 modified extraction files and performs no install or network operation. The
 archive and extraction remain external to the repository.
+
+`drivers/win98/mingw32-toolchain.lock.json` applies the same full-tree lock to
+the MinGW32 GCC 15.2.0 extraction used by VMHAL9x. Build-plan schema 3 binds
+each tool executable and environment to its named lock rather than sharing a
+global compiler environment.
 
 The pinned vmdisp9x source builds with that extraction and its bundled
 DDK-derived headers and `dibeng.lbc`; no separate Windows 98 DDK is required.
@@ -70,9 +74,9 @@ the tree. Draft mode cannot publish an output or be consumed by the builder.
 `-DescribeTree` similarly emits a double-scanned descriptor for an existing
 overlay without changing it.
 
-`drivers/win98/build-plan.json` is now `ready` for the bounded
-VMDisp9x-derived GSW mini display-driver build. The schema-2 plan pins the ready
-derived-source plan, toolchain lock, and upstream lock themselves. The builder
+`drivers/win98/build-plan.json` is `ready` for the paired VMDisp9x-derived
+display driver and VMHAL9x-derived GSW DirectDraw HAL. The schema-3 plan pins
+the ready derived-source plan, both toolchain locks, and upstream lock. The builder
 snapshots those exact linked bytes before use and rejects an alternate
 upstream-lock path. It names a hash-verified local toolchain executable, a
 literal argument array, a derived-recipe working directory, one explicit
@@ -81,28 +85,26 @@ values. Every DRV output must be normalized exactly once. A `build`-origin
 output must be absent before its producing step, while a `derived`-origin
 output must already match and remain unchanged.
 
-The builder re-verifies the complete toolchain, prepares private derived
-scratch, installs the locked Watcom environment only for the child build, and
-launches pinned `wmake.exe` with literal arguments. The reviewed makefile
-controls its Open Watcom subprocesses; the locked `binnt` and `binw` paths are
-prepended to the retained caller `PATH`. It validates every normalized output
-before atomically publishing the build root, performs no network operation,
-and cannot consume a `reference-only` source row. Two independent builds on
-2026-07-17 produced byte-identical declared artifacts matching the plan:
-`gswmini.drv` (14,404 bytes,
-`8ae871b002f60b4ba5d25834849c4534192339ecbf19f096ce0a80ec55aec096`),
-`gswmini.vxd` (29,557 bytes,
-`d4127232095fb7683c2ab43af4fbb3add5a955253a188afb06ed86d6dcabe27f`),
-and `gswmini.inf` (3,108 bytes,
-`f8d665e757af2af4732d78a8b8d1fc0c40040b4f9d009b344e12b6bdae8af944`).
+The builder re-verifies both complete toolchains, prepares private derived
+scratch, installs only the selected child environment, and launches pinned
+`wmake.exe` or `mingw32-make.exe` with literal arguments. It restores inherited
+mixed-case environment variables and never mutates the caller's PATH. It
+validates every normalized output before atomic publication, performs no
+network operation, and cannot consume a `reference-only` source row. The exact
+declared payloads are:
+
+- `gswmini.drv`: 14,732 bytes, `88a53d70230ad74e062dffcb1347619eef02c7bbe5dd07e242aea3ddbb8d75e2`.
+- `gswmini.vxd`: 33,913 bytes, `d9a00abfc465be61b4f2b6ffcfe7dc12451910895c2e53bb95e8aeb60210ee82`.
+- `gswmini.inf`: 3,188 bytes, `12f28bcb5df117a0e1175edf18aac38c2b05de3216a228e56e0814e9af00523f`.
+- `gswhal9x.dll`: 46,592 bytes, `8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38`.
+- `gswdd32.dll`: 32,256 bytes, `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4`.
+
 This proof covers deterministic derivation and compilation, not Windows 98
-installation, device operation, or an installable package.
+installation or device operation.
 
 `drivers/win98/payload-inventory.schema.tsv` and
-`drivers/win98/payload-manifest.schema.tsv` contain only staging schemas. There
-are no inventory or payload rows. A future reviewed inventory must enumerate
-the exact destination names and kinds for each package that is available,
-including the PnP INF and binary structure where applicable. The four reserved
+`drivers/win98/payload-manifest.schema.tsv` contain the reviewed closed
+five-file `gsw-vga` destination set and its exact build hashes. The four reserved
 package identities are independently stageable; availability of one package
 does not imply availability of the other three. With no `-PackageId`, staging
 selects every package declared by the reviewed inventory. An explicit
@@ -143,9 +145,9 @@ DirectX runtime precedes the compatibility layer so the runtime cannot replace
 the final GSW compatibility files. No RunOnce command is emitted while those
 payloads are unavailable.
 
-The pinned VMDisp9x revision now has a reviewed RETVRN99 adaptation and bounded
-build proof. VMHAL9x, Mesa9x, and Wine9x remain planned inputs subject to later
-license and adaptation review. SoftGPU, `libs/vkd3d-shader`, and the VMware
+The pinned VMDisp9x and VMHAL9x revisions have reviewed RETVRN99 adaptations,
+bounded build proofs, and a closed stageable PnP package. Mesa9x and Wine9x
+remain planned inputs subject to later license and adaptation review. SoftGPU, `libs/vkd3d-shader`, and the VMware
 SVGA Device Developer Kit mirror are reference-only at this decision point.
 Changing a disposition requires a separate review; a lock update alone does
 not approve source copying or binary distribution.
@@ -160,13 +162,11 @@ not approve source copying or binary distribution.
   mismatch, incomplete selected package, inventory mismatch, or output hash
   mismatch stops the workflow; an unrelated absent checkout does not block a
   scoped build or staging operation.
-- Adding the first staged payload still requires a populated inventory and
-  manifest, license notices, complete package provenance, INF/content
-  validation, and Setup integration.
-- Draft descriptors, failed builds, and verified but unstaged build roots do
-  not create an install-ready payload claim. The GSW VGA wrapper still requires
-  the complete closed `gsw-vga` inventory, manifest, and VMDisp9x plus VMHAL9x
-  provenance before it can stage anything.
+- The GSW-VGA payload is stageable only as the complete DRV, VxD, INF, HAL,
+  and bridge set; removing or changing any member closes staging.
+- Draft descriptors and failed or unstaged builds do not create a package
+  claim. A stageable package still does not prove Device Manager, DirectDraw,
+  dxdiag, mode switching, or performance inside a licensed Windows 98 guest.
 - The plan preserves a lean RETVRN99-specific architecture while keeping useful
   Windows 9x compatibility knowledge traceable.
 

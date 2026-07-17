@@ -35,6 +35,7 @@
 #define GSW_VGA_CAP_FENCE_IRQ             (1UL << 1)
 #define GSW_VGA_CAP_SURFACE_OFFSET        (1UL << 2)
 #define GSW_VGA_CAP_BLT_V2                (1UL << 3)
+#define GSW_VGA_CAP_SURFACE_IDS           (1UL << 4)
 
 #define GSW_VGA_STATUS_READY              (1UL << 0)
 #define GSW_VGA_STATUS_ERROR              (1UL << 1)
@@ -58,6 +59,8 @@
 
 #pragma pack(push, 1)
 
+#ifndef RETVRN99_GSW_COMMAND_HEADER_DEFINED
+#define RETVRN99_GSW_COMMAND_HEADER_DEFINED
 typedef struct GSWCommandHeader {
 	WORD opcode;
 	WORD version;
@@ -65,6 +68,7 @@ typedef struct GSWCommandHeader {
 	DWORD fence_low;
 	DWORD fence_high;
 } GSWCommandHeader;
+#endif
 
 typedef struct GSWSetModeCommand {
 	GSWCommandHeader header;
@@ -105,10 +109,13 @@ typedef struct GSWCopyCommand {
 	DWORD format;
 } GSWCopyCommand;
 
+#include "gsw_ddraw_abi.h"
+
 #pragma pack(pop)
 
 BOOL GSW_transport_init(void);
 void GSW_transport_shutdown(void);
+void GSW_transport_release(void);
 BOOL GSW_transport_ready(void);
 void *GSW_transport_framebuffer(void);
 DWORD GSW_transport_framebuffer_bytes(void);
@@ -140,5 +147,12 @@ BOOL GSW_transport_copy(
 	DWORD height,
 	DWORD bpp
 );
+BOOL GSW_transport_surface_register(GSWDDRegister *request);
+BOOL GSW_transport_surface_unregister(DWORD surface_id);
+BOOL GSW_transport_surface_fill(const GSWDDFill *request);
+BOOL GSW_transport_surface_blt(const GSWDDBlt *request);
+BOOL GSW_transport_surface_present(DWORD surface_id);
+BOOL GSW_transport_surface_dirty(const GSWDDDirty *request);
+BOOL GSW_DD_ioctl(struct DIOCParams *params, DWORD *result);
 
 #endif

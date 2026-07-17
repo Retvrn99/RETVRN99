@@ -351,8 +351,8 @@ if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
     throw "Windows 98 build plan not found: $planPath"
 }
 $plan = Read-StrictJson $planPath 'Windows 98 build plan'
-if ($plan._spdx -cne 'GPL-3.0-only' -or
-    (Assert-UnsignedInteger $plan.schema 'schema') -ne 2) {
+$planSchema = Assert-UnsignedInteger $plan.schema 'schema'
+if ($plan._spdx -cne 'GPL-3.0-only' -or $planSchema -notin @(2, 3)) {
     throw 'Unsupported or unlicensed Windows 98 build plan.'
 }
 if ($plan.status -cnotin @('blocked', 'ready') -or $plan.reason -isnot [string]) {
@@ -367,10 +367,18 @@ if ($plan.status -eq 'blocked') {
     }
     throw "Windows 98 driver build is blocked: $($plan.reason)"
 }
-Assert-ExactProperties $plan @(
-    '_spdx', 'schema', 'status', 'reason', 'derived_source_plan',
-    'toolchain_lock', 'upstream_lock', 'toolchains', 'steps'
-) 'ready root'
+if ($planSchema -eq 2) {
+    Assert-ExactProperties $plan @(
+        '_spdx', 'schema', 'status', 'reason', 'derived_source_plan',
+        'toolchain_lock', 'upstream_lock', 'toolchains', 'steps'
+    ) 'ready root'
+}
+else {
+    Assert-ExactProperties $plan @(
+        '_spdx', 'schema', 'status', 'reason', 'derived_source_plan',
+        'toolchain_locks', 'upstream_lock', 'toolchains', 'steps'
+    ) 'ready root'
+}
 if ($plan.reason.Length -ne 0) {
     throw 'A ready Windows 98 build plan must have an empty reason.'
 }
@@ -391,7 +399,29 @@ if ($toolchains.Count -eq 0 -or $toolchains.Count -gt $script:MaximumToolchains 
 
 $planDirectory = Split-Path -Parent $planPath
 $derivedPlanSnapshot = Get-LinkedFileSnapshot $planDirectory $plan.derived_source_plan 'derived_source_plan'
-$toolchainLockSnapshot = Get-LinkedFileSnapshot $planDirectory $plan.toolchain_lock 'toolchain_lock'
+$toolchainLockSnapshots = @{}
+if ($planSchema -eq 2) {
+    $toolchainLockSnapshots['default'] = Get-LinkedFileSnapshot $planDirectory $plan.toolchain_lock 'toolchain_lock'
+}
+else {
+    if ($plan.toolchain_locks -isnot [Array] -or @($plan.toolchain_locks).Count -eq 0 -or
+        @($plan.toolchain_locks).Count -gt $script:MaximumToolchains) {
+        throw 'Ready schema-3 build plans require a bounded toolchain_locks array.'
+    }
+    foreach ($metadata in @($plan.toolchain_locks)) {
+        Assert-ExactProperties $metadata @('name', 'relative_path', 'sha256') 'toolchain lock link'
+        if ($metadata.name -isnot [string] -or $metadata.name -cnotmatch '^[a-z0-9][a-z0-9-]*$' -or
+            $toolchainLockSnapshots.ContainsKey($metadata.name)) {
+            throw "Invalid or duplicate toolchain lock link '$($metadata.name)'."
+        }
+        $link = [pscustomobject]@{
+            relative_path = [string]$metadata.relative_path
+            sha256 = [string]$metadata.sha256
+        }
+        $toolchainLockSnapshots[$metadata.name] = Get-LinkedFileSnapshot `
+            $planDirectory $link "toolchain_lock '$($metadata.name)'"
+    }
+}
 $upstreamLockSnapshot = Get-LinkedFileSnapshot $planDirectory $plan.upstream_lock 'upstream_lock'
 $requestedLockPath = Get-FullPath $LockFile
 if (-not $requestedLockPath.Equals(
@@ -413,36 +443,83 @@ foreach ($recipe in @($derivedPlan.recipes)) {
 }
 
 $toolchainRootPath = Get-FullPath $ToolchainRoot
-$toolchainLock = Read-StrictJsonText $toolchainLockSnapshot.Json 'toolchain lock'
-$extractedRoot = Get-ContainedPath $toolchainRootPath $toolchainLock.extracted.relative_path 'extracted toolchain'
-$watcomRoot = Get-ContainedPath $extractedRoot $toolchainLock.environment.watcom_root 'WATCOM root' -AllowRoot
-$edpath = Get-ContainedPath $watcomRoot $toolchainLock.environment.edpath 'EDPATH'
-$includePaths = @(
-    foreach ($relativePath in @($toolchainLock.environment.include)) {
-        Get-ContainedPath $watcomRoot $relativePath 'INCLUDE path'
+$toolchainContexts = @{}
+foreach ($lockName in $toolchainLockSnapshots.Keys) {
+    $snapshot = $toolchainLockSnapshots[$lockName]
+    $lock = Read-StrictJsonText $snapshot.Json "toolchain lock '$lockName'"
+    $lockSchema = Assert-UnsignedInteger $lock.schema "toolchain lock '$lockName' schema"
+    $extractedRoot = Get-ContainedPath $toolchainRootPath $lock.extracted.relative_path "extracted toolchain '$lockName'"
+    if ($lockSchema -eq 1) {
+        $watcomRoot = Get-ContainedPath $extractedRoot $lock.environment.watcom_root 'WATCOM root' -AllowRoot
+        $edpath = Get-ContainedPath $watcomRoot $lock.environment.edpath 'EDPATH'
+        $includePaths = @(
+            foreach ($relativePath in @($lock.environment.include)) {
+                Get-ContainedPath $watcomRoot $relativePath 'INCLUDE path'
+            }
+        )
+        $pathPrefixes = @(
+            foreach ($relativePath in @($lock.environment.path_prefixes)) {
+                Get-ContainedPath $watcomRoot $relativePath 'PATH prefix'
+            }
+        )
+        $environment = [pscustomobject]@{
+            Watcom = $watcomRoot
+            Edpath = $edpath
+            Include = ($includePaths -join ';')
+            PathPrefixes = $pathPrefixes
+        }
+        $directories = @($watcomRoot, $edpath) + $includePaths + $pathPrefixes
     }
-)
-$pathPrefixes = @(
-    foreach ($relativePath in @($toolchainLock.environment.path_prefixes)) {
-        Get-ContainedPath $watcomRoot $relativePath 'PATH prefix'
+    elseif ($lockSchema -eq 2) {
+        $pathPrefixes = @(
+            foreach ($relativePath in @($lock.environment.path_prefixes)) {
+                Get-ContainedPath $extractedRoot $relativePath 'PATH prefix'
+            }
+        )
+        $environment = [pscustomobject]@{
+            Watcom = $null
+            Edpath = $null
+            Include = $null
+            PathPrefixes = $pathPrefixes
+        }
+        $directories = $pathPrefixes
     }
-)
-foreach ($directory in @($watcomRoot, $edpath) + $includePaths + $pathPrefixes) {
-    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
-        throw "Locked toolchain environment directory not found: $directory"
+    else {
+        throw "Unsupported linked toolchain lock schema '$lockSchema'."
+    }
+    foreach ($directory in $directories) {
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+            throw "Locked toolchain environment directory not found: $directory"
+        }
+    }
+    $toolchainContexts[$lockName] = [pscustomobject]@{
+        Snapshot = $snapshot
+        Root = $extractedRoot
+        Environment = $environment
     }
 }
 
 $verifiedToolchains = @{}
 foreach ($toolchain in $toolchains) {
-    Assert-ExactProperties $toolchain @('name', 'relative_path', 'sha256') 'toolchain'
+    if ($planSchema -eq 2) {
+        Assert-ExactProperties $toolchain @('name', 'relative_path', 'sha256') 'toolchain'
+        $toolchainLockName = 'default'
+    }
+    else {
+        Assert-ExactProperties $toolchain @('name', 'lock', 'relative_path', 'sha256') 'toolchain'
+        $toolchainLockName = [string]$toolchain.lock
+    }
     if ($toolchain.name -isnot [string] -or $toolchain.name -cnotmatch '^[a-z0-9][a-z0-9-]*$' -or
         $verifiedToolchains.ContainsKey($toolchain.name)) {
         throw "Invalid or duplicate build toolchain '$($toolchain.name)'."
     }
+    if (-not $toolchainContexts.ContainsKey($toolchainLockName)) {
+        throw "Build toolchain '$($toolchain.name)' references an unknown lock."
+    }
     Assert-LowercaseHash $toolchain.sha256 "toolchain '$($toolchain.name)' sha256"
-    $executable = Get-ContainedPath $extractedRoot $toolchain.relative_path "toolchain '$($toolchain.name)'"
-    Assert-PathComponentsAreNotReparsePoints $extractedRoot $toolchain.relative_path "toolchain '$($toolchain.name)'"
+    $context = $toolchainContexts[$toolchainLockName]
+    $executable = Get-ContainedPath $context.Root $toolchain.relative_path "toolchain '$($toolchain.name)'"
+    Assert-PathComponentsAreNotReparsePoints $context.Root $toolchain.relative_path "toolchain '$($toolchain.name)'"
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
         throw "Toolchain executable not found: $executable"
     }
@@ -450,7 +527,10 @@ foreach ($toolchain in $toolchains) {
     if ($actualHash -cne $toolchain.sha256) {
         throw "Toolchain '$($toolchain.name)' failed SHA-256 verification."
     }
-    $verifiedToolchains[$toolchain.name] = $executable
+    $verifiedToolchains[$toolchain.name] = [pscustomobject]@{
+        Executable = $executable
+        Environment = $context.Environment
+    }
 }
 
 $validatedSteps = @()
@@ -585,17 +665,24 @@ try {
     [void](New-Item -ItemType Directory -Path $temporaryMetadataRoot)
     $temporaryMetadataCreated = $true
     $derivedPlanPath = Join-Path $temporaryMetadataRoot 'derived-source-plan.json'
-    $toolchainLockPath = Join-Path $temporaryMetadataRoot 'toolchain.lock.json'
     $upstreamLockPath = Join-Path $temporaryMetadataRoot 'upstream.lock.tsv'
     [IO.File]::WriteAllBytes($derivedPlanPath, $derivedPlanSnapshot.Bytes)
-    [IO.File]::WriteAllBytes($toolchainLockPath, $toolchainLockSnapshot.Bytes)
     [IO.File]::WriteAllBytes($upstreamLockPath, $upstreamLockSnapshot.Bytes)
-    if ($null -ne $BeforeLinkedMetadataUse) {
-        & $BeforeLinkedMetadataUse $derivedPlanSnapshot.OriginalPath `
-            $toolchainLockSnapshot.OriginalPath $upstreamLockSnapshot.OriginalPath
+    $temporaryToolchainLocks = @{}
+    foreach ($lockName in $toolchainContexts.Keys) {
+        $toolchainLockPath = Join-Path $temporaryMetadataRoot ("toolchain-$lockName.lock.json")
+        [IO.File]::WriteAllBytes($toolchainLockPath, $toolchainContexts[$lockName].Snapshot.Bytes)
+        $temporaryToolchainLocks[$lockName] = $toolchainLockPath
     }
-    & (Join-Path $PSScriptRoot 'verify-win98-driver-toolchain.ps1') `
-        -ToolchainRoot $toolchainRootPath -LockFile $toolchainLockPath
+    if ($null -ne $BeforeLinkedMetadataUse) {
+        $firstToolchainSnapshot = $toolchainContexts[@($toolchainContexts.Keys)[0]].Snapshot
+        & $BeforeLinkedMetadataUse $derivedPlanSnapshot.OriginalPath `
+            $firstToolchainSnapshot.OriginalPath $upstreamLockSnapshot.OriginalPath
+    }
+    foreach ($lockName in $temporaryToolchainLocks.Keys) {
+        & (Join-Path $PSScriptRoot 'verify-win98-driver-toolchain.ps1') `
+            -ToolchainRoot $toolchainRootPath -LockFile $temporaryToolchainLocks[$lockName]
+    }
     & (Join-Path $PSScriptRoot 'prepare-win98-derived-sources.ps1') `
         -SourceRoot $sourceRootPath -OutputRoot $temporaryRoot `
         -RecipePlan $derivedPlanPath -RecipeRoot $planDirectory -LockFile $upstreamLockPath
@@ -603,17 +690,17 @@ try {
     foreach ($name in @('WATCOM', 'EDPATH', 'INCLUDE', 'PATH')) {
         $savedEnvironment[$name] = Get-ProcessEnvironmentEntry $name
     }
-    [Environment]::SetEnvironmentVariable('WATCOM', $watcomRoot, 'Process')
-    [Environment]::SetEnvironmentVariable('EDPATH', $edpath, 'Process')
-    [Environment]::SetEnvironmentVariable('INCLUDE', ($includePaths -join ';'), 'Process')
-    $pathValue = $pathPrefixes -join ';'
-    if ($savedEnvironment.PATH.Present -and
-        -not [string]::IsNullOrEmpty([string]$savedEnvironment.PATH.Value)) {
-        $pathValue += ';' + [string]$savedEnvironment.PATH.Value
-    }
-    [Environment]::SetEnvironmentVariable('PATH', $pathValue, 'Process')
-
     foreach ($step in $validatedSteps) {
+        $stepEnvironment = $step.Toolchain.Environment
+        [Environment]::SetEnvironmentVariable('WATCOM', $stepEnvironment.Watcom, 'Process')
+        [Environment]::SetEnvironmentVariable('EDPATH', $stepEnvironment.Edpath, 'Process')
+        [Environment]::SetEnvironmentVariable('INCLUDE', $stepEnvironment.Include, 'Process')
+        $pathValue = @($stepEnvironment.PathPrefixes) -join ';'
+        if ($savedEnvironment.PATH.Present -and
+            -not [string]::IsNullOrEmpty([string]$savedEnvironment.PATH.Value)) {
+            $pathValue += ';' + [string]$savedEnvironment.PATH.Value
+        }
+        [Environment]::SetEnvironmentVariable('PATH', $pathValue, 'Process')
         Assert-BuildTreeContainsNoReparsePoints $temporaryRoot 'the private build tree'
         $recipeRoot = Get-ContainedPath $temporaryRoot $step.RecipeDestination "build recipe '$($step.Recipe)'"
         $workingDirectory = Get-ContainedPath $recipeRoot $step.WorkingDirectory "build step '$($step.Name)' working directory" -AllowRoot
@@ -651,7 +738,7 @@ try {
         }
         Push-Location $workingDirectory
         try {
-            [string]$toolchainExecutable = $step.Toolchain
+            [string]$toolchainExecutable = $step.Toolchain.Executable
             [string[]]$stepArguments = @($step.Arguments)
             & $toolchainExecutable @stepArguments
             if ($LASTEXITCODE -ne 0) {
@@ -684,7 +771,7 @@ try {
             }
             $outputHash = (Get-FileHash -LiteralPath $output.Path -Algorithm SHA256).Hash.ToLowerInvariant()
             if ([UInt64]$outputFile.Length -ne $output.Bytes -or $outputHash -cne $output.Sha256) {
-                throw "Build output '$($output.Path)' is not reproducible from the reviewed plan."
+                throw "Build output '$($output.Path)' is not reproducible from the reviewed plan: actual bytes=$($outputFile.Length), sha256=$outputHash."
             }
             $output | Add-Member -NotePropertyName RecipeRoot -NotePropertyValue $recipeRoot
             $allResolvedOutputs += $output

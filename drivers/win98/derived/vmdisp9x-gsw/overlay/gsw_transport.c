@@ -12,6 +12,12 @@ typedef char GSWSetModeSizeCheck[(sizeof(GSWSetModeCommand) == 32) ? 1 : -1];
 typedef char GSWPresentSizeCheck[(sizeof(GSWPresentCommand) == 40) ? 1 : -1];
 typedef char GSWFillSizeCheck[(sizeof(GSWFillCommand) == 40) ? 1 : -1];
 typedef char GSWCopySizeCheck[(sizeof(GSWCopyCommand) == 44) ? 1 : -1];
+typedef char GSWRegisterSizeCheck[(sizeof(GSWRegisterSurfaceCommand) == 48) ? 1 : -1];
+typedef char GSWUnregisterSizeCheck[(sizeof(GSWUnregisterSurfaceCommand) == 20) ? 1 : -1];
+typedef char GSWSurfaceFillSizeCheck[(sizeof(GSWSurfaceFillCommand) == 40) ? 1 : -1];
+typedef char GSWSurfaceBltSizeCheck[(sizeof(GSWSurfaceBltCommand) == 76) ? 1 : -1];
+typedef char GSWSurfacePresentSizeCheck[(sizeof(GSWSurfacePresentCommand) == 20) ? 1 : -1];
+typedef char GSWSurfaceDirtySizeCheck[(sizeof(GSWSurfaceDirtyCommand) == 36) ? 1 : -1];
 
 static PCIAddress gsw_pci_address;
 static volatile DWORD *gsw_registers = NULL;
@@ -27,6 +33,20 @@ static DWORD gsw_semaphore = 0;
 static WORD gsw_original_pci_command = 0;
 static BOOL gsw_pci_command_saved = FALSE;
 static BOOL gsw_is_ready = FALSE;
+
+typedef struct GSWSurfaceRecord {
+	DWORD id;
+	DWORD offset;
+	DWORD byte_size;
+	DWORD width;
+	DWORD height;
+	DWORD pitch;
+	DWORD bpp;
+	DWORD flags;
+} GSWSurfaceRecord;
+
+static GSWSurfaceRecord gsw_surfaces[256];
+static DWORD gsw_next_surface_id = 1;
 
 static DWORD gsw_register_read(DWORD offset)
 {
@@ -152,7 +172,7 @@ static void gsw_recover_failed_submission(void)
 	gsw_register_write(GSW_VGA_REG_IRQ_STATUS, GSW_VGA_IRQ_2D);
 }
 
-static BOOL gsw_submit(void *command, DWORD length)
+static BOOL gsw_submit_locked(void *command, DWORD length)
 {
 	GSWCommandHeader *header;
 	DWORD new_tail;
@@ -163,8 +183,9 @@ static BOOL gsw_submit(void *command, DWORD length)
 	   length >= GSW_VGA_RING_BYTES || (length & 3) != 0)
 		return FALSE;
 
-	Wait_Semaphore(gsw_semaphore, 0);
 	success = FALSE;
+	if(!gsw_is_ready)
+		goto done;
 
 	status = gsw_register_read(GSW_VGA_REG_STATUS);
 	if((status & GSW_VGA_STATUS_READY) == 0 ||
@@ -174,7 +195,8 @@ static BOOL gsw_submit(void *command, DWORD length)
 		goto done;
 
 	header = (GSWCommandHeader *)command;
-	header->version = GSW_VGA_COMMAND_VERSION_2;
+	header->version = header->opcode >= GSW_VGA_OPCODE_REGISTER_SURFACE ?
+		GSW_VGA_COMMAND_VERSION_3 : GSW_VGA_COMMAND_VERSION_2;
 	header->length = length;
 	header->fence_low = gsw_fence_low;
 	header->fence_high = gsw_fence_high;
@@ -200,7 +222,32 @@ static BOOL gsw_submit(void *command, DWORD length)
 done:
 	if(!success)
 		gsw_recover_failed_submission();
+	return success;
+}
+
+static BOOL gsw_begin(void)
+{
+	if(gsw_semaphore == 0) return FALSE;
+	Wait_Semaphore(gsw_semaphore, 0);
+	if(!gsw_is_ready)
+	{
+		Signal_Semaphore(gsw_semaphore);
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static void gsw_end(void)
+{
 	Signal_Semaphore(gsw_semaphore);
+}
+
+static BOOL gsw_submit(void *command, DWORD length)
+{
+	BOOL success;
+	if(!gsw_begin()) return FALSE;
+	success = gsw_submit_locked(command, length);
+	gsw_end();
 	return success;
 }
 
@@ -221,6 +268,11 @@ BOOL GSW_transport_init(void)
 
 	if(gsw_is_ready)
 		return TRUE;
+	if(gsw_semaphore == 0)
+	{
+		gsw_semaphore = Create_Semaphore(1);
+		if(gsw_semaphore == 0) return FALSE;
+	}
 
 	if(!PCI_FindDevice(GSW_PCI_VENDOR_ID, GSW_PCI_DEVICE_ID, &gsw_pci_address))
 		return FALSE;
@@ -315,16 +367,6 @@ BOOL GSW_transport_init(void)
 	}
 	gsw_ring = (volatile BYTE *)ring_linear;
 
-	gsw_semaphore = Create_Semaphore(1);
-	if(gsw_semaphore == 0)
-	{
-		_PageFree((PVOID)ring_linear, 0);
-		gsw_ring = NULL;
-		gsw_ring_physical = 0;
-		GSW_transport_shutdown();
-		return FALSE;
-	}
-
 	gsw_ring_tail = 0;
 	gsw_fence_low = 1;
 	gsw_fence_high = 0;
@@ -349,6 +391,7 @@ BOOL GSW_transport_init(void)
 
 void GSW_transport_shutdown(void)
 {
+	if(gsw_semaphore != 0) Wait_Semaphore(gsw_semaphore, 0);
 	gsw_is_ready = FALSE;
 	if(gsw_registers != NULL)
 	{
@@ -358,11 +401,6 @@ void GSW_transport_shutdown(void)
 		gsw_register_write(GSW_VGA_REG_RING_GPA_LOW, 0);
 		gsw_register_write(GSW_VGA_REG_RING_GPA_HIGH, 0);
 		gsw_register_write(GSW_VGA_REG_RING_SIZE, 0);
-	}
-	if(gsw_semaphore != 0)
-	{
-		Destroy_Semaphore(gsw_semaphore);
-		gsw_semaphore = 0;
 	}
 	if(gsw_ring != NULL)
 	{
@@ -376,6 +414,8 @@ void GSW_transport_shutdown(void)
 	gsw_framebuffer_linear = 0;
 	gsw_framebuffer_size = 0;
 	gsw_capabilities = 0;
+	memset(gsw_surfaces, 0, sizeof(gsw_surfaces));
+	gsw_next_surface_id = 1;
 	gsw_registers = NULL;
 	if(gsw_pci_command_saved)
 	{
@@ -384,6 +424,13 @@ void GSW_transport_shutdown(void)
 	}
 	gsw_original_pci_command = 0;
 	memset(&gsw_pci_address, 0, sizeof(gsw_pci_address));
+	if(gsw_semaphore != 0) Signal_Semaphore(gsw_semaphore);
+}
+
+void GSW_transport_release(void)
+{
+	GSW_transport_shutdown();
+	/* The VMM owns this single semaphore through the VxD lifetime. */
 }
 
 BOOL GSW_transport_ready(void)
@@ -504,4 +551,217 @@ BOOL GSW_transport_copy(
 	command.height = height;
 	command.format = gsw_pixel_format(bpp);
 	return gsw_submit(&command, sizeof(command));
+}
+
+static GSWSurfaceRecord *gsw_surface_find(DWORD id)
+{
+	GSWSurfaceRecord *surface;
+	if(id == 0)
+		return NULL;
+	surface = &gsw_surfaces[id & 255];
+	return surface->id == id ? surface : NULL;
+}
+
+static BOOL gsw_surface_rect_valid(
+	const GSWSurfaceRecord *surface,
+	DWORD x,
+	DWORD y,
+	DWORD width,
+	DWORD height
+)
+{
+	if(surface == NULL || width == 0 || height == 0 ||
+	   x > surface->width || width > surface->width - x ||
+	   y > surface->height || height > surface->height - y)
+		return FALSE;
+	return TRUE;
+}
+
+BOOL GSW_transport_surface_register(GSWDDRegister *request)
+{
+	GSWRegisterSurfaceCommand command;
+	GSWSurfaceRecord *surface;
+	DWORD attempts;
+	DWORD id;
+	BOOL success = FALSE;
+
+	if(request == NULL || request->cb != sizeof(*request) || !gsw_begin())
+		return FALSE;
+	if(
+	   (gsw_capabilities & GSW_VGA_CAP_SURFACE_IDS) == 0 ||
+	   !gsw_surface_valid(
+		request->offset, request->pitch, request->width, request->height, request->bpp
+	   ) || request->byte_size == 0 || request->offset > gsw_framebuffer_size ||
+	   request->byte_size > gsw_framebuffer_size - request->offset ||
+	   request->flags & ~GSW_DD_SURFACE_PRESENTABLE)
+		goto done;
+
+	for(attempts = 0; attempts < 256; attempts++)
+	{
+		id = gsw_next_surface_id++;
+		if(id == 0)
+			id = gsw_next_surface_id++;
+		if(gsw_surfaces[id & 255].id == 0)
+			break;
+	}
+	if(attempts == 256)
+		goto done;
+
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_REGISTER_SURFACE;
+	command.surface_id = id;
+	command.offset = request->offset;
+	command.byte_size = request->byte_size;
+	command.width = request->width;
+	command.height = request->height;
+	command.pitch = request->pitch;
+	command.format = gsw_pixel_format(request->bpp);
+	command.flags = request->flags;
+	if(!gsw_submit_locked(&command, sizeof(command)))
+		goto done;
+
+	surface = &gsw_surfaces[id & 255];
+	surface->id = id;
+	surface->offset = request->offset;
+	surface->byte_size = request->byte_size;
+	surface->width = request->width;
+	surface->height = request->height;
+	surface->pitch = request->pitch;
+	surface->bpp = request->bpp;
+	surface->flags = request->flags;
+	request->surface_id = id;
+	success = TRUE;
+done:
+	gsw_end();
+	return success;
+}
+
+BOOL GSW_transport_surface_unregister(DWORD surface_id)
+{
+	GSWUnregisterSurfaceCommand command;
+	GSWSurfaceRecord *surface;
+	BOOL success = FALSE;
+	if(!gsw_begin()) return FALSE;
+	surface = gsw_surface_find(surface_id);
+	if(surface == NULL) goto done;
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_UNREGISTER_SURFACE;
+	command.surface_id = surface_id;
+	if(!gsw_submit_locked(&command, sizeof(command))) goto done;
+	memset(surface, 0, sizeof(*surface));
+	success = TRUE;
+done:
+	gsw_end();
+	return success;
+}
+
+BOOL GSW_transport_surface_fill(const GSWDDFill *request)
+{
+	GSWSurfaceFillCommand command;
+	GSWSurfaceRecord *surface;
+	BOOL success = FALSE;
+	if(request == NULL || request->cb != sizeof(*request))
+		return FALSE;
+	if(!gsw_begin()) return FALSE;
+	surface = gsw_surface_find(request->surface_id);
+	if(!gsw_surface_rect_valid(surface, request->x, request->y, request->width, request->height))
+		goto done;
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_SURFACE_FILL;
+	command.surface_id = request->surface_id;
+	command.x = request->x;
+	command.y = request->y;
+	command.width = request->width;
+	command.height = request->height;
+	command.color = request->color;
+	success = gsw_submit_locked(&command, sizeof(command));
+done:
+	gsw_end();
+	return success;
+}
+
+BOOL GSW_transport_surface_blt(const GSWDDBlt *request)
+{
+	GSWSurfaceBltCommand command;
+	GSWSurfaceRecord *source;
+	GSWSurfaceRecord *destination;
+	BOOL success = FALSE;
+	if(request == NULL || request->cb != sizeof(*request) ||
+	   request->flags & ~(GSW_DD_BLT_SRC_COLOR_KEY | GSW_DD_BLT_DST_COLOR_KEY))
+		return FALSE;
+	if(!gsw_begin()) return FALSE;
+	source = gsw_surface_find(request->source_id);
+	destination = gsw_surface_find(request->destination_id);
+	if(source == NULL || destination == NULL || source->bpp != destination->bpp ||
+	   !gsw_surface_rect_valid(
+		source, request->source_x, request->source_y,
+		request->source_width, request->source_height
+	   ) || !gsw_surface_rect_valid(
+		destination, request->destination_x, request->destination_y,
+		request->destination_width, request->destination_height
+	   ))
+		goto done;
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_SURFACE_BLT;
+	command.source_id = request->source_id;
+	command.destination_id = request->destination_id;
+	command.source_x = request->source_x;
+	command.source_y = request->source_y;
+	command.source_width = request->source_width;
+	command.source_height = request->source_height;
+	command.destination_x = request->destination_x;
+	command.destination_y = request->destination_y;
+	command.destination_width = request->destination_width;
+	command.destination_height = request->destination_height;
+	command.flags = request->flags;
+	command.source_color_key = request->source_color_key;
+	command.destination_color_key = request->destination_color_key;
+	command.pattern = request->pattern;
+	command.rop3 = request->rop3;
+	success = gsw_submit_locked(&command, sizeof(command));
+done:
+	gsw_end();
+	return success;
+}
+
+BOOL GSW_transport_surface_present(DWORD surface_id)
+{
+	GSWSurfacePresentCommand command;
+	GSWSurfaceRecord *surface;
+	BOOL success = FALSE;
+	if(!gsw_begin()) return FALSE;
+	surface = gsw_surface_find(surface_id);
+	if(surface == NULL || (surface->flags & GSW_DD_SURFACE_PRESENTABLE) == 0)
+		goto done;
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_SURFACE_PRESENT;
+	command.surface_id = surface_id;
+	success = gsw_submit_locked(&command, sizeof(command));
+done:
+	gsw_end();
+	return success;
+}
+
+BOOL GSW_transport_surface_dirty(const GSWDDDirty *request)
+{
+	GSWSurfaceDirtyCommand command;
+	GSWSurfaceRecord *surface;
+	BOOL success = FALSE;
+	if(request == NULL || request->cb != sizeof(*request))
+		return FALSE;
+	if(!gsw_begin()) return FALSE;
+	surface = gsw_surface_find(request->surface_id);
+	if(!gsw_surface_rect_valid(surface, request->x, request->y, request->width, request->height))
+		goto done;
+	memset(&command, 0, sizeof(command));
+	command.header.opcode = GSW_VGA_OPCODE_SURFACE_DIRTY;
+	command.surface_id = request->surface_id;
+	command.x = request->x;
+	command.y = request->y;
+	command.width = request->width;
+	command.height = request->height;
+	success = gsw_submit_locked(&command, sizeof(command));
+done:
+	gsw_end();
+	return success;
 }

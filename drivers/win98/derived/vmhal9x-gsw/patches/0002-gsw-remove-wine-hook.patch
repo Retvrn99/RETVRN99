@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/vmhal9x.c b/vmhal9x.c
+--- a/vmhal9x.c
++++ b/vmhal9x.c
+@@ -352,7 +352,9 @@ DWORD __stdcall DriverInit(LPVOID ptr)
+ 	return 0;
+ }
+ 
++#ifndef GSW_DDHAL
+ BOOL __stdcall UninstallWineHook();
++#endif
+ 
+ BOOL WINAPI DllMain(HINSTANCE hModule, DWORD dwReason, LPVOID lpvReserved)
+ {
+@@ -405,7 +407,9 @@ BOOL WINAPI DllMain(HINSTANCE hModule, DWORD dwReason, LPVOID lpvReserved)
+ 
+ 			if(tmp == 0)         // Last process?
+ 			{
++#ifndef GSW_DDHAL
+ 				UninstallWineHook();
++#endif
+ 				hal_memory_destroy();
+ 				TRACE("--- vmhal9x destroyed ---");
+ 			}

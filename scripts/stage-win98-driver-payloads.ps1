@@ -71,6 +71,24 @@ function Get-ContainedPath {
     return $candidate
 }
 
+function Assert-NoReparseAncestor {
+    param([Parameter(Mandatory = $true)][string]$Path, [string]$Label = 'Path')
+
+    $current = Get-FullPath $Path
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "$Label traverses reparse-point component '$current'."
+            }
+        }
+        $parent = Split-Path -Parent $current
+        if ([string]::IsNullOrWhiteSpace($parent) -or
+            $parent.Equals($current, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $current = $parent
+    }
+}
+
 function Convert-ToWin9xShortCharacter {
     param([Parameter(Mandatory = $true)][char]$Character)
 
@@ -497,9 +515,11 @@ if (Test-Path -LiteralPath $outputPath) {
     throw "Output directory already exists; refusing to overwrite it: $outputPath"
 }
 $outputParent = Split-Path -Parent $outputPath
+Assert-NoReparseAncestor $outputParent 'Output directory'
 if (-not (Test-Path -LiteralPath $outputParent -PathType Container)) {
     [void](New-Item -ItemType Directory -Path $outputParent)
 }
+Assert-NoReparseAncestor $outputParent 'Output directory'
 $temporaryPath = Join-Path $outputParent ('.retvrn99-win98-stage-' + [Guid]::NewGuid().ToString('N'))
 $temporaryCreated = $false
 try {
@@ -518,6 +538,13 @@ try {
             throw "Staged payload '$destination' changed after validation."
         }
     }
+    $reparseEntry = Get-ChildItem -LiteralPath $temporaryPath -Recurse -Force |
+        Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 } |
+        Select-Object -First 1
+    if ($null -ne $reparseEntry) {
+        throw "Reparse points are not allowed in the private staging tree: $($reparseEntry.FullName)"
+    }
+    Assert-NoReparseAncestor $outputParent 'Output directory'
     if (Test-Path -LiteralPath $outputPath) {
         throw "Output directory appeared during staging; refusing to overwrite it: $outputPath"
     }

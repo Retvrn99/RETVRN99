@@ -127,11 +127,11 @@ device drivers will use a separate OEM/PnP package manifest so their INFs and
 payloads are registered for the correct Setup phase. This keeps Spanish,
 English, Korean, and future media-specific text in the source's own code page.
 
-The repository's pinned driver-source list and packaging schema are development
-metadata, not installable drivers. Guided Setup currently emits no GSW VGA,
-GSW sound, DirectX 9, or compatibility-layer RunOnce action. Those actions stay
-disabled until reviewed payloads have exact size and SHA-256 entries and pass
-the Setup package validation.
+The repository can reproducibly build and stage the complete five-file GSW-VGA
+PnP package, but Guided Setup does not yet inject it into the Setup source.
+GSW sound, DirectX 9, and compatibility-layer RunOnce actions also remain
+disabled. A staged package is development output, not proof that it installed
+or ran successfully in a licensed Windows 98 guest.
 
 DOS software can use the fixed Sound Blaster 16-compatible resources at
 `220h`, IRQ5, DMA1, and DMA5, with OPL-compatible ports at `388h`. Digital PCM,

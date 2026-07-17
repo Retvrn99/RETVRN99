@@ -349,6 +349,44 @@ try {
         $toolchainLockPath = Join-Path $testRoot 'toolchain.lock.json'
         [IO.File]::WriteAllText($toolchainLockPath, ($toolchainLock | ConvertTo-Json -Depth 8))
 
+        $schema2ArchivePath = Join-Path $downloadDirectory 'fixture-schema2.zip'
+        [IO.File]::WriteAllText($schema2ArchivePath, 'fixture schema 2 archive')
+        $schema2Root = Join-Path $toolchainRoot 'extracted-schema2'
+        $schema2Bin = Join-Path $schema2Root 'bin'
+        New-Item -ItemType Directory -Path $schema2Bin -Force | Out-Null
+        $schema2ToolchainPath = Join-Path $schema2Bin 'write-schema2-artifact.cmd'
+        [IO.File]::WriteAllText(
+            $schema2ToolchainPath,
+            "@echo off`r`nif defined WATCOM exit /b 21`r`nif defined EDPATH exit /b 22`r`nif defined INCLUDE exit /b 23`r`n<nul set /p `"=xyz`" > schema2.bin`r`nexit /b 0`r`n",
+            [Text.Encoding]::ASCII
+        )
+        $schema2Descriptor = & $prepareScript -DescribeTree $schema2Root | ConvertFrom-Json
+        $schema2Lock = [ordered]@{
+            _spdx = 'GPL-3.0-only'
+            schema = 2
+            name = 'fixture-schema2'
+            archive = [ordered]@{
+                relative_path = 'downloads/fixture-schema2.zip'
+                bytes = (Get-Item $schema2ArchivePath).Length
+                sha256 = (Get-FileHash $schema2ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                md5 = (Get-FileHash $schema2ArchivePath -Algorithm MD5).Hash.ToLowerInvariant()
+            }
+            extracted = [ordered]@{
+                relative_path = 'extracted-schema2'
+                file_count = $schema2Descriptor.file_count
+                directory_count = $schema2Descriptor.directory_count
+                total_entries = $schema2Descriptor.total_entries
+                aggregate_bytes = $schema2Descriptor.aggregate_bytes
+                maximum_file_bytes = $schema2Descriptor.maximum_file_bytes
+                maximum_path_bytes = $schema2Descriptor.maximum_path_bytes
+                digest_algorithm = 'retvrn99-file-tree-sha256-v1'
+                sha256 = $schema2Descriptor.sha256
+            }
+            environment = [ordered]@{ path_prefixes = @('bin') }
+        }
+        $schema2LockPath = Join-Path $testRoot 'toolchain-schema2.lock.json'
+        [IO.File]::WriteAllText($schema2LockPath, ($schema2Lock | ConvertTo-Json -Depth 8))
+
         $overlayPath = Join-Path $testRoot 'overlay'
         New-Item -ItemType Directory -Path $overlayPath | Out-Null
         [IO.File]::WriteAllText((Join-Path $overlayPath 'marker.txt'), 'derived marker')
@@ -622,6 +660,75 @@ try {
                 -BuildPlan $planPath -LockFile $alternateLockPath
         } 'must resolve to the SHA-linked upstream_lock path'
         Assert-True (-not (Test-Path (Join-Path $testRoot 'alternate-lock-output')))
+
+        $schema3Plan = ($plan | ConvertTo-Json -Depth 12) | ConvertFrom-Json
+        $schema3Plan.schema = 3
+        $schema3Plan.PSObject.Properties.Remove('toolchain_lock')
+        $schema3Plan | Add-Member -NotePropertyName toolchain_locks -NotePropertyValue @(
+            [pscustomobject]@{
+                name = 'fixture-lock'
+                relative_path = 'toolchain.lock.json'
+                sha256 = (Get-FileHash $toolchainLockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            },
+            [pscustomobject]@{
+                name = 'fixture-schema2-lock'
+                relative_path = 'toolchain-schema2.lock.json'
+                sha256 = (Get-FileHash $schema2LockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        )
+        foreach ($schema3Toolchain in $schema3Plan.toolchains) {
+            $schema3Toolchain | Add-Member -NotePropertyName lock -NotePropertyValue 'fixture-lock'
+        }
+        $schema3Plan.toolchains += [pscustomobject]@{
+            name = 'fixture-schema2-toolchain'
+            lock = 'fixture-schema2-lock'
+            relative_path = 'bin/write-schema2-artifact.cmd'
+            sha256 = (Get-FileHash $schema2ToolchainPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+        $schema3Plan.steps += [pscustomobject]@{
+            name = 'build-schema2-after-watcom'
+            recipe = 'vmdisp9x-derived'
+            toolchain = 'fixture-schema2-toolchain'
+            working_directory = '.'
+            arguments = @()
+            normalizations = @()
+            outputs = @([pscustomobject]@{
+                relative_path = 'schema2.bin'
+                origin = 'build'
+                sha256 = Get-ByteHash ([byte[]](0x78, 0x79, 0x7a))
+                bytes = 3
+            })
+        }
+        $schema3PlanPath = Join-Path $testRoot 'build-plan-schema3.json'
+        [IO.File]::WriteAllText($schema3PlanPath, ($schema3Plan | ConvertTo-Json -Depth 12))
+        $schema3Output = Join-Path $testRoot 'verified-schema3-build'
+        & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+            -OutputRoot $schema3Output -BuildPlan $schema3PlanPath -LockFile $lockPath | Out-Null
+        Assert-True (Test-Path -LiteralPath (
+            Join-Path $schema3Output 'vmdisp9x-derived\artifact.bin'
+        ) -PathType Leaf)
+        Assert-True (Test-Path -LiteralPath (
+            Join-Path $schema3Output 'vmdisp9x-derived\schema2.bin'
+        ) -PathType Leaf)
+        & $assertBuildEnvironmentRestored
+
+        $schema3Plan.toolchain_locks = @(
+            $schema3Plan.toolchain_locks + $schema3Plan.toolchain_locks[0]
+        )
+        [IO.File]::WriteAllText($schema3PlanPath, ($schema3Plan | ConvertTo-Json -Depth 12))
+        Assert-Throws {
+            & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+                -OutputRoot (Join-Path $testRoot 'duplicate-schema3-lock') `
+                -BuildPlan $schema3PlanPath -LockFile $lockPath
+        } 'Invalid or duplicate toolchain lock link'
+        $schema3Plan.toolchain_locks = @($schema3Plan.toolchain_locks[0], $schema3Plan.toolchain_locks[1])
+        $schema3Plan.toolchains[0].lock = 'missing-lock'
+        [IO.File]::WriteAllText($schema3PlanPath, ($schema3Plan | ConvertTo-Json -Depth 12))
+        Assert-Throws {
+            & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+                -OutputRoot (Join-Path $testRoot 'missing-schema3-lock') `
+                -BuildPlan $schema3PlanPath -LockFile $lockPath
+        } 'references an unknown lock'
 
         $buildOutput = Join-Path $testRoot 'verified-build'
         $savedNativeExitCode = $global:LASTEXITCODE

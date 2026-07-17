@@ -1,3 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-only
-# Schema only. Future rows enumerate the exact reviewed destination set and package shape.
+# Reviewed install-ready GSW-VGA destination set.
 package_id	destination_relative_path	kind	hardware_id	run_once_order
+gsw-vga	GSW-VGA\gswmini.inf	INF	PCI\VEN_FFFE&DEV_0002	0
+gsw-vga	GSW-VGA\gswmini.drv	Binary	PCI\VEN_FFFE&DEV_0002	0
+gsw-vga	GSW-VGA\gswmini.vxd	Binary	PCI\VEN_FFFE&DEV_0002	0
+gsw-vga	GSW-VGA\gswhal9x.dll	Binary	PCI\VEN_FFFE&DEV_0002	0
+gsw-vga	GSW-VGA\gswdd32.dll	Binary	PCI\VEN_FFFE&DEV_0002	0

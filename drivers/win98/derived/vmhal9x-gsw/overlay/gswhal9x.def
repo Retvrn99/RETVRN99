@@ -1,0 +1,4 @@
+; SPDX-License-Identifier: GPL-3.0-only
+EXPORTS
+	DriverInit        = DriverInit@4
+	VidMemInfo        = VidMemInfo@8

@@ -20,9 +20,12 @@ wmake.exe -f gsw.mak gsw
 logging disabled. Its prerequisites include only objects linked into the GSW
 driver pair.
 
-The bounded output set is `gswmini.drv`, `gswmini.vxd`, and the source
-`gswmini.inf`. The Win16 normalizer must run on `gswmini.drv` before its final
-size and SHA-256 are recorded.
+The bounded output set from this recipe is `gswmini.drv`, `gswmini.vxd`, and
+the source `gswmini.inf`. The complete install set also requires
+`gswhal9x.dll` and `gswdd32.dll` from the paired `vmhal9x-gsw` recipe. The INF
+copies all five files to the Windows system directory, so staging must reject
+an incomplete set. The Win16 normalizer must run on `gswmini.drv` before its
+final size and SHA-256 are recorded.
 
 The driver retains the QEMU/Bochs VBE mode programming used by the real VGA
 BIOS, then mirrors Windows mode sets and flips to GSW-VGA ABI v2. Its VxD:
@@ -37,9 +40,8 @@ BIOS, then mirrors Windows mode sets and flips to GSW-VGA ABI v2. Its VxD:
 - initializes the small upstream WRAM metadata allocation before FBHDA and
   cursor code can dereference it.
 
-`GSW_transport_fill` and `GSW_transport_copy` are callable VxD-side helpers,
-but this package does not install VMHAL9x or advertise DirectDraw acceleration.
-Its bootstrap 16-bit driver declines the DirectDraw 32-bit-driver query rather
-than naming an absent VMHAL DLL, and it declines the OpenGL ICD escape rather
-than naming an absent Mesa DLL. The helpers become the backend for the
-separately proof-gated DirectDraw port.
+The v3 transport registers bounded framebuffer surfaces and exposes validated
+fill, blit, present, and dirty-range commands. The bootstrap 16-bit driver names
+`gswhal9x.dll` only in this GSW DirectDraw build, while continuing to decline
+the OpenGL ICD escape. The HAL and VxD fail closed when their exact bridge ABI
+or framebuffer identity does not match.

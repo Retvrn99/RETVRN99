@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/3d_accel.h b/3d_accel.h
+--- a/3d_accel.h
++++ b/3d_accel.h
+@@ -539,7 +539,11 @@
+ #pragma pack(pop)
+ 
+ /* DLL handlers */
++#ifdef GSW_DDHAL
++#define VMDISP9X_LIB "gswdd32.dll"
++#else
+ #define VMDISP9X_LIB "vmdisp9x.dll"
++#endif
+ 
+ typedef FBHDA_t *(__cdecl *FBHDA_setup_t)();
+ typedef void (__cdecl *FBHDA_access_begin_t)(DWORD flags);
+diff --git a/vmhal9x.c b/vmhal9x.c
+--- a/vmhal9x.c
++++ b/vmhal9x.c
+@@ -35,6 +35,10 @@
+ 
+ #include "nocrt.h"
+ 
++#ifdef GSW_DDHAL
++#include "gsw_backend.h"
++#endif
++
+ #ifndef DDHALINFO_ISPRIMARYDISPLAY
+ #define DDHALINFO_ISPRIMARYDISPLAY 0x00000001l
+ // indicates driver is primary display driver
+@@ -342,7 +346,11 @@ DWORD __stdcall DriverInit(LPVOID ptr)
+ 
+ 	globalHal->invalid = FALSE;
+ 	
+-	if(FBHDA_load_ex(globalHal))
++	if(FBHDA_load_ex(globalHal)
++#ifdef GSW_DDHAL
++		&& GSWDD_load(globalHal)
++#endif
++	)
+ 	{
+ 		TRACE("DriverInit SUCCESS!");
+ 		return 1;

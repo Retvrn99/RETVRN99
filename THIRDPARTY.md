@@ -21,11 +21,12 @@ as a GPL-2.0-or-later behavioral and algorithmic reference. DOSBox-X source is
 not vendored here; adapted code retains upstream attribution in its source
 header.
 
-The exact Windows 98 driver and graphics source candidates in
-`drivers/win98/upstream.lock.tsv` are pinned planning or reference inputs. None
-of those repositories or their binary outputs are vendored or distributed by
-this lock. Their upstream licenses remain applicable if a later change adapts
-or distributes their material.
+The exact Windows 98 driver and graphics sources in
+`drivers/win98/upstream.lock.tsv` are pinned planned or reference inputs.
+VMDisp9x and VMHAL9x are adapted into local derived build trees; their upstream
+MIT notices remain in those trees. Neither external repository nor compiled
+driver output is committed to RETVRN99. Locally built GSW-VGA payloads retain
+the applicable upstream notices and RETVRN99's GPL-3.0-only adaptation terms.
 
 The Windows 98 driver build feasibility proof uses the official Open Watcom
 C/C++ 1.9 archive and extracted toolchain pinned by
@@ -33,3 +34,9 @@ C/C++ 1.9 archive and extracted toolchain pinned by
 vendored or distributed by RETVRN99. The lock records integrity and build
 environment metadata only; Open Watcom's own license remains applicable to a
 locally acquired copy.
+
+The VMHAL9x-derived build uses a pinned MSYS2 MinGW32 GCC 15.2.0 extraction in
+`drivers/win98/mingw32-toolchain.lock.json`. The extraction is not vendored or
+distributed. `gswhal9x.dll` and `gswdd32.dll` statically use GCC support code
+under the GCC Runtime Library Exception; the compiler and runtime's own license
+terms remain applicable to the locally acquired toolchain.

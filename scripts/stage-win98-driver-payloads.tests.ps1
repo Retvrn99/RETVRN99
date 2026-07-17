@@ -55,6 +55,12 @@ function Invoke-Git {
     return ($output -join [Environment]::NewLine).Trim()
 }
 
+function New-DirectoryReparsePoint {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Target)
+    $kind = if ([IO.Path]::DirectorySeparatorChar -eq '\') { 'Junction' } else { 'SymbolicLink' }
+    New-Item -ItemType $kind -Path $Path -Target $Target | Out-Null
+}
+
 function New-PinnedCheckout {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -203,6 +209,9 @@ try {
     $payloadFiles = [ordered]@{
         'build\vga\GSWVGA.INF' = 'display-inf'
         'build\vga\GSWVGA.DRV' = 'display-driver'
+        'build\vga\GSWVGA.VXD' = 'display-mini-vdd'
+        'build\vga\GSWHAL9X.DLL' = 'display-hal'
+        'build\vga\GSWDD32.DLL' = 'display-bridge'
         'build\sound\GSWSOUND.INF' = 'sound-inf'
         'build\sound\GSWSOUND.VXD' = 'sound-driver'
         'components\DX9REDIST.EXE' = 'directx-runtime'
@@ -223,14 +232,20 @@ try {
     )
     $vgaInf = New-InventoryRow 'gsw-vga' 'VGA\GSWVGA.INF' 'INF' 'PCI\VEN_FFFE&DEV_0002' 0
     $vgaDriver = New-InventoryRow 'gsw-vga' 'VGA\GSWVGA.DRV' 'Binary' 'PCI\VEN_FFFE&DEV_0002' 0
+    $vgaVxd = New-InventoryRow 'gsw-vga' 'VGA\GSWVGA.VXD' 'Binary' 'PCI\VEN_FFFE&DEV_0002' 0
+    $vgaHal = New-InventoryRow 'gsw-vga' 'VGA\GSWHAL9X.DLL' 'Binary' 'PCI\VEN_FFFE&DEV_0002' 0
+    $vgaBridge = New-InventoryRow 'gsw-vga' 'VGA\GSWDD32.DLL' 'Binary' 'PCI\VEN_FFFE&DEV_0002' 0
     $soundInf = New-InventoryRow 'gsw-sound' 'SOUND\GSWSOUND.INF' 'INF' 'PCI\VEN_FFFE&DEV_0003' 0
     $soundDriver = New-InventoryRow 'gsw-sound' 'SOUND\GSWSOUND.VXD' 'Binary' 'PCI\VEN_FFFE&DEV_0003' 0
     $directX = New-InventoryRow 'directx9-runtime' 'RUNONCE\DX9REDIST.EXE' 'Component' '' 100
     $compat = New-InventoryRow 'gsw-dx9-compat' 'RUNONCE\GSWDX9.DLL' 'Component' '' 200
-    $allInventoryRows = @($vgaInf, $vgaDriver, $soundInf, $soundDriver, $directX, $compat)
+    $allInventoryRows = @($vgaInf, $vgaDriver, $vgaVxd, $vgaHal, $vgaBridge, $soundInf, $soundDriver, $directX, $compat)
     $vgaManifestRows = @(
         New-ManifestRow $vgaInf 'build\vga\GSWVGA.INF' $script:PayloadRoot
         New-ManifestRow $vgaDriver 'build\vga\GSWVGA.DRV' $script:PayloadRoot
+        New-ManifestRow $vgaVxd 'build\vga\GSWVGA.VXD' $script:PayloadRoot
+        New-ManifestRow $vgaHal 'build\vga\GSWHAL9X.DLL' $script:PayloadRoot
+        New-ManifestRow $vgaBridge 'build\vga\GSWDD32.DLL' $script:PayloadRoot
     )
     $soundManifestRows = @(
         New-ManifestRow $soundInf 'build\sound\GSWSOUND.INF' $script:PayloadRoot
@@ -252,7 +267,7 @@ try {
     $compatManifest = Join-Path $script:TestRoot 'compat-manifest.tsv'
     $fullManifest = Join-Path $script:TestRoot 'full-manifest.tsv'
     Write-Tsv $fullInventory $inventoryColumns $allInventoryRows
-    Write-Tsv $vgaInventory $inventoryColumns @($vgaInf, $vgaDriver)
+    Write-Tsv $vgaInventory $inventoryColumns @($vgaInf, $vgaDriver, $vgaVxd, $vgaHal, $vgaBridge)
     Write-Tsv $vgaManifest $manifestColumns $vgaManifestRows
     Write-Tsv $directXManifest $manifestColumns $directXManifestRows
     Write-Tsv $compatManifest $manifestColumns $compatManifestRows
@@ -261,16 +276,16 @@ try {
     Invoke-SelfTest 'Explicit VGA selection stages only the complete selected package' {
         $output = Invoke-Staging 'explicit-vga' $fullInventory $vgaManifest @('gsw-vga')
         Assert-True (($output -join [Environment]::NewLine) -match 'Verified 2 immutable')
-        Assert-True (($output -join [Environment]::NewLine) -match 'Staged 2 hash-verified')
+        Assert-True (($output -join [Environment]::NewLine) -match 'Staged 5 hash-verified')
         $files = @(Get-ChildItem (Join-Path $script:TestRoot 'explicit-vga') -File -Recurse)
-        Assert-Equal $files.Count 2
+        Assert-Equal $files.Count 5
         Assert-True (Test-Path (Join-Path $script:TestRoot 'explicit-vga\VGA\GSWVGA.INF'))
         Assert-True (-not (Test-Path (Join-Path $script:TestRoot 'explicit-vga\SOUND')))
     }
 
     Invoke-SelfTest 'Omitted selection stages every inventory-declared package' {
         $output = Invoke-Staging -Name 'declared-vga' -Inventory $vgaInventory -Manifest $vgaManifest
-        Assert-True (($output -join [Environment]::NewLine) -match 'Staged 2 hash-verified')
+        Assert-True (($output -join [Environment]::NewLine) -match 'Staged 5 hash-verified')
     }
 
     Invoke-SelfTest 'A source-free package stages without unrelated provenance' {
@@ -396,7 +411,25 @@ try {
 
         $fullOutput = Invoke-Staging -Name 'full-selection' -Inventory $fullInventory -Manifest $fullManifest
         Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Verified 4 immutable')
-        Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Staged 6 hash-verified')
+        Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Staged 9 hash-verified')
+    }
+
+    Invoke-SelfTest 'Staging rejects a reparse-point output ancestor' {
+        $target = Join-Path $script:TestRoot 'reparse-target'
+        $link = Join-Path $script:TestRoot 'reparse-parent'
+        New-Item -ItemType Directory -Path $target | Out-Null
+        New-DirectoryReparsePoint -Path $link -Target $target
+        try {
+            Assert-Throws {
+                & $script:StageScript -SourceRoot $script:SourceRoot `
+                    -PayloadRoot $script:PayloadRoot -PayloadManifest $vgaManifest `
+                    -PayloadInventory $vgaInventory -LockFile $script:LockPath `
+                    -OutputDirectory (Join-Path $link 'stage') -PackageId 'gsw-vga'
+            } 'traverses reparse-point component'
+        }
+        finally {
+            Remove-Item -LiteralPath $link -Force
+        }
     }
 }
 finally {

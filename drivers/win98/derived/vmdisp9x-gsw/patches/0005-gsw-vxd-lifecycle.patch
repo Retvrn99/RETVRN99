@@ -306,7 +306,8 @@ index 7c2ddc4..1f3d0b2 100644
 +	}
 +	VDD_release_mappings();
 +	mouse_release();
- 	GSW_transport_shutdown();
+-	GSW_transport_shutdown();
++	GSW_transport_release();
 +	FBHDA_release_hw();
 +	wram_release();
  #endif

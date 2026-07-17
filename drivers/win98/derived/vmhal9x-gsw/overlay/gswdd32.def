@@ -1,0 +1,23 @@
+; SPDX-License-Identifier: GPL-3.0-only
+EXPORTS
+	FBHDA_setup
+	FBHDA_access_begin
+	FBHDA_access_end
+	FBHDA_access_rect
+	FBHDA_swap
+	FBHDA_clean
+	FBHDA_page_modify
+	FBHDA_mode_query
+	FBHDA_DD_surface_get
+	FBHDA_DD_surface_set
+	FBHDA_DD_surface_delete
+	FBHDA_DD_surface_modify
+	FBHDA_DD_surface_watch
+	FBHDA_DD_surface_notify
+	GSWDD_query              = GSWDD_query@4
+	GSWDD_register_surface   = GSWDD_register_surface@4
+	GSWDD_unregister_surface = GSWDD_unregister_surface@4
+	GSWDD_fill               = GSWDD_fill@4
+	GSWDD_blt                = GSWDD_blt@4
+	GSWDD_present            = GSWDD_present@4
+	GSWDD_dirty              = GSWDD_dirty@4

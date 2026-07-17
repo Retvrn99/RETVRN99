@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/dddrv.c b/dddrv.c
+--- a/dddrv.c
++++ b/dddrv.c
+@@ -265,6 +265,10 @@ static void buildDDHALInfo(VMDAHAL_t __far *hal, int modeidx)
+ 	 */
+ 	hal->ddHALInfo.vmiData.dwNumHeaps  = 0;
+ 	heap = 0;
++#ifdef GSW_DIRECTDRAW
++	can_flip = TRUE;
++#else
+ 	can_flip = hda->flags & FB_SUPPORT_FLIPING;
++#endif
+ 	
+ 	stride = hda->stride;
+@@ -288,6 +292,15 @@ static void buildDDHALInfo(VMDAHAL_t __far *hal, int modeidx)
+ 	/*
+ 	 * capabilities supported
+ 	 */
++#ifdef GSW_DIRECTDRAW
++	hal->ddHALInfo.ddCaps.dwCaps = DDCAPS_GDI |
++		DDCAPS_BLT | DDCAPS_BLTCOLORFILL | DDCAPS_BLTSTRETCH |
++		DDCAPS_COLORKEY;
++	hal->ddHALInfo.ddCaps.dwCKeyCaps = DDCKEYCAPS_SRCBLT | DDCKEYCAPS_DESTBLT;
++	hal->ddHALInfo.ddCaps.dwFXCaps = DDFXCAPS_BLTSHRINKX |
++		DDFXCAPS_BLTSHRINKY | DDFXCAPS_BLTSTRETCHX | DDFXCAPS_BLTSTRETCHY;
++	hal->ddHALInfo.ddCaps.ddsCaps.dwCaps = DDSCAPS_OFFSCREENPLAIN;
++#else
+ 	hal->ddHALInfo.ddCaps.dwCaps = DDCAPS_GDI | /* HW is shared with GDI */
+ 	                               DDCAPS_BLT | /* BLT is supported */
+ 	                               DDCAPS_BLTDEPTHFILL | /* depth fill */
+@@ -323,6 +342,7 @@ static void buildDDHALInfo(VMDAHAL_t __far *hal, int modeidx)
+ 
+ 	hal->ddHALInfo.ddCaps.ddsCaps.dwCaps = DDSCAPS_OFFSCREENPLAIN |
+ 	                                       DDSCAPS_ALPHA;
++#endif
+ 
+ 	/* 3D support */
+ 	if(hal->d3dhal_global != NULL)
+@@ -346,10 +366,22 @@ static void buildDDHALInfo(VMDAHAL_t __far *hal, int modeidx)
+   /*
+    * fill in rops supported
+    */
++#ifdef GSW_DIRECTDRAW
++	_fmemset(hal->ddHALInfo.ddCaps.dwRops, 0, sizeof(hal->ddHALInfo.ddCaps.dwRops));
++	{
++		static BYTE gsw_rops[] = {0x00, 0x11, 0x33, 0x44, 0x55, 0x66, 0x88, 0xBB, 0xCC, 0xEE, 0xFF};
++		for(ii = 0; ii < sizeof(gsw_rops); ++ii)
++		{
++			BYTE rop = gsw_rops[ii];
++			hal->ddHALInfo.ddCaps.dwRops[rop >> 5] |= 1UL << (rop & 31);
++		}
++	}
++#else
+ 	for(ii=0; ii<DD_ROP_SPACE; ii++)
+ 	{
+ 		hal->ddHALInfo.ddCaps.dwRops[ii] = 0xFFFFFFFFUL;// JH: we have all ROP3s :-)
+ 	}
++#endif
+ 
+ 	/*
+ 	 * required alignments of the scan lines for each kind of memory
+@@ -382,8 +419,13 @@ static void buildDDHALInfo(VMDAHAL_t __far *hal, int modeidx)
+ 	/*
+ 	 *  FOURCC
+ 	 */
++#ifdef GSW_DIRECTDRAW
++	hal->ddHALInfo.ddCaps.dwNumFourCCCodes = 0;
++	hal->ddHALInfo.lpdwFourCC = NULL;
++#else
+ 	hal->ddHALInfo.ddCaps.dwNumFourCCCodes = sizeof(dwpFOURCCs)/sizeof(DWORD);
+ 	hal->ddHALInfo.lpdwFourCC = &dwpFOURCCs[0];
++#endif
+ 
+   hal->ddHALInfo.ddCaps.dwMinOverlayStretch   = 1000;
+ 	hal->ddHALInfo.ddCaps.dwMinLiveVideoStretch = 1000;

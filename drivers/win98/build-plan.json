@@ -1,25 +1,40 @@
 {
   "_spdx": "GPL-3.0-only",
-  "schema": 2,
+  "schema": 3,
   "status": "ready",
   "reason": "",
   "derived_source_plan": {
     "relative_path": "derived-source-plan.json",
-    "sha256": "a919c2ff1fa5867908765044dea2094aac6e3379006c287df8c44b517a0c5273"
+    "sha256": "e212f63ebe244401acd9ebdf396a0e45c7138e3b2b5cbf98e5977e4a568a2bb3"
   },
-  "toolchain_lock": {
-    "relative_path": "toolchain.lock.json",
-    "sha256": "faedd2ffd829418028a51474a6716ffa4fb381442bbb88fe1fec7ab62181c4fd"
-  },
+  "toolchain_locks": [
+    {
+      "name": "open-watcom",
+      "relative_path": "toolchain.lock.json",
+      "sha256": "e97012fb9d9b1257e59ac5ea46ac8aa1b54b62e2feb03fed70545c5769e07dff"
+    },
+    {
+      "name": "mingw32",
+      "relative_path": "mingw32-toolchain.lock.json",
+      "sha256": "db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12"
+    }
+  ],
   "upstream_lock": {
     "relative_path": "upstream.lock.tsv",
-    "sha256": "489dfb0a17b4b6698af83c32de628eb7d60d49b71e0f01a2d9957b5e44bdb0d8"
+    "sha256": "f9532d1d9997746f523aead2a0e985ca25a190cf142efd5306e9a43476ae3e48"
   },
   "toolchains": [
     {
       "name": "open-watcom-wmake",
+      "lock": "open-watcom",
       "relative_path": "binnt/wmake.exe",
       "sha256": "3b428e1ba24ea461d8a2250b54076f05d93b6b07ff78d58b87149897bccd6f2c"
+    },
+    {
+      "name": "mingw32-make",
+      "lock": "mingw32",
+      "relative_path": "bin/mingw32-make.exe",
+      "sha256": "638e639d1c35156d50830ff18af8030a2ab513c33f2f7d6657cfe1776867ed0d"
     }
   ],
   "steps": [
@@ -28,36 +43,26 @@
       "recipe": "vmdisp9x-gsw",
       "toolchain": "open-watcom-wmake",
       "working_directory": ".",
-      "arguments": [
-        "-f",
-        "gsw.mak",
-        "gsw"
-      ],
+      "arguments": ["-f", "gsw.mak", "gsw"],
       "normalizations": [
-        {
-          "kind": "win16-version-date",
-          "relative_path": "gswmini.drv"
-        }
+        {"kind":"win16-version-date","relative_path":"gswmini.drv"}
       ],
       "outputs": [
-        {
-          "relative_path": "gswmini.drv",
-          "origin": "build",
-          "bytes": 14404,
-          "sha256": "8ae871b002f60b4ba5d25834849c4534192339ecbf19f096ce0a80ec55aec096"
-        },
-        {
-          "relative_path": "gswmini.vxd",
-          "origin": "build",
-          "bytes": 29557,
-          "sha256": "d4127232095fb7683c2ab43af4fbb3add5a955253a188afb06ed86d6dcabe27f"
-        },
-        {
-          "relative_path": "gswmini.inf",
-          "origin": "derived",
-          "bytes": 3108,
-          "sha256": "f8d665e757af2af4732d78a8b8d1fc0c40040b4f9d009b344e12b6bdae8af944"
-        }
+        {"relative_path":"gswmini.drv","origin":"build","bytes":14732,"sha256":"88a53d70230ad74e062dffcb1347619eef02c7bbe5dd07e242aea3ddbb8d75e2"},
+        {"relative_path":"gswmini.vxd","origin":"build","bytes":33913,"sha256":"d9a00abfc465be61b4f2b6ffcfe7dc12451910895c2e53bb95e8aeb60210ee82"},
+        {"relative_path":"gswmini.inf","origin":"derived","bytes":3188,"sha256":"12f28bcb5df117a0e1175edf18aac38c2b05de3216a228e56e0814e9af00523f"}
+      ]
+    },
+    {
+      "name": "build-vmhal9x-gsw",
+      "recipe": "vmhal9x-gsw",
+      "toolchain": "mingw32-make",
+      "working_directory": ".",
+      "arguments": ["-f", "gsw.mk", "gsw"],
+      "normalizations": [],
+      "outputs": [
+        {"relative_path":"gswhal9x.dll","origin":"build","bytes":46592,"sha256":"8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38"},
+        {"relative_path":"gswdd32.dll","origin":"build","bytes":32256,"sha256":"bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4"}
       ]
     }
   ]

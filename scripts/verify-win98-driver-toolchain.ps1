@@ -7,6 +7,8 @@ param(
 
     [string]$LockFile,
 
+    [string]$DescribeRelativePath,
+
     [scriptblock]$BeforeSecondScan
 )
 
@@ -417,8 +419,34 @@ function Assert-TreeDescriptorMatches {
     }
 }
 
-$lockPath = Get-FullPath $LockFile
 $toolchainRootPath = Get-FullPath $ToolchainRoot
+if (-not [string]::IsNullOrWhiteSpace($DescribeRelativePath)) {
+    $describedPath = Get-ContainedPath $toolchainRootPath $DescribeRelativePath 'described toolchain'
+    Assert-PathComponentsAreNotReparsePoints $toolchainRootPath $DescribeRelativePath 'described toolchain'
+    if (-not (Test-Path -LiteralPath $describedPath -PathType Container)) {
+        throw "Described toolchain root not found: $describedPath"
+    }
+    $descriptor = Get-ToolchainTreeDescriptor -Root $describedPath `
+        -ExpectedFileCount $script:HardMaximumFiles `
+        -ExpectedDirectoryCount $script:HardMaximumDirectories `
+        -ExpectedTotalEntries $script:HardMaximumEntries `
+        -ExpectedAggregateBytes $script:HardMaximumAggregateBytes `
+        -ExpectedMaximumFileBytes $script:HardMaximumFileBytes `
+        -ExpectedMaximumPathBytes $script:HardMaximumPathBytes
+    [ordered]@{
+        file_count = $descriptor.FileCount
+        directory_count = $descriptor.DirectoryCount
+        total_entries = $descriptor.TotalEntries
+        aggregate_bytes = $descriptor.AggregateBytes
+        maximum_file_bytes = $descriptor.MaximumFileBytes
+        maximum_path_bytes = $descriptor.MaximumPathBytes
+        digest_algorithm = 'retvrn99-file-tree-sha256-v1'
+        sha256 = $descriptor.Sha256
+    } | ConvertTo-Json
+    return
+}
+
+$lockPath = Get-FullPath $LockFile
 if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
     throw "Toolchain lock not found: $lockPath"
 }
@@ -437,15 +465,20 @@ Assert-ExactProperties $lock.extracted @(
     'aggregate_bytes', 'maximum_file_bytes', 'maximum_path_bytes',
     'digest_algorithm', 'sha256'
 ) 'extracted'
-Assert-ExactProperties $lock.environment @(
-    'watcom_root', 'edpath', 'include', 'path_prefixes'
-) 'environment'
-
 if ($lock._spdx -cne 'GPL-3.0-only') {
     throw 'The toolchain lock must declare GPL-3.0-only metadata licensing.'
 }
-if ((Assert-UnsignedInteger $lock.schema 'schema') -ne 1) {
+$schema = Assert-UnsignedInteger $lock.schema 'schema'
+if ($schema -ne 1 -and $schema -ne 2) {
     throw "Unsupported toolchain lock schema '$($lock.schema)'."
+}
+if ($schema -eq 1) {
+    Assert-ExactProperties $lock.environment @(
+        'watcom_root', 'edpath', 'include', 'path_prefixes'
+    ) 'environment'
+}
+else {
+    Assert-ExactProperties $lock.environment @('path_prefixes') 'environment'
 }
 if ($lock.name -isnot [string] -or $lock.name -cnotmatch '^[a-z0-9][a-z0-9.-]*$') {
     throw "Invalid toolchain name '$($lock.name)'."
@@ -488,11 +521,16 @@ if ($archivePath -ieq $extractedPath) {
 Assert-PathComponentsAreNotReparsePoints $toolchainRootPath $lock.archive.relative_path 'archive'
 Assert-PathComponentsAreNotReparsePoints $toolchainRootPath $lock.extracted.relative_path 'extracted'
 
-if ($lock.environment.watcom_root -cne '.' -or $lock.environment.edpath -cne 'eddat') {
-    throw "Environment metadata must set WATCOM='.' and EDPATH='eddat'."
+if ($schema -eq 1) {
+    if ($lock.environment.watcom_root -cne '.' -or $lock.environment.edpath -cne 'eddat') {
+        throw "Environment metadata must set WATCOM='.' and EDPATH='eddat'."
+    }
+    Assert-ExactStringArray $lock.environment.include @('h/nt', 'h/win', 'h') 'environment.include'
+    Assert-ExactStringArray $lock.environment.path_prefixes @('binnt', 'binw') 'environment.path_prefixes'
 }
-Assert-ExactStringArray $lock.environment.include @('h/nt', 'h/win', 'h') 'environment.include'
-Assert-ExactStringArray $lock.environment.path_prefixes @('binnt', 'binw') 'environment.path_prefixes'
+else {
+    Assert-ExactStringArray $lock.environment.path_prefixes @('bin') 'environment.path_prefixes'
+}
 
 if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
     throw "Pinned toolchain archive is absent: $archivePath"
@@ -505,7 +543,12 @@ if (((Get-Item -LiteralPath $archivePath).Attributes -band [IO.FileAttributes]::
     throw 'Pinned toolchain archive and extracted root cannot be reparse points.'
 }
 
-$requiredEnvironmentDirectories = @('eddat', 'h/nt', 'h/win', 'h', 'binnt', 'binw')
+$requiredEnvironmentDirectories = if ($schema -eq 1) {
+    @('eddat', 'h/nt', 'h/win', 'h', 'binnt', 'binw')
+}
+else {
+    @('bin')
+}
 foreach ($relativePath in $requiredEnvironmentDirectories) {
     $directoryPath = Get-ContainedPath $extractedPath $relativePath 'environment'
     Assert-PathComponentsAreNotReparsePoints $extractedPath $relativePath 'environment'

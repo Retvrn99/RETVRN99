@@ -10,83 +10,34 @@
       "source_directory": "vmdisp9x",
       "destination_directory": "vmdisp9x-gsw",
       "patches": [
-        {
-          "relative_path": "derived/vmdisp9x-gsw/patches/0001-gsw-vxd-shutdown.patch",
-          "bytes": 565,
-          "sha256": "6c28e39962e4efc5f4620692ce5b40c7753a32f183f93f4c49215d8437c7286c",
-          "normalize_lf_paths": [
-            "vxd_main.c"
-          ]
-        },
-        {
-          "relative_path": "derived/vmdisp9x-gsw/patches/0002-gsw-release-profile.patch",
-          "bytes": 391,
-          "sha256": "3104f7cd9b33f1cb22759e0c71717a2ed6cd05bffb81ec1bb15cb9ad729f6bd3",
-          "normalize_lf_paths": [
-            "makefile"
-          ]
-        },
-        {
-          "relative_path": "derived/vmdisp9x-gsw/patches/0003-gsw-no-directdraw-claim.patch",
-          "bytes": 958,
-          "sha256": "ac88a8ee5ba8e9a24ec21a5e672586a5e604311c154d9bad10e13d04d85370ea",
-          "normalize_lf_paths": [
-            "dddrv.c"
-          ]
-        },
-        {
-          "relative_path": "derived/vmdisp9x-gsw/patches/0004-gsw-bootstrap-escapes.patch",
-          "bytes": 3265,
-          "sha256": "80355dd40a133054102506e7ca0a4d2fc6131e1a6108c3e622f2930a216d3251",
-          "normalize_lf_paths": [
-            "control.c"
-          ]
-        },
-        {
-          "relative_path": "derived/vmdisp9x-gsw/patches/0005-gsw-vxd-lifecycle.patch",
-          "bytes": 10243,
-          "sha256": "03fe9e48bc106265df1535cfc38c24b4a266e1e579e5d0608b5632665c42734e",
-          "normalize_lf_paths": [
-            "3d_accel.h",
-            "vxd.h",
-            "vxd_fbhda.c",
-            "vxd_fbhda_dd.c",
-            "vxd_main.c",
-            "vxd_mouse.c",
-            "vxd_vdd.c",
-            "vxd_vdd.h",
-            "vxd_wram.c",
-            "wram.h"
-          ]
-        }
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0001-gsw-vxd-shutdown.patch","bytes":565,"sha256":"6c28e39962e4efc5f4620692ce5b40c7753a32f183f93f4c49215d8437c7286c","normalize_lf_paths":["vxd_main.c"]},
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0002-gsw-release-profile.patch","bytes":391,"sha256":"3104f7cd9b33f1cb22759e0c71717a2ed6cd05bffb81ec1bb15cb9ad729f6bd3","normalize_lf_paths":["makefile"]},
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0003-gsw-no-directdraw-claim.patch","bytes":1044,"sha256":"a19141dffd6fdd674b6d27ba9173ed41928e6d4daf8a874e7b53ff1549954ad2","normalize_lf_paths":["dddrv.c"]},
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0004-gsw-bootstrap-escapes.patch","bytes":1368,"sha256":"506fee7bbea8d48cf2fa63f0c50dabc644936860fa214c03e8e9d33c1ef0de9a","normalize_lf_paths":["control.c"]},
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0005-gsw-vxd-lifecycle.patch","bytes":10270,"sha256":"9b111b2eedc193dd2055f961eb4c353789b00e16dc56efa8d2c75a296fdb1b0a","normalize_lf_paths":["3d_accel.h","vxd.h","vxd_fbhda.c","vxd_fbhda_dd.c","vxd_main.c","vxd_mouse.c","vxd_vdd.c","vxd_vdd.h","vxd_wram.c","wram.h"]},
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0006-gsw-directdraw-ioctl.patch","bytes":435,"sha256":"38440b4778975d7c468fc6d98687c5f873ebfc40748d23ae4120195525b1bd88","normalize_lf_paths":["vxd_main.c"]},
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0007-gsw-directdraw-capabilities.patch","bytes":2558,"sha256":"352f745a62ef3e1b281432926d47e59b169ccb8f7b8e1195b4d5fee7f0d7429c","normalize_lf_paths":["dddrv.c"]}
       ],
       "overlays": [
-        {
-          "relative_path": "derived/vmdisp9x-gsw/overlay",
-          "destination_relative_path": ".",
-          "replace_existing": false,
-          "tree": {
-            "file_count": 11,
-            "directory_count": 1,
-            "total_entries": 12,
-            "aggregate_bytes": 28126,
-            "maximum_file_bytes": 13055,
-            "maximum_path_bytes": 16,
-            "digest_algorithm": "retvrn99-file-tree-sha256-v1",
-            "sha256": "05bfb13ab488096feffd2d50a7d3638d085cbe79376484a8cfe408acb1acd07a"
-          }
-        }
+        {"relative_path":"derived/vmdisp9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":12,"directory_count":1,"total_entries":13,"aggregate_bytes":42752,"maximum_file_bytes":21013,"maximum_path_bytes":16,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"8ed21a217c4c856847882fd4f44950c81f99a68a3bb169c5208eb24f685bda3a"}},
+        {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":1,"directory_count":0,"total_entries":1,"aggregate_bytes":3968,"maximum_file_bytes":3968,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"c2aa95990efb64df043f01806663730f918ef913989f599e457756d8f345475a"}}
       ],
-      "output_tree": {
-        "file_count": 150,
-        "directory_count": 7,
-        "total_entries": 157,
-        "aggregate_bytes": 1313800,
-        "maximum_file_bytes": 113466,
-        "maximum_path_bytes": 26,
-        "digest_algorithm": "retvrn99-file-tree-sha256-v1",
-        "sha256": "5e273b754a9d3c658a61a6e228e925daaea923e30a65a1cf50999c54663f6fd2"
-      }
+      "output_tree": {"file_count":152,"directory_count":7,"total_entries":159,"aggregate_bytes":1332442,"maximum_file_bytes":113466,"maximum_path_bytes":26,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"e55ff6a206e25b55b621d3cea263de86f58ab8a21d50c52dcd7e154dda26b0ee"}
+    },
+    {
+      "name": "vmhal9x-gsw",
+      "upstream_name": "vmhal9x",
+      "source_directory": "vmhal9x",
+      "destination_directory": "vmhal9x-gsw",
+      "patches": [
+        {"relative_path":"derived/vmhal9x-gsw/patches/0001-gsw-bridge-and-fail-closed-hal.patch","bytes":947,"sha256":"333ff9518ccb0ef788e7ee4a40084f0885cddeed1ca71de704db3f5d49b9d041","normalize_lf_paths":["3d_accel.h","vmhal9x.c"]},
+        {"relative_path":"derived/vmhal9x-gsw/patches/0002-gsw-remove-wine-hook.patch","bytes":601,"sha256":"42a56f27ce164fd5e6a86e62cb8bd9f0dd96fb88e99d2167f4dc15b3dc1d17c9","normalize_lf_paths":["vmhal9x.c"]}
+      ],
+      "overlays": [
+        {"relative_path":"derived/vmhal9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":10,"directory_count":0,"total_entries":10,"aggregate_bytes":21964,"maximum_file_bytes":9808,"maximum_path_bytes":17,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"056a0a20683cddd7b8bdb7f471dffa2556f1a54000a7ae5ac7f0810d62d5bed3"}},
+        {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":1,"directory_count":0,"total_entries":1,"aggregate_bytes":3968,"maximum_file_bytes":3968,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"c2aa95990efb64df043f01806663730f918ef913989f599e457756d8f345475a"}}
+      ],
+      "output_tree": {"file_count":153,"directory_count":12,"total_entries":165,"aggregate_bytes":1396843,"maximum_file_bytes":201544,"maximum_path_bytes":33,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"52f4e5e398521c650740e95f8129908955e0c3fc6767c3441533b48953aa9692"}
     }
   ]
 }

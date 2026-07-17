@@ -95,12 +95,13 @@ function Write-FixtureLock {
         [string[]]$Include = @('h/nt', 'h/win', 'h'),
         [string[]]$PathPrefixes = @('binnt', 'binw'),
         [string]$WatcomRoot = '.',
-        [string]$EdPath = 'eddat'
+        [string]$EdPath = 'eddat',
+        [int]$Schema = 1
     )
 
     $lock = [ordered]@{
         _spdx = 'GPL-3.0-only'
-        schema = 1
+        schema = $Schema
         name = 'fixture-open-watcom-1.9'
         archive = [ordered]@{
             relative_path = $ArchivePath
@@ -119,11 +120,15 @@ function Write-FixtureLock {
             digest_algorithm = 'retvrn99-file-tree-sha256-v1'
             sha256 = '12d34c7f434075ddce253237ebb82e1509c12ce7736fcafe3b48a0426477273b'
         }
-        environment = [ordered]@{
-            watcom_root = $WatcomRoot
-            edpath = $EdPath
-            include = $Include
-            path_prefixes = $PathPrefixes
+        environment = if ($Schema -eq 2) {
+            [ordered]@{ path_prefixes = $PathPrefixes }
+        } else {
+            [ordered]@{
+                watcom_root = $WatcomRoot
+                edpath = $EdPath
+                include = $Include
+                path_prefixes = $PathPrefixes
+            }
         }
     }
     [IO.File]::WriteAllText($Path, ($lock | ConvertTo-Json -Depth 8))
@@ -147,6 +152,35 @@ try {
             "Verified Windows 98 toolchain 'fixture-open-watcom-1.9' " +
             '(7 files, 19 bytes, tree 12d34c7f434075ddce253237ebb82e1509c12ce7736fcafe3b48a0426477273b).'
         )
+    }
+
+    Invoke-SelfTest 'A PATH-only schema-2 toolchain verifies and stays strict' {
+        $schema2Root = Join-Path $testRoot 'schema2-root'
+        New-FixtureToolchain -Root $schema2Root
+        Move-Item -LiteralPath (Join-Path $schema2Root 'open-watcom-1.9\binnt') `
+            -Destination (Join-Path $schema2Root 'open-watcom-1.9\bin')
+        $descriptor = & $verifyScript -ToolchainRoot $schema2Root `
+            -DescribeRelativePath 'open-watcom-1.9' | ConvertFrom-Json
+        $schema2Lock = Join-Path $testRoot 'schema2.lock.json'
+        Write-FixtureLock -Path $schema2Lock -Schema 2 -PathPrefixes @('bin')
+        $lockObject = Get-Content -Raw -LiteralPath $schema2Lock | ConvertFrom-Json
+        foreach ($property in @(
+            'file_count', 'directory_count', 'total_entries', 'aggregate_bytes',
+            'maximum_file_bytes', 'maximum_path_bytes', 'sha256'
+        )) { $lockObject.extracted.$property = $descriptor.$property }
+        [IO.File]::WriteAllText($schema2Lock, ($lockObject | ConvertTo-Json -Depth 8))
+        $output = @(& $verifyScript -ToolchainRoot $schema2Root -LockFile $schema2Lock)
+        Assert-Equal (($output -join [Environment]::NewLine) -match "fixture-open-watcom-1.9") $true
+
+        $invalid = Join-Path $testRoot 'schema2-invalid.lock.json'
+        $text = [IO.File]::ReadAllText($schema2Lock).Replace(
+            '"path_prefixes":',
+            '"watcom_root": ".", "path_prefixes":'
+        )
+        [IO.File]::WriteAllText($invalid, $text)
+        Assert-Throws {
+            & $verifyScript -ToolchainRoot $schema2Root -LockFile $invalid
+        } 'Unexpected property.*in environment metadata'
     }
 
     Invoke-SelfTest 'Canonical tree digest is independent of creation order' {
