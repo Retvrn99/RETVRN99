@@ -9,7 +9,7 @@ GSW_DRV_OBJS = &
   modes.obj scrsw.obj
 
 GSW_VXD_OBJS = &
-  pci.obj gsw_transport.obj gsw_ddraw.obj vxd_fbhda.obj &
+  pci.obj gsw_transport.obj gsw3d_transport.obj gsw3d_ioctl.obj gsw_ddraw.obj vxd_fbhda.obj &
   vxd_fbhda_dd.obj vxd_lib.obj vxd_main_gsw.obj vxd_vbe_gsw.obj &
   vxd_vdd_gsw.obj vxd_mouse.obj vxd_wram.obj vxd_async.obj vxd_terror.obj
 
@@ -23,6 +23,12 @@ gsw : gswmini.drv gswmini.vxd gswmini.inf .symbolic
 
 gsw_transport.obj : gsw_transport.c gsw_transport.h .autodepend
 	$(CC32) $(CFLAGS32) $(INCS) $(FLAGS) gsw_transport.c
+
+gsw3d_transport.obj : gsw3d_transport.c gsw_transport.h gsw3d_abi.h .autodepend
+	$(CC32) $(CFLAGS32) $(INCS) $(FLAGS) gsw3d_transport.c
+
+gsw3d_ioctl.obj : gsw3d_ioctl.c gsw_transport.h gsw3d_abi.h .autodepend
+	$(CC32) $(CFLAGS32) $(INCS) $(FLAGS) gsw3d_ioctl.c
 
 gsw_ddraw.obj : gsw_ddraw.c gsw_transport.h .autodepend
 	$(CC32) $(CFLAGS32) $(INCS) $(FLAGS) gsw_ddraw.c
@@ -125,6 +131,8 @@ name gswmini.vxd
 file vxd_main_gsw.obj
 file pci.obj
 file gsw_transport.obj
+file gsw3d_transport.obj
+file gsw3d_ioctl.obj
 file gsw_ddraw.obj
 file vxd_fbhda.obj
 file vxd_fbhda_dd.obj

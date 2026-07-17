@@ -63,7 +63,7 @@ The final package payloads are:
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
 | `gswmini.drv` | 14,732 | `88a53d70230ad74e062dffcb1347619eef02c7bbe5dd07e242aea3ddbb8d75e2` |
-| `gswmini.vxd` | 33,913 | `d9a00abfc465be61b4f2b6ffcfe7dc12451910895c2e53bb95e8aeb60210ee82` |
+| `gswmini.vxd` | 38,669 | `fff33344a8ee01b6ca48546e9433c7bb1aae2247fb8a0d25c99ce8d3017572fe` |
 | `gswmini.inf` | 3,188 | `12f28bcb5df117a0e1175edf18aac38c2b05de3216a228e56e0814e9af00523f` |
 | `gswhal9x.dll` | 46,592 | `8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38` |
 | `gswdd32.dll` | 32,256 | `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4` |
@@ -71,6 +71,9 @@ The final package payloads are:
 The DLL identity is GSW-specific. `gswhal9x.dll` is the DirectDraw HAL and
 `gswdd32.dll` is its narrow VxD bridge. The build does not produce or advertise
 an OpenGL ICD, Direct3D driver, Mesa component, VESA helper, or tray utility.
+The mini-VDD contains the capability-gated GSW3D guest transport, but it exposes
+no usable 3D path unless the host explicitly advertises the guarded proof
+backend.
 
 ## Stageable package
 

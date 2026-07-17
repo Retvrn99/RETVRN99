@@ -2,12 +2,17 @@
 diff --git a/vxd_main.c b/vxd_main.c
 --- a/vxd_main.c
 +++ b/vxd_main.c
-@@ -798,6 +798,13 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
+@@ -798,6 +798,18 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
  	DWORD *inBuf  = (DWORD*)params->lpInBuffer;
  	DWORD *outBuf = (DWORD*)params->lpOutBuffer;
  	DWORD rc = 1;
 +
 +#ifdef GSW
++	if(GSW3D_ioctl(params, &rc))
++	{
++		return rc;
++	}
++
 +	if(GSW_DD_ioctl(params, &rc))
 +	{
 +		return rc;

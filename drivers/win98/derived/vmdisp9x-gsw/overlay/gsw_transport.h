@@ -40,6 +40,12 @@
 #define GSW_VGA_STATUS_READY              (1UL << 0)
 #define GSW_VGA_STATUS_ERROR              (1UL << 1)
 #define GSW_VGA_IRQ_2D                    (1UL << 0)
+#define GSW_VGA_IRQ_3D                    (1UL << 1)
+
+#define GSW_VGA_CAP_3D_SVGA9              (1UL << 8)
+#define GSW_VGA_CAP_DIRECT_PRESENT        (1UL << 9)
+#define GSW_VGA_CAP_ASYNC_FENCES          (1UL << 10)
+#define GSW_VGA_CAP_RESOURCE_UPLOAD       (1UL << 11)
 
 #define GSW_VGA_COMMAND_VERSION_2         2
 #define GSW_VGA_OPCODE_SET_MODE           1
@@ -110,6 +116,7 @@ typedef struct GSWCopyCommand {
 } GSWCopyCommand;
 
 #include "gsw_ddraw_abi.h"
+#include "gsw3d_abi.h"
 
 #pragma pack(pop)
 
@@ -153,6 +160,32 @@ BOOL GSW_transport_surface_fill(const GSWDDFill *request);
 BOOL GSW_transport_surface_blt(const GSWDDBlt *request);
 BOOL GSW_transport_surface_present(DWORD surface_id);
 BOOL GSW_transport_surface_dirty(const GSWDDDirty *request);
+DWORD GSW_transport_register_read(DWORD offset);
+void GSW_transport_register_write(DWORD offset, DWORD value);
 BOOL GSW_DD_ioctl(struct DIOCParams *params, DWORD *result);
+BOOL GSW3D_transport_init(void);
+void GSW3D_transport_shutdown(void);
+BOOL GSW3D_transport_query(GSW3DQuery *query);
+BOOL GSW3D_transport_context(BOOL create, DWORD context_id, GSW3DResult *result);
+BOOL GSW3D_transport_submit(
+	DWORD context_id,
+	const BYTE *batch,
+	DWORD byte_count,
+	GSW3DResult *result
+);
+BOOL GSW3D_transport_upload(
+	DWORD resource_id,
+	DWORD destination_offset_low,
+	DWORD destination_offset_high,
+	const BYTE *bytes,
+	DWORD byte_count,
+	GSW3DResult *result
+);
+BOOL GSW3D_transport_present(const GSW3DPresentRequest *request, GSW3DResult *result);
+BOOL GSW3D_transport_fence_poll(
+	const GSW3DFencePollRequest *request,
+	GSW3DResult *result
+);
+BOOL GSW3D_ioctl(struct DIOCParams *params, DWORD *result);
 
 #endif

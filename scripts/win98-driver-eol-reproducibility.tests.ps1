@@ -11,7 +11,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ProofRoot,
 
-    [string]$RepositoryRoot
+    [string]$RepositoryRoot,
+
+    [string]$BuildPlanRelativePath = 'drivers/win98/build-plan.json'
 )
 
 Set-StrictMode -Version Latest
@@ -39,24 +41,68 @@ function Invoke-Git {
     return $output
 }
 
-function Get-InputInventory {
-    param([Parameter(Mandatory = $true)][string]$Checkout)
+function Get-ContainedPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Base,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
 
-    $driverRoot = Join-Path $Checkout 'drivers\win98'
+    if ([string]::IsNullOrWhiteSpace($RelativePath) -or [IO.Path]::IsPathRooted($RelativePath)) {
+        throw "Build metadata path must be nonempty and relative: $RelativePath"
+    }
+    $rootPath = [IO.Path]::GetFullPath($Root).TrimEnd([char[]]'\/')
+    $candidate = [IO.Path]::GetFullPath((Join-Path $Base $RelativePath))
+    $prefix = $rootPath + [IO.Path]::DirectorySeparatorChar
+    if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Build metadata path escapes the checkout: $RelativePath"
+    }
+    return $candidate
+}
+
+function Get-InputInventory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Checkout,
+        [Parameter(Mandatory = $true)][string]$BuildPlanRelativePath
+    )
+
     $paths = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($item in @(Get-ChildItem -LiteralPath $driverRoot -File)) {
-        if ($item.Extension -cin @('.json', '.tsv')) {
-            [void]$paths.Add([IO.Path]::GetRelativePath($Checkout, $item.FullName).Replace('\', '/'))
+    $planRelative = $BuildPlanRelativePath.Replace('\', '/')
+    if ([IO.Path]::IsPathRooted($planRelative) -or $planRelative.Contains('../')) {
+        throw 'BuildPlanRelativePath must be a contained repository-relative path.'
+    }
+    [void]$paths.Add($planRelative)
+    $buildPlanPath = Get-ContainedPath $Checkout $Checkout $planRelative
+    $planDirectory = Split-Path -Parent $buildPlanPath
+    $buildPlan = Get-Content -Raw -LiteralPath $buildPlanPath | ConvertFrom-Json
+    $linkedPaths = @(
+        [string]$buildPlan.derived_source_plan.relative_path,
+        [string]$buildPlan.upstream_lock.relative_path
+    )
+    if ($null -ne $buildPlan.PSObject.Properties['toolchain_lock']) {
+        $linkedPaths += [string]$buildPlan.toolchain_lock.relative_path
+    }
+    if ($null -ne $buildPlan.PSObject.Properties['toolchain_locks']) {
+        foreach ($lock in @($buildPlan.toolchain_locks)) {
+            $linkedPaths += [string]$lock.relative_path
         }
     }
-    $derivedPlan = Get-Content -Raw -LiteralPath (Join-Path $driverRoot 'derived-source-plan.json') |
-        ConvertFrom-Json
+    foreach ($linkedPath in $linkedPaths) {
+        $fullPath = Get-ContainedPath $Checkout $planDirectory $linkedPath
+        [void]$paths.Add([IO.Path]::GetRelativePath($Checkout, $fullPath).Replace('\', '/'))
+    }
+    $derivedPlanPath = Get-ContainedPath $Checkout $planDirectory (
+        [string]$buildPlan.derived_source_plan.relative_path
+    )
+    $derivedRoot = Split-Path -Parent $derivedPlanPath
+    $derivedPlan = Get-Content -Raw -LiteralPath $derivedPlanPath | ConvertFrom-Json
     foreach ($recipe in @($derivedPlan.recipes)) {
         foreach ($patch in @($recipe.patches)) {
-            [void]$paths.Add(('drivers/win98/' + [string]$patch.relative_path).Replace('\', '/'))
+            $fullPath = Get-ContainedPath $Checkout $derivedRoot ([string]$patch.relative_path)
+            [void]$paths.Add([IO.Path]::GetRelativePath($Checkout, $fullPath).Replace('\', '/'))
         }
         foreach ($overlay in @($recipe.overlays)) {
-            $overlayRoot = Join-Path $driverRoot ([string]$overlay.relative_path)
+            $overlayRoot = Get-ContainedPath $Checkout $derivedRoot ([string]$overlay.relative_path)
             foreach ($item in @(Get-ChildItem -LiteralPath $overlayRoot -Recurse -File)) {
                 [void]$paths.Add(
                     [IO.Path]::GetRelativePath($Checkout, $item.FullName).Replace('\', '/')
@@ -76,14 +122,15 @@ function Get-InputInventory {
 function Get-DeclaredOutputs {
     param(
         [Parameter(Mandatory = $true)][string]$Checkout,
-        [Parameter(Mandatory = $true)][string]$BuildRoot
+        [Parameter(Mandatory = $true)][string]$BuildRoot,
+        [Parameter(Mandatory = $true)][string]$BuildPlanRelativePath
     )
 
-    $driverRoot = Join-Path $Checkout 'drivers\win98'
-    $buildPlan = Get-Content -Raw -LiteralPath (Join-Path $driverRoot 'build-plan.json') |
-        ConvertFrom-Json
-    $derivedPlan = Get-Content -Raw -LiteralPath (Join-Path $driverRoot 'derived-source-plan.json') |
-        ConvertFrom-Json
+    $buildPlanPath = Join-Path $Checkout $BuildPlanRelativePath
+    $buildPlan = Get-Content -Raw -LiteralPath $buildPlanPath | ConvertFrom-Json
+    $planDirectory = Split-Path -Parent $buildPlanPath
+    $derivedPlanPath = Join-Path $planDirectory ([string]$buildPlan.derived_source_plan.relative_path)
+    $derivedPlan = Get-Content -Raw -LiteralPath $derivedPlanPath | ConvertFrom-Json
     $recipes = @{}
     foreach ($recipe in @($derivedPlan.recipes)) {
         $recipes[$recipe.name] = $recipe.destination_directory
@@ -116,6 +163,7 @@ $repositoryPath = Get-FullPath $RepositoryRoot
 $sourcePath = Get-FullPath $SourceRoot
 $toolchainPath = Get-FullPath $ToolchainRoot
 $proofPath = Get-FullPath $ProofRoot
+$buildPlanRelative = $BuildPlanRelativePath.Replace('\', '/')
 
 if (Test-Path -LiteralPath $proofPath) {
     throw "ProofRoot must be previously absent: $proofPath"
@@ -150,13 +198,20 @@ foreach ($case in @(
     [void](Invoke-Git $checkout @('config', 'core.autocrlf', $case.Value))
     [void](Invoke-Git $checkout @('checkout', '--detach', '--force', '--quiet', $commit))
 
-    $inventories[$case.Name] = @(Get-InputInventory $checkout)
+    $checkoutBuildPlan = Join-Path $checkout $buildPlanRelative
+    $checkoutPlan = Get-Content -Raw -LiteralPath $checkoutBuildPlan | ConvertFrom-Json
+    $checkoutPlanDirectory = Split-Path -Parent $checkoutBuildPlan
+    $checkoutUpstreamLock = Join-Path $checkoutPlanDirectory (
+        [string]$checkoutPlan.upstream_lock.relative_path
+    )
+    $inventories[$case.Name] = @(Get-InputInventory $checkout $buildPlanRelative)
     & (Join-Path $checkout 'scripts\build-win98-driver-sources.ps1') `
         -SourceRoot $sourcePath -ToolchainRoot $toolchainPath `
         -OutputRoot $buildRoot `
-        -BuildPlan (Join-Path $checkout 'drivers\win98\build-plan.json') `
-        -LockFile (Join-Path $checkout 'drivers\win98\upstream.lock.tsv')
-    $outputs[$case.Name] = @(Get-DeclaredOutputs $checkout $buildRoot)
+        -BuildPlan $checkoutBuildPlan -LockFile $checkoutUpstreamLock
+    $outputs[$case.Name] = @(
+        Get-DeclaredOutputs $checkout $buildRoot $buildPlanRelative
+    )
 }
 
 $trueInputs = $inventories['autocrlf-true'] -join "`n"

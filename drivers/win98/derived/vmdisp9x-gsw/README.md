@@ -36,6 +36,9 @@ BIOS, then mirrors Windows mode sets and flips to GSW-VGA ABI v2. Its VxD:
 - allocates one fixed, zeroed, physically contiguous 4 KiB guest ring;
 - submits one bounded command at a time and requires synchronous head and
   nonzero-fence completion before reusing ring storage;
+- owns a separate fixed 4 KiB GSW3D ring and a bounded 64 KiB staging region,
+  and exposes context, submit, upload, present, and fence-poll DIOCs only when
+  the host advertises the guarded SVGA9 proof capabilities;
 - presents surface offsets without framebuffer copies; and
 - initializes the small upstream WRAM metadata allocation before FBHDA and
   cursor code can dereference it.

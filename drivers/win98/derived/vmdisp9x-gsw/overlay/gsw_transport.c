@@ -58,6 +58,19 @@ static void gsw_register_write(DWORD offset, DWORD value)
 	gsw_registers[offset >> 2] = value;
 }
 
+DWORD GSW_transport_register_read(DWORD offset)
+{
+	if(gsw_registers == NULL || offset >= GSW_VGA_CONTROL_BYTES || (offset & 3) != 0)
+		return 0;
+	return gsw_register_read(offset);
+}
+
+void GSW_transport_register_write(DWORD offset, DWORD value)
+{
+	if(gsw_registers != NULL && offset < GSW_VGA_CONTROL_BYTES && (offset & 3) == 0)
+		gsw_register_write(offset, value);
+}
+
 static DWORD gsw_bytes_per_pixel(DWORD bpp)
 {
 	switch(bpp)
@@ -386,12 +399,14 @@ BOOL GSW_transport_init(void)
 	}
 
 	gsw_is_ready = TRUE;
+	(void)GSW3D_transport_init();
 	return TRUE;
 }
 
 void GSW_transport_shutdown(void)
 {
 	if(gsw_semaphore != 0) Wait_Semaphore(gsw_semaphore, 0);
+	GSW3D_transport_shutdown();
 	gsw_is_ready = FALSE;
 	if(gsw_registers != NULL)
 	{

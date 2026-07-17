@@ -15,14 +15,14 @@
         {"relative_path":"derived/vmdisp9x-gsw/patches/0003-gsw-no-directdraw-claim.patch","bytes":1044,"sha256":"a19141dffd6fdd674b6d27ba9173ed41928e6d4daf8a874e7b53ff1549954ad2","normalize_lf_paths":["dddrv.c"]},
         {"relative_path":"derived/vmdisp9x-gsw/patches/0004-gsw-bootstrap-escapes.patch","bytes":1368,"sha256":"506fee7bbea8d48cf2fa63f0c50dabc644936860fa214c03e8e9d33c1ef0de9a","normalize_lf_paths":["control.c"]},
         {"relative_path":"derived/vmdisp9x-gsw/patches/0005-gsw-vxd-lifecycle.patch","bytes":10270,"sha256":"9b111b2eedc193dd2055f961eb4c353789b00e16dc56efa8d2c75a296fdb1b0a","normalize_lf_paths":["3d_accel.h","vxd.h","vxd_fbhda.c","vxd_fbhda_dd.c","vxd_main.c","vxd_mouse.c","vxd_vdd.c","vxd_vdd.h","vxd_wram.c","wram.h"]},
-        {"relative_path":"derived/vmdisp9x-gsw/patches/0006-gsw-directdraw-ioctl.patch","bytes":435,"sha256":"38440b4778975d7c468fc6d98687c5f873ebfc40748d23ae4120195525b1bd88","normalize_lf_paths":["vxd_main.c"]},
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0006-gsw-directdraw-ioctl.patch","bytes":490,"sha256":"3766f10ad37b7521c9d5b4db829dceb73bc94de5552c031f98e0ab24b245ec59","normalize_lf_paths":["vxd_main.c"]},
         {"relative_path":"derived/vmdisp9x-gsw/patches/0007-gsw-directdraw-capabilities.patch","bytes":2558,"sha256":"352f745a62ef3e1b281432926d47e59b169ccb8f7b8e1195b4d5fee7f0d7429c","normalize_lf_paths":["dddrv.c"]}
       ],
       "overlays": [
-        {"relative_path":"derived/vmdisp9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":12,"directory_count":1,"total_entries":13,"aggregate_bytes":42752,"maximum_file_bytes":21013,"maximum_path_bytes":16,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"8ed21a217c4c856847882fd4f44950c81f99a68a3bb169c5208eb24f685bda3a"}},
-        {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":1,"directory_count":0,"total_entries":1,"aggregate_bytes":3968,"maximum_file_bytes":3968,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"c2aa95990efb64df043f01806663730f918ef913989f599e457756d8f345475a"}}
+        {"relative_path":"derived/vmdisp9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":14,"directory_count":1,"total_entries":15,"aggregate_bytes":65665,"maximum_file_bytes":21441,"maximum_path_bytes":17,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"2f473aa8d8e30b4c7278056b9ba7f15ba01cbe582add9272b28de400740efb8c"}},
+        {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":2,"directory_count":0,"total_entries":2,"aggregate_bytes":9021,"maximum_file_bytes":5053,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"3017fa753f794f69f9a6c4a5c45c029832b91acdd2a264574fdc244d894abe25"}}
       ],
-      "output_tree": {"file_count":152,"directory_count":7,"total_entries":159,"aggregate_bytes":1332442,"maximum_file_bytes":113466,"maximum_path_bytes":26,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"e55ff6a206e25b55b621d3cea263de86f58ab8a21d50c52dcd7e154dda26b0ee"}
+      "output_tree": {"file_count":155,"directory_count":7,"total_entries":162,"aggregate_bytes":1360458,"maximum_file_bytes":113466,"maximum_path_bytes":26,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"44ea67ab954776c05ad37be5de506d6215193058967883d7efaaa1d8af100968"}
     },
     {
       "name": "vmhal9x-gsw",
@@ -35,9 +35,9 @@
       ],
       "overlays": [
         {"relative_path":"derived/vmhal9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":10,"directory_count":0,"total_entries":10,"aggregate_bytes":21964,"maximum_file_bytes":9808,"maximum_path_bytes":17,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"056a0a20683cddd7b8bdb7f471dffa2556f1a54000a7ae5ac7f0810d62d5bed3"}},
-        {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":1,"directory_count":0,"total_entries":1,"aggregate_bytes":3968,"maximum_file_bytes":3968,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"c2aa95990efb64df043f01806663730f918ef913989f599e457756d8f345475a"}}
+        {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":2,"directory_count":0,"total_entries":2,"aggregate_bytes":9021,"maximum_file_bytes":5053,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"3017fa753f794f69f9a6c4a5c45c029832b91acdd2a264574fdc244d894abe25"}}
       ],
-      "output_tree": {"file_count":153,"directory_count":12,"total_entries":165,"aggregate_bytes":1396843,"maximum_file_bytes":201544,"maximum_path_bytes":33,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"52f4e5e398521c650740e95f8129908955e0c3fc6767c3441533b48953aa9692"}
+      "output_tree": {"file_count":154,"directory_count":12,"total_entries":166,"aggregate_bytes":1401896,"maximum_file_bytes":201544,"maximum_path_bytes":33,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"9584a1758cbd44cfd4599de1ebe12c57db5670507691807220473d8d5b4a1192"}
     }
   ]
 }
