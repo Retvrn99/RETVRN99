@@ -46,33 +46,59 @@ vga_vbe_lfb_enabled :: proc(v: ^Vga) -> bool {
 	return vga_vbe_enabled(v) && v.dispi[DISPI_INDEX_ENABLE] & DISPI_LFB_ENABLED != 0
 }
 
+vga_publish_external_lfb_writes :: proc(v: ^Vga, dirty: bool) -> bool {
+	if v == nil || !dirty || !vga_vbe_lfb_enabled(v) {return false}
+	vga_note_content_change(v)
+	return true
+}
+
 vga_vbe_pitch :: proc(v: ^Vga) -> int {
 	width := int(v.dispi[DISPI_INDEX_VIRT_WIDTH])
-	if width == 0 { width = int(v.dispi[DISPI_INDEX_XRES]) }
+	if width == 0 {width = int(v.dispi[DISPI_INDEX_XRES])}
 	return dispi_pitch(width, int(v.dispi[DISPI_INDEX_BPP]))
 }
 
-vga_gsw_present :: proc(v: ^Vga, width, height, pitch: u32, format: Gsw_Pixel_Format) -> bool {
+vga_gsw_present_surface :: proc(
+	v: ^Vga,
+	offset, width, height, pitch: u32,
+	format: Gsw_Pixel_Format,
+) -> bool {
 	if v == nil || width == 0 || height == 0 {return false}
 	bpp, bytes: u16
 	switch format {
-	case .Indexed_8: bpp, bytes = 8, 1
-	case .Rgb_555: bpp, bytes = 15, 2
-	case .Rgb_565: bpp, bytes = 16, 2
-	case .Rgb_888: bpp, bytes = 24, 3
-	case .Xrgb_8888: bpp, bytes = 32, 4
-	case: return false
+	case .Indexed_8:
+		bpp, bytes = 8, 1
+	case .Rgb_555:
+		bpp, bytes = 15, 2
+	case .Rgb_565:
+		bpp, bytes = 16, 2
+	case .Rgb_888:
+		bpp, bytes = 24, 3
+	case .Xrgb_8888:
+		bpp, bytes = 32, 4
+	case:
+		return false
 	}
-	if pitch % u32(bytes) != 0 {return false}
+	if pitch == 0 || pitch % u32(bytes) != 0 || offset % u32(bytes) != 0 {return false}
 	virtual_width := pitch / u32(bytes)
-	if width > u32(max(u16)) || height > u32(max(u16)) || virtual_width > u32(max(u16)) {return false}
+	x_offset := offset % pitch / u32(bytes)
+	y_offset := offset / pitch
+	last := u64(offset) + u64(height - 1) * u64(pitch) + u64(width) * u64(bytes)
+	if width > u32(max(u16)) ||
+	   height > u32(max(u16)) ||
+	   virtual_width > u32(max(u16)) ||
+	   x_offset > u32(max(u16)) ||
+	   y_offset > u32(max(u16)) ||
+	   last > u64(len(v.vram)) {
+		return false
+	}
 	candidate := v.dispi
 	candidate[DISPI_INDEX_XRES] = u16(width)
 	candidate[DISPI_INDEX_YRES] = u16(height)
 	candidate[DISPI_INDEX_BPP] = bpp
 	candidate[DISPI_INDEX_VIRT_WIDTH] = u16(virtual_width)
-	candidate[DISPI_INDEX_X_OFFSET] = 0
-	candidate[DISPI_INDEX_Y_OFFSET] = 0
+	candidate[DISPI_INDEX_X_OFFSET] = u16(x_offset)
+	candidate[DISPI_INDEX_Y_OFFSET] = u16(y_offset)
 	candidate[DISPI_INDEX_ENABLE] = DISPI_ENABLED | DISPI_LFB_ENABLED | DISPI_NOCLEARMEM
 	if !dispi_mode_valid(&candidate) {return false}
 	v.dispi = candidate
@@ -82,14 +108,23 @@ vga_gsw_present :: proc(v: ^Vga, width, height, pitch: u32, format: Gsw_Pixel_Fo
 	return true
 }
 
+vga_gsw_present :: proc(v: ^Vga, width, height, pitch: u32, format: Gsw_Pixel_Format) -> bool {
+	return vga_gsw_present_surface(v, 0, width, height, pitch, format)
+}
+
 @(private = "package")
 dispi_pitch :: proc(width, bpp: int) -> int {
 	switch bpp {
-	case 4:  return (width + 7) / 8
-	case 8:  return width
-	case 15, 16: return width * 2
-	case 24: return width * 3
-	case 32: return width * 4
+	case 4:
+		return (width + 7) / 8
+	case 8:
+		return width
+	case 15, 16:
+		return width * 2
+	case 24:
+		return width * 3
+	case 32:
+		return width * 4
 	}
 	return 0
 }
@@ -105,17 +140,21 @@ dispi_mode_valid :: proc(regs: ^[12]u16) -> bool {
 	y := int(regs[DISPI_INDEX_YRES])
 	bpp := int(regs[DISPI_INDEX_BPP])
 	virtual_width := int(regs[DISPI_INDEX_VIRT_WIDTH])
-	if virtual_width == 0 { virtual_width = x }
-	if x <= 0 || x > DISPI_MAX_XRES || y <= 0 || y > DISPI_MAX_YRES || !dispi_supported_bpp(u16(bpp)) { return false }
-	if virtual_width < x { return false }
+	if virtual_width == 0 {virtual_width = x}
+	if x <= 0 ||
+	   x > DISPI_MAX_XRES ||
+	   y <= 0 ||
+	   y > DISPI_MAX_YRES ||
+	   !dispi_supported_bpp(u16(bpp)) {return false}
+	if virtual_width < x {return false}
 	pitch := dispi_pitch(virtual_width, bpp)
-	if pitch <= 0 || pitch > VRAM_SIZE { return false }
+	if pitch <= 0 || pitch > VRAM_SIZE {return false}
 	available := bpp == 4 ? VRAM_SIZE / 4 : VRAM_SIZE
 	virtual_height := available / pitch
-	if virtual_height < y { return false }
+	if virtual_height < y {return false}
 	xoff := int(regs[DISPI_INDEX_X_OFFSET])
 	yoff := int(regs[DISPI_INDEX_Y_OFFSET])
-	if xoff < 0 || yoff < 0 || xoff + x > virtual_width || yoff + y > virtual_height { return false }
+	if xoff < 0 || yoff < 0 || xoff + x > virtual_width || yoff + y > virtual_height {return false}
 	return true
 }
 
@@ -138,18 +177,22 @@ dispi_io_write :: proc(v: ^Vga, port: u16, size: u8, value: u32) -> bool {
 @(private = "package")
 dispi_io_read :: proc(v: ^Vga, port: u16, size: u8) -> u32 {
 	value := port == DISPI_PORT_INDEX ? v.dispi_index : dispi_read_register(v, v.dispi_index)
-	if size == 1 { return u32(value & 0xFF) }
+	if size == 1 {return u32(value & 0xFF)}
 	return u32(value)
 }
 
 dispi_read_register :: proc(v: ^Vga, index: u16) -> u16 {
-	if index >= u16(len(v.dispi)) { return 0xFFFF }
+	if index >= u16(len(v.dispi)) {return 0xFFFF}
 	if v.dispi[DISPI_INDEX_ENABLE] & DISPI_GETCAPS != 0 {
 		switch int(index) {
-		case DISPI_INDEX_XRES: return DISPI_MAX_XRES
-		case DISPI_INDEX_YRES: return DISPI_MAX_YRES
-		case DISPI_INDEX_BPP: return 32
-		case DISPI_INDEX_BANK: return DISPI_BANK_GRANULARITY_32K << 8
+		case DISPI_INDEX_XRES:
+			return DISPI_MAX_XRES
+		case DISPI_INDEX_YRES:
+			return DISPI_MAX_YRES
+		case DISPI_INDEX_BPP:
+			return 32
+		case DISPI_INDEX_BANK:
+			return DISPI_BANK_GRANULARITY_32K << 8
 		}
 	}
 	switch int(index) {
@@ -166,25 +209,34 @@ dispi_read_register :: proc(v: ^Vga, index: u16) -> u16 {
 }
 
 dispi_write_register :: proc(v: ^Vga, index, value: u16) -> bool {
-	if index >= u16(len(v.dispi)) { return false }
+	if index >= u16(len(v.dispi)) {return false}
 	switch int(index) {
 	case DISPI_INDEX_ID:
-		if value < DISPI_ID0 || value > DISPI_ID5 { return false }
+		if value < DISPI_ID0 || value > DISPI_ID5 {return false}
 		v.dispi[index] = value
 		return true
 	case DISPI_INDEX_ENABLE:
-		allowed := DISPI_ENABLED | DISPI_GETCAPS | DISPI_BANK_GRANULARITY_32K | DISPI_8BIT_DAC | DISPI_LFB_ENABLED | DISPI_NOCLEARMEM
+		allowed :=
+			DISPI_ENABLED |
+			DISPI_GETCAPS |
+			DISPI_BANK_GRANULARITY_32K |
+			DISPI_8BIT_DAC |
+			DISPI_LFB_ENABLED |
+			DISPI_NOCLEARMEM
 		flags := value & allowed
-		if flags & DISPI_ENABLED != 0 && !dispi_mode_valid(&v.dispi) { return false }
+		if flags & DISPI_ENABLED != 0 && !dispi_mode_valid(&v.dispi) {return false}
 		was_enabled := vga_vbe_enabled(v)
-		if !was_enabled && flags & DISPI_ENABLED != 0 && flags & DISPI_NOCLEARMEM == 0 && v.vram != nil {
-			for &b in v.vram { b = 0 }
+		if !was_enabled &&
+		   flags & DISPI_ENABLED != 0 &&
+		   flags & DISPI_NOCLEARMEM == 0 &&
+		   v.vram != nil {
+			for &b in v.vram {b = 0}
 		}
 		v.dispi[index] = flags
 		vga_recalculate_timing(v)
 		return true
 	case DISPI_INDEX_XRES, DISPI_INDEX_YRES, DISPI_INDEX_BPP:
-		if vga_vbe_enabled(v) { return false }
+		if vga_vbe_enabled(v) {return false}
 		v.dispi[index] = value
 		if int(index) == DISPI_INDEX_XRES {
 			v.dispi[DISPI_INDEX_VIRT_WIDTH] = value
@@ -193,23 +245,23 @@ dispi_write_register :: proc(v: ^Vga, index, value: u16) -> bool {
 	case DISPI_INDEX_VIRT_WIDTH:
 		candidate := v.dispi
 		candidate[index] = value
-		if value == 0 { candidate[index] = candidate[DISPI_INDEX_XRES] }
-		if !dispi_mode_valid(&candidate) { return false }
+		if value == 0 {candidate[index] = candidate[DISPI_INDEX_XRES]}
+		if !dispi_mode_valid(&candidate) {return false}
 		v.dispi[index] = candidate[index]
 		return true
 	case DISPI_INDEX_X_OFFSET, DISPI_INDEX_Y_OFFSET:
 		candidate := v.dispi
 		candidate[index] = value
-		if !dispi_mode_valid(&candidate) { return false }
+		if !dispi_mode_valid(&candidate) {return false}
 		v.dispi[index] = value
 		return true
 	case DISPI_INDEX_BANK:
 		bank := value & 0x3FFF
 		available := v.dispi[DISPI_INDEX_BPP] == 4 ? VRAM_SIZE / 4 : VRAM_SIZE
-		if int(bank) * dispi_bank_granularity(v) + DISPI_BANK_SIZE > available { return false }
+		if int(bank) * dispi_bank_granularity(v) + DISPI_BANK_SIZE > available {return false}
 		direction := value & DISPI_BANK_RW
-		if direction == 0 || direction & DISPI_BANK_RD != 0 { v.bank_read = bank }
-		if direction == 0 || direction & DISPI_BANK_WR != 0 { v.bank_write = bank }
+		if direction == 0 || direction & DISPI_BANK_RD != 0 {v.bank_read = bank}
+		if direction == 0 || direction & DISPI_BANK_WR != 0 {v.bank_write = bank}
 		v.dispi[index] = bank
 		return true
 	case DISPI_INDEX_VIRT_HEIGHT, DISPI_INDEX_VIDEO_MEMORY_64K, DISPI_INDEX_DDC:

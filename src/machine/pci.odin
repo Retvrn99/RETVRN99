@@ -9,7 +9,7 @@ GSW_PCI_VENDOR_ID :: u16(0xFFFE) // private development ID; not PCI-SIG assigned
 GSW_VGA_PCI_DEVICE_ID :: u16(0x0002)
 GSW_VGA_CAPABILITY_OFFSET :: 0x40
 GSW_VGA_CAPABILITY_SIGNATURE :: u32(0x5657_5347) // "GSWV"
-GSW_VGA_CAPABILITY_VERSION :: u16(1)
+GSW_VGA_CAPABILITY_VERSION :: u16(2)
 GSW_VGA_CAPABILITY_LENGTH :: u16(0x14)
 GSW_VGA_CONTROL_BAR :: u32(0xF100_0000)
 GSW_VGA_FRAMEBUFFER_BAR :: u32(0xE000_0000)
@@ -237,7 +237,7 @@ pci_init :: proc(p: ^Pci) {
 	pci_seed_u16(&graphics.cfg, cap + 8, u16(persona.GUEST_PERSONA.vram_bytes / (1024 * 1024)))
 	pci_seed_u16(&graphics.cfg, cap + 10, persona.GUEST_PERSONA.graphics_core_mhz)
 	graphics.cfg[cap + 12] = persona.GUEST_PERSONA.graphics_agp_rate
-	graphics.cfg[cap + 13] = 1
+	graphics.cfg[cap + 13] = u8(GSW_VGA_CAPABILITY_VERSION)
 	graphics.cfg[cap + 14] = 0x03
 }
 

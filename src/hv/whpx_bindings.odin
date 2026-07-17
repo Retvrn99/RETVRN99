@@ -26,6 +26,7 @@ WHV_PARTITION_PROPERTY_CODE :: enum u32 {
 WHV_MAP_GPA_RANGE_FLAG_READ: u32 : 0x1
 WHV_MAP_GPA_RANGE_FLAG_WRITE: u32 : 0x2
 WHV_MAP_GPA_RANGE_FLAG_EXECUTE: u32 : 0x4
+WHV_MAP_GPA_RANGE_FLAG_TRACK_DIRTY_PAGES: u32 : 0x8
 
 WHV_TRANSLATE_GVA_RESULT_CODE :: enum u32 {
 	Success                 = 0,
@@ -114,7 +115,7 @@ WHV_X64_TABLE_REGISTER :: struct {
 
 // 16-byte union; the SDK aligns it to 16 via WHV_UINT128 (DECLSPEC_ALIGN(16)) —
 // WinHvPlatform.dll does aligned SSE access on register value arrays.
-WHV_REGISTER_VALUE :: struct #raw_union #align(16) {
+WHV_REGISTER_VALUE :: struct #raw_union #align (16) {
 	Reg128:  [2]u64,
 	Reg64:   u64,
 	Reg32:   u32,
@@ -287,10 +288,29 @@ WHV_EMULATOR_CALLBACKS :: struct {
 	Size:             u32,
 	Reserved:         u32,
 	IoPort:           proc "system" (ctx: rawptr, io: ^WHV_EMULATOR_IO_ACCESS_INFO) -> HRESULT,
-	Memory:           proc "system" (ctx: rawptr, mem: ^WHV_EMULATOR_MEMORY_ACCESS_INFO) -> HRESULT,
-	GetRegs:          proc "system" (ctx: rawptr, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT,
-	SetRegs:          proc "system" (ctx: rawptr, names: [^]WHV_REGISTER_NAME, count: u32, values: [^]WHV_REGISTER_VALUE) -> HRESULT,
-	TranslateGvaPage: proc "system" (ctx: rawptr, gva: u64, flags: u32, result: ^WHV_TRANSLATE_GVA_RESULT_CODE, gpa: ^u64) -> HRESULT,
+	Memory:           proc "system" (
+		ctx: rawptr,
+		mem: ^WHV_EMULATOR_MEMORY_ACCESS_INFO,
+	) -> HRESULT,
+	GetRegs:          proc "system" (
+		ctx: rawptr,
+		names: [^]WHV_REGISTER_NAME,
+		count: u32,
+		values: [^]WHV_REGISTER_VALUE,
+	) -> HRESULT,
+	SetRegs:          proc "system" (
+		ctx: rawptr,
+		names: [^]WHV_REGISTER_NAME,
+		count: u32,
+		values: [^]WHV_REGISTER_VALUE,
+	) -> HRESULT,
+	TranslateGvaPage: proc "system" (
+		ctx: rawptr,
+		gva: u64,
+		flags: u32,
+		result: ^WHV_TRANSLATE_GVA_RESULT_CODE,
+		gpa: ^u64,
+	) -> HRESULT,
 }
 
 foreign import whp "system:WinHvPlatform.lib"
@@ -305,6 +325,7 @@ foreign whp {
 	WHvSetupPartition :: proc(part: WHV_PARTITION_HANDLE) -> HRESULT ---
 	WHvMapGpaRange :: proc(part: WHV_PARTITION_HANDLE, source: rawptr, gpa: u64, size: u64, flags: u32) -> HRESULT ---
 	WHvUnmapGpaRange :: proc(part: WHV_PARTITION_HANDLE, gpa: u64, size: u64) -> HRESULT ---
+	WHvQueryGpaRangeDirtyBitmap :: proc(part: WHV_PARTITION_HANDLE, gpa: u64, size: u64, bitmap: ^u64, bitmap_size: u32) -> HRESULT ---
 	WHvTranslateGva :: proc(part: WHV_PARTITION_HANDLE, index: u32, gva: u64, flags: u32, result: ^WHV_TRANSLATE_GVA_RESULT, gpa: ^u64) -> HRESULT ---
 	WHvCreateVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32, flags: u32) -> HRESULT ---
 	WHvDeleteVirtualProcessor :: proc(part: WHV_PARTITION_HANDLE, index: u32) -> HRESULT ---

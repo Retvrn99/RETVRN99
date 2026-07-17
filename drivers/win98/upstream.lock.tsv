@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Source-provenance lock only. These rows do not identify shipped or install-ready payloads.
+name	source_directory	repository	commit	upstream_license	disposition	scope
+vmdisp9x	vmdisp9x	https://github.com/JHRobotics/vmdisp9x.git	718b3d51a1532fe1ba2e133cf76186f1a609d35e	MIT	planned	display-driver
+vmhal9x	vmhal9x	https://github.com/JHRobotics/vmhal9x.git	d0e52c21bb21656785cfde970a8e7b0b57fda5d8	MIT	planned	directdraw-and-d3d-hal
+mesa9x	mesa9x	https://github.com/JHRobotics/mesa9x.git	29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f	MIT	planned	software-rasterizer
+softgpu	softgpu	https://github.com/JHRobotics/softgpu.git	be7a6421068a1d1f475b8939a24237921490c2b8	MIT	reference-only	integration-reference
+wine9x	wine9x	https://github.com/JHRobotics/Wine9x.git	8ab16c6c0930efc1f9138eddda7b3114d7f31e62	LGPL-2.1-or-later	planned	dx8-and-dx9-compatibility
+vkd3d-shader	vkd3d	https://gitlab.winehq.org/wine/vkd3d.git	1b0924d12c18df03912a8876ed17fd017ce9308e	LGPL-2.1-or-later	reference-only	libs-vkd3d-shader
+vmware-svga-ddk	vmware-svga	https://github.com/prepare/vmware-svga.git	eea7ddcd0d34702f8f0a33c1933718706c6318c5	MIT	reference-only	protocol-and-example-source-headers

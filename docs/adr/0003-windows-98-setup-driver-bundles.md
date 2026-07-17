@@ -37,7 +37,9 @@ copy before it enters the image transaction. The user ISO remains read-only.
 Bundle processing is deterministic, bounded, idempotent, and fails closed on
 unsafe paths, duplicate package identities, cross-bundle PnP-ID collisions, or
 case-insensitive and 8.3 filename collisions. The shipped DMA policy is the
-first stock overlay; no RETVRN99 PnP driver payload ships yet.
+first stock overlay; no RETVRN99 PnP driver payload ships yet. ADR 0004 records
+the exact upstream source candidates and the fail-closed delivery order without
+turning that planning metadata into a payload claim.
 
 Four bundle kinds keep Setup phases explicit:
 
@@ -101,3 +103,4 @@ bounded interface without changing bundle or INF semantics.
 - [VOGONS discussion of loose Setup files and new INF registration](https://www.vogons.org/viewtopic.php?t=91993)
 - [Windows 95D unattended media customization background](https://drevonor.com/win95d.php)
 - [Patcher9x Windows 98 TLB patch](https://github.com/JHRobotics/patcher9x)
+- [Windows 98 driver source and delivery lock](0004-windows-98-driver-source-and-delivery-lock.md)

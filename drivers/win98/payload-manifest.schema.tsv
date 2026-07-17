@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Schema only. No Windows 98 driver or DirectX payload is currently available.
+package_id	source_relative_path	destination_relative_path	kind	sha256	bytes	hardware_id	run_once_order

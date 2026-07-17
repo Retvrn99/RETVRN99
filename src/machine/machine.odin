@@ -90,6 +90,10 @@ Machine :: struct {
 	primary_ide_kernel_dma_transactions: u64,
 	primary_ide_kernel_dma_bytes:        u64,
 	audio:                               sound.Audio_Mixer,
+	sb16:                                sound.Sb16,
+	opl3:                                sound.Opl3,
+	sb16_dreq_channel:                   int,
+	sb16_dreq_active:                    bool,
 	cdda_pending:                        [MACHINE_CDDA_PENDING_FRAMES]sound.Audio_Frame,
 	cdda_pending_count:                  int,
 	fdc:                                 disk.Fdc,
@@ -210,7 +214,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	) {
 		return false
 	}
-	vram, vram_ok := hv.map_device_memory(&m.vm, video.VBE_LFB_BASE, video.VRAM_SIZE)
+	vram, vram_ok := hv.map_device_memory_tracked(&m.vm, video.VBE_LFB_BASE, video.VRAM_SIZE)
 	if !vram_ok || !video.vga_init(&m.vga, vram) {
 		return false
 	}
@@ -226,6 +230,8 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	if !sound.audio_mixer_init(&m.audio) {
 		return false
 	}
+	sound.sb16_init(&m.sb16)
+	sound.opl3_init(&m.opl3)
 	hosttime.waiter_init(&m.idle_waiter)
 	m.vm.io_ctx = m
 	m.vm.io_read = machine_io_read
@@ -346,6 +352,19 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 		bus_register(&m.bus, port, port, dma_h)
 	}
 
+	sb16_h := Io_Handler {
+		ctx   = m,
+		read  = machine_sb16_read,
+		write = machine_sb16_write,
+	}
+	bus_register_byte_decomposed(&m.bus, sound.SB16_BASE_PORT, sound.SB16_LAST_PORT, sb16_h)
+	opl3_h := Io_Handler {
+		ctx   = m,
+		read  = machine_opl3_read,
+		write = machine_opl3_write,
+	}
+	bus_register_byte_decomposed(&m.bus, sound.OPL3_BASE_PORT, sound.OPL3_LAST_PORT, opl3_h)
+
 	delay_h := Io_Handler {
 		ctx   = m,
 		read  = machine_isa_delay_read,
@@ -411,16 +430,14 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	machine_whitelist_range(&m.bus, 0x1E8, 0x1EF) // IDE tertiary: Win98 boot-disk ATAPI driver probe; absent
 	machine_whitelist_range(&m.bus, 0x168, 0x16F) // IDE quaternary, same driver probe series
 	bus_whitelist(&m.bus, 0x36E, 0x36F) // IDE quaternary device control, same probe (tertiary's 0x3EE is inside the COM3 range above)
-	// Known-absent ISA game, sound, SCSI, and network adapter probe windows.
+	// Known-absent ISA game, SCSI, and network adapter probe windows.
 	machine_whitelist_range(&m.bus, 0x130, 0x13F)
 	machine_whitelist_range(&m.bus, 0x200, 0x207)
-	machine_whitelist_range(&m.bus, 0x220, 0x22F)
 	machine_whitelist_range(&m.bus, 0x230, 0x23F)
 	machine_whitelist_range(&m.bus, 0x240, 0x24F)
 	machine_whitelist_range(&m.bus, 0x280, 0x29F)
 	machine_whitelist_range(&m.bus, 0x300, 0x31F)
 	machine_whitelist_range(&m.bus, 0x330, 0x35F)
-	machine_whitelist_range(&m.bus, 0x388, 0x38B)
 	machine_clock_set_running(m, true)
 	initialized = true
 	return true
@@ -436,6 +453,7 @@ machine_destroy :: proc(m: ^Machine) {
 	disk.atapi_eject(&m.atapi)
 	hosttime.waiter_destroy(&m.idle_waiter)
 	hv.governor_destroy(&m.governor)
+	video.gsw_vga_destroy(&m.gsw_vga)
 	video.vga_destroy(&m.vga)
 	hv.destroy(&m.vm)
 	fwcfg_destroy(&m.fwcfg)
@@ -887,7 +905,7 @@ machine_scheduler_refresh :: proc(m: ^Machine) {
 		machine_relative_ns_deadline(m, cmos_next_deadline_ns(&m.cmos)),
 		true,
 	)
-	deadline, pending = sound.audio_mixer_next_deadline_tick(&m.audio)
+	deadline, pending = machine_audio_next_deadline(m)
 	machine_scheduler_set(m, .Audio, deadline, pending)
 	if m.cpu_mode == .GSW_886 {
 		now := master_timeline_now(m.timeline)
@@ -1131,7 +1149,7 @@ machine_advance_device :: proc(m: ^Machine, device: Scheduled_Device) {
 	}
 }
 
-@(private = "file")
+@(private = "package")
 machine_sync_device :: proc(m: ^Machine, device: Scheduled_Device) {
 	index := int(device)
 	now := master_timeline_now(m.timeline)
@@ -1174,6 +1192,7 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 	}
 	if m.power_off_requested {return false}
 	machine_sync_time(m)
+	video.gsw_vga_poll(&m.gsw_vga)
 	if m.reset_requested || m.power_off_requested {return false}
 	queued := false
 	deferred_pending_event := false
@@ -1820,68 +1839,6 @@ machine_bmide_submit_atapi :: proc(m: ^Machine) {
 }
 
 @(private = "file")
-machine_audio_reset_cdda :: proc(m: ^Machine) {
-	if m == nil {return}
-	m.cdda_pending_count = 0
-	sound.audio_mixer_reset_cdda(&m.audio)
-}
-
-@(private = "file")
-machine_audio_drain_cdda :: proc(m: ^Machine) {
-	if m.cdda_pending_count == 0 {return}
-	consumed := sound.audio_mixer_queue_cdda(&m.audio, m.cdda_pending[:m.cdda_pending_count])
-	if consumed <= 0 {return}
-	remaining := m.cdda_pending_count - consumed
-	copy(m.cdda_pending[:remaining], m.cdda_pending[consumed:m.cdda_pending_count])
-	m.cdda_pending_count = remaining
-}
-
-@(private = "file")
-machine_cdda_frame :: proc(ctx: rawptr, pcm: []u8) {
-	m := (^Machine)(ctx)
-	if m == nil || len(pcm) != disk.DISC_RAW_SECTOR_SIZE {return}
-	machine_audio_drain_cdda(m)
-	frames: [disk.DISC_RAW_SECTOR_SIZE / 4]sound.Audio_Frame
-	for i in 0 ..< len(frames) {
-		offset := i * 4
-		frames[i] = {
-			left  = i16(u16(pcm[offset]) | u16(pcm[offset + 1]) << 8),
-			right = i16(u16(pcm[offset + 2]) | u16(pcm[offset + 3]) << 8),
-		}
-	}
-	consumed := sound.audio_mixer_queue_cdda(&m.audio, frames[:])
-	remaining := len(frames) - consumed
-	if remaining == 0 {return}
-	if m.cdda_pending_count + remaining > len(m.cdda_pending) {
-		bus_freeze(&m.bus, "CDDA source queue overflow")
-		return
-	}
-	copy(m.cdda_pending[m.cdda_pending_count:m.cdda_pending_count + remaining], frames[consumed:])
-	m.cdda_pending_count += remaining
-}
-
-@(private = "file")
-machine_audio_apply_pit_transitions :: proc(m: ^Machine) {
-	enabled := m.pit.port61_low & 0x02 != 0
-	for transition in pit_channel2_transition_slice(&m.pit) {
-		_ = sound.audio_mixer_set_speaker_state(
-			&m.audio,
-			transition.master_tick,
-			enabled,
-			transition.level,
-		)
-	}
-	pit_clear_channel2_transitions(&m.pit)
-}
-
-@(private = "file")
-machine_audio_advance_to :: proc(m: ^Machine, tick: u64) {
-	machine_audio_apply_pit_transitions(m)
-	machine_audio_drain_cdda(m)
-	_ = sound.audio_mixer_advance_to(&m.audio, tick)
-}
-
-@(private = "file")
 machine_sync_ide_irq_routes :: proc(m: ^Machine) {
 	if m == nil {return}
 	primary_native := pci_ide_channel_native(&m.pci, 0)
@@ -2320,20 +2277,35 @@ machine_vga_sync :: proc(m: ^Machine) {
 	video.vga_sync_to(&m.vga, m.active_ns)
 }
 
+@(private = "file")
+machine_publish_vbe_lfb_writes :: proc(m: ^Machine) -> bool {
+	if m == nil || m.vm.part == nil {return true}
+	dirty, ok := hv.query_device_memory_dirty(&m.vm, video.vga_vram(&m.vga))
+	if !ok {
+		bus_freeze(&m.bus, "WHPX VGA dirty-page query failed")
+		return false
+	}
+	_ = video.vga_publish_external_lfb_writes(&m.vga, dirty)
+	return true
+}
+
 machine_display_frame :: proc(m: ^Machine) -> ^video.Display_Frame {
 	machine_vga_sync(m)
+	_ = machine_publish_vbe_lfb_writes(m)
 	return video.vga_display_frame(&m.vga)
 }
 
 machine_capture_scanout :: proc(m: ^Machine, descriptor: ^video.Scanout_Descriptor) -> bool {
 	if m == nil || descriptor == nil {return false}
 	machine_vga_sync(m)
+	if !machine_publish_vbe_lfb_writes(m) {return false}
 	return video.scanout_descriptor_capture(descriptor, &m.vga)
 }
 
 machine_scanout_generation :: proc(m: ^Machine) -> u64 {
 	if m == nil {return 0}
 	machine_vga_sync(m)
+	_ = machine_publish_vbe_lfb_writes(m)
 	return m.vga.content_generation
 }
 

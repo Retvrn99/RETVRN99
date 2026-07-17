@@ -11,22 +11,26 @@ AUDIO_CDDA_QUEUE_FRAMES :: 16_384
 AUDIO_GAIN_UNITY :: u32(65_536)
 
 Audio_Mixer :: struct {
-	now_ticks:       u64,
-	output_phase:    u64,
-	speaker_enabled: bool,
-	speaker_level:   i32,
-	speaker_area:    i128,
-	speaker_ticks:   u64,
-	speaker_gain:    u32,
-	cdda_gain:       u32,
-	cdda_resampler:  Audio_Resampler,
-	cdda_frames:     [AUDIO_CDDA_QUEUE_FRAMES]Audio_Frame_Wide,
-	cdda_head:       int,
-	cdda_count:      int,
-	mix_batch:       [AUDIO_RENDER_BATCH]Audio_Frame,
-	mix_batch_count: int,
-	output:          Audio_Output,
-	blocks_rendered: u64,
+	now_ticks:         u64,
+	output_phase:      u64,
+	speaker_enabled:   bool,
+	speaker_level:     i32,
+	speaker_area:      i128,
+	speaker_ticks:     u64,
+	legacy_left_area:  i128,
+	legacy_right_area: i128,
+	sb16_frame:        Audio_Frame,
+	opl3_frame:        Audio_Frame,
+	speaker_gain:      u32,
+	cdda_gain:         u32,
+	cdda_resampler:    Audio_Resampler,
+	cdda_frames:       [AUDIO_CDDA_QUEUE_FRAMES]Audio_Frame_Wide,
+	cdda_head:         int,
+	cdda_count:        int,
+	mix_batch:         [AUDIO_RENDER_BATCH]Audio_Frame,
+	mix_batch_count:   int,
+	output:            Audio_Output,
+	blocks_rendered:   u64,
 }
 
 audio_mixer_init :: proc(mixer: ^Audio_Mixer) -> bool {
@@ -130,6 +134,20 @@ audio_mixer_blocks_rendered :: proc(mixer: ^Audio_Mixer) -> u64 {
 	return mixer != nil ? mixer.blocks_rendered : 0
 }
 
+audio_mixer_set_sb16_frame :: proc(mixer: ^Audio_Mixer, at_tick: u64, frame: Audio_Frame) -> bool {
+	if at_tick < mixer.now_ticks {return false}
+	_ = audio_mixer_advance_to(mixer, at_tick)
+	mixer.sb16_frame = frame
+	return true
+}
+
+audio_mixer_set_opl3_frame :: proc(mixer: ^Audio_Mixer, at_tick: u64, frame: Audio_Frame) -> bool {
+	if at_tick < mixer.now_ticks {return false}
+	_ = audio_mixer_advance_to(mixer, at_tick)
+	mixer.opl3_frame = frame
+	return true
+}
+
 @(private = "file")
 audio_mixer_average_speaker :: proc(mixer: ^Audio_Mixer) -> i64 {
 	if mixer.speaker_ticks == 0 {return 0}
@@ -141,11 +159,22 @@ audio_mixer_average_speaker :: proc(mixer: ^Audio_Mixer) -> i64 {
 }
 
 @(private = "file")
+audio_mixer_average_area :: proc(area: i128, ticks: u64) -> i64 {
+	if ticks == 0 {return 0}
+	denominator := i128(ticks)
+	if area >= 0 {return i64((area + denominator / 2) / denominator)}
+	return i64((area - denominator / 2) / denominator)
+}
+
+@(private = "file")
 audio_mixer_emit :: proc(mixer: ^Audio_Mixer) {
 	speaker := audio_mixer_average_speaker(mixer) * i64(mixer.speaker_gain) / i64(AUDIO_GAIN_UNITY)
+	legacy_left := audio_mixer_average_area(mixer.legacy_left_area, mixer.speaker_ticks)
+	legacy_right := audio_mixer_average_area(mixer.legacy_right_area, mixer.speaker_ticks)
 	cdda := audio_mixer_cdda_pop(mixer)
-	left := i64(cdda.left) * i64(mixer.cdda_gain) / i64(AUDIO_GAIN_UNITY) + speaker
-	right := i64(cdda.right) * i64(mixer.cdda_gain) / i64(AUDIO_GAIN_UNITY) + speaker
+	left := i64(cdda.left) * i64(mixer.cdda_gain) / i64(AUDIO_GAIN_UNITY) + speaker + legacy_left
+	right :=
+		i64(cdda.right) * i64(mixer.cdda_gain) / i64(AUDIO_GAIN_UNITY) + speaker + legacy_right
 	mixer.mix_batch[mixer.mix_batch_count] = {
 		left  = audio_clamp_i16(left),
 		right = audio_clamp_i16(right),
@@ -153,6 +182,8 @@ audio_mixer_emit :: proc(mixer: ^Audio_Mixer) {
 	mixer.mix_batch_count += 1
 	if mixer.mix_batch_count == AUDIO_RENDER_BATCH {audio_mixer_flush_batch(mixer)}
 	mixer.speaker_area = 0
+	mixer.legacy_left_area = 0
+	mixer.legacy_right_area = 0
 	mixer.speaker_ticks = 0
 }
 
@@ -164,6 +195,10 @@ audio_mixer_advance_to :: proc(mixer: ^Audio_Mixer, target_tick: u64) -> u64 {
 		until_frame := (remaining_phase + AUDIO_OUTPUT_HZ - 1) / AUDIO_OUTPUT_HZ
 		step := min(target_tick - mixer.now_ticks, max(until_frame, u64(1)))
 		mixer.speaker_area += i128(mixer.speaker_level) * i128(step)
+		mixer.legacy_left_area +=
+			i128(i32(mixer.sb16_frame.left) + i32(mixer.opl3_frame.left)) * i128(step)
+		mixer.legacy_right_area +=
+			i128(i32(mixer.sb16_frame.right) + i32(mixer.opl3_frame.right)) * i128(step)
 		mixer.speaker_ticks += step
 		phase := u128(mixer.output_phase) + u128(step) * u128(AUDIO_OUTPUT_HZ)
 		mixer.output_phase = u64(phase % u128(AUDIO_MASTER_CLOCK_HZ))
@@ -190,8 +225,16 @@ audio_mixer_set_speaker_state :: proc(
 }
 
 audio_mixer_active :: proc(mixer: ^Audio_Mixer) -> bool {
-	return mixer != nil &&
-	       (mixer.speaker_enabled || mixer.cdda_count > 0 || mixer.mix_batch_count > 0)
+	return(
+		mixer != nil &&
+		(mixer.speaker_enabled ||
+				mixer.cdda_count > 0 ||
+				mixer.mix_batch_count > 0 ||
+				mixer.sb16_frame.left != 0 ||
+				mixer.sb16_frame.right != 0 ||
+				mixer.opl3_frame.left != 0 ||
+				mixer.opl3_frame.right != 0) \
+	)
 }
 
 audio_mixer_next_deadline_tick :: proc(mixer: ^Audio_Mixer) -> (deadline: u64, pending: bool) {

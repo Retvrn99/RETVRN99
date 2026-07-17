@@ -1,7 +1,8 @@
 # IzarraVM algorithm notice
 
-Selected PC timing, device, media, audio, and guest-test algorithms are adapted
-from IzarraVM commit `d930de57acccbc6a70cda8cc5a603173bf23cd1c`.
+Selected PC timing, device, media, audio, video, and guest-test algorithms are
+adapted from IzarraVM commits `d930de57acccbc6a70cda8cc5a603173bf23cd1c`
+and `b88a9fe68a8109f26632ff2802262cc38a6a5ad9`.
 IzarraVM is copyright its contributors and licensed GPL-3.0-only. RETVRN99 and
 each adapted Odin source file remain GPL-3.0-only.
 

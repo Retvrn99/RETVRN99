@@ -1,0 +1,8 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "status": "blocked",
+  "reason": "No reviewed Windows 98 toolchain and deterministic output recipe is committed.",
+  "toolchains": [],
+  "steps": []
+}

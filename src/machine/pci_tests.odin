@@ -502,10 +502,16 @@ pci_test_gsw_vga_identity_bars_and_persona :: proc(t: ^testing.T) {
 
 	pci_out(&p, 0xCF8, 4, 0x8000_1040)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), GSW_VGA_CAPABILITY_SIGNATURE)
+	pci_out(&p, 0xCF8, 4, 0x8000_1044)
+	testing.expect_value(
+		t,
+		pci_in(&p, 0xCFC, 4),
+		u32(GSW_VGA_CAPABILITY_LENGTH) << 16 | u32(GSW_VGA_CAPABILITY_VERSION),
+	)
 	pci_out(&p, 0xCF8, 4, 0x8000_1048)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(150) << 16 | 32)
 	pci_out(&p, 0xCF8, 4, 0x8000_104C)
-	testing.expect_value(t, pci_in(&p, 0xCFC, 4) & 0x00FF_FFFF, u32(0x0003_0104))
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4) & 0x00FF_FFFF, u32(0x0003_0204))
 }
 
 @(test)

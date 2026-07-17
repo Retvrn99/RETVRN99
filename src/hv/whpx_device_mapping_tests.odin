@@ -39,6 +39,66 @@ whpx_device_mapping_test_read :: proc(t: ^testing.T, vm: ^Vm, gpa: u64) -> (u8, 
 	return u8(reg_rax(vm)), true
 }
 
+@(private = "file")
+whpx_device_mapping_test_write :: proc(t: ^testing.T, vm: ^Vm, gpa: u64, value: u8) -> bool {
+	if !testing.expect(t, gpa <= u64(max(u32))) {return false}
+	copy(
+		vm.ram[0x7000:],
+		[]u8{0xB0, value, 0xA2, u8(gpa), u8(gpa >> 8), u8(gpa >> 16), u8(gpa >> 24), 0xF4},
+	)
+	code := WHV_X64_SEGMENT_REGISTER {
+		Base       = 0,
+		Limit      = 0xFFFF_FFFF,
+		Selector   = 8,
+		Attributes = 0xC09B,
+	}
+	data := WHV_X64_SEGMENT_REGISTER {
+		Base       = 0,
+		Limit      = 0xFFFF_FFFF,
+		Selector   = 16,
+		Attributes = 0xC093,
+	}
+	names := [?]WHV_REGISTER_NAME{.Cs, .Ds, .Es, .Ss, .Fs, .Gs, .Rip, .Rflags, .Rsp, .Rax, .Cr0}
+	values: [len(names)]WHV_REGISTER_VALUE
+	values[0].Segment = code
+	for i in 1 ..< 6 {values[i].Segment = data}
+	values[6].Reg64 = 0x7000
+	values[7].Reg64 = 0x2
+	values[8].Reg64 = 0x8000
+	values[9].Reg64 = 0
+	values[10].Reg64 = 0x11
+	if !testing.expect(
+		t,
+		WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0,
+	) {
+		return false
+	}
+	return testing.expect_value(t, run(vm).kind, Exit_Kind.Halt)
+}
+
+@(test)
+whpx_tracked_device_mapping_reports_and_clears_guest_writes :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	base: u64 = 0xE000_0000
+	backing, mapped := map_device_memory_tracked(&vm, base, 0x2000)
+	if !testing.expect(t, mapped) {return}
+	dirty, query_ok := query_device_memory_dirty(&vm, backing)
+	testing.expect(t, query_ok && !dirty)
+	if !whpx_device_mapping_test_write(t, &vm, base + 0x1003, 0x5A) {return}
+	dirty, query_ok = query_device_memory_dirty(&vm, backing)
+	testing.expect(t, query_ok && dirty)
+	testing.expect_value(t, backing[0x1003], u8(0x5A))
+	dirty, query_ok = query_device_memory_dirty(&vm, backing)
+	testing.expect(t, query_ok && !dirty)
+}
+
 @(test)
 whpx_device_mapping_relocates_disables_and_preserves_backing :: proc(t: ^testing.T) {
 	if !available() {

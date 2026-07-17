@@ -1,13 +1,44 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package vga
 
-@(rodata) SEQ_MASKS := [8]u8{0x03, 0x3D, 0x0F, 0x3F, 0x0E, 0x00, 0x00, 0x00}
-@(rodata) GFX_MASKS := [16]u8{0x0F, 0x0F, 0x0F, 0x1F, 0x03, 0x7B, 0x0F, 0x0F, 0xFF, 0, 0, 0, 0, 0, 0, 0}
-@(rodata) ATTR_MASKS := [32]u8{
-	0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-	0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F, 0x3F,
-	0xFF, 0x3F, 0x0F, 0x0F, 0x0F, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+@(rodata)
+SEQ_MASKS := [8]u8{0x03, 0x3D, 0x0F, 0x3F, 0x0E, 0x00, 0x00, 0x00}
+@(rodata)
+GFX_MASKS := [16]u8{0x0F, 0x0F, 0x0F, 0x1F, 0x03, 0x7B, 0x0F, 0x0F, 0xFF, 0, 0, 0, 0, 0, 0, 0}
+@(rodata)
+ATTR_MASKS := [32]u8 {
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0x3F,
+	0xFF,
+	0x3F,
+	0x0F,
+	0x0F,
+	0x0F,
+	0x00,
+	0x00,
+	0x00,
+	0x00,
+	0x00,
+	0x00,
+	0x00,
+	0x00,
+	0x00,
+	0x00,
+	0x00,
 }
 
 @(private = "file")
@@ -44,8 +75,10 @@ vga_io_write :: proc(v: ^Vga, port: u16, size: u8, value: u32) {
 vga_io_read :: proc(v: ^Vga, port: u16, size: u8) -> u32 {
 	if v == nil || !v.pci_io_enabled {
 		switch size {
-		case 1: return 0xFF
-		case 2: return 0xFFFF
+		case 1:
+			return 0xFF
+		case 2:
+			return 0xFFFF
 		}
 		return 0xFFFF_FFFF
 	}
@@ -61,10 +94,19 @@ vga_io_read :: proc(v: ^Vga, port: u16, size: u8) -> u32 {
 
 @(private = "file")
 standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
+	if v.cga.active {
+		switch port {
+		case 0x3D0, 0x3D2, 0x3D4, 0x3D6:
+			v.crtc_ix = value & 0x1F
+			return false
+		case 0x3D1, 0x3D3, 0x3D5, 0x3D7:
+			return cga_crtc_write(v, v.crtc_ix, value)
+		}
+	}
 	crtc_port := active_crtc_index_port(v)
 	switch port {
 	case 0x3B4, 0x3D4:
-		if port == crtc_port { v.crtc_ix = value & 0x1F }
+		if port == crtc_port {v.crtc_ix = value & 0x1F}
 	case 0x3B5, 0x3D5:
 		if port == crtc_port + 1 {return crtc_write(v, v.crtc_ix, value)}
 	case 0x3C0:
@@ -84,9 +126,15 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 		}
 		v.attr_flip = !v.attr_flip
 	case 0x3C2:
-		changed := v.misc != value
+		changed := v.misc != value || v.cga.active
+		cga_leave_personality(v)
 		v.misc = value
 		vga_recalculate_timing(v)
+		return changed
+	case 0x3C3:
+		masked := value & 1
+		changed := v.video_subsystem_enable != masked
+		v.video_subsystem_enable = masked
 		return changed
 	case 0x3C4:
 		v.seq_ix = value & 7
@@ -112,7 +160,7 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 		v.dac_state = 0
 	case 0x3C9:
 		dac_value := value
-		if v.dispi[DISPI_INDEX_ENABLE] & DISPI_8BIT_DAC == 0 { dac_value &= 0x3F }
+		if v.dispi[DISPI_INDEX_ENABLE] & DISPI_8BIT_DAC == 0 {dac_value &= 0x3F}
 		index := int(v.dac_write) * 3 + int(v.dac_sub)
 		changed := v.dac[index] != dac_value
 		v.dac[index] = dac_value
@@ -134,18 +182,39 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 		}
 	case 0x3DA, 0x3BA:
 		v.feature = value & 3
+	case 0x3D8:
+		return cga_set_mode_control(v, value)
+	case 0x3D9:
+		return cga_set_color_select(v, value)
+	case 0x3DB:
+		changed := v.cga.light_pen_triggered
+		v.cga.light_pen_triggered = false
+		return changed
+	case 0x3DC:
+		was_triggered := v.cga.light_pen_triggered
+		cga_latch_light_pen(v)
+		return !was_triggered && v.cga.light_pen_triggered
 	}
 	return false
 }
 
 @(private = "file")
 standard_port_read :: proc(v: ^Vga, port: u16) -> u8 {
+	if v.cga.active {
+		switch port {
+		case 0x3D0, 0x3D2, 0x3D4, 0x3D6:
+			return 0xFF
+		case 0x3D1, 0x3D3, 0x3D5, 0x3D7:
+			value, readable := cga_crtc_read(v, v.crtc_ix)
+			return readable ? value : 0xFF
+		}
+	}
 	crtc_port := active_crtc_index_port(v)
 	switch port {
 	case 0x3B4, 0x3D4:
-		if port == crtc_port { return v.crtc_ix }
+		if port == crtc_port {return v.crtc_ix}
 	case 0x3B5, 0x3D5:
-		if port == crtc_port + 1 && int(v.crtc_ix) < len(v.crtc) { return v.crtc[v.crtc_ix] }
+		if port == crtc_port + 1 && int(v.crtc_ix) < len(v.crtc) {return v.crtc[v.crtc_ix]}
 	case 0x3BA, 0x3DA:
 		if port == active_status_port(v) {
 			v.attr_flip = false
@@ -154,13 +223,15 @@ standard_port_read :: proc(v: ^Vga, port: u16) -> u8 {
 	case 0x3C0:
 		return v.attr_ix | (v.video_on ? 0x20 : 0)
 	case 0x3C1:
-		if int(v.attr_ix) < len(v.attr) { return v.attr[v.attr_ix] }
+		if int(v.attr_ix) < len(v.attr) {return v.attr[v.attr_ix]}
 	case 0x3C2:
-		return 0x10
+		return vga_status_0(v)
+	case 0x3C3:
+		return v.video_subsystem_enable & 1
 	case 0x3C4:
 		return v.seq_ix
 	case 0x3C5:
-		if int(v.seq_ix) < len(v.seq) { return v.seq[v.seq_ix] }
+		if int(v.seq_ix) < len(v.seq) {return v.seq[v.seq_ix]}
 	case 0x3C6:
 		return v.pel_mask
 	case 0x3C7:
@@ -182,7 +253,13 @@ standard_port_read :: proc(v: ^Vga, port: u16) -> u8 {
 	case 0x3CE:
 		return v.gfx_ix
 	case 0x3CF:
-		if int(v.gfx_ix) < len(v.gfx) { return v.gfx[v.gfx_ix] }
+		if int(v.gfx_ix) < len(v.gfx) {return v.gfx[v.gfx_ix]}
+	case 0x3DB:
+		v.cga.light_pen_triggered = false
+		return 0xFF
+	case 0x3DC:
+		cga_latch_light_pen(v)
+		return 0xFF
 	}
 	return 0xFF
 }

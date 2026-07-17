@@ -51,6 +51,25 @@ test_audio_mixer_silence_has_no_deadline :: proc(t: ^testing.T) {
 	testing.expect(t, !pending)
 }
 
+@(test)
+test_audio_mixer_integrates_sb16_and_opl3_stereo_sources :: proc(t: ^testing.T) {
+	mixer := audio_test_new_mixer(t)
+	if mixer == nil {return}
+	defer free(mixer)
+	consumer: Audio_Consumer
+	audio_consumer_init(&consumer, audio_mixer_output(mixer))
+	audio_consumer_discard_queued(&consumer)
+	consumer.gain = AUDIO_RAMP_FRAMES
+	frame_ticks := AUDIO_MASTER_CLOCK_HZ / AUDIO_OUTPUT_HZ
+	testing.expect(t, audio_mixer_set_sb16_frame(mixer, 0, {1_000, -1_000}))
+	testing.expect(t, audio_mixer_set_opl3_frame(mixer, 0, {250, 500}))
+	_ = audio_mixer_advance_to(mixer, frame_ticks)
+	audio_mixer_publish_pending(mixer)
+	frame: [1]Audio_Frame
+	audio_consumer_read(&consumer, frame[:])
+	testing.expect_value(t, frame[0], Audio_Frame{1_250, -500})
+}
+
 audio_test_fill_cdda :: proc(frames: []Audio_Frame, content_frames: int) {
 	for index in 0 ..< min(content_frames, len(frames)) {
 		frames[index] = {

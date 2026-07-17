@@ -242,7 +242,7 @@ render_scanline :: proc(v: ^Vga, pixels: []u32, kind: Display_Kind, width, heigh
 
 @(private = "file")
 render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y: int) {
-	character_width := v.seq[1] & 1 != 0 ? 8 : 9
+	character_width := v.cga.active ? 8 : (v.seq[1] & 1 != 0 ? 8 : 9)
 	character_height := max(int(v.crtc[9] & 0x1F) + 1, 1)
 	columns := width / character_width
 	if y < 0 || y >= height {return}
@@ -253,9 +253,9 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y: int) {
 	effective_line := y - origin_line + legacy_preset_row(v, below_split)
 	row := effective_line / character_height
 	glyph_y := effective_line % character_height
-	pitch := int(v.crtc[0x13]) * 2
-	byte_pan := legacy_byte_pan(v, below_split)
-	pan := legacy_text_pel_pan(v, below_split, character_width)
+	pitch := v.cga.active ? columns * 2 : int(v.crtc[0x13]) * 2
+	byte_pan := v.cga.active ? 0 : legacy_byte_pan(v, below_split)
+	pan := v.cga.active ? 0 : legacy_text_pel_pan(v, below_split, character_width)
 	font_a, font_b := font_blocks(v)
 	blink_on := (v.timing.elapsed_ns / 500_000_000) & 1 == 0
 	cursor := int(v.crtc[0x0E]) << 8 | int(v.crtc[0x0F])
@@ -272,14 +272,17 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y: int) {
 		attribute := legacy_text_byte(v, raw + 1)
 		foreground := attribute & 0x0F
 		font_base := (attribute & 0x08 != 0 ? font_b : font_a) * 8192
-		if font_a != font_b {foreground &= 7}
+		if v.cga.active {font_base = 0}
+		if !v.cga.active && font_a != font_b {foreground &= 7}
 		background := attribute >> 4
-		if v.attr[0x10] & 0x08 != 0 {
+		blink_enabled :=
+			v.cga.active ? v.cga.mode_control & CGA_MODE_BLINK != 0 : v.attr[0x10] & 0x08 != 0
+		if blink_enabled {
 			background &= 7
 			if attribute & 0x80 != 0 && !blink_on {foreground = background}
 		}
-		fg := attribute_color(v, foreground)
-		bg := attribute_color(v, background)
+		fg := v.cga.active ? CGA_COLORS[int(foreground & 0x0F)] : attribute_color(v, foreground)
+		bg := v.cga.active ? CGA_COLORS[int(background & 0x0F)] : attribute_color(v, background)
 		cursor_here := v.crtc[0x0A] & 0x20 == 0 && blink_on && cursor_line && raw == cursor_raw
 		if cursor_here {temporary := fg; fg = bg; bg = temporary}
 		bits := plane_byte(v, 2, font_base + int(character) * 32 + min(glyph_y, 31))
@@ -342,7 +345,8 @@ render_cga_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
 	for x in 0 ..< width {
 		value := legacy_linear_byte(v, start + row + x / 4)
 		shift := uint(6 - (x & 3) * 2)
-		pixels[y * width + x] = attribute_color(v, (value >> shift) & 3)
+		pixel := (value >> shift) & 3
+		pixels[y * width + x] = v.cga.active ? cga_color(v, pixel) : attribute_color(v, pixel)
 	}
 }
 
@@ -437,6 +441,17 @@ display_geometry :: proc(v: ^Vga) -> (Display_Kind, int, int) {
 		}
 		return kind, int(v.dispi[DISPI_INDEX_XRES]), int(v.dispi[DISPI_INDEX_YRES])
 	}
+	if v.cga.active {
+		columns := max(int(v.crtc[0x01]), 1)
+		character_width := cga_character_width(v)
+		height := max(int(v.crtc[0x06]) * (int(v.crtc[0x09] & 0x1F) + 1), 1)
+		if v.cga.mode_control & CGA_MODE_GRAPHICS != 0 {
+			kind :=
+				v.cga.mode_control & CGA_MODE_HIGH_RES != 0 ? Display_Kind.Cga_1 : Display_Kind.Cga_2
+			return kind, columns * character_width, height
+		}
+		return .Text, columns * 8, height
+	}
 	graphics := v.gfx[6] & 1 != 0 || v.attr[0x10] & 1 != 0
 	if !graphics {
 		character_width := v.seq[1] & 1 != 0 ? 8 : 9
@@ -457,8 +472,12 @@ display_geometry :: proc(v: ^Vga) -> (Display_Kind, int, int) {
 	return .Planar_4, width, height
 }
 
-@(private = "file")
+@(private = "package")
 video_output_enabled :: proc(v: ^Vga) -> bool {
+	if !legacy_video_subsystem_enabled(v) {return false}
+	if v.cga.active && !vga_vbe_enabled(v) {
+		return v.cga.mode_control & CGA_MODE_VIDEO_ENABLE != 0
+	}
 	return v.video_on && v.seq[0] & 3 == 3 && v.seq[1] & 0x20 == 0
 }
 
@@ -547,16 +566,7 @@ legacy_linear_byte :: proc(v: ^Vga, raw: int) -> u8 {
 
 @(private = "file")
 render_cga :: proc(v: ^Vga, pixels: []u32, width, height: int) {
-	pitch := max(width / 4, 1)
-	start := int(display_start(v)) * 2
-	for y in 0 ..< height {
-		row := (y & 1) * 0x2000 + (y >> 1) * pitch
-		for x in 0 ..< width {
-			value := legacy_linear_byte(v, start + row + x / 4)
-			shift := uint(6 - (x & 3) * 2)
-			pixels[y * width + x] = attribute_color(v, (value >> shift) & 3)
-		}
-	}
+	for y in 0 ..< height {render_cga_scanline(v, pixels, width, y)}
 }
 
 @(private = "file")
@@ -572,8 +582,56 @@ render_cga_1_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
 	for x in 0 ..< width {
 		value := legacy_linear_byte(v, start + row + x / 8)
 		index := value & (u8(0x80) >> uint(x & 7)) != 0 ? u8(1) : u8(0)
-		pixels[y * width + x] = attribute_color(v, index)
+		pixels[y * width + x] = v.cga.active ? cga_color(v, index) : attribute_color(v, index)
 	}
+}
+
+@(private = "package")
+vga_status_mux_bits :: proc(v: ^Vga, physical_line, physical_dot: int) -> u8 {
+	kind, width, height := display_geometry(v)
+	if width <= 0 || height <= 0 || v.timing.visible_dots <= 0 || v.timing.visible_lines <= 0 {
+		return 0
+	}
+	x := min(physical_dot * width / v.timing.visible_dots, width - 1)
+	y := min(physical_line * height / v.timing.visible_lines, height - 1)
+	color: u8
+	#partial switch kind {
+	case .Planar_4:
+		geometry := legacy_graphics_row(v, kind, y)
+		source_x := x + legacy_pel_pan(v, geometry.below_split)
+		address := legacy_display_counter(v, geometry.row_base, u32(source_x / 8))
+		offset := legacy_display_offset(v, address, geometry.row_scan)
+		bit := u8(0x80) >> uint(source_x & 7)
+		for plane in 0 ..< 4 {
+			if v.attr[0x12] & (u8(1) << uint(plane)) != 0 &&
+			   plane_byte(v, plane, offset) & bit != 0 {color |= u8(1) << uint(plane)}
+		}
+		color = attribute_palette_index(v, color)
+	case .Indexed_8:
+		geometry := legacy_graphics_row(v, kind, y)
+		source_x := x + (legacy_pel_pan(v, geometry.below_split) & 3)
+		plane := source_x & 3
+		offset := int(geometry.row_base + u32(source_x / 4)) & (LEGACY_PLANE_SIZE - 1)
+		if v.seq[4] & 0x08 == 0 {
+			address := legacy_display_counter(v, geometry.row_base, u32(source_x / 4))
+			offset = legacy_display_offset(v, address, geometry.row_scan)
+		}
+		color = plane_byte(v, plane, offset) & v.pel_mask
+	case:
+		return 0
+	}
+	pair: u8
+	switch (v.attr[0x12] >> 4) & 3 {
+	case 0:
+		pair = (color >> 2 & 1) << 1 | color & 1
+	case 1:
+		pair = color >> 4 & 3
+	case 2:
+		pair = (color >> 3 & 1) << 1 | color >> 1 & 1
+	case 3:
+		pair = color >> 6 & 3
+	}
+	return pair << 4
 }
 
 @(private = "file")

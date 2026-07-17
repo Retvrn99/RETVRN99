@@ -24,8 +24,10 @@ The virtual machine currently exposes:
 - A 1.44 MB floppy drive and an ATAPI 10x DVD / 52x CD-ROM drive.
 - The guest-visible GSW VGA device, with legacy VGA and Bochs VBE available
   while the Windows GSW driver is being finished.
-- PC-speaker and CD-audio output. The planned Windows and DOS sound devices are
-  not complete yet.
+- PC-speaker and CD-audio output, plus fixed-resource Sound Blaster 16 digital
+  audio at `220h`/IRQ5/DMA1+5 and an OPL3-compatible device at `388h`. OPL
+  synthesis is still being expanded; the Windows GSW-SOUND driver does not ship
+  yet.
 
 ## Requirements
 

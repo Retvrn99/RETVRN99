@@ -8,27 +8,31 @@ package vga
 vga_mmio_contains :: proc(v: ^Vga, gpa: u64, size: u8) -> bool {
 	if v == nil || !v.pci_memory_enabled {return false}
 	n := u64(max(size, 1))
-	if gpa > max(u64) - n { return false }
+	if gpa > max(u64) - n {return false}
 	end := gpa + n
-	return (gpa >= LEGACY_APERTURE_BASE && end <= LEGACY_APERTURE_END) ||
-	       (gpa >= v.framebuffer_base &&
-	        v.framebuffer_base <= max(u64) - u64(VRAM_SIZE) &&
-	        end <= v.framebuffer_base + u64(VRAM_SIZE))
+	return(
+		(legacy_video_memory_enabled(v) &&
+			gpa >= LEGACY_APERTURE_BASE &&
+			end <= LEGACY_APERTURE_END) ||
+		(gpa >= v.framebuffer_base &&
+				v.framebuffer_base <= max(u64) - u64(VRAM_SIZE) &&
+				end <= v.framebuffer_base + u64(VRAM_SIZE)) \
+	)
 }
 
 vga_mmio_read :: proc(v: ^Vga, gpa: u64, size: u8) -> (u32, bool) {
-	if !vga_mmio_contains(v, gpa, size) || v.vram == nil { return 0, false }
+	if !vga_mmio_contains(v, gpa, size) || v.vram == nil {return 0, false}
 	value: u32
 	for i in 0 ..< int(max(size, 1)) {
 		byte, ok := vga_memory_read_byte(v, gpa + u64(i))
-		if !ok { return 0, false }
+		if !ok {return 0, false}
 		value |= u32(byte) << uint(i * 8)
 	}
 	return value, true
 }
 
 vga_mmio_write :: proc(v: ^Vga, gpa: u64, size: u8, value: u32) -> bool {
-	if !vga_mmio_contains(v, gpa, size) || v.vram == nil { return false }
+	if !vga_mmio_contains(v, gpa, size) || v.vram == nil {return false}
 	wrote := false
 	for i in 0 ..< int(max(size, 1)) {
 		if !vga_memory_write_byte(v, gpa + u64(i), u8(value >> uint(i * 8))) {
@@ -46,14 +50,15 @@ vga_memory_read_byte :: proc(v: ^Vga, gpa: u64) -> (u8, bool) {
 	if gpa >= v.framebuffer_base && gpa - v.framebuffer_base < u64(VRAM_SIZE) {
 		return v.vram[int(gpa - v.framebuffer_base)], true
 	}
+	if !legacy_video_memory_enabled(v) {return 0xFF, false}
 	if vga_vbe_enabled(v) && gpa >= 0xA0000 && gpa < 0xB0000 {
 		offset := int(v.bank_read) * dispi_bank_granularity(v) + int(gpa - 0xA0000)
-		if v.dispi[DISPI_INDEX_BPP] == 4 { return planar_read(v, offset, false), true }
-		if offset >= 0 && offset < len(v.vram) { return v.vram[offset], true }
+		if v.dispi[DISPI_INDEX_BPP] == 4 {return planar_read(v, offset, false), true}
+		if offset >= 0 && offset < len(v.vram) {return v.vram[offset], true}
 		return 0xFF, false
 	}
 	raw, ok := legacy_aperture_offset(v, gpa)
-	if !ok { return 0xFF, false }
+	if !ok {return 0xFF, false}
 	return legacy_planar_read(v, raw), true
 }
 
@@ -63,14 +68,15 @@ vga_memory_write_byte :: proc(v: ^Vga, gpa: u64, value: u8) -> bool {
 		v.vram[int(gpa - v.framebuffer_base)] = value
 		return true
 	}
+	if !legacy_video_memory_enabled(v) {return false}
 	if vga_vbe_enabled(v) && gpa >= 0xA0000 && gpa < 0xB0000 {
 		offset := int(v.bank_write) * dispi_bank_granularity(v) + int(gpa - 0xA0000)
-		if v.dispi[DISPI_INDEX_BPP] == 4 { planar_write(v, offset, value, false); return true }
-		if offset >= 0 && offset < len(v.vram) { v.vram[offset] = value; return true }
+		if v.dispi[DISPI_INDEX_BPP] == 4 {planar_write(v, offset, value, false); return true}
+		if offset >= 0 && offset < len(v.vram) {v.vram[offset] = value; return true}
 		return false
 	}
 	raw, ok := legacy_aperture_offset(v, gpa)
-	if !ok { return false }
+	if !ok {return false}
 	legacy_planar_write(v, raw, value)
 	return true
 }
@@ -80,13 +86,13 @@ legacy_aperture_offset :: proc(v: ^Vga, gpa: u64) -> (int, bool) {
 	map_select := (v.gfx[6] >> 2) & 3
 	switch map_select {
 	case 0:
-		if gpa >= 0xA0000 && gpa < 0xC0000 { return int(gpa - 0xA0000), true }
+		if gpa >= 0xA0000 && gpa < 0xC0000 {return int(gpa - 0xA0000), true}
 	case 1:
-		if gpa >= 0xA0000 && gpa < 0xB0000 { return int(gpa - 0xA0000), true }
+		if gpa >= 0xA0000 && gpa < 0xB0000 {return int(gpa - 0xA0000), true}
 	case 2:
-		if gpa >= 0xB0000 && gpa < 0xB8000 { return int(gpa - 0xB0000), true }
+		if gpa >= 0xB0000 && gpa < 0xB8000 {return int(gpa - 0xB0000), true}
 	case 3:
-		if gpa >= 0xB8000 && gpa < 0xC0000 { return int(gpa - 0xB8000), true }
+		if gpa >= 0xB8000 && gpa < 0xC0000 {return int(gpa - 0xB8000), true}
 	}
 	return 0, false
 }
@@ -94,19 +100,19 @@ legacy_aperture_offset :: proc(v: ^Vga, gpa: u64) -> (int, bool) {
 @(private = "package")
 plane_byte :: proc(v: ^Vga, plane, offset: int) -> u8 {
 	index := offset * 4 + plane
-	if index < 0 || index >= len(v.vram) { return 0 }
+	if index < 0 || index >= len(v.vram) {return 0}
 	return v.vram[index]
 }
 
 @(private = "package")
 set_plane_byte :: proc(v: ^Vga, plane, offset: int, value: u8) {
 	index := offset * 4 + plane
-	if index >= 0 && index < len(v.vram) { v.vram[index] = value }
+	if index >= 0 && index < len(v.vram) {v.vram[index] = value}
 }
 
 @(private = "file")
 load_latches :: proc(v: ^Vga, offset: int) {
-	for plane in 0 ..< 4 { v.latch[plane] = plane_byte(v, plane, offset) }
+	for plane in 0 ..< 4 {v.latch[plane] = plane_byte(v, plane, offset)}
 }
 
 @(private = "file")
@@ -125,9 +131,9 @@ planar_read :: proc(v: ^Vga, raw: int, wrap_legacy: bool) -> u8 {
 		plane = int(v.gfx[4] & 2) | (raw & 1)
 		offset = raw >> 1
 	}
-	if wrap_legacy { offset &= LEGACY_PLANE_SIZE - 1 }
+	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
 	load_latches(v, offset)
-	if v.gfx[5] & 0x08 == 0 { return v.latch[plane] }
+	if v.gfx[5] & 0x08 == 0 {return v.latch[plane]}
 	compare := v.gfx[2] & 0x0F
 	dont_care := v.gfx[7] & 0x0F
 	result := u8(0xFF)
@@ -157,27 +163,32 @@ planar_write :: proc(v: ^Vga, raw: int, value: u8, wrap_legacy: bool) {
 		offset = raw >> 1
 		plane_mask &= u8(0x05) << uint(raw & 1)
 	}
-	if wrap_legacy { offset &= LEGACY_PLANE_SIZE - 1 }
+	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
 	result := write_mode_result(v, value)
 	for plane in 0 ..< 4 {
-		if plane_mask & (u8(1) << uint(plane)) != 0 { set_plane_byte(v, plane, offset, result[plane]) }
+		if plane_mask & (u8(1) << uint(plane)) !=
+		   0 {set_plane_byte(v, plane, offset, result[plane])}
 	}
 }
 
 @(private = "file")
 rotate_right_8 :: proc(value: u8, count: u8) -> u8 {
 	n := uint(count & 7)
-	if n == 0 { return value }
+	if n == 0 {return value}
 	return value >> n | value << (8 - n)
 }
 
 @(private = "file")
 raster_operation :: proc(op: u8, source, latch: u8) -> u8 {
 	switch op & 3 {
-	case 0: return source
-	case 1: return source & latch
-	case 2: return source | latch
-	case 3: return source ~ latch
+	case 0:
+		return source
+	case 1:
+		return source & latch
+	case 2:
+		return source | latch
+	case 3:
+		return source ~ latch
 	}
 	return source
 }
@@ -196,7 +207,7 @@ write_mode_result :: proc(v: ^Vga, value: u8) -> [4]u8 {
 		case 0:
 			if v.gfx[1] & (u8(1) << uint(plane)) != 0 {
 				source = v.gfx[0] & (u8(1) << uint(plane)) != 0 ? 0xFF : 0
-			} else { source = rotated }
+			} else {source = rotated}
 		case 1:
 			result[plane] = latch
 			continue

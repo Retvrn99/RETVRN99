@@ -127,6 +127,17 @@ device drivers will use a separate OEM/PnP package manifest so their INFs and
 payloads are registered for the correct Setup phase. This keeps Spanish,
 English, Korean, and future media-specific text in the source's own code page.
 
+The repository's pinned driver-source list and packaging schema are development
+metadata, not installable drivers. Guided Setup currently emits no GSW VGA,
+GSW sound, DirectX 9, or compatibility-layer RunOnce action. Those actions stay
+disabled until reviewed payloads have exact size and SHA-256 entries and pass
+the Setup package validation.
+
+DOS software can use the fixed Sound Blaster 16-compatible resources at
+`220h`, IRQ5, DMA1, and DMA5, with OPL-compatible ports at `388h`. Digital PCM,
+DSP probing, DMA playback, IRQ acknowledgement, and OPL timers are available;
+OPL synthesis fidelity and additional DSP formats are still being extended.
+
 While installation is active, RETVRN99 locks drive switching, drive creation,
 browsing, and unrelated media changes. This prevents an install state from
 being attached to the wrong image. To start over, stop the machine and choose

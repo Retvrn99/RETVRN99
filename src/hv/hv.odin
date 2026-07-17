@@ -25,7 +25,8 @@ Interrupt_Injection_Result :: enum {
 }
 
 Vm_Create_Options :: struct {
-	trace_ud_gp_exits: bool,
+	trace_ud_gp_exits:       bool,
+	guest_ymm_state_enabled: bool, // guest task switching preserves YMM state
 }
 
 Exception_Trace_Record :: struct {
@@ -68,6 +69,9 @@ Device_Mapping :: struct {
 	gpa:              u64,
 	host:             rawptr,
 	size:             int,
+	track_dirty:      bool,
+	dirty_pending:    bool,
+	dirty_bitmap:     []u64,
 	mapped:           bool,
 	requested_gpa:    u64,
 	requested_mapped: bool,
@@ -155,6 +159,7 @@ Vm :: struct {
 	irq_queue_rip:               u64,
 	mmio:                        proc(ctx: rawptr, gpa: u64, write: bool, data: []u8),
 	trace_ud_gp_exits:           bool,
+	guest_ymm_state_enabled:     bool,
 	exception_trace:             [dynamic]Exception_Trace_Record,
 	exception_count:             u64,
 }
@@ -266,6 +271,16 @@ set_open_bus_shadow :: proc(vm: ^Vm, gpa, size: u64, readable, writable: bool) -
 // Allocates stable page-aligned storage and maps it Read|Write at gpa.
 map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 	return whpx_map_device_memory(vm, gpa, size)
+}
+
+// Direct framebuffer mappings use WHPX dirty-page tracking so scanout can
+// discover guest writes without trapping every store.
+map_device_memory_tracked :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
+	return whpx_map_device_memory_tracked(vm, gpa, size)
+}
+
+query_device_memory_dirty :: proc(vm: ^Vm, backing: []u8) -> (dirty: bool, ok: bool) {
+	return whpx_query_device_memory_dirty(vm, backing)
 }
 
 // Requests a page-aligned device mapping state change. The backing allocation

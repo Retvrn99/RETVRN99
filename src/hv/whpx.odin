@@ -37,6 +37,7 @@ whpx_create :: proc(vm: ^Vm, ram_size: int, options: Vm_Create_Options) -> bool 
 		return false
 	}
 	vm.part = part
+	vm.guest_ymm_state_enabled = options.guest_ymm_state_enabled
 
 	count: u32 = 1
 	if WHvSetPartitionProperty(part, .ProcessorCount, &count, size_of(count)) < 0 {
@@ -135,6 +136,9 @@ whpx_destroy :: proc(vm: ^Vm) {
 	delete(vm.shadow_mappings)
 	vm.shadow_mappings = nil
 	for mapping in vm.device_mappings {
+		if mapping.dirty_bitmap != nil {
+			delete(mapping.dirty_bitmap, runtime.heap_allocator())
+		}
 		win32.VirtualFree(mapping.host, 0, win32.MEM_RELEASE)
 	}
 	delete(vm.device_mappings)
@@ -143,6 +147,7 @@ whpx_destroy :: proc(vm: ^Vm) {
 	vm.exception_trace = nil
 	vm.exception_count = 0
 	vm.trace_ud_gp_exits = false
+	vm.guest_ymm_state_enabled = false
 	if held_gate {
 		sync.unlock(&whpx_vm_gate)
 	}
@@ -151,6 +156,13 @@ whpx_destroy :: proc(vm: ^Vm) {
 @(private = "file")
 whpx_page_range_valid :: proc(gpa, size: u64) -> bool {
 	return size > 0 && gpa & 0xFFF == 0 && size & 0xFFF == 0 && gpa <= max(u64) - size
+}
+
+@(private = "file")
+whpx_device_mapping_flags :: proc(track_dirty: bool) -> u32 {
+	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE
+	if track_dirty {flags |= WHV_MAP_GPA_RANGE_FLAG_TRACK_DIRTY_PAGES}
+	return flags
 }
 
 @(private = "file")
@@ -268,7 +280,16 @@ whpx_set_open_bus_shadow :: proc(vm: ^Vm, gpa, size: u64, readable, writable: bo
 	return true
 }
 
-whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
+@(private = "file")
+whpx_map_device_memory_internal :: proc(
+	vm: ^Vm,
+	gpa: u64,
+	size: int,
+	track_dirty: bool,
+) -> (
+	[]u8,
+	bool,
+) {
 	if vm.part == nil || size <= 0 || !whpx_page_range_valid(gpa, u64(size)) {
 		return nil, false
 	}
@@ -300,8 +321,19 @@ whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 	if mem == nil {
 		return nil, false
 	}
-	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE
+	dirty_bitmap: []u64
+	if track_dirty {
+		pages := map_size / 0x1000
+		words := int((pages + 63) / 64)
+		dirty_bitmap = make([]u64, words, runtime.heap_allocator())
+		if dirty_bitmap == nil {
+			win32.VirtualFree(mem, 0, win32.MEM_RELEASE)
+			return nil, false
+		}
+	}
+	flags := whpx_device_mapping_flags(track_dirty)
 	if WHvMapGpaRange(vm.part, mem, gpa, map_size, flags) < 0 {
+		if dirty_bitmap != nil {delete(dirty_bitmap, runtime.heap_allocator())}
 		win32.VirtualFree(mem, 0, win32.MEM_RELEASE)
 		return nil, false
 	}
@@ -311,12 +343,22 @@ whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 			gpa = gpa,
 			host = mem,
 			size = size,
+			track_dirty = track_dirty,
+			dirty_bitmap = dirty_bitmap,
 			mapped = true,
 			requested_gpa = gpa,
 			requested_mapped = true,
 		},
 	)
 	return ([^]u8)(mem)[:size], true
+}
+
+whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
+	return whpx_map_device_memory_internal(vm, gpa, size, false)
+}
+
+whpx_map_device_memory_tracked :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
+	return whpx_map_device_memory_internal(vm, gpa, size, true)
 }
 
 @(private = "file")
@@ -327,6 +369,43 @@ whpx_device_mapping_index :: proc(vm: ^Vm, backing: []u8) -> int {
 		if mapping.host == host && mapping.size == len(backing) {return i}
 	}
 	return -1
+}
+
+@(private = "file")
+whpx_capture_device_memory_dirty :: proc(vm: ^Vm, mapping: ^Device_Mapping) -> bool {
+	if vm == nil || mapping == nil || !mapping.track_dirty || !mapping.mapped {return true}
+	if len(mapping.dirty_bitmap) == 0 {return false}
+	for &word in mapping.dirty_bitmap {word = 0}
+	bitmap_size := u32(len(mapping.dirty_bitmap) * size_of(u64))
+	if WHvQueryGpaRangeDirtyBitmap(
+		   vm.part,
+		   mapping.gpa,
+		   u64(mapping.size),
+		   &mapping.dirty_bitmap[0],
+		   bitmap_size,
+	   ) <
+	   0 {
+		return false
+	}
+	for word in mapping.dirty_bitmap {
+		if word != 0 {
+			mapping.dirty_pending = true
+			break
+		}
+	}
+	return true
+}
+
+whpx_query_device_memory_dirty :: proc(vm: ^Vm, backing: []u8) -> (dirty: bool, ok: bool) {
+	if vm == nil || vm.part == nil {return false, false}
+	index := whpx_device_mapping_index(vm, backing)
+	if index < 0 {return false, false}
+	mapping := &vm.device_mappings[index]
+	if !mapping.track_dirty {return false, false}
+	if !whpx_capture_device_memory_dirty(vm, mapping) {return false, false}
+	dirty = mapping.dirty_pending
+	mapping.dirty_pending = false
+	return dirty, true
 }
 
 @(private = "file")
@@ -421,13 +500,13 @@ whpx_map_a20_device_region :: proc(
 	if source_base < mapping.gpa || source_base + size > mapping_end {return false}
 	if WHvUnmapGpaRange(vm.part, odd_base, size) < 0 {return false}
 	source := rawptr(uintptr(mapping.host) + uintptr(source_base - mapping.gpa))
-	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE
+	flags := whpx_device_mapping_flags(mapping.track_dirty)
 	return WHvMapGpaRange(vm.part, source, odd_base, size, flags) >= 0
 }
 
 @(private = "file")
 whpx_map_device_mapping_at :: proc(vm: ^Vm, mapping: ^Device_Mapping, gpa: u64) -> bool {
-	flags := WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE
+	flags := whpx_device_mapping_flags(mapping.track_dirty)
 	if WHvMapGpaRange(vm.part, mapping.host, gpa, u64(mapping.size), flags) < 0 {return false}
 	if vm.a20_enabled {return true}
 
@@ -459,8 +538,9 @@ whpx_apply_device_mapping_request :: proc(
 	old_gpa, old_mapped := mapping.gpa, mapping.mapped
 	new_gpa, new_mapped := mapping.requested_gpa, mapping.requested_mapped
 
-	if old_mapped && WHvUnmapGpaRange(vm.part, old_gpa, u64(mapping.size)) < 0 {
-		return false, true
+	if old_mapped {
+		if !whpx_capture_device_memory_dirty(vm, mapping) {return false, true}
+		if WHvUnmapGpaRange(vm.part, old_gpa, u64(mapping.size)) < 0 {return false, true}
 	}
 	if new_mapped && !whpx_map_device_mapping_at(vm, mapping, new_gpa) {
 		rollback_ok = !old_mapped || whpx_map_device_mapping_at(vm, mapping, old_gpa)
@@ -508,6 +588,9 @@ whpx_apply_a20_request :: proc(vm: ^Vm) -> (ok: bool, rollback_ok: bool) {
 
 	old_enabled := vm.a20_enabled
 	new_enabled := vm.a20_requested
+	for &mapping in vm.device_mappings {
+		if !whpx_capture_device_memory_dirty(vm, &mapping) {return false, true}
+	}
 	if !whpx_apply_a20_mapping(vm, new_enabled) {
 		rollback_ok = whpx_apply_a20_mapping(vm, old_enabled)
 		vm.a20_requested = old_enabled
@@ -531,9 +614,8 @@ whpx_map_rom :: proc(vm: ^Vm, gpa: u64, data: []u8) -> bool {
 		return false
 	}
 	copy(([^]u8)(mem)[:len(data)], data)
-	flags := WHV_MAP_GPA_RANGE_FLAG_READ |
-	         WHV_MAP_GPA_RANGE_FLAG_WRITE |
-	         WHV_MAP_GPA_RANGE_FLAG_EXECUTE
+	flags :=
+		WHV_MAP_GPA_RANGE_FLAG_READ | WHV_MAP_GPA_RANGE_FLAG_WRITE | WHV_MAP_GPA_RANGE_FLAG_EXECUTE
 	if WHvMapGpaRange(vm.part, mem, gpa, u64(size), flags) < 0 {
 		win32.VirtualFree(mem, 0, win32.MEM_RELEASE)
 		return false
@@ -645,13 +727,8 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			} else {
 				pending_name := WHV_REGISTER_NAME.PendingInterruption
 				pending_value: WHV_REGISTER_VALUE
-				if WHvGetVirtualProcessorRegisters(
-					vm.part,
-					0,
-					&pending_name,
-					1,
-					&pending_value,
-				) < 0 {
+				if WHvGetVirtualProcessorRegisters(vm.part, 0, &pending_name, 1, &pending_value) <
+				   0 {
 					return Exit{kind = .Failed, detail = "failed to verify PIC interrupt delivery"}
 				}
 				vm.irq_delivery_pending = pending_value.Reg64
@@ -674,14 +751,20 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 						vm.irq_delivery_io_port = io.PortNumber
 						vm.irq_delivery_io_access = io.AccessInfo
 						vm.irq_delivery_io_rax = io.Rax
-						vm.irq_delivery_ins_len = min(io.InstructionByteCount, u8(len(vm.irq_delivery_ins)))
+						vm.irq_delivery_ins_len = min(
+							io.InstructionByteCount,
+							u8(len(vm.irq_delivery_ins)),
+						)
 						copy(
 							vm.irq_delivery_ins[:vm.irq_delivery_ins_len],
 							io.InstructionBytes[:vm.irq_delivery_ins_len],
 						)
 					}
 					if vm.irq_delivered != nil && !vm.irq_delivered(vm.irq_ctx, vm.irq_vector) {
-						return Exit{kind = .Failed, detail = "PIC interrupt delivery callback failed"}
+						return Exit {
+							kind = .Failed,
+							detail = "PIC interrupt delivery callback failed",
+						}
 					}
 					vm.irq_queued = false
 					vm.irq_delivery_count += 1
@@ -845,12 +928,7 @@ whpx_request_irq_window :: proc(vm: ^Vm, enable: bool) {
 }
 
 whpx_can_inject :: proc(vm: ^Vm) -> bool {
-	names := [?]WHV_REGISTER_NAME {
-		.Rflags,
-		.PendingInterruption,
-		.InterruptState,
-		.PendingEvent,
-	}
+	names := [?]WHV_REGISTER_NAME{.Rflags, .PendingInterruption, .InterruptState, .PendingEvent}
 	vals: [len(names)]WHV_REGISTER_VALUE
 	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0]) < 0 {
 		return false

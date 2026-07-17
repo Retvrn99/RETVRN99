@@ -13,7 +13,11 @@ test_dispi_read :: proc(v: ^Vga, index: u16) -> u16 {
 	return u16(vga_io_read(v, DISPI_PORT_DATA, 2))
 }
 
-test_set_vbe_mode :: proc(v: ^Vga, width, height, bpp: u16, flags := DISPI_NOCLEARMEM | DISPI_BANK_GRANULARITY_32K) -> bool {
+test_set_vbe_mode :: proc(
+	v: ^Vga,
+	width, height, bpp: u16,
+	flags := DISPI_NOCLEARMEM | DISPI_BANK_GRANULARITY_32K,
+) -> bool {
 	test_dispi_write(v, DISPI_INDEX_ENABLE, 0)
 	test_dispi_write(v, DISPI_INDEX_XRES, width)
 	test_dispi_write(v, DISPI_INDEX_YRES, height)
@@ -118,8 +122,34 @@ vga_test_dispi_bank_granularity_flag :: proc(t: ^testing.T) {
 	testing.expect(t, dispi_write_register(&v, DISPI_INDEX_BANK, 2 | DISPI_BANK_RW))
 	testing.expect(t, vga_mmio_write(&v, 0xA0000, 1, 0x44))
 	testing.expect_value(t, v.vram[2 * 64 * 1024], u8(0x44))
-	testing.expect(t, dispi_write_register(&v, DISPI_INDEX_ENABLE, DISPI_ENABLED | DISPI_NOCLEARMEM | DISPI_BANK_GRANULARITY_32K))
+	testing.expect(
+		t,
+		dispi_write_register(
+			&v,
+			DISPI_INDEX_ENABLE,
+			DISPI_ENABLED | DISPI_NOCLEARMEM | DISPI_BANK_GRANULARITY_32K,
+		),
+	)
 	testing.expect_value(t, dispi_bank_granularity(&v), 32 * 1024)
 	testing.expect(t, vga_mmio_write(&v, 0xA0001, 1, 0x55))
 	testing.expect_value(t, v.vram[2 * 32 * 1024 + 1], u8(0x55))
+}
+
+@(test)
+vga_test_external_lfb_dirty_publication_requires_active_lfb :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+
+	testing.expect(t, !vga_publish_external_lfb_writes(&v, true))
+	testing.expect(t, test_set_vbe_mode(&v, 640, 480, 32, DISPI_NOCLEARMEM | DISPI_LFB_ENABLED))
+	generation := v.content_generation
+	testing.expect(t, !vga_publish_external_lfb_writes(&v, false))
+	testing.expect_value(t, v.content_generation, generation)
+	testing.expect(t, vga_publish_external_lfb_writes(&v, true))
+	testing.expect_value(t, v.content_generation, generation + 1)
+
+	testing.expect(t, dispi_write_register(&v, DISPI_INDEX_ENABLE, 0))
+	testing.expect(t, !vga_publish_external_lfb_writes(&v, true))
 }
