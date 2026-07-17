@@ -6,10 +6,11 @@ import persona "../persona"
 // ATAPI bus-master DMA command handling is adapted from IzarraVM commit
 // d930de57acccbc6a70cda8cc5a603173bf23cd1c.
 
-ATAPI_STATUS_ERR  :: 0x01
-ATAPI_STATUS_DRQ  :: 0x08
+ATAPI_STATUS_ERR :: 0x01
+ATAPI_STATUS_DRQ :: 0x08
+ATAPI_STATUS_DSC :: 0x10
 ATAPI_STATUS_DRDY :: 0x40
-ATAPI_STATUS_BSY  :: 0x80
+ATAPI_STATUS_BSY :: 0x80
 
 ATAPI_ERROR_ABRT :: 0x04
 
@@ -56,66 +57,67 @@ Atapi_Cdda_State :: enum u8 {
 Atapi_Cdda_Frame_Proc :: proc(ctx: rawptr, pcm: []u8)
 
 Atapi :: struct {
-	image: Disc_Image,
-	state: Atapi_State,
-	data_kind: Atapi_Data_Kind,
-	buf: [DISC_RAW_SECTOR_SIZE]u8,
-	buf_len: int,
-	buf_pos: int,
-	phase_end: int,
-	phase_limit: int,
-	packet: [ATAPI_PACKET_BYTES]u8,
-	packet_pos: int,
-	trace_hist: [ATAPI_TRACE_HISTORY]Atapi_Packet_Trace,
-	trace_count: u64,
-	read_lba: u32,
-	read_blocks: u32,
-	read_raw: bool,
-	read_cd_selection: u8,
-	read_sector_size: int,
-	data_pending: bool,
-	data_ready_tick: u64,
-	now_tick: u64,
+	image:                    Disc_Image,
+	state:                    Atapi_State,
+	data_kind:                Atapi_Data_Kind,
+	buf:                      [DISC_RAW_SECTOR_SIZE]u8,
+	buf_len:                  int,
+	buf_pos:                  int,
+	phase_end:                int,
+	phase_limit:              int,
+	packet:                   [ATAPI_PACKET_BYTES]u8,
+	packet_pos:               int,
+	trace_hist:               [ATAPI_TRACE_HISTORY]Atapi_Packet_Trace,
+	trace_count:              u64,
+	read_lba:                 u32,
+	read_blocks:              u32,
+	read_raw:                 bool,
+	read_cd_selection:        u8,
+	read_sector_size:         int,
+	data_pending:             bool,
+	data_ready_tick:          u64,
+	now_tick:                 u64,
 	data_out_remaining:       int,
 	data_out_phase_remaining: int,
-	cdda_state: Atapi_Cdda_State,
-	cdda_lba: u32,
-	cdda_end_lba: u32,
-	cdda_next_tick: u64,
-	cdda_frame: Atapi_Cdda_Frame_Proc,
-	cdda_ctx: rawptr,
-	cdda_frames_played: u64,
-	cdda_generation: u64,
-	media_changed: bool,
-	sense_key: u8,
-	sense_asc: u8,
-	sense_ascq: u8,
-	reg_error: u8,
-	reg_features: u8,
-	reg_seccount: u8,
-	reg_lba_lo: u8,
-	reg_lba_mid: u8,
-	reg_lba_hi: u8,
-	reg_drive: u8,
-	reg_status: u8,
-	reg_ctrl: u8,
-	io_space_enabled: bool,
-	channel_enabled:  bool,
-	irq_pending:      bool,
-	irq_signaled:     bool,
-	irq: proc(ctx: rawptr, asserted: bool),
-	irq_ctx: rawptr,
-	dma_pending: bool,
-	dma_submitted: bool,
-	dma_lba: u32,
-	dma_blocks: u32,
-	dma_raw: bool,
-	dma_cd_selection: u8,
-	dma_sector_size: int,
-	dma_byte_count: u32,
-	dma_cache: [DISC_RAW_SECTOR_SIZE]u8,
-	dma_cache_lba: u32,
-	dma_cache_valid: bool,
+	cdda_state:               Atapi_Cdda_State,
+	cdda_lba:                 u32,
+	cdda_end_lba:             u32,
+	cdda_next_tick:           u64,
+	cdda_frame:               Atapi_Cdda_Frame_Proc,
+	cdda_ctx:                 rawptr,
+	cdda_frames_played:       u64,
+	cdda_generation:          u64,
+	media_changed:            bool,
+	sense_key:                u8,
+	sense_asc:                u8,
+	sense_ascq:               u8,
+	reg_error:                u8,
+	reg_features:             u8,
+	reg_seccount:             u8,
+	reg_lba_lo:               u8,
+	reg_lba_mid:              u8,
+	reg_lba_hi:               u8,
+	reg_drive:                u8,
+	reg_status:               u8,
+	reg_ctrl:                 u8,
+	io_space_enabled:         bool,
+	channel_enabled:          bool,
+	irq_pending:              bool,
+	irq_signaled:             bool,
+	irq:                      proc(ctx: rawptr, asserted: bool),
+	irq_ctx:                  rawptr,
+	dma_pending:              bool,
+	dma_submitted:            bool,
+	dma_lba:                  u32,
+	dma_blocks:               u32,
+	dma_raw:                  bool,
+	dma_cd_selection:         u8,
+	dma_sector_size:          int,
+	dma_byte_count:           u32,
+	dma_cache:                [DISC_RAW_SECTOR_SIZE]u8,
+	dma_cache_lba:            u32,
+	dma_cache_valid:          bool,
+	activity_generation:      u64,
 }
 
 atapi_init :: proc(a: ^Atapi) {
@@ -138,8 +140,10 @@ atapi_io_decoded :: proc(a: ^Atapi) -> bool {
 @(private = "file")
 atapi_open_bus :: proc(size: u8) -> u32 {
 	switch size {
-	case 1: return 0xFF
-	case 2: return 0xFFFF
+	case 1:
+		return 0xFF
+	case 2:
+		return 0xFFFF
 	}
 	return 0xFFFF_FFFF
 }
@@ -336,16 +340,22 @@ atapi_interrupt_pending :: proc(a: ^Atapi) -> bool {
 }
 
 @(private = "file")
+atapi_set_signature :: proc(a: ^Atapi) {
+	a.reg_seccount = 1
+	a.reg_lba_lo = 1
+	a.reg_lba_mid = 0x14
+	a.reg_lba_hi = 0xEB
+	a.reg_drive &= 0xF0
+}
+
+@(private = "file")
 atapi_reset_signature :: proc(a: ^Atapi) {
 	atapi_acknowledge_irq(a)
 	atapi_cancel_transfer(a)
 	atapi_stop_audio(a, .Stopped)
 	a.reg_error = 1
-	a.reg_seccount = 1
-	a.reg_lba_lo = 1
-	a.reg_lba_mid = 0x14
-	a.reg_lba_hi = 0xEB
 	a.reg_drive = 0xA0
+	atapi_set_signature(a)
 	a.reg_status = 0
 }
 
@@ -413,6 +423,12 @@ atapi_command :: proc(a: ^Atapi, cmd: u8) {
 		atapi_reset_signature(a)
 	case 0xEF:
 		atapi_complete(a)
+	case 0xEC:
+		atapi_cancel_transfer(a)
+		atapi_set_signature(a)
+		a.reg_error = ATAPI_ERROR_ABRT
+		a.reg_status = ATAPI_STATUS_DRDY | ATAPI_STATUS_DSC | ATAPI_STATUS_ERR
+		atapi_raise_irq(a)
 	case:
 		atapi_cancel_transfer(a)
 		a.reg_error = ATAPI_ERROR_ABRT
@@ -734,7 +750,12 @@ atapi_publish_read_sector :: proc(a: ^Atapi) {
 	a.data_pending = false
 	ok := false
 	if a.read_cd_selection != 0 {
-		ok = atapi_read_cd_sector(&a.image, a.read_lba, a.read_cd_selection, a.buf[:a.read_sector_size])
+		ok = atapi_read_cd_sector(
+			&a.image,
+			a.read_lba,
+			a.read_cd_selection,
+			a.buf[:a.read_sector_size],
+		)
 	} else if a.read_raw {
 		ok = disc_image_read_raw_sector(&a.image, a.read_lba, a.buf[:DISC_RAW_SECTOR_SIZE])
 	} else {
@@ -744,6 +765,7 @@ atapi_publish_read_sector :: proc(a: ^Atapi) {
 		atapi_check_condition(a, 0x03, 0x11, 0)
 		return
 	}
+	a.activity_generation += 1
 	a.buf_len = a.read_sector_size
 	a.buf_pos = 0
 	a.state = .Data_In
@@ -787,7 +809,10 @@ Atapi_Read_Cd_Layout :: struct {
 atapi_read_cd_layout :: proc(
 	mode: Disc_Track_Mode,
 	expected_type, selection: u8,
-) -> (Atapi_Read_Cd_Layout, bool) {
+) -> (
+	Atapi_Read_Cd_Layout,
+	bool,
+) {
 	audio := mode == .Audio_2352
 	switch expected_type {
 	case 0:
@@ -802,10 +827,11 @@ atapi_read_cd_layout :: proc(
 	if audio {
 		if selection & ~u8(0x10) != 0 {return {}, false}
 		return Atapi_Read_Cd_Layout {
-			sector_size = selection & 0x10 != 0 ? DISC_RAW_SECTOR_SIZE : 0,
-			audio       = true,
-			user_data   = selection & 0x10 != 0,
-		}, true
+				sector_size = selection & 0x10 != 0 ? DISC_RAW_SECTOR_SIZE : 0,
+				audio = true,
+				user_data = selection & 0x10 != 0,
+			},
+			true
 	}
 
 	header_code := (selection >> 5) & 3
@@ -830,7 +856,10 @@ atapi_read_cd_span_layout :: proc(
 	image: ^Disc_Image,
 	lba, count: u32,
 	expected_type, selection: u8,
-) -> (Atapi_Read_Cd_Layout, bool) {
+) -> (
+	Atapi_Read_Cd_Layout,
+	bool,
+) {
 	cursor := lba
 	remaining := count
 	result: Atapi_Read_Cd_Layout
@@ -856,12 +885,7 @@ atapi_read_cd_span_layout :: proc(
 }
 
 @(private = "file")
-atapi_read_cd_sector :: proc(
-	image: ^Disc_Image,
-	lba: u32,
-	selection: u8,
-	out: []u8,
-) -> bool {
+atapi_read_cd_sector :: proc(image: ^Disc_Image, lba: u32, selection: u8, out: []u8) -> bool {
 	track, found := disc_image_track_at_lba(image, lba)
 	if !found {return false}
 	layout, supported := atapi_read_cd_layout(track.mode, 0, selection)
@@ -882,10 +906,7 @@ atapi_read_cd_sector :: proc(
 		position += 4
 	}
 	if layout.user_data {
-		copy(
-			out[position:position + DISC_DATA_SECTOR_SIZE],
-			raw[16:16 + DISC_DATA_SECTOR_SIZE],
-		)
+		copy(out[position:position + DISC_DATA_SECTOR_SIZE], raw[16:16 + DISC_DATA_SECTOR_SIZE])
 		position += DISC_DATA_SECTOR_SIZE
 	}
 	if layout.edc_ecc {
@@ -912,13 +933,7 @@ atapi_read_cd :: proc(a: ^Atapi) {
 		return
 	}
 	expected_type := (a.packet[1] >> 2) & 7
-	layout, supported := atapi_read_cd_span_layout(
-		&a.image,
-		lba,
-		count,
-		expected_type,
-		selection,
-	)
+	layout, supported := atapi_read_cd_span_layout(&a.image, lba, count, expected_type, selection)
 	if !supported {
 		atapi_check_condition(a, 0x05, 0x24, 0)
 		return
@@ -1001,33 +1016,37 @@ atapi_dma_load_cache :: proc(a: ^Atapi, lba: u32) -> bool {
 		ok = disc_image_read_data_sector(&a.image, lba, a.dma_cache[:DISC_DATA_SECTOR_SIZE])
 	}
 	if !ok {return false}
+	a.activity_generation += 1
 	a.dma_cache_lba = lba
 	a.dma_cache_valid = true
 	return true
 }
 
 @(private = "file")
-atapi_dma_read_adapter :: proc(
-	ctx: rawptr,
-	channel: u8,
-	offset: u32,
-	data: []u8,
-) -> bool {
+atapi_dma_read_adapter :: proc(ctx: rawptr, channel: u8, offset: u32, data: []u8) -> bool {
 	a := (^Atapi)(ctx)
-	if channel != 1 || !a.dma_pending || a.dma_sector_size <= 0 ||
-	   offset > a.dma_byte_count || u32(len(data)) > a.dma_byte_count - offset {
+	if channel != 1 ||
+	   !a.dma_pending ||
+	   a.dma_sector_size <= 0 ||
+	   offset > a.dma_byte_count ||
+	   u32(len(data)) > a.dma_byte_count - offset {
 		return false
 	}
-	if !a.dma_raw && a.dma_cd_selection == 0 &&
+	if !a.dma_raw &&
+	   a.dma_cd_selection == 0 &&
 	   offset % u32(DISC_DATA_SECTOR_SIZE) == 0 &&
 	   len(data) % DISC_DATA_SECTOR_SIZE == 0 {
 		lba := a.dma_lba + offset / u32(DISC_DATA_SECTOR_SIZE)
-		return disc_image_read_data_sectors(
+		if !disc_image_read_data_sectors(
 			&a.image,
 			lba,
 			u32(len(data) / DISC_DATA_SECTOR_SIZE),
 			data,
-		)
+		) {
+			return false
+		}
+		a.activity_generation += 1
+		return true
 	}
 	written := 0
 	for written < len(data) {
@@ -1060,19 +1079,28 @@ atapi_dma_abort_adapter :: proc(ctx: rawptr, channel: u8) {
 	atapi_raise_irq(a)
 }
 
+@(private = "file")
+atapi_dma_bytes_per_second :: proc(a: ^Atapi) -> u64 {
+	if a == nil {return 0}
+	if a.image.media_class == .Dvd_Rom {return ATAPI_DVD_DATA_BYTES_PER_SECOND}
+	return u64(max(a.dma_sector_size, 1)) * ATAPI_CD_DATA_SECTORS_PER_SECOND
+}
+
 atapi_bmide_request :: proc(a: ^Atapi) -> (Bmide_Request, bool) {
 	if a == nil || !a.dma_pending || a.dma_submitted {return {}, false}
 	return Bmide_Request {
-		direction        = .Device_To_Memory,
-		byte_count       = a.dma_byte_count,
-		device           = {
-			ctx    = a,
-			begin  = atapi_dma_begin_adapter,
-			read   = atapi_dma_read_adapter,
-			commit = atapi_dma_commit_adapter,
-			abort  = atapi_dma_abort_adapter,
+			direction = .Device_To_Memory,
+			byte_count = a.dma_byte_count,
+			bytes_per_second = atapi_dma_bytes_per_second(a),
+			device = {
+				ctx = a,
+				begin = atapi_dma_begin_adapter,
+				read = atapi_dma_read_adapter,
+				commit = atapi_dma_commit_adapter,
+				abort = atapi_dma_abort_adapter,
+			},
 		},
-	}, true
+		true
 }
 
 atapi_bmide_mark_submitted :: proc(a: ^Atapi) {
@@ -1084,11 +1112,7 @@ atapi_bmide_pending :: proc(a: ^Atapi) -> bool {
 }
 
 atapi_irq_enabled :: proc(a: ^Atapi) -> bool {
-	return(
-		a != nil &&
-		a.channel_enabled &&
-		a.reg_ctrl & 0x02 == 0 \
-	)
+	return a != nil && a.channel_enabled && a.reg_ctrl & 0x02 == 0
 }
 
 @(private = "file")
@@ -1113,12 +1137,12 @@ atapi_read_header :: proc(a: ^Atapi) {
 
 @(private = "file")
 atapi_play_audio_msf :: proc(a: ^Atapi) {
-	start, start_ok := disc_image_msf_to_lba(Disc_Msf {
-		minute = a.packet[3], second = a.packet[4], frame = a.packet[5],
-	})
-	end, end_ok := disc_image_msf_to_lba(Disc_Msf {
-		minute = a.packet[6], second = a.packet[7], frame = a.packet[8],
-	})
+	start, start_ok := disc_image_msf_to_lba(
+		Disc_Msf{minute = a.packet[3], second = a.packet[4], frame = a.packet[5]},
+	)
+	end, end_ok := disc_image_msf_to_lba(
+		Disc_Msf{minute = a.packet[6], second = a.packet[7], frame = a.packet[8]},
+	)
 	if !start_ok || !end_ok || end < start {
 		atapi_check_condition(a, 0x05, 0x24, 0)
 		return
@@ -1184,6 +1208,7 @@ atapi_emit_cdda_frame :: proc(a: ^Atapi) {
 		atapi_stop_audio(a, .Stopped)
 		return
 	}
+	a.activity_generation += 1
 	if a.cdda_frame != nil {a.cdda_frame(a.cdda_ctx, pcm[:])}
 	a.cdda_lba += 1
 	a.cdda_frames_played += 1
@@ -1281,7 +1306,8 @@ atapi_read_full_toc :: proc(a: ^Atapi, allocation: int) {
 		if point == 0xA1 {a.buf[offset + 8] = last}
 		if point == 0xA2 {
 			msf := disc_image_lba_to_msf(a.image.total_sectors)
-			a.buf[offset + 8], a.buf[offset + 9], a.buf[offset + 10] = msf.minute, msf.second, msf.frame
+			a.buf[offset + 8], a.buf[offset + 9], a.buf[offset + 10] =
+				msf.minute, msf.second, msf.frame
 		}
 		offset += 11
 	}
@@ -1291,7 +1317,8 @@ atapi_read_full_toc :: proc(a: ^Atapi, allocation: int) {
 		a.buf[offset + 1] = atapi_track_control(track)
 		a.buf[offset + 2] = 1
 		a.buf[offset + 3] = track.number
-		a.buf[offset + 8], a.buf[offset + 9], a.buf[offset + 10] = msf.minute, msf.second, msf.frame
+		a.buf[offset + 8], a.buf[offset + 9], a.buf[offset + 10] =
+			msf.minute, msf.second, msf.frame
 		offset += 11
 	}
 	atapi_put_be16(a.buf[:], 0, u16(offset - 2))
@@ -1303,10 +1330,14 @@ atapi_read_full_toc :: proc(a: ^Atapi, allocation: int) {
 atapi_read_subchannel :: proc(a: ^Atapi) {
 	a.buf = {}
 	switch a.cdda_state {
-	case .Playing: a.buf[1] = 0x11
-	case .Paused: a.buf[1] = 0x12
-	case .Complete: a.buf[1] = 0x13
-	case .Stopped: a.buf[1] = 0x15
+	case .Playing:
+		a.buf[1] = 0x11
+	case .Paused:
+		a.buf[1] = 0x12
+	case .Complete:
+		a.buf[1] = 0x13
+	case .Stopped:
+		a.buf[1] = 0x15
 	}
 	allocation := int(atapi_be16(a.packet[7:9]))
 	length := 4

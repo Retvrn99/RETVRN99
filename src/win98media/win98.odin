@@ -7,14 +7,14 @@ import "core:path/filepath"
 import "core:strings"
 
 Detected_Media :: struct {
-	win98:                Iso_Record,
-	setup:                Iso_Record,
-	setup_name:           string,
-	msbatch:              Iso_Record,
-	has_msbatch:          bool,
-	win98_file_count:     u32,
-	win98_total_bytes:    u64,
-	allocator:            runtime.Allocator,
+	win98:             Iso_Record,
+	setup:             Iso_Record,
+	setup_name:        string,
+	msbatch:           Iso_Record,
+	has_msbatch:       bool,
+	win98_file_count:  u32,
+	win98_total_bytes: u64,
+	allocator:         runtime.Allocator,
 }
 
 detected_destroy :: proc(media: ^Detected_Media) {
@@ -53,7 +53,11 @@ Tree_Stats_Context :: struct {
 	total:     u64,
 }
 
-iso_tree_stats_walk :: proc(ctx: ^Tree_Stats_Context, record: Iso_Record, depth: int) -> Diagnostic {
+iso_tree_stats_walk :: proc(
+	ctx: ^Tree_Stats_Context,
+	record: Iso_Record,
+	depth: int,
+) -> Diagnostic {
 	if depth > MAX_TREE_DEPTH {
 		return .Malformed_Directory
 	}
@@ -71,7 +75,8 @@ iso_tree_stats_walk :: proc(ctx: ^Tree_Stats_Context, record: Iso_Record, depth:
 	defer iso_entries_destroy(entries, ctx.allocator)
 	for entry in entries {
 		if entry.record.is_dir {
-			if child_diagnostic := iso_tree_stats_walk(ctx, entry.record, depth + 1); child_diagnostic != .None {
+			if child_diagnostic := iso_tree_stats_walk(ctx, entry.record, depth + 1);
+			   child_diagnostic != .None {
 				return child_diagnostic
 			}
 		} else {
@@ -85,16 +90,35 @@ iso_tree_stats_walk :: proc(ctx: ^Tree_Stats_Context, record: Iso_Record, depth:
 	return .None
 }
 
-iso_tree_stats :: proc(image: ^Iso_Image, root: Iso_Record, allocator: runtime.Allocator) -> (u32, u64, Diagnostic) {
-	ctx := Tree_Stats_Context{image = image, allocator = allocator}
+iso_tree_stats :: proc(
+	image: ^Iso_Image,
+	root: Iso_Record,
+	allocator: runtime.Allocator,
+) -> (
+	u32,
+	u64,
+	Diagnostic,
+) {
+	ctx := Tree_Stats_Context {
+		image     = image,
+		allocator = allocator,
+	}
 	ctx.visited = make([dynamic]u64, allocator)
 	defer delete(ctx.visited)
 	diagnostic := iso_tree_stats_walk(&ctx, root, 0)
 	return ctx.count, ctx.total, diagnostic
 }
 
-detect_win98 :: proc(image: ^Iso_Image, allocator: runtime.Allocator) -> (Detected_Media, Diagnostic) {
-	media := Detected_Media{allocator = allocator}
+detect_win98 :: proc(
+	image: ^Iso_Image,
+	allocator: runtime.Allocator,
+) -> (
+	Detected_Media,
+	Diagnostic,
+) {
+	media := Detected_Media {
+		allocator = allocator,
+	}
 	root_entries, root_diagnostic := iso_directory_read(image, image.root, allocator)
 	if root_diagnostic != .None {
 		return {}, root_diagnostic
@@ -111,7 +135,13 @@ detect_win98 :: proc(image: ^Iso_Image, allocator: runtime.Allocator) -> (Detect
 		return {}, directory_diagnostic
 	}
 	defer iso_entries_destroy(entries, allocator)
-	required := [?]string{"PRECOPY1.CAB", "PRECOPY2.CAB", "BASE4.CAB", "OEMSETUP.EXE", "OEMSETUP.BIN"}
+	required := [?]string {
+		"PRECOPY1.CAB",
+		"PRECOPY2.CAB",
+		"BASE4.CAB",
+		"OEMSETUP.EXE",
+		"OEMSETUP.BIN",
+	}
 	for name in required {
 		entry, ok := iso_find(entries, name)
 		if !ok || entry.record.is_dir {
@@ -146,7 +176,11 @@ detect_win98 :: proc(image: ^Iso_Image, allocator: runtime.Allocator) -> (Detect
 		return {}, .Not_Windows_98_SE
 	}
 
-	media.win98_file_count, media.win98_total_bytes, directory_diagnostic = iso_tree_stats(image, media.win98, allocator)
+	media.win98_file_count, media.win98_total_bytes, directory_diagnostic = iso_tree_stats(
+		image,
+		media.win98,
+		allocator,
+	)
 	if directory_diagnostic != .None {
 		detected_destroy(&media)
 		return {}, directory_diagnostic
@@ -158,20 +192,47 @@ detect_win98 :: proc(image: ^Iso_Image, allocator: runtime.Allocator) -> (Detect
 			return {}, tools_diagnostic
 		}
 		defer iso_entries_destroy(tools_entries, allocator)
-		if sysrec, has_sysrec := iso_find(tools_entries, "SYSREC"); has_sysrec && sysrec.record.is_dir {
-			sysrec_entries, sysrec_diagnostic := iso_directory_read(image, sysrec.record, allocator)
+		if sysrec, has_sysrec := iso_find(tools_entries, "SYSREC");
+		   has_sysrec && sysrec.record.is_dir {
+			sysrec_entries, sysrec_diagnostic := iso_directory_read(
+				image,
+				sysrec.record,
+				allocator,
+			)
 			if sysrec_diagnostic != .None {
 				detected_destroy(&media)
 				return {}, sysrec_diagnostic
 			}
 			defer iso_entries_destroy(sysrec_entries, allocator)
-			if template, has_template := iso_find(sysrec_entries, "MSBATCH.INF"); has_template && !template.record.is_dir {
+			if template, has_template := iso_find(sysrec_entries, "MSBATCH.INF");
+			   has_template && !template.record.is_dir {
 				media.msbatch = template.record
 				media.has_msbatch = true
 			}
 		}
 	}
 	return media, .None
+}
+
+boot_floppy_inspection_result :: proc(
+	diagnostic: Boot_Floppy_Diagnostic,
+) -> (
+	embedded: bool,
+	media_diagnostic: Diagnostic,
+) {
+	switch diagnostic {
+	case .None:
+		return true, .None
+	case .Absent, .Unsupported:
+		return false, .None
+	case .Image_Read_Failed:
+		return false, .El_Torito_Read_Failed
+	case .Malformed:
+		return false, .Malformed_El_Torito
+	case .Destination_Exists, .Create_File_Failed, .Write_Failed:
+		return false, .Malformed_El_Torito
+	}
+	return false, .Malformed_El_Torito
 }
 
 inspect :: proc(path: string, allocator := context.allocator) -> (Media_Info, Diagnostic) {
@@ -185,14 +246,23 @@ inspect :: proc(path: string, allocator := context.allocator) -> (Media_Info, Di
 		return {}, detect_diagnostic
 	}
 	defer detected_destroy(&detected)
-	info := Media_Info{
-		volume_identifier = strings.clone(string(image.volume_identifier[:image.volume_id_len]), allocator),
-		setup_executable = strings.clone(detected.setup_name, allocator),
-		has_msbatch_template = detected.has_msbatch,
-		logical_block_size = image.block_size,
-		win98_file_count = detected.win98_file_count,
-		win98_total_bytes = detected.win98_total_bytes,
-		allocator = allocator,
+	_, boot_diagnostic := iso_boot_floppy_find(&image)
+	has_embedded_boot_floppy, boot_media_diagnostic := boot_floppy_inspection_result(
+		boot_diagnostic,
+	)
+	if boot_media_diagnostic != .None {return {}, boot_media_diagnostic}
+	info := Media_Info {
+		volume_identifier        = strings.clone(
+			string(image.volume_identifier[:image.volume_id_len]),
+			allocator,
+		),
+		setup_executable         = strings.clone(detected.setup_name, allocator),
+		has_msbatch_template     = detected.has_msbatch,
+		logical_block_size       = image.block_size,
+		win98_file_count         = detected.win98_file_count,
+		win98_total_bytes        = detected.win98_total_bytes,
+		has_embedded_boot_floppy = has_embedded_boot_floppy,
+		allocator                = allocator,
 	}
 	return info, .None
 }
@@ -235,7 +305,13 @@ iso_copy_file :: proc(image: ^Iso_Image, record: Iso_Record, destination: string
 	return .None
 }
 
-iso_safe_child :: proc(root, parent, name: string, allocator: runtime.Allocator) -> (string, bool) {
+iso_safe_child :: proc(
+	root, parent, name: string,
+	allocator: runtime.Allocator,
+) -> (
+	string,
+	bool,
+) {
 	if !iso_component_safe(name) {
 		return "", false
 	}
@@ -244,7 +320,9 @@ iso_safe_child :: proc(root, parent, name: string, allocator: runtime.Allocator)
 		return "", false
 	}
 	relative, relative_error := filepath.rel(root, path, allocator)
-	escapes := relative == ".." || (len(relative) > 2 && relative[:2] == ".." && filepath.is_separator(relative[2]))
+	escapes :=
+		relative == ".." ||
+		(len(relative) > 2 && relative[:2] == ".." && filepath.is_separator(relative[2]))
 	if relative_error != nil || escapes || filepath.is_abs(relative) {
 		delete(path, allocator)
 		delete(relative, allocator)
@@ -261,7 +339,12 @@ Extract_Context :: struct {
 	visited:   [dynamic]u64,
 }
 
-extract_directory_walk :: proc(ctx: ^Extract_Context, record: Iso_Record, path: string, depth: int) -> Diagnostic {
+extract_directory_walk :: proc(
+	ctx: ^Extract_Context,
+	record: Iso_Record,
+	path: string,
+	depth: int,
+) -> Diagnostic {
 	if depth > MAX_TREE_DEPTH {
 		return .Malformed_Directory
 	}
@@ -303,8 +386,17 @@ extract_directory_walk :: proc(ctx: ^Extract_Context, record: Iso_Record, path: 
 	return .None
 }
 
-extract_directory :: proc(image: ^Iso_Image, source: Iso_Record, root, destination: string, allocator: runtime.Allocator) -> Diagnostic {
-	ctx := Extract_Context{image = image, root = root, allocator = allocator}
+extract_directory :: proc(
+	image: ^Iso_Image,
+	source: Iso_Record,
+	root, destination: string,
+	allocator: runtime.Allocator,
+) -> Diagnostic {
+	ctx := Extract_Context {
+		image     = image,
+		root      = root,
+		allocator = allocator,
+	}
 	ctx.visited = make([dynamic]u64, allocator)
 	defer delete(ctx.visited)
 	return extract_directory_walk(&ctx, source, destination, 0)
@@ -329,7 +421,13 @@ extract_win98 :: proc(path, staging_directory: string) -> Diagnostic {
 	if make_error := os.make_directory_all(staging_directory); make_error != nil {
 		return .Create_Directory_Failed
 	}
-	extract_diagnostic := extract_directory(&image, detected.win98, staging_directory, staging_directory, context.temp_allocator)
+	extract_diagnostic := extract_directory(
+		&image,
+		detected.win98,
+		staging_directory,
+		staging_directory,
+		context.temp_allocator,
+	)
 	if extract_diagnostic != .None {
 		_ = os.remove_all(staging_directory)
 	}

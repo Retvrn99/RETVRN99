@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import disk "../disk"
+
 // MC146818 algorithms adapted from IzarraVM commit
 // d930de57acccbc6a70cda8cc5a603173bf23cd1c.
 
@@ -17,6 +19,11 @@ CMOS_CENTURY_ALTERNATE :: 0x37
 CMOS_BIOS_DISK_TRANSLATION :: 0x39
 CMOS_BIOS_DISK_TRANSLATION_PRIMARY_MASK :: u8(0x03)
 CMOS_BIOS_DISK_TRANSLATION_LARGE :: u8(0x02)
+CMOS_DISK_TYPE :: 0x12
+CMOS_PRIMARY_DISK_EXTENDED_TYPE :: 0x19
+CMOS_PRIMARY_DISK_GEOMETRY :: 0x1B
+CMOS_DISK_TYPE_EXTENDED :: u8(0x0F)
+CMOS_DISK_EXTENDED_TYPE_47 :: u8(47)
 
 Cmos_Time :: struct {
 	year:    u16,
@@ -220,7 +227,11 @@ cmos_recompute_irqf :: proc(c: ^Cmos) {
 @(private = "file")
 cmos_apply_machine_config :: proc(c: ^Cmos, ram_bytes: u64) {
 	c.ram[0x10] = 0x40
-	c.ram[0x12] = 0x00
+	c.ram[CMOS_DISK_TYPE] &~= 0xF0
+	c.ram[CMOS_PRIMARY_DISK_EXTENDED_TYPE] = 0
+	for index in CMOS_PRIMARY_DISK_GEOMETRY ..< CMOS_PRIMARY_DISK_GEOMETRY + 9 {
+		c.ram[index] = 0
+	}
 	c.ram[0x14] = 0x2D
 	c.ram[0x15] = 0x80
 	c.ram[0x16] = 0x02
@@ -256,6 +267,29 @@ cmos_refresh_checksum :: proc(c: ^Cmos) {
 	sum := cmos_checksum(c)
 	c.ram[CMOS_CHECKSUM_HIGH] = u8(sum >> 8)
 	c.ram[CMOS_CHECKSUM_LOW] = u8(sum)
+}
+
+cmos_set_primary_disk :: proc(c: ^Cmos, sector_count: u64) {
+	c.ram[CMOS_DISK_TYPE] &~= 0xF0
+	c.ram[CMOS_PRIMARY_DISK_EXTENDED_TYPE] = 0
+	for index in CMOS_PRIMARY_DISK_GEOMETRY ..< CMOS_PRIMARY_DISK_GEOMETRY + 9 {
+		c.ram[index] = 0
+	}
+	if sector_count != 0 {
+		cylinders, heads, sectors_per_track := disk.ide_chs_geometry(sector_count)
+		c.ram[CMOS_DISK_TYPE] |= CMOS_DISK_TYPE_EXTENDED << 4
+		c.ram[CMOS_PRIMARY_DISK_EXTENDED_TYPE] = CMOS_DISK_EXTENDED_TYPE_47
+		c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 0] = u8(cylinders)
+		c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 1] = u8(cylinders >> 8)
+		c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 2] = heads
+		c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 3] = 0xFF
+		c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 4] = 0xFF
+		c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 5] = 0xC0 | (heads > 8 ? u8(0x08) : 0)
+		c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 6] = u8(cylinders)
+		c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 7] = u8(cylinders >> 8)
+		c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 8] = sectors_per_track
+	}
+	cmos_refresh_checksum(c)
 }
 
 cmos_init :: proc(c: ^Cmos, ram_bytes: u64) {

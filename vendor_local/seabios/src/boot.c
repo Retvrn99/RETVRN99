@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 // Code to load disk image and start system boot.
 //
 // Copyright (C) 2008-2013  Kevin O'Connor <kevin@koconnor.net>
@@ -963,11 +964,15 @@ boot_rom(u32 vector)
 static void
 boot_fail(void)
 {
-    if (BootRetryTime == (u32)-1)
+    if (!getDrive(EXTTYPE_HD, 0)) {
+        printf("No RETVRN99 hard drive is configured.\n");
+        printf("Stop the machine, then choose Tools > Create Hard Drive.\n");
+    } else if (BootRetryTime == (u32)-1) {
         printf("No bootable device.\n");
-    else
+    } else {
         printf("No bootable device.  Retrying in %d seconds.\n"
                , BootRetryTime/1000);
+    }
     // Wait for 'BootRetryTime' milliseconds and then reboot.
     u32 end = irqtimer_calc(BootRetryTime);
     for (;;) {

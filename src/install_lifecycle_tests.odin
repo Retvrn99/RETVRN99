@@ -8,12 +8,49 @@ import "core:path/filepath"
 import "core:strings"
 import "core:testing"
 import "core:time"
-import "fat32"
+import "disk"
+import "fat32session"
 import "hv"
 import "machine"
 import "profile"
 import "vmconfig"
-import "win98prep"
+
+INSTALL_TEST_SECTOR_BYTES :: 512
+INSTALL_TEST_PARTITION_LBA :: u64(63)
+
+@(test)
+install_test_volume_open_failure_is_typed_and_user_facing :: proc(t: ^testing.T) {
+	root := install_test_directory(t)
+	defer delete(root)
+	defer os.remove_all(root)
+	missing, path_error := filepath.join({root, "missing.img"}, context.temp_allocator)
+	if !testing.expect(t, path_error == nil) {return}
+	shared: Shared
+	defer vm_log_destroy(&shared)
+	ctx := Vm_Ctx {
+		shared             = &shared,
+		attach             = true,
+		hard_drive_path    = missing,
+		machine_session_id = "missing-image-test",
+	}
+	testing.expect(t, !vm_open_volume_with_adapter(&ctx, .In_Process))
+	testing.expect_value(t, ctx.volume_open_error.code, fat32session.Error_Code.Image_Missing)
+	message := vm_volume_open_failure_message(&ctx, "start")
+	testing.expect(t, strings.contains(message, "start failed"))
+	testing.expect(t, strings.contains(message, "Image_Missing"))
+	testing.expect(t, strings.contains(message, "does not exist"))
+	ctx.volume_open_error = fat32session.error_make(
+		.Helper_Missing,
+		false,
+		.Not_Started,
+		0,
+		0,
+		"retvrn99-fat32.exe is missing beside retvrn99.exe",
+	)
+	helper_message := vm_volume_open_failure_message(&ctx, "start")
+	testing.expect(t, strings.contains(helper_message, "Helper_Missing"))
+	testing.expect(t, strings.contains(helper_message, "retvrn99-fat32.exe is missing"))
+}
 
 @(test)
 install_test_active_session_forces_turbo_without_changing_persona :: proc(t: ^testing.T) {
@@ -100,157 +137,6 @@ install_test_retry_preserves_original_cmos_boot_order :: proc(t: ^testing.T) {
 }
 
 @(test)
-install_test_invalid_retry_restores_previous_launch_pending_state :: proc(t: ^testing.T) {
-	context.allocator = context.temp_allocator
-	dir := install_test_directory(t)
-	defer os.remove_all(dir)
-	state_path, _ := filepath.join({dir, "install-state.json"})
-	missing_iso, _ := filepath.join({dir, "missing.iso"})
-	install_root, _ := filepath.join({dir, "install"})
-	c_drive, _ := filepath.join({dir, "c_drive"})
-	shared: Shared
-	ctx := Vm_Ctx {
-		shared = &shared,
-		paths = profile.Paths{install_state = state_path},
-		install_state = profile.Install_State {
-			phase = .Launch_Pending,
-			source_path = strings.clone("original.iso"),
-			reset_count = 3,
-		},
-		cdrom_path = strings.clone("original.iso"),
-	}
-	defer profile.install_state_destroy(&ctx.install_state)
-	defer delete(ctx.cdrom_path)
-	defer vm_log_destroy(&shared)
-	previous := install_state_clone(&ctx.install_state)
-	previous_cdrom_path := strings.clone(ctx.cdrom_path)
-	defer profile.install_state_destroy(&previous)
-	defer delete(previous_cdrom_path)
-
-	profile.install_state_destroy(&ctx.install_state)
-	ctx.install_state = install_state_candidate("retry.iso", nil, false, &previous)
-	delete(ctx.cdrom_path)
-	ctx.cdrom_path = strings.clone("retry.iso")
-	testing.expect_value(
-		t,
-		profile.install_state_save(state_path, &ctx.install_state),
-		profile.Install_State_Diagnostic.None,
-	)
-	report := win98prep.prepare(missing_iso, install_root, c_drive)
-	defer win98prep.report_destroy(&report)
-	testing.expect_value(t, report.diagnostic, win98prep.Diagnostic.Media_Rejected)
-	testing.expect_value(
-		t,
-		report.transaction.state,
-		win98prep.Preparation_Transaction_State.Inactive,
-	)
-	testing.expect_value(
-		t,
-		install_preparation_restore_previous(&ctx, &previous, &previous_cdrom_path, &report),
-		Install_Preparation_State_Restore.Restored,
-	)
-	testing.expect_value(t, ctx.install_state.phase, profile.Install_Phase.Launch_Pending)
-	testing.expect_value(t, ctx.install_state.source_path, "original.iso")
-	testing.expect_value(t, ctx.install_state.reset_count, u32(3))
-	testing.expect_value(t, ctx.cdrom_path, "original.iso")
-	loaded, diagnostic := profile.install_state_load(state_path)
-	defer profile.install_state_destroy(&loaded)
-	testing.expect_value(t, diagnostic, profile.Install_State_Diagnostic.None)
-	testing.expect_value(t, loaded.phase, profile.Install_Phase.Launch_Pending)
-	testing.expect_value(t, loaded.source_path, "original.iso")
-}
-
-@(test)
-install_test_initial_safe_failure_restores_inactive_state :: proc(t: ^testing.T) {
-	context.allocator = context.temp_allocator
-	dir := install_test_directory(t)
-	defer os.remove_all(dir)
-	state_path, _ := filepath.join({dir, "install-state.json"})
-	shared: Shared
-	ctx := Vm_Ctx {
-		shared = &shared,
-		paths = profile.Paths{install_state = state_path},
-		install_state = profile.Install_State {
-			phase = .Preparing,
-			source_path = strings.clone("retry.iso"),
-		},
-		cdrom_path = strings.clone("retry.iso"),
-	}
-	defer profile.install_state_destroy(&ctx.install_state)
-	defer delete(ctx.cdrom_path)
-	defer vm_log_destroy(&shared)
-	previous: profile.Install_State
-	previous_cdrom_path := ""
-	testing.expect_value(
-		t,
-		profile.install_state_save(state_path, &ctx.install_state),
-		profile.Install_State_Diagnostic.None,
-	)
-	report := win98prep.Report {
-		diagnostic = .Extract_Failed,
-		transaction = win98prep.Preparation_Transaction{state = .Rolled_Back},
-	}
-	testing.expect_value(
-		t,
-		install_preparation_restore_previous(&ctx, &previous, &previous_cdrom_path, &report),
-		Install_Preparation_State_Restore.Restored,
-	)
-	testing.expect(t, !profile.install_state_active(&ctx.install_state))
-	testing.expect_value(t, ctx.install_state.source_path, "")
-	testing.expect_value(t, ctx.cdrom_path, "")
-	loaded, diagnostic := profile.install_state_load(state_path)
-	defer profile.install_state_destroy(&loaded)
-	testing.expect_value(t, diagnostic, profile.Install_State_Diagnostic.None)
-	testing.expect_value(t, loaded.phase, profile.Install_Phase.None)
-}
-
-@(test)
-install_test_previous_state_restore_failure_keeps_preparing_recovery_state :: proc(t: ^testing.T) {
-	context.allocator = context.temp_allocator
-	dir := install_test_directory(t)
-	defer os.remove_all(dir)
-	blocked_parent, _ := filepath.join({dir, "not-a-directory"})
-	testing.expect(t, os.write_entire_file(blocked_parent, "blocked") == nil)
-	state_path, _ := filepath.join({blocked_parent, "install-state.json"})
-	shared: Shared
-	ctx := Vm_Ctx {
-		shared = &shared,
-		paths = profile.Paths{install_state = state_path},
-		install_state = profile.Install_State {
-			phase = .Preparing,
-			source_path = strings.clone("retry.iso"),
-		},
-		cdrom_path = strings.clone("retry.iso"),
-	}
-	defer profile.install_state_destroy(&ctx.install_state)
-	defer delete(ctx.cdrom_path)
-	defer vm_log_destroy(&shared)
-	previous := profile.Install_State {
-		phase       = .Launch_Pending,
-		source_path = strings.clone("original.iso"),
-	}
-	previous_cdrom_path := strings.clone("original.iso")
-	defer profile.install_state_destroy(&previous)
-	defer delete(previous_cdrom_path)
-	report := win98prep.Report {
-		diagnostic = .Extract_Failed,
-		transaction = win98prep.Preparation_Transaction{state = .Rolled_Back},
-	}
-
-	testing.expect_value(
-		t,
-		install_preparation_restore_previous(&ctx, &previous, &previous_cdrom_path, &report),
-		Install_Preparation_State_Restore.Persistence_Failed,
-	)
-	testing.expect_value(t, ctx.install_state.phase, profile.Install_Phase.Preparing)
-	testing.expect_value(t, ctx.install_state.source_path, "retry.iso")
-	testing.expect_value(t, ctx.cdrom_path, "retry.iso")
-	testing.expect_value(t, previous.phase, profile.Install_Phase.Launch_Pending)
-	testing.expect_value(t, previous.source_path, "original.iso")
-	testing.expect(t, strings.contains(shared.frozen_msg, "recovery state retained"))
-}
-
-@(test)
 install_test_first_successful_boot_captures_unknown_cmos_before_override :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := install_test_directory(t)
@@ -263,6 +149,7 @@ install_test_first_successful_boot_captures_unknown_cmos_before_override :: proc
 		paths = profile.Paths{cmos = cmos_path, install_state = state_path},
 	}
 	ctx.install_state = install_state_candidate("WIN98SE.ISO", ctx.cmos[:], false, nil)
+	install_test_bind_state(t, &ctx.install_state, dir, 12)
 	defer profile.install_state_destroy(&ctx.install_state)
 	defer vm_log_destroy(&shared)
 	testing.expect(t, !ctx.install_state.saved_cmos_valid)
@@ -322,33 +209,6 @@ install_test_direct_launch_only_transitions_pending_state :: proc(t: ^testing.T)
 }
 
 @(test)
-install_test_interrupted_preparation_recovers_but_remains_nonbootable :: proc(t: ^testing.T) {
-	context.allocator = context.temp_allocator
-	root := install_test_directory(t)
-	defer os.remove_all(root)
-	install_root, _ := filepath.join({root, "install"})
-	c_drive, _ := filepath.join({root, "c_drive"})
-	testing.expect(t, os.make_directory(install_root) == nil)
-	testing.expect(t, os.make_directory(c_drive) == nil)
-	autoexec, _ := filepath.join({c_drive, win98prep.BOOTSTRAP_AUTOEXEC_NAME})
-	testing.expect(t, os.write_entire_file(autoexec, win98prep.BOOTSTRAP_AUTOEXEC) == nil)
-	paths := profile.Paths {
-		install = install_root,
-		c_drive = c_drive,
-	}
-	state := profile.Install_State {
-		phase       = .Preparing,
-		source_path = "WIN98SE.ISO",
-	}
-
-	interrupted, recovered := install_interrupted_preparation_recover(&paths, &state)
-	testing.expect(t, interrupted)
-	testing.expect(t, recovered)
-	testing.expect(t, !os.exists(autoexec))
-	testing.expect(t, !install_state_boot_allowed(&state))
-}
-
-@(test)
 install_test_launch_state_save_failure_keeps_pending :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := install_test_directory(t)
@@ -395,6 +255,7 @@ install_test_successful_direct_launch_persists_setup_milestone :: proc(t: ^testi
 				reset_count = u32(reset_count),
 			},
 		}
+		install_test_bind_state(t, &ctx.install_state, dir, u64(20 + reset_count))
 		testing.expect(t, install_launch_prepare(&ctx))
 		testing.expect_value(t, ctx.install_state.phase, profile.Install_Phase.Setup_Running)
 		testing.expect_value(t, ctx.install_state.milestone, expected)
@@ -407,23 +268,6 @@ install_test_successful_direct_launch_persists_setup_milestone :: proc(t: ^testi
 		profile.install_state_destroy(&ctx.install_state)
 		vm_log_destroy(&shared)
 	}
-}
-
-@(test)
-install_test_rollback_failure_report_always_blocks_reboot :: proc(t: ^testing.T) {
-	failed_state := win98prep.Report {
-		diagnostic = .Launcher_Failed,
-		transaction = win98prep.Preparation_Transaction{state = .Rollback_Failed},
-	}
-	testing.expect(t, install_preparation_rollback_failed(&failed_state))
-	failed_diagnostic := win98prep.Report {
-		diagnostic = .Rollback_Failed,
-	}
-	testing.expect(t, install_preparation_rollback_failed(&failed_diagnostic))
-	safe_failure := win98prep.Report {
-		diagnostic = .Launcher_Failed,
-	}
-	testing.expect(t, !install_preparation_rollback_failed(&safe_failure))
 }
 
 @(test)
@@ -443,61 +287,216 @@ install_test_attached_boot_requires_live_volume :: proc(t: ^testing.T) {
 }
 
 @(test)
-install_test_reset_can_reopen_missing_protected_volume :: proc(t: ^testing.T) {
+install_test_stopped_machine_can_open_selected_image :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := install_test_directory(t)
 	defer os.remove_all(dir)
-	io_sys_path, _ := filepath.join({dir, "IO.SYS"})
-	testing.expect(t, os.write_entire_file(io_sys_path, "boot") == nil)
+	image_path := test_image_create(t, dir, "reopen.img")
+	if image_path == "" {return}
+	if !test_image_write_files(
+		t,
+		image_path,
+		nil,
+		[]Test_Image_File{{path = "IO.SYS", data = "boot"}},
+	) {return}
 	shared: Shared
 	ctx := Vm_Ctx {
 		shared = &shared,
 		attach = true,
-		paths = profile.Paths{c_drive = dir},
+		paths = profile.Paths{root = dir, default_image = image_path},
+		hard_drive_path = image_path,
+		machine_session_id = "reopen-test",
 	}
 	testing.expect(t, !vm_volume_ready(&ctx))
 	testing.expect(t, vm_ensure_volume(&ctx))
 	testing.expect(t, vm_volume_ready(&ctx))
 	testing.expect(t, vm_close_volume(&ctx))
-	testing.expect(t, ctx.volume == nil)
+	testing.expect(t, ctx.fat_session == nil)
+}
+
+@(test)
+install_test_completed_close_warning_releases_volume_without_reattach :: proc(
+	t: ^testing.T,
+) {
+	context.allocator = context.temp_allocator
+	dir := install_test_directory(t)
+	defer os.remove_all(dir)
+	image_path := test_image_create(t, dir, "completed-close.img")
+	if image_path == "" {return}
+	shared: Shared
+	defer vm_log_destroy(&shared)
+	ctx := Vm_Ctx {
+		shared             = &shared,
+		attach             = true,
+		hard_drive_path    = image_path,
+		machine_session_id = "completed-close-lifecycle",
+	}
+	if !testing.expect(t, vm_open_volume_with_adapter(&ctx, .In_Process)) {return}
+	state_root, state_error := filepath.join(
+		{dir, ".completed-close.img.retvrn99-fat32"},
+		context.temp_allocator,
+	)
+	if !testing.expect(t, state_error == nil) {return}
+	blocker, blocker_error := filepath.join(
+		{state_root, "unowned-cleanup-blocker.bin"},
+		context.temp_allocator,
+	)
+	if !testing.expect(t, blocker_error == nil) ||
+	   !testing.expect_value(t, os.write_entire_file(blocker, "preserve me"), os.Error(nil)) {
+		return
+	}
+	testing.expect(t, vm_close_volume(&ctx))
+	testing.expect(t, ctx.fat_session == nil)
+	logged := false
+	for line in shared.log_lines {
+		logged = logged || strings.contains(line, "companion cleanup warning")
+	}
+	testing.expect(t, logged)
+	reopened, reopen_error := fat32session.open_machine(
+		image_path,
+		"completed-close-reopen",
+		.In_Process,
+	)
+	if !testing.expect_value(t, reopen_error.code, fat32session.Error_Code.None) {return}
+	testing.expect_value(
+		t,
+		fat32session.close(reopened, .Commit).code,
+		fat32session.Error_Code.None,
+	)
 }
 
 @(test)
 install_test_reset_rejects_frozen_protected_volume :: proc(t: ^testing.T) {
-	volume := fat32.Volume {
-		frozen = true,
+	dummy := true
+	session := fat32session.Machine_Session {
+		ctx = &dummy,
+		operations = fat32session.Machine_Operations {
+			ready = proc(ctx: rawptr) -> bool {return false},
+		},
 	}
 	ctx := Vm_Ctx {
-		attach = true,
-		volume = &volume,
-		bd     = fat32.volume_block_device(&volume),
+		attach      = true,
+		fat_session = &session,
 	}
 	testing.expect(t, !vm_volume_ready(&ctx))
 	testing.expect(t, !vm_ensure_volume(&ctx))
-	testing.expect(t, ctx.volume == &volume)
+	testing.expect(t, ctx.fat_session == &session)
 }
 
 @(test)
 install_test_failed_close_keeps_machine_live_for_retry :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	shared: Shared
-	volume := fat32.Volume {
-		frozen = true,
+	dummy := true
+	session := fat32session.Machine_Session {
+		ctx = &dummy,
+		operations = fat32session.Machine_Operations {
+			ready = proc(ctx: rawptr) -> bool {return false},
+			barrier = proc(ctx: rawptr, reason: fat32session.Barrier_Reason) -> (
+				fat32session.Barrier_Result,
+				fat32session.Session_Error,
+			) {
+				return {}, fat32session.error_make(
+					.FAT_Invalid,
+					false,
+					.Retained,
+					0,
+					0,
+					"test freeze",
+				)
+			},
+		},
 	}
 	ctx := Vm_Ctx {
-		shared = &shared,
-		volume = &volume,
+		shared      = &shared,
+		attach      = true,
+		fat_session = &session,
 	}
 	ctx.guard.valid = true
 	m := new(machine.Machine)
 	defer free(m)
 	machine_live := true
 	diagnostic := vm_reinitialize_machine(&ctx, m, &machine_live)
-	testing.expect_value(t, diagnostic, Vm_Reinitialize_Diagnostic.Reconciliation_Failed)
+	testing.expect_value(t, diagnostic, Vm_Reinitialize_Diagnostic.Durability_Failed)
 	testing.expect(t, machine_live)
 	testing.expect(t, ctx.guard.valid)
-	testing.expect(t, ctx.volume == &volume)
+	testing.expect(t, ctx.fat_session == &session)
 	vm_log_destroy(&shared)
+}
+
+Failed_Boot_Close_State :: struct {
+	commit_calls: int,
+	retain_calls: int,
+}
+
+@(test)
+install_test_failed_boot_releases_retained_session_before_image_switch :: proc(t: ^testing.T) {
+	state: Failed_Boot_Close_State
+	session := new(fat32session.Machine_Session)
+	session.ctx = &state
+	session.operations = fat32session.Machine_Operations {
+		close = proc(ctx: rawptr, mode: fat32session.Close_Mode) -> fat32session.Session_Error {
+			state := (^Failed_Boot_Close_State)(ctx)
+			if mode == .Retain {
+				state.retain_calls += 1
+				return {}
+			}
+			state.commit_calls += 1
+			return fat32session.error_make(
+				.Wal_IO,
+				false,
+				.Retained,
+				0,
+				0,
+				"test commit failure",
+			)
+		},
+	}
+	shared: Shared
+	ctx := Vm_Ctx {
+		shared          = &shared,
+		attach          = true,
+		fat_session     = session,
+		hard_drive_path = "old.img",
+	}
+
+	testing.expect(t, vm_release_failed_boot_volume(&ctx))
+	testing.expect(t, ctx.fat_session == nil)
+	testing.expect_value(t, state.commit_calls, 1)
+	testing.expect_value(t, state.retain_calls, 1)
+	ctx.hard_drive_path = "new.img"
+	testing.expect(t, ctx.fat_session == nil)
+	vm_log_destroy(&shared)
+}
+
+@(test)
+install_test_failed_reset_releases_session_after_commit_failure :: proc(t: ^testing.T) {
+	state: Failed_Boot_Close_State
+	session := new(fat32session.Machine_Session)
+	session.ctx = &state
+	session.operations = fat32session.Machine_Operations {
+		close = proc(ctx: rawptr, mode: fat32session.Close_Mode) -> fat32session.Session_Error {
+			state := (^Failed_Boot_Close_State)(ctx)
+			if mode == .Retain {
+				state.retain_calls += 1
+				return {}
+			}
+			state.commit_calls += 1
+			return fat32session.error_make(
+				.Wal_IO,
+				false,
+				.Retained,
+				0,
+				0,
+				"test failed-reset commit failure",
+			)
+		},
+	}
+
+	testing.expect(t, machine_session_release_after_failed_reset(&session))
+	testing.expect(t, session == nil)
+	testing.expect_value(t, state.commit_calls, 1)
+	testing.expect_value(t, state.retain_calls, 1)
 }
 
 @(test)
@@ -605,23 +604,30 @@ install_test_gui_reset_preserves_hardware_trace_identity :: proc(t: ^testing.T) 
 }
 
 @(test)
-install_test_full_reset_reconciles_reopens_and_rebinds_wake_guard :: proc(t: ^testing.T) {
+install_test_full_reset_retains_image_session_and_rebinds_wake_guard :: proc(t: ^testing.T) {
 	if !hv.available() {return}
 	context.allocator = context.temp_allocator
 	dir := install_test_directory(t)
 	defer os.remove_all(dir)
-	io_sys_path, _ := filepath.join({dir, "IO.SYS"})
+	image_path := test_image_create(t, dir, "gui-reset.img")
+	if image_path == "" {return}
 	cmos_path, _ := filepath.join({dir, "cmos.bin"})
-	windows_path, _ := filepath.join({dir, "WINDOWS"})
-	sentinel_path, _ := filepath.join({windows_path, "WNBOOTNG.STS"})
-	testing.expect(t, os.write_entire_file(io_sys_path, "boot") == nil)
-	testing.expect(t, os.make_directory_all(windows_path) == nil)
-	testing.expect(t, os.write_entire_file(sentinel_path, "setup") == nil)
+	if !test_image_write_files(
+		t,
+		image_path,
+		[]string{"WINDOWS"},
+		[]Test_Image_File{
+			{path = "IO.SYS", data = "boot"},
+			{path = "WINDOWS/WNBOOTNG.STS", data = "setup"},
+		},
+	) {return}
 	shared: Shared
 	ctx := Vm_Ctx {
 		shared = &shared,
 		attach = true,
-		paths = profile.Paths{c_drive = dir, cmos = cmos_path},
+		paths = profile.Paths{root = dir, default_image = image_path, cmos = cmos_path},
+		hard_drive_path = image_path,
+		machine_session_id = "gui-reset-test",
 		install_state = profile.Install_State {
 			phase = .Setup_Running,
 			milestone = .First_Reboot,
@@ -630,6 +636,7 @@ install_test_full_reset_reconciles_reopens_and_rebinds_wake_guard :: proc(t: ^te
 			saved_cmos_valid = true,
 		},
 	}
+	install_test_bind_state(t, &ctx.install_state, dir, 40)
 	defer profile.install_state_destroy(&ctx.install_state)
 	if !testing.expect(t, vm_guard_init(&ctx.guard)) {return}
 	defer vm_guard_destroy(&ctx.guard)
@@ -655,8 +662,16 @@ install_test_full_reset_reconciles_reopens_and_rebinds_wake_guard :: proc(t: ^te
 	testing.expect_value(t, diagnostic, Vm_Reinitialize_Diagnostic.None)
 	testing.expect(t, machine_live)
 	testing.expect(t, vm_volume_ready(&ctx))
-	_, sentinel_error := os.lstat(sentinel_path, context.temp_allocator)
-	testing.expect_value(t, sentinel_error, os.Error(os.General_Error.Not_Exist))
+	sentinel, sentinel_error := fat32session.observe(
+		ctx.fat_session,
+		[]fat32session.Probe{{kind = .Read_Range, path = "WINDOWS/WNBOOTNG.STS", length = 5}},
+		context.temp_allocator,
+	)
+	if testing.expect_value(t, sentinel_error.code, fat32session.Error_Code.None) {
+		defer fat32session.observation_batch_destroy(&sentinel, context.temp_allocator)
+		testing.expect_value(t, len(sentinel.items), 1)
+		if len(sentinel.items) == 1 {testing.expect_value(t, string(sentinel.items[0].data), "setup")}
+	}
 	testing.expect(t, after.valid)
 	testing.expect(t, after.generation > before.generation)
 }
@@ -666,6 +681,72 @@ Install_Test_Reset_Route :: enum {
 	Kbc_Controller_Pulse,
 	Kbc_Output_Port,
 	Port_92,
+}
+
+install_test_u16le :: proc(data: []u8, offset: int) -> u16 {
+	return u16(data[offset]) | u16(data[offset + 1]) << 8
+}
+
+install_test_u32le :: proc(data: []u8, offset: int) -> u32 {
+	return u32(data[offset]) |
+	       u32(data[offset + 1]) << 8 |
+	       u32(data[offset + 2]) << 16 |
+	       u32(data[offset + 3]) << 24
+}
+
+install_test_root_file_lba :: proc(
+	device: disk.Block_Device,
+	short_name: [11]u8,
+) -> (u64, bool) {
+	sector: [INSTALL_TEST_SECTOR_BYTES]u8
+	if device.read == nil ||
+	   !device.read(device.ctx, INSTALL_TEST_PARTITION_LBA, sector[:]) ||
+	   install_test_u16le(sector[:], 11) != INSTALL_TEST_SECTOR_BYTES {
+		return 0, false
+	}
+	sectors_per_cluster := u32(sector[13])
+	reserved := u32(install_test_u16le(sector[:], 14))
+	fat_count := u32(sector[16])
+	sectors_per_fat := install_test_u32le(sector[:], 36)
+	cluster := install_test_u32le(sector[:], 44)
+	if sectors_per_cluster == 0 || fat_count == 0 || sectors_per_fat == 0 || cluster < 2 {
+		return 0, false
+	}
+	data_start := INSTALL_TEST_PARTITION_LBA + u64(reserved + fat_count * sectors_per_fat)
+	fat_start := INSTALL_TEST_PARTITION_LBA + u64(reserved)
+	for _ in 0 ..< 1024 {
+		cluster_lba := data_start + u64(cluster - 2) * u64(sectors_per_cluster)
+		for sector_index in u32(0) ..< sectors_per_cluster {
+			if !device.read(device.ctx, cluster_lba + u64(sector_index), sector[:]) {
+				return 0, false
+			}
+			for offset := 0; offset < INSTALL_TEST_SECTOR_BYTES; offset += 32 {
+				if sector[offset] == 0 {return 0, false}
+				if sector[offset] == 0xE5 || sector[offset + 11] == 0x0F {continue}
+				matched := true
+				for index in 0 ..< 11 {
+					if sector[offset + index] != short_name[index] {
+						matched = false
+						break
+					}
+				}
+				if !matched {continue}
+				first := u32(install_test_u16le(sector[:], offset + 26)) |
+				         u32(install_test_u16le(sector[:], offset + 20)) << 16
+				if first < 2 {return 0, false}
+				return data_start + u64(first - 2) * u64(sectors_per_cluster), true
+			}
+		}
+		fat_offset := u64(cluster) * 4
+		if !device.read(device.ctx, fat_start + fat_offset / INSTALL_TEST_SECTOR_BYTES, sector[:]) {
+			return 0, false
+		}
+		entry_offset := int(fat_offset % INSTALL_TEST_SECTOR_BYTES)
+		next := install_test_u32le(sector[:], entry_offset) & 0x0FFF_FFFF
+		if next < 2 || next >= 0x0FFF_FFF8 {return 0, false}
+		cluster = next
+	}
+	return 0, false
 }
 
 install_test_request_hardware_reset :: proc(m: ^machine.Machine, route: Install_Test_Reset_Route) {
@@ -693,33 +774,40 @@ install_test_full_console_reset_route :: proc(
 	context.allocator = context.temp_allocator
 	dir := install_test_directory(t)
 	defer os.remove_all(dir)
-	io_sys_path, _ := filepath.join({dir, "IO.SYS"})
-	windows_path, _ := filepath.join({dir, "WINDOWS"})
-	sentinel_path, _ := filepath.join({windows_path, "WNBOOTNG.STS"})
-	testing.expect(t, os.write_entire_file(io_sys_path, "boot") == nil)
-	testing.expect(t, os.make_directory_all(windows_path) == nil)
-	testing.expect(t, os.write_entire_file(sentinel_path, "setup") == nil)
+	image_path := test_image_create(t, dir, "reset-route.img")
+	if image_path == "" {return}
+	if !test_image_write_files(
+		t,
+		image_path,
+		[]string{"WINDOWS"},
+		[]Test_Image_File{
+			{path = "IO.SYS", data = "boot"},
+			{path = "WINDOWS/WNBOOTNG.STS", data = "setup"},
+		},
+	) {return}
 
 	paths := profile.Paths {
-		c_drive = dir,
+		root          = dir,
+		default_image = image_path,
 	}
-	volume := fat32.volume_open(paths.c_drive, VOLUME_MB)
-	if !testing.expect(t, volume != nil) {return}
+	session, session_error := fat32session.open_in_process(image_path, "reset-route-test")
+	if !testing.expect(t, session_error.code == .None && session != nil) {return}
+	device := fat32session.block_device(session)
 	m := new(machine.Machine)
 	defer free(m)
 	if !testing.expect(t, machine.machine_init(m, 64 * 1024 * 1024)) {
-		_ = fat32.volume_close(volume)
+		_ = fat32session.close(session, .Retain)
 		return
 	}
 	machine_live := true
 	defer {
 		if machine_live {machine.machine_destroy(m)}
-		if volume != nil {_ = fat32.volume_close(volume)}
+		if session != nil {_ = fat32session.close(session, .Commit)}
 	}
 	if !testing.expect(t, machine.load_roms(&m.vm)) {return}
 	if !testing.expect(t, machine.machine_set_hardware_trace(m, true)) {return}
 	machine.machine_clock_set_running(m, false)
-	machine.machine_attach_disk(m, fat32.volume_block_device(volume))
+	machine.machine_attach_disk(m, device)
 
 	guard: Vm_Guard
 	if !testing.expect(t, vm_guard_init(&guard)) {return}
@@ -728,20 +816,17 @@ install_test_full_console_reset_route :: proc(
 	machine.machine_set_wake_adapter(m, &guard, vm_guard_schedule)
 	wake_before := vm_guard_stats(&guard)
 
-	if !testing.expect(t, volume.io_sys_lba != 0) {return}
-	io_sys_sector: [fat32.SECTOR]u8
-	if !testing.expect(t, fat32.volume_read(volume, volume.io_sys_lba, io_sys_sector[:])) {return}
+	io_short: [11]u8
+	copy(io_short[:], "IO      SYS")
+	io_sys_lba, io_sys_found := install_test_root_file_lba(device, io_short)
+	if !testing.expect(t, io_sys_found) {return}
+	io_sys_sector: [INSTALL_TEST_SECTOR_BYTES]u8
+	if !testing.expect(t, device.read(device.ctx, io_sys_lba, io_sys_sector[:])) {return}
 	io_sys_sector[1] = 'X'
 	expected_sector := io_sys_sector
-	if !testing.expect(t, fat32.volume_stage_write(volume, volume.io_sys_lba, io_sys_sector[:])) {
+	if !testing.expect(t, device.write(device.ctx, io_sys_lba, io_sys_sector[:])) {
 		return
 	}
-	testing.expect(t, fat32.volume_journal_storage_stats(volume).present_sectors > 0)
-	unstaged_host, unstaged_error := os.read_entire_file(io_sys_path, context.temp_allocator)
-	if !testing.expect(t, unstaged_error == nil) {return}
-	defer delete(unstaged_host, context.temp_allocator)
-	testing.expect_value(t, string(unstaged_host), "boot")
-
 	install_test_request_hardware_reset(m, route)
 	if !testing.expect(t, machine.machine_reset_requested(m)) {return}
 	testing.expect_value(t, machine.machine_reset_provenance(m), expected_source)
@@ -764,7 +849,7 @@ install_test_full_console_reset_route :: proc(
 		m,
 		&guard,
 		&machine_live,
-		&volume,
+		&session,
 		&paths,
 		{},
 		cmos[:],
@@ -783,22 +868,24 @@ install_test_full_console_reset_route :: proc(
 	testing.expect_value(t, result.guest_requested_resets, u64(1))
 	testing.expect_value(t, result.reset_history_count, 1)
 	testing.expect_value(t, result.reset_history[0], reset_reason)
-	testing.expect(t, volume != nil && !volume.frozen)
-	_, sentinel_error := os.lstat(sentinel_path, context.temp_allocator)
-	testing.expect_value(t, sentinel_error, os.Error(os.General_Error.Not_Exist))
-	testing.expect_value(
-		t,
-		fat32.volume_journal_storage_stats(volume).present_sectors,
-		u32(0),
+	testing.expect(t, fat32session.session_ready(session))
+	sentinel, sentinel_error := fat32session.observe(
+		session,
+		[]fat32session.Probe{{kind = .Read_Range, path = "WINDOWS/WNBOOTNG.STS", length = 5}},
+		context.temp_allocator,
 	)
+	if testing.expect(t, sentinel_error.code == .None) {
+		defer fat32session.observation_batch_destroy(&sentinel, context.temp_allocator)
+		testing.expect_value(t, len(sentinel.items), 1)
+		if len(sentinel.items) == 1 {testing.expect_value(t, string(sentinel.items[0].data), "setup")}
+	}
 	testing.expect(t, m.has_disk)
-	testing.expect(t, m.ide.bd.ctx == rawptr(volume))
-	persisted_host, persisted_error := os.read_entire_file(io_sys_path, context.temp_allocator)
-	if !testing.expect(t, persisted_error == nil) {return}
-	defer delete(persisted_host, context.temp_allocator)
-	testing.expect_value(t, string(persisted_host), "bXot")
-	persisted_sector: [fat32.SECTOR]u8
-	if !testing.expect(t, fat32.volume_read(volume, volume.io_sys_lba, persisted_sector[:])) {return}
+	testing.expect(t, m.ide.bd.ctx == session.ctx)
+	persisted_sector: [INSTALL_TEST_SECTOR_BYTES]u8
+	device = fat32session.block_device(session)
+	persisted_lba, persisted_found := install_test_root_file_lba(device, io_short)
+	if !testing.expect(t, persisted_found) {return}
+	if !testing.expect(t, device.read(device.ctx, persisted_lba, persisted_sector[:])) {return}
 	testing.expect_value(t, persisted_sector, expected_sector)
 	wake_after := vm_guard_stats(&guard)
 	testing.expect(t, wake_after.valid)
@@ -858,6 +945,7 @@ install_test_failed_reset_rolls_back_memory_and_persisted_state :: proc(t: ^test
 		milestone   = .DOS_Setup,
 		source_path = strings.clone("WIN98SE.ISO"),
 	}
+	install_test_bind_state(t, &state, dir, 30)
 	defer profile.install_state_destroy(&state)
 	testing.expect_value(
 		t,
@@ -935,7 +1023,7 @@ install_test_failed_console_reinitialize_preserves_hardware_trace :: proc(t: ^te
 		return
 	}
 	machine.machine_trace_record(m, .Reset_Request, 0xCF9, 0x06)
-	volume: ^fat32.Volume
+	session: ^fat32session.Machine_Session
 	paths: profile.Paths
 	options := acceptance.Options {
 		setup_diagnostics = .Hardware,
@@ -944,7 +1032,7 @@ install_test_failed_console_reinitialize_preserves_hardware_trace :: proc(t: ^te
 		m,
 		&guard,
 		&machine_live,
-		&volume,
+		&session,
 		&paths,
 		{},
 		nil,
@@ -986,7 +1074,7 @@ install_test_failed_replacement_machine_init_preserves_trace_and_cleans_resource
 		return
 	}
 	machine.machine_trace_record(m, .Reset_Request, 0xCF9, 0x06)
-	volume: ^fat32.Volume
+	session: ^fat32session.Machine_Session
 	paths: profile.Paths
 	options := acceptance.Options {
 		setup_diagnostics = .Hardware,
@@ -995,7 +1083,7 @@ install_test_failed_replacement_machine_init_preserves_trace_and_cleans_resource
 		m,
 		&guard,
 		&machine_live,
-		&volume,
+		&session,
 		&paths,
 		{},
 		nil,
@@ -1030,7 +1118,7 @@ install_test_finish_session_restores_boot_order_and_releases_media_controls :: p
 	defer os.remove_all(dir)
 	cmos_path, _ := filepath.join({dir, "cmos.bin"})
 	state_path, _ := filepath.join({dir, "install-state.json"})
-	guest_path, _ := filepath.join({dir, "c_drive", "WINDOWS", "WIN.COM"})
+	guest_path, _ := filepath.join({dir, "unrelated", "WINDOWS", "WIN.COM"})
 	testing.expect(t, os.make_directory_all(filepath.dir(guest_path)) == nil)
 	testing.expect(t, os.write_entire_file(guest_path, []u8{'g', 'u', 'e', 's', 't'}) == nil)
 
@@ -1418,8 +1506,28 @@ install_test_pending_dialog_replaces_owned_path :: proc(t: ^testing.T) {
 }
 
 @(private = "file")
+install_test_bind_state :: proc(
+	t: ^testing.T,
+	state: ^profile.Install_State,
+	root: string,
+	transaction_id: u64 = 1,
+) {
+	if state == nil {return}
+	image_path, path_error := filepath.join({root, "bound-install.img"}, context.temp_allocator)
+	if !testing.expect(t, path_error == nil) {return}
+	identity: profile.Install_Image_Identity
+	identity[0] = 0x52
+	identity[15] = u8(transaction_id & 0xFF) | 1
+	phase := state.phase
+	state.phase = .None
+	diagnostic := profile.install_state_bind(state, image_path, identity, transaction_id)
+	state.phase = phase
+	testing.expect_value(t, diagnostic, profile.Install_Binding_Diagnostic.None)
+}
+
 install_test_directory :: proc(t: ^testing.T) -> string {
 	base, base_error := os.temp_directory(context.allocator)
+	defer delete(base)
 	testing.expect(t, base_error == nil)
 	dir, dir_error := os.make_directory_temp(
 		base,

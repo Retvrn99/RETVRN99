@@ -45,6 +45,8 @@ acceptance_result_test_round_trip_shape_is_bounded_and_path_free :: proc(t: ^tes
 		desktop_marker_seen = true,
 		desktop_enum_valid = true,
 		desktop_vga_irq11_seen = true,
+		desktop_primary_ide_dma_transactions = 2,
+		desktop_primary_ide_dma_bytes = 1024,
 		last_progress_reason = "desktop_marker",
 		hardware_trace_path = "hardware-trace.txt",
 		wake_guard = {
@@ -55,7 +57,12 @@ acceptance_result_test_round_trip_shape_is_bounded_and_path_free :: proc(t: ^tes
 			stale_callbacks = 1,
 			evidence_dropped = 2,
 		},
-		execution = {primary_ide_dma_transactions = 3, primary_ide_dma_bytes = 1536},
+		execution = {
+			primary_ide_dma_transactions = 3,
+			primary_ide_dma_bytes = 1536,
+			primary_ide_kernel_dma_transactions = 2,
+			primary_ide_kernel_dma_bytes = 1024,
+		},
 	}
 	result.reset_history[0] = "guest_reset"
 	result.reset_history_count = 1
@@ -81,6 +88,10 @@ acceptance_result_test_round_trip_shape_is_bounded_and_path_free :: proc(t: ^tes
 	testing.expect(t, strings.contains(text, `"desktop_vga_irq11_seen": true`))
 	testing.expect(t, strings.contains(text, `"primary_ide_dma_transactions": 3`))
 	testing.expect(t, strings.contains(text, `"primary_ide_dma_bytes": 1536`))
+	testing.expect(t, strings.contains(text, `"primary_ide_kernel_dma_transactions": 2`))
+	testing.expect(t, strings.contains(text, `"primary_ide_kernel_dma_bytes": 1024`))
+	testing.expect(t, strings.contains(text, `"desktop_primary_ide_dma_transactions": 2`))
+	testing.expect(t, strings.contains(text, `"desktop_primary_ide_dma_bytes": 1024`))
 	testing.expect(t, strings.contains(text, `"hardware_trace_path": "hardware-trace.txt"`))
 	testing.expect(t, strings.contains(text, `"retry_callbacks": 3`))
 	testing.expect(t, strings.contains(text, `"cancel_calls": 7`))

@@ -8,6 +8,7 @@
 | Libre Franklin (`libre-franklin.ttf`) | Google Fonts blob `8cf5549196f5e98dc27be05fc2b3691e77eaa89c` | SIL Open Font License 1.1 | `assets/font/` |
 | odin-imgui (Dear ImGui v1.92.8-docking bindings + prebuilt `imgui_windows_x64.lib`, SDL3/SDLRenderer3 backends) | commit `a116eb1` (2026-07-07) | MIT | `vendor_local/imgui/` |
 | IzarraVM algorithm and test references | commit `d930de57acccbc6a70cda8cc5a603173bf23cd1c` | GPL-3.0-only | selectively adapted in `src/`; see `src/IZARRAVM_NOTICE.md` |
+| patcher9x Windows 98 TLB patch data and W3/W4 decoding reference | commit `b6e30d4b5a396dcd453b6c8e6733fd5b5cbce59e` | MIT | adapted in `src/win98imageprep/`; see `src/win98imageprep/PATCHER9X_NOTICE.md` |
 
 Details per component in each directory's `LICENSE-NOTES.md`.
 

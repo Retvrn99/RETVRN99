@@ -122,10 +122,10 @@ ide_test_identify :: proc(t: ^testing.T) {
 
 	ide_test_outb(&ide, 0x1F6, 0xA0)
 	ide_test_command(&ide, 0xEC)
+	testing.expect_value(t, ide.transfer_mode, IDE_DEFAULT_TRANSFER_MODE)
 
 	st := ide_test_inb(&ide, 0x1F7)
-	testing.expect(t, st & 0x80 == 0) // BSY clear
-	testing.expect(t, st & 0x08 != 0) // DRQ set
+	testing.expect_value(t, st, u8(IDE_STATUS_READY | IDE_STATUS_DRQ))
 
 	words: [256]u16
 	for i in 0 ..< 256 {words[i] = ide_test_inw(&ide, 0x1F0)}
@@ -138,6 +138,8 @@ ide_test_identify :: proc(t: ^testing.T) {
 	testing.expect(t, words[49] & 0x0100 != 0) // DMA supported
 	testing.expect(t, words[49] & 0x0200 != 0) // LBA supported
 	testing.expect(t, words[49] & 0x0800 != 0) // IORDY supported for PIO3/4
+	testing.expect_value(t, words[50], u16(0x4000))
+	testing.expect_value(t, words[51], u16(0x0200))
 	testing.expect_value(t, words[53] & 0x0007, u16(0x0007))
 	testing.expect_value(t, words[59], u16(0x0110))
 	testing.expect_value(t, words[54], words[1])
@@ -151,15 +153,36 @@ ide_test_identify :: proc(t: ^testing.T) {
 	testing.expect_value(t, words[66], u16(120))
 	testing.expect_value(t, words[67], u16(120))
 	testing.expect_value(t, words[68], u16(120))
-	testing.expect_value(t, words[88], u16(0x101F))
+	testing.expect_value(t, words[80], u16(0x003E))
+	testing.expect_value(t, words[83], u16(0x5000))
+	testing.expect_value(t, words[86], u16(0x5000))
+	testing.expect_value(t, words[88], u16(0x001F))
+	testing.expect_value(t, words[93], IDE_HARDWARE_RESET_RESULT)
 	sectors := u32(words[60]) | (u32(words[61]) << 16)
 	testing.expect_value(t, sectors, u32(2048))
-	// "RETVRN99 VDISK" with swapped bytes
+	// ATA strings are byte-swapped within each word and space padded.
+	testing.expect_value(t, words[10], u16('R') << 8 | u16('E'))
+	testing.expect_value(t, words[19], u16('1') << 8 | u16(' '))
+	testing.expect_value(t, words[23], u16('1') << 8 | u16('.'))
 	testing.expect_value(t, words[27], u16('R') << 8 | u16('E'))
 	testing.expect_value(t, words[28], u16('T') << 8 | u16('V'))
 
 	st = ide_test_inb(&ide, 0x1F7)
-	testing.expect(t, st & 0x08 == 0) // DRQ clear after 256 words
+	testing.expect_value(t, st, u8(IDE_STATUS_READY))
+}
+
+@(test)
+ide_test_ready_states_satisfy_windows_98_esdi_probe :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+	ready_mask := u8(IDE_STATUS_DRDY | IDE_STATUS_DSC)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7) & ready_mask, ready_mask)
+	ide_test_command(&ide, 0x40)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7) & ready_mask, ready_mask)
+	ide_test_command(&ide, 0xEC)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7) & ready_mask, ready_mask)
 }
 
 @(test)
@@ -212,6 +235,32 @@ ide_test_set_features_selects_only_supported_dma_mode :: proc(t: ^testing.T) {
 	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR != 0)
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(IDE_ERROR_ABRT))
 	testing.expect_value(t, ide.transfer_mode, u8(0x42))
+
+	ide_test_outb(&ide, 0x3F6, 0x04)
+	ide_test_outb(&ide, 0x3F6, 0x00)
+	testing.expect_value(t, ide.transfer_mode, u8(0x42))
+	ide_test_command(&ide, 0xEC)
+	for i in 0 ..< 256 {words[i] = ide_test_inw(&ide, 0x1F0)}
+	testing.expect_value(t, words[88], u16(0x041F))
+	testing.expect_value(t, words[93], IDE_HARDWARE_RESET_RESULT)
+}
+
+@(test)
+ide_test_set_features_aborts_unsupported_subcommands :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	for subcommand in ([]u8{0x00, 0x02, 0xAA}) {
+		ide_test_outb(&ide, 0x1F1, subcommand)
+		ide_test_outb(&ide, 0x1F7, 0xEF)
+		testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(IDE_ERROR_ABRT))
+		status := ide_test_inb(&ide, 0x1F7)
+		testing.expect(t, status & IDE_STATUS_ERR != 0)
+		testing.expect(t, status & (IDE_STATUS_BSY | IDE_STATUS_DRQ) == 0)
+		testing.expect_value(t, ide.transfer_mode, IDE_DEFAULT_TRANSFER_MODE)
+	}
 }
 
 @(test)
@@ -281,6 +330,7 @@ ide_test_read_multiple_uses_16_sector_irq_blocks :: proc(t: ^testing.T) {
 	if !testing.expect(t, pending) {return}
 	ide_advance_to(&ide, first)
 	testing.expect_value(t, ram.read_attempts, 1)
+	testing.expect_value(t, ide.activity_generation, u64(1))
 	testing.expect_value(t, ram.last_read_bytes, sector_count * IDE_SECTOR_SIZE)
 	testing.expect_value(t, ram.irqs, 1)
 	_ = ide_test_inb(&ide, 0x1F7)
@@ -356,6 +406,7 @@ ide_test_write_multiple_stages_blocks_and_commits_once :: proc(t: ^testing.T) {
 	ide_advance_to(&ide, commit)
 	testing.expect_value(t, ram.write_attempts, 1)
 	testing.expect_value(t, ram.writes, 1)
+	testing.expect_value(t, ide.activity_generation, u64(1))
 	testing.expect_value(t, ram.last_write_bytes, sector_count * IDE_SECTOR_SIZE)
 	testing.expect_value(t, ram.irqs, 2)
 	for sector in 0 ..< sector_count {
@@ -453,6 +504,23 @@ ide_test_multisector_write_checkpoints_on_flush_cache :: proc(t: ^testing.T) {
 }
 
 @(test)
+ide_test_flush_cache_completes_only_after_durable_flush :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+
+	ide_test_outb(&ide, 0x1F7, 0xE7)
+	testing.expect_value(t, ide_test_inb(&ide, 0x3F6), u8(IDE_STATUS_BSY))
+	testing.expect_value(t, ram.flushes, 0)
+	testing.expect_value(t, ram.irqs, 0)
+	testing.expect(t, ide_test_advance_deadline(&ide))
+	testing.expect_value(t, ram.flushes, 1)
+	testing.expect_value(t, ram.irqs, 1)
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(IDE_STATUS_READY))
+}
+
+@(test)
 ide_test_idle_writeback_failure_retries_without_poisoning_writes :: proc(t: ^testing.T) {
 	ram: Ide_Test_Ram
 	ide: Ide
@@ -503,7 +571,7 @@ ide_test_idle_writeback_failure_retries_without_poisoning_writes :: proc(t: ^tes
 }
 
 @(test)
-ide_test_flush_reconciliation_failure_aborts_command :: proc(t: ^testing.T) {
+ide_test_flush_durability_failure_aborts_command :: proc(t: ^testing.T) {
 	ram: Ide_Test_Ram
 	ide: Ide
 	ide_test_setup(&ram, &ide)
@@ -578,6 +646,8 @@ ide_test_nodata_commands :: proc(t: ^testing.T) {
 	ide_test_setup(&ram, &ide)
 	defer delete(ram.data)
 
+	ide_test_outb(&ide, 0x1F1, 0x03)
+	ide_test_outb(&ide, 0x1F2, IDE_DEFAULT_TRANSFER_MODE)
 	for cmd in ([]u8{0xEF, 0x40, 0xE7}) {
 		ide_test_command(&ide, cmd)
 		st := ide_test_inb(&ide, 0x1F7)
@@ -647,7 +717,7 @@ ide_test_software_reset_reselects_master_and_publishes_signature :: proc(t: ^tes
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F3), u8(1))
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F4), u8(0))
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F5), u8(0))
-	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(IDE_STATUS_DRDY))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(IDE_STATUS_READY))
 	testing.expect(t, !ide_interrupt_pending(&ide))
 	testing.expect_value(t, ram.irqs, 1)
 	testing.expect_value(t, ram.irq_deasserts, 1)
@@ -666,7 +736,7 @@ ide_test_execute_device_diagnostic_is_broadcast_from_slave_selection :: proc(t: 
 	testing.expect(t, ide_test_advance_deadline(&ide))
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F6), u8(0xA0))
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(1))
-	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(IDE_STATUS_DRDY))
+	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(IDE_STATUS_READY))
 	testing.expect_value(t, ram.irqs, 1)
 }
 
@@ -696,10 +766,21 @@ ide_test_dma_request_uses_udma_66_rate :: proc(t: ^testing.T) {
 	ide_test_setup(&ram, &ide)
 	defer delete(ram.data)
 
+	ide_test_outb(&ide, 0x1F1, 0x03)
+	ide_test_outb(&ide, 0x1F2, 0x40 | IDE_UDMA_MODE)
+	ide_test_command(&ide, 0xEF)
 	ide_test_set_lba28(&ide, 1, 1)
 	ide_io_write(&ide, 0x1F7, 1, 0xC8)
 	request, pending := ide_bmide_request(&ide)
-	testing.expect(t, pending)
+	if !testing.expect(t, pending) {return}
+	testing.expect(
+		t,
+		request.device.begin(request.device.ctx, 0, request.direction, request.byte_count),
+	)
+	testing.expect_value(t, ide.activity_generation, u64(1))
+	data: [IDE_SECTOR_SIZE]u8
+	testing.expect(t, request.device.read(request.device.ctx, 0, 0, data[:]))
+	testing.expect_value(t, ide.activity_generation, u64(1))
 	testing.expect_value(t, IDE_UDMA_MODE, u8(4))
 }
 
@@ -718,6 +799,7 @@ ide_test_pio_read_phases_obey_deadlines :: proc(t: ^testing.T) {
 	testing.expect(t, pending)
 	testing.expect_value(t, first, IDE_COMMAND_LATENCY_TICKS)
 	testing.expect_value(t, ram.reads, 0)
+	testing.expect_value(t, ide.activity_generation, u64(0))
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F7), u8(IDE_STATUS_BSY))
 	ide_advance_to(&ide, first - 1)
 	testing.expect_value(t, ram.reads, 0)
@@ -809,6 +891,7 @@ ide_test_pio_batched_read_failure_aborts_at_first_ready_deadline :: proc(t: ^tes
 	testing.expect_value(t, ram.read_attempts, 1)
 	testing.expect_value(t, ram.last_read_bytes, 3 * IDE_SECTOR_SIZE)
 	testing.expect_value(t, ram.reads, 0)
+	testing.expect_value(t, ide.activity_generation, u64(0))
 	testing.expect_value(t, ide_test_inb(&ide, 0x1F1), u8(IDE_ERROR_ABRT))
 	status := ide_test_inb(&ide, 0x1F7)
 	testing.expect(t, status & IDE_STATUS_ERR != 0)
@@ -830,12 +913,13 @@ ide_test_multisector_write_rejection_has_no_partial_commit :: proc(t: ^testing.T
 	ide_test_set_lba28(&ide, 11, 3)
 	ide_test_command(&ide, 0x30)
 	for sector in 0 ..< 3 {
-		for word in 0 ..< 256 {ide_test_outw(&ide, 0x1F0, u16(sector + 1))}
+		for _ in 0 ..< 256 {ide_test_outw(&ide, 0x1F0, u16(sector + 1))}
 		testing.expect(t, ide_test_advance_deadline(&ide))
 	}
 
 	testing.expect_value(t, ram.write_attempts, 1)
 	testing.expect_value(t, ram.writes, 0)
+	testing.expect_value(t, ide.activity_generation, u64(0))
 	testing.expect_value(t, ram.last_write_bytes, 3 * IDE_SECTOR_SIZE)
 	testing.expect_value(t, ram.data[start], u8(0xA5))
 	testing.expect_value(t, ram.data[start + 2 * IDE_SECTOR_SIZE], u8(0xA5))
@@ -858,7 +942,7 @@ ide_test_pci_decode_gates_taskfile_and_channel :: proc(t: ^testing.T) {
 	ide_set_pci_decode(&ide, true, false)
 	testing.expect_value(t, ide_io_read(&ide, 0x1F7, 1), u32(0xFF))
 	ide_set_pci_decode(&ide, true, true)
-	testing.expect_value(t, ide_io_read(&ide, 0x1F7, 1), u32(IDE_STATUS_DRDY))
+	testing.expect_value(t, ide_io_read(&ide, 0x1F7, 1), u32(IDE_STATUS_READY))
 }
 
 @(test)

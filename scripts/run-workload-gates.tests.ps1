@@ -51,6 +51,9 @@ $testRoot = Join-Path $tempBase ("retvrn99-workload-gates-test-{0}" -f [Guid]::N
 New-Item -ItemType Directory -Path $testRoot | Out-Null
 
 try {
+    $repositoryRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+    $imageTool = Build-WorkloadImageTool -RepositoryRoot $repositoryRoot -OutputDirectory (Join-Path $testRoot 'tools') -Threads ([Environment]::ProcessorCount)
+
     Invoke-SelfTest 'EXITVM.COM protocol bytes are exact' {
         $actual = (Get-ExitVmBytes | ForEach-Object { $_.ToString('X2') }) -join ''
         Assert-Equal $actual 'B00CE6E430C0E6E5B003E6E6B8014CCD21'
@@ -190,11 +193,24 @@ try {
 
     Invoke-SelfTest 'Doom profile staging is isolated and byte-exact' {
         $profile = Join-Path $testRoot 'doom-profile'
-        $staged = Stage-WorkloadProfile -ProfileRoot $profile -DosSeed $seed -WorkloadDirectory $doom -Workload $manifest.workloads[0]
-        Assert-True (Test-Path -LiteralPath (Join-Path $staged.c_drive 'DOOM.EXE'))
-        $exitHex = ([IO.File]::ReadAllBytes((Join-Path $staged.c_drive 'EXITVM.COM')) | ForEach-Object { $_.ToString('X2') }) -join ''
+        $staged = Stage-WorkloadProfile -ProfileRoot $profile -DosSeed $seed -WorkloadDirectory $doom -Workload $manifest.workloads[0] -ImageTool $imageTool
+        Assert-True (Test-Path -LiteralPath $staged.image_path -PathType Leaf)
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $profile 'c_drive') -PathType Container))
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $profile 'image-staging')))
+        $settings = Get-Content -LiteralPath $staged.settings_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-Equal ([int]$settings.version) 2
+        Assert-Equal ([string]$settings.hard_drive_path) ([IO.Path]::GetFullPath($staged.image_path))
+        $observed = Join-Path $testRoot 'doom-observed'
+        New-Item -ItemType Directory -Path $observed | Out-Null
+        $exitPath = Join-Path $observed 'EXITVM.COM'
+        $exitResult = Invoke-WorkloadImageTool -ImageTool $imageTool -Arguments @('observe', $staged.image_path, 'EXITVM.COM', $exitPath) -Timeout 120
+        Assert-Equal $exitResult.exit_code 0
+        $exitHex = ([IO.File]::ReadAllBytes($exitPath) | ForEach-Object { $_.ToString('X2') }) -join ''
         Assert-Equal $exitHex 'B00CE6E430C0E6E5B003E6E6B8014CCD21'
-        $autoexecBytes = [IO.File]::ReadAllBytes((Join-Path $staged.c_drive 'AUTOEXEC.BAT'))
+        $autoexecPath = Join-Path $observed 'AUTOEXEC.BAT'
+        $autoexecResult = Invoke-WorkloadImageTool -ImageTool $imageTool -Arguments @('observe', $staged.image_path, 'AUTOEXEC.BAT', $autoexecPath) -Timeout 120
+        Assert-Equal $autoexecResult.exit_code 0
+        $autoexecBytes = [IO.File]::ReadAllBytes($autoexecPath)
         $autoexec = [Text.Encoding]::ASCII.GetString($autoexecBytes)
         Assert-True ($autoexec.Contains("doom.exe -config MAX.CFG -timedemo demo3 > GATE.OUT`r`n"))
         for ($index = 0; $index -lt $autoexecBytes.Length; $index++) {
@@ -203,14 +219,26 @@ try {
             }
         }
         Assert-Equal ([IO.File]::ReadAllText((Join-Path $seed 'AUTOEXEC.BAT'))) 'source-autoexec'
+        $missingPath = Join-Path $observed 'MISSING.OUT'
+        $missingResult = Invoke-WorkloadImageTool -ImageTool $imageTool -Arguments @('observe', $staged.image_path, 'MISSING.OUT', $missingPath) -Timeout 120
+        Assert-Equal $missingResult.exit_code 3
+        Assert-True (-not (Test-Path -LiteralPath $missingPath))
     }
 
     Invoke-SelfTest 'Quake staging adds bounded completion config and logging' {
         $profile = Join-Path $testRoot 'quake-profile'
-        $staged = Stage-WorkloadProfile -ProfileRoot $profile -DosSeed $seed -WorkloadDirectory $quake -Workload $manifest.workloads[1]
-        $autoexec = [IO.File]::ReadAllText((Join-Path $staged.c_drive 'AUTOEXEC.BAT'))
+        $staged = Stage-WorkloadProfile -ProfileRoot $profile -DosSeed $seed -WorkloadDirectory $quake -Workload $manifest.workloads[1] -ImageTool $imageTool
+        $observed = Join-Path $testRoot 'quake-observed'
+        New-Item -ItemType Directory -Path $observed | Out-Null
+        $autoexecPath = Join-Path $observed 'AUTOEXEC.BAT'
+        $autoexecResult = Invoke-WorkloadImageTool -ImageTool $imageTool -Arguments @('observe', $staged.image_path, 'AUTOEXEC.BAT', $autoexecPath) -Timeout 120
+        Assert-Equal $autoexecResult.exit_code 0
+        $autoexec = [IO.File]::ReadAllText($autoexecPath)
         Assert-True ($autoexec.Contains('-condebug +exec GATEEND.CFG'))
-        $gate = [IO.File]::ReadAllText((Join-Path $staged.c_drive 'ID1\GATEEND.CFG'))
+        $gatePath = Join-Path $observed 'GATEEND.CFG'
+        $gateResult = Invoke-WorkloadImageTool -ImageTool $imageTool -Arguments @('observe', $staged.image_path, 'ID1/GATEEND.CFG', $gatePath) -Timeout 120
+        Assert-Equal $gateResult.exit_code 0
+        $gate = [IO.File]::ReadAllText($gatePath)
         Assert-True ($gate.EndsWith("quit`r`n"))
         Assert-Equal ([regex]::Matches($gate, '(?m)^wait\r$').Count) (969 + 128)
     }
@@ -224,7 +252,7 @@ try {
             id = 'collision'; executable = 'doom.exe'; arguments = @(); metric = 'gametics'; expected = 1
         }
         Assert-Throws {
-            Stage-WorkloadProfile -ProfileRoot (Join-Path $testRoot 'collision-profile') -DosSeed $seed -WorkloadDirectory $collision -Workload $workload
+            Stage-WorkloadProfile -ProfileRoot (Join-Path $testRoot 'collision-profile') -DosSeed $seed -WorkloadDirectory $collision -Workload $workload -ImageTool $imageTool
         } 'overwrite'
     }
 }

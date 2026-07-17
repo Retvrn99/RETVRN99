@@ -164,7 +164,7 @@ pci_test_amd756_ide_identity_and_compatibility_mode :: proc(t: ^testing.T) {
 	pci_out(&p, 0xCF8, 4, 0x8000_3900) // 00:07.1
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0x7409_1022))
 	pci_out(&p, 0xCF8, 4, 0x8000_3908)
-	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0x0101_8A02))
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0x0101_8A03))
 	pci_out(&p, 0xCFD, 1, 0)
 	testing.expect_value(t, pci_in(&p, 0xCFD, 1), u32(0x8A))
 	pci_out(&p, 0xCFD, 1, 0xFF)
@@ -183,7 +183,7 @@ pci_test_amd756_ide_identity_and_compatibility_mode :: proc(t: ^testing.T) {
 	pci_out(&p, 0xCF8, 4, 0x8000_394C)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0xFFFF_00FF))
 	pci_out(&p, 0xCF8, 4, 0x8000_3950)
-	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0))
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0x0303_0303))
 
 	pci_out(&p, 0xCF8, 4, 0x8000_3940)
 	pci_out(&p, 0xCFC, 4, 0xFFFF_FFFF)

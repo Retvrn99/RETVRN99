@@ -9,7 +9,6 @@ Visual_Shader :: enum u8 {
 	Not_So_Subtle,
 }
 
-CRT_SHADER_DXIL := #load("../../assets/shaders/retvrn99-crt.dxil")
 CRT_SHADER_SPIRV := #load("../../assets/shaders/retvrn99-crt.spv")
 
 Crt_Uniforms :: struct {
@@ -34,22 +33,12 @@ visual_shader_name :: proc(style: Visual_Shader) -> cstring {
 host_shader_init :: proc(h: ^Host) -> bool {
 	if h == nil || h.gpu == nil || h.ren == nil {return false}
 	formats := sdl3.GetGPUShaderFormats(h.gpu)
-	code: []u8
-	format: sdl3.GPUShaderFormat
-	if .DXIL in formats {
-		code = CRT_SHADER_DXIL
-		format = {.DXIL}
-	} else if .SPIRV in formats {
-		code = CRT_SHADER_SPIRV
-		format = {.SPIRV}
-	} else {
-		return false
-	}
+	if .SPIRV not_in formats {return false}
 	info := sdl3.GPUShaderCreateInfo {
-		code_size           = uint(len(code)),
-		code                = ([^]u8)(raw_data(code)),
+		code_size           = uint(len(CRT_SHADER_SPIRV)),
+		code                = ([^]u8)(raw_data(CRT_SHADER_SPIRV)),
 		entrypoint          = "main",
-		format              = format,
+		format              = {.SPIRV},
 		stage               = .FRAGMENT,
 		num_samplers        = 1,
 		num_uniform_buffers = 1,

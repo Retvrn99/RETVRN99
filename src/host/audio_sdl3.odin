@@ -10,6 +10,7 @@ HOST_AUDIO_CALLBACK_FRAMES :: 1024
 
 Host_Audio :: struct {
 	stream:           ^sdl3.AudioStream,
+	subsystem_active: bool,
 	consumer:         audio.Audio_Consumer,
 	callback_frames:  [HOST_AUDIO_CALLBACK_FRAMES]audio.Audio_Frame,
 	last_callback_ns: u64,
@@ -20,6 +21,8 @@ Host_Audio :: struct {
 host_audio_open :: proc(host: ^Host_Audio, output: ^audio.Audio_Output) -> bool {
 	if host == nil || output == nil {return false}
 	host_audio_close(host)
+	if !sdl3.InitSubSystem({.AUDIO}) {return false}
+	host.subsystem_active = true
 	audio.audio_consumer_init(&host.consumer, output)
 	spec := sdl3.AudioSpec {
 		format   = .S16,
@@ -46,6 +49,7 @@ host_audio_open :: proc(host: ^Host_Audio, output: ^audio.Audio_Output) -> bool 
 host_audio_close :: proc(host: ^Host_Audio) {
 	if host == nil {return}
 	if host.stream != nil {sdl3.DestroyAudioStream(host.stream)}
+	if host.subsystem_active {sdl3.QuitSubSystem({.AUDIO})}
 	host^ = {}
 }
 

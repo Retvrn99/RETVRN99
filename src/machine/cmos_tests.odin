@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import disk "../disk"
 import "core:testing"
 
 cmos_test_read :: proc(c: ^Cmos, reg: u8) -> u8 {
@@ -122,6 +123,7 @@ test_cmos_seabios_primary_disk_uses_large_translation :: proc(t: ^testing.T) {
 	c: Cmos
 	cmos_init(&c, 64 * 1024 * 1024)
 	testing.expect_value(t, c.ram[CMOS_BIOS_DISK_TRANSLATION], u8(0x02))
+	testing.expect_value(t, c.ram[CMOS_DISK_TYPE] & 0xF0, u8(0))
 	testing.expect(t, cmos_checksum_valid(&c))
 
 	saved := cmos_nvram_export(&c)
@@ -132,6 +134,71 @@ test_cmos_seabios_primary_disk_uses_large_translation :: proc(t: ^testing.T) {
 	testing.expect(t, cmos_last_import_checksum_was_valid(&restored))
 	testing.expect_value(t, restored.ram[CMOS_BIOS_DISK_TRANSLATION], u8(0xFE))
 	testing.expect(t, cmos_checksum_valid(&restored))
+}
+
+@(test)
+test_cmos_primary_disk_type_47_matches_ata_physical_geometry :: proc(t: ^testing.T) {
+	c: Cmos
+	cmos_init(&c, 256 * 1024 * 1024)
+	c.ram[CMOS_DISK_TYPE] = 0x0F
+	cmos_set_primary_disk(&c, 20 * (u64(1) << 30) / disk.IDE_SECTOR_SIZE)
+
+	testing.expect_value(t, c.ram[CMOS_DISK_TYPE], u8(0xFF))
+	testing.expect_value(t, c.ram[CMOS_PRIMARY_DISK_EXTENDED_TYPE], u8(47))
+	expected := [9]u8{0xFF, 0x3F, 0x10, 0xFF, 0xFF, 0xC8, 0xFF, 0x3F, 0x3F}
+	for value, index in expected {
+		testing.expect_value(t, c.ram[CMOS_PRIMARY_DISK_GEOMETRY + index], value)
+	}
+	testing.expect(t, cmos_checksum_valid(&c))
+
+	cmos_set_primary_disk(&c, 0)
+	testing.expect_value(t, c.ram[CMOS_DISK_TYPE], u8(0x0F))
+	testing.expect_value(t, c.ram[CMOS_PRIMARY_DISK_EXTENDED_TYPE], u8(0))
+	for index in CMOS_PRIMARY_DISK_GEOMETRY ..< CMOS_PRIMARY_DISK_GEOMETRY + 9 {
+		testing.expect_value(t, c.ram[index], u8(0))
+	}
+	testing.expect(t, cmos_checksum_valid(&c))
+}
+
+@(test)
+test_cmos_primary_disk_geometry_tracks_smaller_images :: proc(t: ^testing.T) {
+	c: Cmos
+	cmos_init(&c, 64 * 1024 * 1024)
+	sector_count := u64(1) << 21
+	cmos_set_primary_disk(&c, sector_count)
+
+	cylinders := u16(sector_count / u64(disk.IDE_CHS_HEADS * disk.IDE_CHS_SECTORS_PER_TRACK))
+	testing.expect_value(t, c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 0], u8(cylinders))
+	testing.expect_value(t, c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 1], u8(cylinders >> 8))
+	testing.expect_value(t, c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 2], u8(disk.IDE_CHS_HEADS))
+	testing.expect_value(t, c.ram[CMOS_PRIMARY_DISK_GEOMETRY + 8], u8(disk.IDE_CHS_SECTORS_PER_TRACK))
+	testing.expect(t, cmos_checksum_valid(&c))
+}
+
+@(test)
+test_machine_disk_attach_reasserts_cmos_after_nvram_import :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(m)
+
+	diskless: Cmos
+	cmos_init(&diskless, 64 * 1024 * 1024)
+	diskless_nvram := cmos_nvram_export(&diskless)
+	backing := make([]u8, 1024 * 1024)
+	defer delete(backing)
+	machine_attach_disk(m, machine_test_bd(&backing))
+	testing.expect_value(t, m.cmos.ram[CMOS_DISK_TYPE] & 0xF0, u8(0xF0))
+	testing.expect(t, cmos_checksum_valid(&m.cmos))
+
+	testing.expect(t, machine_cmos_import(m, diskless_nvram[:]))
+	testing.expect_value(t, m.cmos.ram[CMOS_DISK_TYPE] & 0xF0, u8(0xF0))
+	testing.expect_value(t, m.cmos.ram[CMOS_PRIMARY_DISK_EXTENDED_TYPE], u8(47))
+	testing.expect(t, cmos_checksum_valid(&m.cmos))
+
+	testing.expect(t, machine_detach_disk(m))
+	testing.expect_value(t, m.cmos.ram[CMOS_DISK_TYPE] & 0xF0, u8(0))
+	testing.expect(t, cmos_checksum_valid(&m.cmos))
 }
 
 @(test)
@@ -248,12 +315,12 @@ test_cmos_checksum_validation_and_repair :: proc(t: ^testing.T) {
 	c: Cmos
 	cmos_init(&c, 64 * 1024 * 1024)
 	testing.expect(t, cmos_checksum_valid(&c))
-	cmos_test_write(&c, 0x20, 0xA5)
+	cmos_test_write(&c, 0x24, 0xA5)
 	testing.expect(t, !cmos_checksum_valid(&c))
 	cmos_refresh_checksum(&c)
 	testing.expect(t, cmos_checksum_valid(&c))
 	saved := cmos_nvram_export(&c)
-	saved[0x21] = saved[0x21] ~ 1
+	saved[0x25] = saved[0x25] ~ 1
 	saved[0x0D] = 0
 
 	restored: Cmos
@@ -262,5 +329,5 @@ test_cmos_checksum_validation_and_repair :: proc(t: ^testing.T) {
 	testing.expect(t, !cmos_last_import_checksum_was_valid(&restored))
 	testing.expect(t, cmos_checksum_valid(&restored))
 	testing.expect_value(t, cmos_test_read(&restored, 0x0E), u8(0xC0))
-	testing.expect_value(t, cmos_test_read(&restored, 0x21), saved[0x21])
+	testing.expect_value(t, cmos_test_read(&restored, 0x25), saved[0x25])
 }

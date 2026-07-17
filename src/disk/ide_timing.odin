@@ -37,7 +37,7 @@ ide_next_deadline :: proc(ide: ^Ide) -> (u64, bool) {
 @(private = "file")
 ide_publish_data_in :: proc(ide: ^Ide) {
 	ide.state = .Data_In
-	ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ
+	ide.reg_status = IDE_STATUS_READY | IDE_STATUS_DRQ
 	ide_raise_irq(ide)
 }
 
@@ -48,12 +48,13 @@ ide_complete_write :: proc(ide: ^Ide) {
 		ide_abort(ide)
 		return
 	}
+	ide.activity_generation += 1
 	ide_note_writeback(ide)
 	sectors := u64(ide.pio_staged_bytes / IDE_SECTOR_SIZE)
 	ide_dma_set_taskfile_lba(ide, ide.pio_start_lba + sectors)
 	ide.reg_seccount = 0
 	ide.state = .Idle
-	ide.reg_status = IDE_STATUS_DRDY
+	ide.reg_status = IDE_STATUS_READY
 	ide.pio_start_lba = 0
 	ide.pio_staged_bytes = 0
 	ide_raise_irq(ide)
@@ -71,13 +72,13 @@ ide_service_deadline :: proc(ide: ^Ide, action: Ide_Deadline_Action) {
 		ide.pio_block_remaining = ide_pio_block_sector_count(ide)
 		ide.buf_pos = 0
 		ide.state = .Data_Out
-		ide.reg_status = IDE_STATUS_DRDY | IDE_STATUS_DRQ
+		ide.reg_status = IDE_STATUS_READY | IDE_STATUS_DRQ
 		if ide.pio_staged_bytes > 0 {ide_raise_irq(ide)}
 	case .Write_Commit:
 		ide_complete_write(ide)
 	case .Command_Complete:
 		ide.state = .Idle
-		ide.reg_status = IDE_STATUS_DRDY
+		ide.reg_status = IDE_STATUS_READY
 		ide_raise_irq(ide)
 	case .Diagnostic_Complete:
 		ide.state = .Idle
@@ -86,7 +87,7 @@ ide_service_deadline :: proc(ide: ^Ide, action: Ide_Deadline_Action) {
 	case .Flush_Complete:
 		if !ide_checkpoint(ide) {ide_abort(ide); return}
 		ide.state = .Idle
-		ide.reg_status = IDE_STATUS_DRDY
+		ide.reg_status = IDE_STATUS_READY
 		ide_raise_irq(ide)
 	case .None:
 	}

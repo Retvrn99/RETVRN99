@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-only
 // Low level ATA disk access
 //
 // Copyright (C) 2008,2009  Kevin O'Connor <kevin@koconnor.net>
@@ -347,6 +348,7 @@ ata_pio_transfer(struct disk_op_s *op, int iswrite, int blocksize)
 #define  BM_STATUS_IRQ    0x04
 #define  BM_STATUS_ERROR  0x02
 #define  BM_STATUS_ACTIVE 0x01
+#define  BM_STATUS_DMA0   0x20
 #define BM_TABLE  4
 
 struct sff_dma_prd {
@@ -765,6 +767,41 @@ init_drive_atapi(struct atadrive_s *dummy, u16 *buffer)
     return adrive;
 }
 
+#define AMD756_PRIMARY_MASTER_UDMA 0x53
+#define AMD756_UDMA4_EXPLICIT      0xc5
+
+static void
+init_amd756_primary_udma4(struct atadrive_s *adrive, u16 *buffer)
+{
+    struct ata_channel_s *chan = adrive->chan_gf;
+    struct pci_device *pci = chan->pci_tmp;
+    if (!pci || pci->vendor != PCI_VENDOR_ID_AMD
+        || pci->device != PCI_DEVICE_ID_AMD_VIPER_7409
+        || chan->chanid != 0 || adrive->slave
+        || !(buffer[53] & 0x04) || !(buffer[88] & (1 << 4)))
+        return;
+
+    u16 iomaster = pci_enable_iobar(pci, PCI_BASE_ADDRESS_4);
+    if (!iomaster)
+        return;
+
+    struct ata_pio_command cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.feature = ATA_SET_FEATRUE_TRANSFER_MODE;
+    cmd.sector_count = ATA_TRANSFER_MODE_ULTRA_DMA | 4;
+    cmd.command = ATA_CMD_SET_FEATURES;
+    if (ata_cmd_nondata(adrive, &cmd) < 0) {
+        dprintf(1, "AMD-756: primary master UDMA-4 selection failed\n");
+        return;
+    }
+
+    pci_config_writeb(pci->bdf, AMD756_PRIMARY_MASTER_UDMA,
+                      AMD756_UDMA4_EXPLICIT);
+    outb(BM_STATUS_DMA0, iomaster + BM_STATUS);
+    buffer[88] |= 1 << 12;
+    dprintf(1, "AMD-756: primary master initialized for UDMA-4\n");
+}
+
 // Detect if the given drive is a regular ata drive - initialize it if so.
 static struct atadrive_s *
 init_drive_ata(struct atadrive_s *dummy, u16 *buffer)
@@ -780,6 +817,7 @@ init_drive_ata(struct atadrive_s *dummy, u16 *buffer)
         return NULL;
     adrive->drive.type = DTYPE_ATA;
     adrive->drive.blksize = DISK_SECTOR_SIZE;
+    init_amd756_primary_udma4(adrive, buffer);
 
     adrive->drive.pchs.cylinder = buffer[1];
     adrive->drive.pchs.head = buffer[3];
