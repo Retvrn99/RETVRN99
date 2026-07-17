@@ -8,6 +8,7 @@ DEFAULT_WINDOW_SCALE :: 2
 WIN_W :: TEXT_W * DEFAULT_WINDOW_SCALE // 1440
 WIN_H :: TEXT_H * DEFAULT_WINDOW_SCALE + MENU_BAR_H
 HOST_GPU_DRIVER :: "vulkan"
+HOST_VULKAN_API_VERSION :: u32(0x0040_1000) // VK_MAKE_API_VERSION(0, 1, 1, 0)
 
 Host :: struct {
 	win:                 ^sdl3.Window,
@@ -18,6 +19,11 @@ Host :: struct {
 	gpu_surface_bytes:   u64,
 	gpu_present:         Host_Gpu_Present,
 	gpu_direct_presents: u64,
+	gsw3d_bridge:        Gsw3d_Bridge,
+	gsw3d_triangle:      Gsw3d_Triangle_Renderer,
+	gsw3d_backend:       Gsw3d_Proof_Backend,
+	gsw3d_executor:      Gsw3d_Proof_Executor,
+	gsw3d_proof_enabled: bool,
 	shader:              ^sdl3.GPUShader,
 	shader_state:        ^sdl3.GPURenderState,
 	tex_width:           int,
@@ -35,18 +41,39 @@ Host :: struct {
 	mouse_buttons:       u8,
 }
 
+@(private = "file")
+host_create_gpu_device :: proc() -> ^sdl3.GPUDevice {
+	props := sdl3.CreateProperties()
+	if props == 0 {return nil}
+	defer sdl3.DestroyProperties(props)
+	vulkan := sdl3.GPUVulkanOptions {
+		vulkan_api_version = HOST_VULKAN_API_VERSION,
+	}
+	if !sdl3.SetStringProperty(props, sdl3.PROP_GPU_DEVICE_CREATE_NAME_STRING, HOST_GPU_DRIVER) ||
+	   !sdl3.SetBooleanProperty(props, sdl3.PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true) ||
+	   !sdl3.SetPointerProperty(
+			   props,
+			   sdl3.PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER,
+			   &vulkan,
+		   ) {
+		return nil
+	}
+	return sdl3.CreateGPUDeviceWithProperties(props)
+}
+
 host_init :: proc(h: ^Host) -> (ok: bool) {
 	h^ = {}
 	defer if !ok {host_destroy(h)}
 	if !sdl3.Init({.VIDEO}) {
 		return false
 	}
+	gsw3d_bridge_init(&h.gsw3d_bridge)
 	// no RESIZABLE flag: fixed-size window
 	h.win = sdl3.CreateWindow("RETVRN99", WIN_W, WIN_H, {})
 	if h.win == nil {
 		return false
 	}
-	h.gpu = sdl3.CreateGPUDevice({.SPIRV}, false, HOST_GPU_DRIVER)
+	h.gpu = host_create_gpu_device()
 	if h.gpu == nil {return false}
 	driver := sdl3.GetGPUDeviceDriver(h.gpu)
 	if driver == nil || string(driver) != HOST_GPU_DRIVER {
@@ -81,6 +108,9 @@ host_init :: proc(h: ^Host) -> (ok: bool) {
 
 host_destroy :: proc(h: ^Host) {
 	if h.mouse_captured {_ = sdl3.SetWindowRelativeMouseMode(h.win, false)}
+	gsw3d_bridge_shutdown(&h.gsw3d_bridge)
+	if h.gsw3d_proof_enabled {_ = host_gsw3d_proof_reset(h, 0)}
+	gsw3d_triangle_renderer_destroy(&h.gsw3d_triangle)
 	host_shader_destroy(h)
 	if h.tex != nil {sdl3.DestroyTexture(h.tex)}
 	host_gpu_surfaces_destroy(h)

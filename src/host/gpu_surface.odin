@@ -151,6 +151,25 @@ host_gpu_surface_texture :: proc(h: ^Host, id: u32) -> ^sdl3.GPUTexture {
 	return surface != nil ? surface.gpu_texture : nil
 }
 
+@(private = "package")
+host_gpu_surface_render_target :: proc(
+	h: ^Host,
+	id: u32,
+) -> (
+	texture: ^sdl3.GPUTexture,
+	format: sdl3.GPUTextureFormat,
+	width, height: u32,
+	ok: bool,
+) {
+	surface := host_gpu_surface_find(h, id)
+	if surface == nil || surface.gpu_texture == nil || h.gpu == nil {return}
+	pixel_format, _, known := host_gpu_surface_pixel_format(surface.descriptor.format)
+	if !known {return}
+	format = sdl3.GetGPUTextureFormatFromPixelFormat(pixel_format)
+	if format == .INVALID {return}
+	return surface.gpu_texture, format, surface.descriptor.width, surface.descriptor.height, true
+}
+
 host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descriptor) -> bool {
 	if h == nil || h.gpu == nil || h.ren == nil {
 		return false
@@ -252,8 +271,9 @@ host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descripto
 	}
 	h.gpu_surface_bytes = h.gpu_surface_bytes - replaced_bytes + byte_size
 	if previous.live {
-		if h.gpu_present.surface_id == descriptor.id &&
-		   !host_gpu_present_valid(h.gpu_present, descriptor) {
+		// Replacement storage is undefined until the backend renders or uploads
+		// it, even when the new descriptor has the same dimensions and format.
+		if h.gpu_present.surface_id == descriptor.id {
 			h.gpu_present = {}
 			h.has_frame = false
 		}

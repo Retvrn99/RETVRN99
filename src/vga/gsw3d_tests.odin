@@ -6,25 +6,41 @@ import "core:testing"
 import "core:time"
 
 Gsw3d_Test_Backend :: struct {
-	submit_entered:  sync.Sema,
-	release_submit:  sync.Sema,
-	create_entered:  sync.Sema,
-	release_create:  sync.Sema,
-	block_create:    bool,
-	submitted:       [32]u8,
-	submitted_bytes: int,
-	work_count:      int,
-	reset_count:     int,
+	submit_entered:         sync.Sema,
+	release_submit:         sync.Sema,
+	create_entered:         sync.Sema,
+	release_create:         sync.Sema,
+	block_create:           bool,
+	submitted:              [32]u8,
+	submitted_bytes:        int,
+	work_count:             int,
+	reset_count:            int,
+	cancel_count:           int,
+	reset_generation:       u64,
+	cancel_generation:      u64,
+	cancel_stopping:        bool,
+	reset_saw_cancel:       bool,
+	cancel_releases_create: bool,
 }
 
 gsw3d_test_backend_validate :: proc(ctx: rawptr, batch: []u8) -> bool {
 	return true
 }
 
-gsw3d_test_backend_reset :: proc(ctx: rawptr) -> bool {
+gsw3d_test_backend_reset :: proc(ctx: rawptr, generation: u64) -> bool {
 	backend := (^Gsw3d_Test_Backend)(ctx)
 	backend.reset_count += 1
+	backend.reset_generation = generation
+	backend.reset_saw_cancel = backend.cancel_count != 0
 	return true
+}
+
+gsw3d_test_backend_cancel :: proc(ctx: rawptr, generation: u64, stopping: bool) {
+	backend := (^Gsw3d_Test_Backend)(ctx)
+	backend.cancel_count += 1
+	backend.cancel_generation = generation
+	backend.cancel_stopping = stopping
+	if stopping && backend.cancel_releases_create {sync.sema_post(&backend.release_create)}
 }
 
 gsw3d_test_backend_execute :: proc(ctx: rawptr, work: ^Gsw3d_Work) -> bool {
@@ -64,6 +80,7 @@ gsw3d_test_transport_fence_cannot_overtake_queued_backend_work :: proc(t: ^testi
 				validate_svga9 = gsw3d_test_backend_validate,
 				execute = gsw3d_test_backend_execute,
 				reset = gsw3d_test_backend_reset,
+				cancel = gsw3d_test_backend_cancel,
 			},
 		),
 	) {return}
@@ -183,6 +200,7 @@ gsw3d_test_submission_is_copied_before_worker_parse :: proc(t: ^testing.T) {
 				validate_svga9 = gsw3d_test_backend_validate,
 				execute = gsw3d_test_backend_execute,
 				reset = gsw3d_test_backend_reset,
+				cancel = gsw3d_test_backend_cancel,
 			},
 		),
 	)
@@ -224,6 +242,7 @@ gsw3d_test_reset_ignores_in_flight_completion :: proc(t: ^testing.T) {
 				validate_svga9 = gsw3d_test_backend_validate,
 				execute = gsw3d_test_backend_execute,
 				reset = gsw3d_test_backend_reset,
+				cancel = gsw3d_test_backend_cancel,
 			},
 		),
 	) {return}
@@ -240,4 +259,81 @@ gsw3d_test_reset_ignores_in_flight_completion :: proc(t: ^testing.T) {
 	testing.expect(t, gsw3d_find_context(&g.three_d, 1) == nil)
 	testing.expect_value(t, g.three_d.ring_head, g.three_d.ring_tail)
 	testing.expect_value(t, backend.reset_count, 1)
+}
+
+@(test)
+gsw3d_test_reset_cancels_old_generation_before_backend_reset :: proc(t: ^testing.T) {
+	framebuffer: [4096]u8
+	backend: Gsw3d_Test_Backend
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer[:])
+	defer gsw_vga_destroy(&g)
+	if !testing.expect(
+		t,
+		gsw_vga_set_3d_backend(
+			&g,
+			{
+				ctx = &backend,
+				capabilities = GSW3D_BACKEND_SVGA9,
+				validate_svga9 = gsw3d_test_backend_validate,
+				execute = gsw3d_test_backend_execute,
+				reset = gsw3d_test_backend_reset,
+				cancel = gsw3d_test_backend_cancel,
+			},
+		),
+	) {return}
+
+	gsw3d_reset(&g.three_d)
+	if !testing.expect(t, gsw3d_wait_idle(&g.three_d, time.Second)) {return}
+	testing.expect_value(t, backend.cancel_count, 1)
+	testing.expect_value(t, backend.cancel_generation, u64(1))
+	testing.expect(t, !backend.cancel_stopping)
+	testing.expect_value(t, backend.reset_count, 1)
+	testing.expect_value(t, backend.reset_generation, u64(2))
+	testing.expect(t, backend.reset_saw_cancel)
+}
+
+@(test)
+gsw3d_test_destroy_cancels_blocked_backend_before_join :: proc(t: ^testing.T) {
+	framebuffer: [4096]u8
+	ram := make([]u8, 4096)
+	defer delete(ram)
+	backend := Gsw3d_Test_Backend {
+		block_create           = true,
+		cancel_releases_create = true,
+	}
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer[:])
+	if !testing.expect(
+		t,
+		gsw_vga_set_3d_backend(
+			&g,
+			{
+				ctx = &backend,
+				capabilities = GSW3D_BACKEND_SVGA9,
+				validate_svga9 = gsw3d_test_backend_validate,
+				execute = gsw3d_test_backend_execute,
+				reset = gsw3d_test_backend_reset,
+				cancel = gsw3d_test_backend_cancel,
+			},
+		),
+	) {gsw_vga_destroy(&g); return}
+
+	g.three_d.ring_gpa = 128
+	g.three_d.ring_size = 256
+	create := ram[128:152]
+	gsw3d_test_header(create, .Create_Context, 1)
+	gsw_test_wr32(create, 16, 1)
+	g.three_d.ring_tail = 24
+	_ = gsw3d_register_write(&g.three_d, GSW3D_REG_DOORBELL, 1, ram)
+	if !testing.expect(t, sync.sema_wait_with_timeout(&backend.create_entered, time.Second)) {
+		sync.sema_post(&backend.release_create)
+		gsw_vga_destroy(&g)
+		return
+	}
+
+	gsw_vga_destroy(&g)
+	testing.expect_value(t, backend.cancel_count, 1)
+	testing.expect_value(t, backend.cancel_generation, u64(1))
+	testing.expect(t, backend.cancel_stopping)
 }

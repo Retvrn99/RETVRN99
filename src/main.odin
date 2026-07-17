@@ -111,6 +111,7 @@ Vm_Ctx :: struct {
 	preparation_recovered:    bool,
 	firmware_log_all:         bool,
 	hard_drive_path:          string,
+	gsw3d_host:               ^host.Host,
 }
 
 main :: proc() {
@@ -131,6 +132,7 @@ run_main :: proc() -> int {
 	frame_dump_path := ""
 	seconds_explicit := false
 	start_requested := false
+	gsw3d_proof := false
 	acceptance_options, acceptance_diagnostic := acceptance.options_parse(os.args[1:])
 	if acceptance_diagnostic != .None {
 		fmt.eprintfln("acceptance option error: %v", acceptance_diagnostic)
@@ -140,6 +142,7 @@ run_main :: proc() -> int {
 	for a in os.args[1:] {
 		if a == "--console" {console = true}
 		if a == "--start" {start_requested = true}
+		if a == "--gsw3d-proof" {gsw3d_proof = true}
 		if a == "--no-disk" {attach = false}
 		if strings.has_prefix(a, "--auto-close:") {
 			auto_close, _ = strconv.parse_int(a[len("--auto-close:"):])
@@ -166,6 +169,10 @@ run_main :: proc() -> int {
 	}
 	if acceptance_options.accept_until == .Desktop && !seconds_explicit {
 		run_seconds = 2 * 60 * 60
+	}
+	if console && gsw3d_proof {
+		fmt.eprintln("--gsw3d-proof is available only in the GUI host")
+		return 1
 	}
 
 	paths: profile.Paths
@@ -297,6 +304,7 @@ run_main :: proc() -> int {
 		has_cmos,
 		acceptance_options.firmware_log_all,
 		start_requested,
+		gsw3d_proof,
 	)
 }
 
@@ -311,6 +319,7 @@ gui_main :: proc(
 	has_cmos: bool,
 	firmware_log_all: bool,
 	start_requested: bool,
+	gsw3d_proof: bool,
 ) -> (
 	result: int,
 ) {
@@ -388,6 +397,15 @@ gui_main :: proc(
 	if !host.host_init(&h) {
 		fmt.eprintfln("host_init failed: %s", sdl3.GetError())
 		return 1
+	}
+	if gsw3d_proof {
+		if !host.host_gsw3d_proof_enable(&h) {
+			fmt.eprintfln("GSW3D proof renderer initialization failed: %s", sdl3.GetError())
+			host.host_destroy(&h)
+			return 1
+		}
+		ctx.gsw3d_host = &h
+		fmt.println("video: developer-only exact GSW3D triangle profile enabled")
 	}
 	preferred_locale, _ := host.host_preferred_locale()
 	defer host.host_locale_destroy(&preferred_locale)
@@ -845,6 +863,7 @@ gui_main :: proc(
 			}
 			frame_mailbox_release(&shared.frames, frame_slot)
 		}
+		_ = host.host_gsw3d_proof_drain(&h)
 		host.host_render_guest(&h)
 
 		imgui_impl_sdlrenderer3.NewFrame()

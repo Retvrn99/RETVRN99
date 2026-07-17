@@ -23,7 +23,9 @@ The virtual machine currently exposes:
 - A FAT32 hard drive on a UDMA/66 (Ultra DMA mode 4) IDE controller.
 - A 1.44 MB floppy drive and an ATAPI 10x DVD / 52x CD-ROM drive.
 - The guest-visible GSW VGA device, with legacy VGA and Bochs VBE available
-  while the Windows GSW driver is being finished.
+  while the Windows GSW driver is being finished. Its guarded v2 transport and
+  host-resident SDL_GPU path have an exact developer triangle profile, but the
+  normal guest persona still advertises no 3D acceleration.
 - PC-speaker and CD-audio output, plus fixed-resource Sound Blaster 16 digital
   audio at `220h`/IRQ5/DMA1+5 and an OPL3-compatible device at `388h`, including
   the Sound Blaster FM aliases at `220h`-`223h`. The OPL
@@ -35,6 +37,7 @@ The virtual machine currently exposes:
 
 - x86-64 Windows with an AVX2-capable processor.
 - The Windows Hypervisor Platform optional feature enabled.
+- A Vulkan 1.1-capable GPU and display driver.
 - `SDL3.dll` beside `retvrn99.exe`.
 - Your own operating-system and application media.
 
@@ -63,6 +66,10 @@ to start the machine as soon as the window is ready:
 ```powershell
 .\retvrn99.exe --start
 ```
+
+Renderer developers can add `--gsw3d-proof` to attach the hash-locked
+640x480 POSITIONT/D3DCOLOR transport profile. It accepts only the captured
+triangle command stream and is not a game-compatible acceleration mode.
 
 The default profile is `%USERPROFILE%\.retvrn99`. To keep a machine separate,
 pass another profile directory:

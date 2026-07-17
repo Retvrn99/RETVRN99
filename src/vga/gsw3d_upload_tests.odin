@@ -87,11 +87,13 @@ gsw3d_upload_test_upload :: proc(ctx: rawptr, work: ^Gsw3d_Work) -> bool {
 	return true
 }
 
-gsw3d_upload_test_reset :: proc(ctx: rawptr) -> bool {
+gsw3d_upload_test_reset :: proc(ctx: rawptr, generation: u64) -> bool {
 	backend := (^Gsw3d_Upload_Test_Backend)(ctx)
 	backend.reset_count += 1
 	return !backend.fail_reset
 }
+
+gsw3d_upload_test_cancel :: proc(ctx: rawptr, generation: u64, stopping: bool) {}
 
 gsw3d_upload_test_backend :: proc(
 	backend: ^Gsw3d_Upload_Test_Backend,
@@ -103,6 +105,7 @@ gsw3d_upload_test_backend :: proc(
 		validate_svga9 = gsw3d_upload_test_validate,
 		execute        = gsw3d_upload_test_execute,
 		reset          = gsw3d_upload_test_reset,
+		cancel         = gsw3d_upload_test_cancel,
 	}
 	if with_upload {
 		result.capabilities |= GSW3D_BACKEND_RESOURCE_UPLOAD
@@ -299,7 +302,16 @@ gsw3d_upload_test_snapshots_payload_and_orders_resource_lifetime :: proc(t: ^tes
 	testing.expect_value(t, backend.work_kinds[2], Gsw3d_Work_Kind.Resource_Upload)
 	resource := gsw3d_find_resource(&g.three_d, 9)
 	testing.expect(t, resource != nil)
-	if resource != nil {testing.expect_value(t, resource.size, u64(512))}
+	if resource != nil {
+		testing.expect_value(t, resource.kind, Gsw3d_Resource_Kind.Surface)
+		testing.expect_value(t, resource.flags, u32(0))
+		testing.expect_value(t, resource.format, u32(1))
+		testing.expect_value(t, resource.width, u32(128))
+		testing.expect_value(t, resource.height, u32(1))
+		testing.expect_value(t, resource.depth, u32(1))
+		testing.expect_value(t, resource.mip_levels, u32(1))
+		testing.expect_value(t, resource.size, u64(512))
+	}
 	testing.expect_value(t, g.three_d.completed_fence, u64(4))
 	testing.expect_value(t, g.three_d.metrics.uploads, u64(1))
 	testing.expect_value(t, g.three_d.metrics.upload_bytes, u64(len(payload)))
@@ -824,8 +836,12 @@ gsw3d_upload_test_direct_present_honors_backend_interval_mask :: proc(t: ^testin
 		id   = 1,
 	}
 	g.three_d.resources[0] = {
-		live = true,
-		id   = 9,
+		live   = true,
+		id     = 9,
+		kind   = .Surface,
+		width  = 640,
+		height = 480,
+		depth  = 1,
 	}
 
 	descriptor: [64]u8
@@ -844,6 +860,32 @@ gsw3d_upload_test_direct_present_honors_backend_interval_mask :: proc(t: ^testin
 		testing.expect_value(t, g.three_d.ring_head, u32(0))
 		testing.expect_value(t, g.three_d.error, Gsw3d_Error.Malformed_Descriptor)
 	}
+
+	gsw_test_wr32(descriptor[:], 56, 1)
+	gsw_test_wr32(descriptor[:], 24, 1)
+	gsw3d_upload_test_process_descriptor(&g, ram[:], descriptor[:])
+	testing.expect_value(t, g.three_d.ring_head, u32(0))
+	testing.expect_value(t, g.three_d.error, Gsw3d_Error.Invalid_Resource)
+	gsw_test_wr32(descriptor[:], 24, 0)
+
+	g.three_d.resources[0].kind = .Buffer
+	gsw3d_upload_test_process_descriptor(&g, ram[:], descriptor[:])
+	testing.expect_value(t, g.three_d.ring_head, u32(0))
+	testing.expect_value(t, g.three_d.error, Gsw3d_Error.Invalid_Resource)
+	g.three_d.resources[0].kind = .Surface
+
+	gsw_test_wr32(descriptor[:], 40, ~u32(0))
+	gsw_test_wr32(descriptor[:], 48, 2)
+	gsw3d_upload_test_process_descriptor(&g, ram[:], descriptor[:])
+	testing.expect_value(t, g.three_d.ring_head, u32(0))
+	testing.expect_value(t, g.three_d.error, Gsw3d_Error.Invalid_Resource)
+	gsw_test_wr32(descriptor[:], 40, 0)
+	gsw_test_wr32(descriptor[:], 48, 640)
+	gsw_test_wr32(descriptor[:], 48, 641)
+	gsw3d_upload_test_process_descriptor(&g, ram[:], descriptor[:])
+	testing.expect_value(t, g.three_d.ring_head, u32(0))
+	testing.expect_value(t, g.three_d.error, Gsw3d_Error.Invalid_Resource)
+	gsw_test_wr32(descriptor[:], 48, 640)
 
 	gsw_test_wr32(descriptor[:], 56, 1)
 	gsw3d_upload_test_process_descriptor(&g, ram[:], descriptor[:])

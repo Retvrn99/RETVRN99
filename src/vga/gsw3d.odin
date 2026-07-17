@@ -106,7 +106,8 @@ Gsw3d_Work :: struct {
 
 Gsw3d_Execute_Proc :: proc(ctx: rawptr, work: ^Gsw3d_Work) -> bool
 Gsw3d_Upload_Proc :: proc(ctx: rawptr, work: ^Gsw3d_Work) -> bool
-Gsw3d_Reset_Proc :: proc(ctx: rawptr) -> bool
+Gsw3d_Reset_Proc :: proc(ctx: rawptr, generation: u64) -> bool
+Gsw3d_Cancel_Proc :: proc(ctx: rawptr, generation: u64, stopping: bool)
 Gsw3d_Validate_Svga9_Proc :: proc(ctx: rawptr, batch: []u8) -> bool
 Gsw3d_Resource_Size_Proc :: proc(ctx: rawptr, format, width, height, depth: u32) -> (u64, bool)
 
@@ -119,6 +120,7 @@ Gsw3d_Backend :: struct {
 	execute:           Gsw3d_Execute_Proc,
 	upload:            Gsw3d_Upload_Proc,
 	reset:             Gsw3d_Reset_Proc,
+	cancel:            Gsw3d_Cancel_Proc,
 }
 
 Gsw3d_Region :: struct {
@@ -133,10 +135,23 @@ Gsw3d_Context :: struct {
 	id:   u32,
 }
 
+Gsw3d_Resource_Kind :: enum u8 {
+	Unknown,
+	Surface,
+	Buffer,
+}
+
 Gsw3d_Resource :: struct {
-	live: bool,
-	id:   u32,
-	size: u64,
+	live:       bool,
+	id:         u32,
+	kind:       Gsw3d_Resource_Kind,
+	flags:      u32,
+	format:     u32,
+	width:      u32,
+	height:     u32,
+	depth:      u32,
+	mip_levels: u32,
+	size:       u64,
 }
 
 Gsw3d_Metrics :: struct {
@@ -239,7 +254,7 @@ gsw3d_worker_proc :: proc(d: ^Gsw3d) {
 		case .Transport_Barrier:
 			ok = true
 		case .Reset:
-			ok = d.backend.reset != nil && d.backend.reset(d.backend.ctx)
+			ok = d.backend.reset != nil && d.backend.reset(d.backend.ctx, work.generation)
 		case .Create_Context, .Destroy_Context, .Submit_Svga9, .Direct_Present:
 			ok = d.backend.execute != nil && d.backend.execute(d.backend.ctx, work)
 		case .Resource_Upload:
@@ -277,6 +292,7 @@ gsw3d_attach_backend :: proc(d: ^Gsw3d, backend: Gsw3d_Backend) -> bool {
 	if d == nil ||
 	   backend.execute == nil ||
 	   backend.reset == nil ||
+	   backend.cancel == nil ||
 	   backend.validate_svga9 == nil ||
 	   backend.capabilities & GSW3D_BACKEND_SVGA9 == 0 ||
 	   upload_supported != (backend.upload != nil && backend.resource_size != nil) ||
@@ -328,6 +344,7 @@ gsw3d_reset :: proc(d: ^Gsw3d) {
 	reset_work: ^Gsw3d_Work
 	if d.worker != nil {reset_work = gsw3d_work_new(d, .Reset, 0, 0)}
 	sync.lock(&d.mu)
+	old_generation := d.generation
 	d.generation += 1
 	if d.generation == 0 {d.generation = 1}
 	gsw3d_cancel_queued(d)
@@ -339,12 +356,25 @@ gsw3d_reset :: proc(d: ^Gsw3d) {
 	d.reset_pending = reset_work != nil
 	if reset_work != nil {
 		reset_work.generation = d.generation
-		d.queue[d.queue_tail] = reset_work
-		d.queue_tail = (d.queue_tail + 1) % GSW3D_MAX_QUEUED_WORK
-		d.queue_count += 1
 	}
 	sync.unlock(&d.mu)
-	if reset_work != nil {sync.cond_signal(&d.work_ready)}
+	if reset_work != nil {
+		d.backend.cancel(d.backend.ctx, old_generation, false)
+		queued := false
+		sync.lock(&d.mu)
+		if !d.stopping && reset_work.generation == d.generation {
+			d.queue[d.queue_tail] = reset_work
+			d.queue_tail = (d.queue_tail + 1) % GSW3D_MAX_QUEUED_WORK
+			d.queue_count += 1
+			queued = true
+		}
+		sync.unlock(&d.mu)
+		if queued {
+			sync.cond_signal(&d.work_ready)
+		} else {
+			gsw3d_work_free(d, reset_work)
+		}
+	}
 	for &region in d.regions {region = {}}
 	for &entry in d.contexts {entry = {}}
 	for &resource in d.resources {resource = {}}
@@ -359,9 +389,13 @@ gsw3d_destroy :: proc(d: ^Gsw3d) {
 	if d == nil {return}
 	if d.worker != nil {
 		sync.lock(&d.mu)
+		old_generation := d.generation
+		d.generation += 1
+		if d.generation == 0 {d.generation = 1}
 		d.stopping = true
 		gsw3d_cancel_queued(d)
 		sync.unlock(&d.mu)
+		d.backend.cancel(d.backend.ctx, old_generation, true)
 		sync.cond_broadcast(&d.work_ready)
 		thread.destroy(d.worker)
 	}
@@ -578,22 +612,36 @@ gsw3d_validate_svga9_batch :: proc(batch: []u8, context_id: u32 = 0) -> bool {
 }
 
 @(private = "file")
-gsw3d_defined_resource_size :: proc(backend: ^Gsw3d_Backend, body: []u8) -> (u64, bool) {
-	if backend.resource_size == nil {return 0, true}
+gsw3d_defined_resource :: proc(backend: ^Gsw3d_Backend, body: []u8) -> (Gsw3d_Resource, bool) {
+	resource := Gsw3d_Resource {
+		live       = true,
+		id         = gsw_rd32(body, 0),
+		flags      = gsw_rd32(body, 4),
+		format     = gsw_rd32(body, 8),
+		width      = gsw_rd32(body, 44),
+		height     = gsw_rd32(body, 48),
+		depth      = gsw_rd32(body, 52),
+		mip_levels = 0,
+	}
+	resource.kind = resource.format == 37 ? .Buffer : .Surface
 	format := gsw_rd32(body, 8)
 	levels: u32
 	for face in 0 ..< 6 {levels += gsw_rd32(body, 12 + face * 4)}
+	resource.mip_levels = levels
 	total: u64
 	for level in 0 ..< int(levels) {
 		offset := 44 + level * 12
 		width := gsw_rd32(body, offset)
 		height := gsw_rd32(body, offset + 4)
 		depth := gsw_rd32(body, offset + 8)
+		if width == 0 || height == 0 || depth == 0 {return {}, false}
+		if backend.resource_size == nil {continue}
 		size, ok := backend.resource_size(backend.ctx, format, width, height, depth)
-		if !ok || size == 0 || total > ~u64(0) - size {return 0, false}
+		if !ok || size == 0 || total > ~u64(0) - size {return {}, false}
 		total += size
 	}
-	return total, total != 0
+	resource.size = total
+	return resource, backend.resource_size == nil || total != 0
 }
 
 @(private = "file")
@@ -616,16 +664,12 @@ gsw3d_apply_resource_lifetimes :: proc(
 			if resource == nil {return false}
 			resource^ = {}
 		case 1070:
-			resource_size, ok := gsw3d_defined_resource_size(backend, body)
+			definition, ok := gsw3d_defined_resource(backend, body)
 			if !ok {return false}
 			resource := gsw3d_find_resource_in(resources, resource_id)
 			if resource == nil {resource = gsw3d_free_resource_in(resources)}
 			if resource == nil {return false}
-			resource^ = {
-				live = true,
-				id   = resource_id,
-				size = resource_size,
-			}
+			resource^ = definition
 		}
 		offset += 8 + body_size
 	}
@@ -849,7 +893,18 @@ gsw3d_execute_descriptor :: proc(d: ^Gsw3d, descriptor, ram: []u8) -> Gsw3d_Exec
 			height = gsw_rd32(descriptor, 52),
 		}
 		work.interval = gsw_rd32(descriptor, 56)
-		if work.surface_id == 0 || gsw3d_find_resource(d, work.surface_id) == nil {
+		resource := gsw3d_find_resource(d, work.surface_id)
+		if work.surface_id == 0 ||
+		   resource == nil ||
+		   resource.kind != .Surface ||
+		   work.source.x > resource.width ||
+		   work.source.y > resource.height ||
+		   work.source.width > resource.width - work.source.x ||
+		   work.source.height > resource.height - work.source.y ||
+		   work.destination.x > resource.width ||
+		   work.destination.y > resource.height ||
+		   work.destination.width > resource.width - work.destination.x ||
+		   work.destination.height > resource.height - work.destination.y {
 			d.error = .Invalid_Resource
 			gsw3d_work_free(d, work)
 			return .Invalid
@@ -858,6 +913,8 @@ gsw3d_execute_descriptor :: proc(d: ^Gsw3d, descriptor, ram: []u8) -> Gsw3d_Exec
 		   work.source.height == 0 ||
 		   work.destination.width == 0 ||
 		   work.destination.height == 0 ||
+		   work.destination.x > ~u32(0) - work.destination.width ||
+		   work.destination.y > ~u32(0) - work.destination.height ||
 		   work.interval > GSW3D_PRESENT_INTERVAL_MAX ||
 		   d.backend.present_intervals & (u32(1) << work.interval) == 0 {
 			gsw3d_work_free(d, work)

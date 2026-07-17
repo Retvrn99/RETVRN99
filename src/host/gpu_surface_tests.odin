@@ -130,3 +130,27 @@ host_gpu_surface_test_present_selects_resident_texture_without_readback :: proc(
 	testing.expect_value(t, source, sdl3.FRect{0, 0, 1024, 768})
 	testing.expect(t, selected != nil)
 }
+
+@(test)
+host_gpu_surface_test_new_legacy_frame_takes_display_ownership :: proc(t: ^testing.T) {
+	h: Host
+	h.gpu_present = {
+		surface_id    = 23,
+		source        = {0, 0, 1024, 768},
+		destination   = {0, 0, 1024, 768},
+		canvas_width  = 1024,
+		canvas_height = 768,
+		interval      = HOST_GPU_PRESENT_INTERVAL,
+	}
+	h.aspect_width = 1024
+	h.aspect_height = 768
+	host_cpu_frame_metadata_publish(&h, 4, 3)
+	testing.expect_value(t, h.gpu_present.surface_id, u32(0))
+	testing.expect_value(t, h.aspect_width, 4)
+	testing.expect_value(t, h.aspect_height, 3)
+	testing.expect(t, h.has_frame)
+
+	host_clear_frame(&h)
+	testing.expect_value(t, h.gpu_present.surface_id, u32(0))
+	testing.expect(t, !h.has_frame)
+}
