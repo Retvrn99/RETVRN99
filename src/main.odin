@@ -140,6 +140,8 @@ run_main :: proc() -> int {
 	seconds_explicit := false
 	start_requested := false
 	gsw3d_proof := false
+	quick_install_dev := false
+	quick_install_builder := ""
 	acceptance_options, acceptance_diagnostic := acceptance.options_parse(os.args[1:])
 	if acceptance_diagnostic != .None {
 		fmt.eprintfln("acceptance option error: %v", acceptance_diagnostic)
@@ -150,6 +152,7 @@ run_main :: proc() -> int {
 		if a == "--console" {console = true}
 		if a == "--start" {start_requested = true}
 		if a == "--gsw3d-proof" {gsw3d_proof = true}
+		if a == "--quickinstall-dev" {quick_install_dev = true}
 		if a == "--no-disk" {attach = false}
 		if strings.has_prefix(a, "--auto-close:") {
 			auto_close, _ = strconv.parse_int(a[len("--auto-close:"):])
@@ -169,6 +172,10 @@ run_main :: proc() -> int {
 		}
 		if strings.has_prefix(a, "--frame-dump:") {
 			frame_dump_path = a[len("--frame-dump:"):]
+		}
+		if strings.has_prefix(a, "--quickinstall-builder:") {
+			quick_install_builder = a[len("--quickinstall-builder:"):]
+			quick_install_dev = true
 		}
 	}
 	if acceptance_options.accept_until == .Hardware_Detection && !seconds_explicit {
@@ -312,6 +319,8 @@ run_main :: proc() -> int {
 		acceptance_options.firmware_log_all,
 		start_requested,
 		gsw3d_proof,
+		quick_install_dev,
+		quick_install_builder,
 	)
 }
 
@@ -327,6 +336,8 @@ gui_main :: proc(
 	firmware_log_all: bool,
 	start_requested: bool,
 	gsw3d_proof: bool,
+	quick_install_dev: bool,
+	quick_install_builder: string,
 ) -> (
 	result: int,
 ) {
@@ -506,6 +517,7 @@ gui_main :: proc(
 		visual_shader     = h.visual_shader,
 		shaders_available = h.shader_state != nil,
 		hard_drive_path   = active_settings.hard_drive_path,
+		quick_install_enabled = quick_install_dev,
 	}
 	floppy_activity_light: host.Activity_Light_State
 	hard_drive_activity_light: host.Activity_Light_State
@@ -520,7 +532,10 @@ gui_main :: proc(
 	create_worker.allocator = context.allocator
 	defer hard_drive_create_worker_destroy(&create_worker)
 	guided_install: Guided_Install_Model
+	quick_install: Quick_Install_Model
+	defer quick_install_destroy(&quick_install)
 	install_resume_after_create := false
+	quick_install_resume_after_create := false
 	hard_drive_controller: Hard_Drive_Controller
 	hard_drive_controller_init(&hard_drive_controller)
 	dropped_paths := make([dynamic]string)
@@ -746,7 +761,9 @@ gui_main :: proc(
 				if gui_storage_dispatch_allowed(
 					drop_machine_running,
 					drop_install_active,
-					guided_install.phase != .Closed || create_model.visible,
+					guided_install.phase != .Closed ||
+					quick_install.visible ||
+					create_model.visible,
 				) {
 					_ = hard_drive_controller_handle(
 						&hard_drive_controller,
@@ -786,6 +803,7 @@ gui_main :: proc(
 				} else if dialog_result.accepted && len(dialog_result.paths) == 1 {
 					blocked :=
 						guided_install.phase != .Closed ||
+						quick_install.visible ||
 						create_model.visible ||
 						hard_drive_controller_is_open(&hard_drive_controller)
 					if !gui_storage_dispatch_allowed(
@@ -814,6 +832,7 @@ gui_main :: proc(
 			case .Create_Image_Path:
 				blocked :=
 					guided_install.phase != .Closed ||
+					quick_install.visible ||
 					hard_drive_controller_is_open(&hard_drive_controller)
 				if dialog_result.failed {
 					vm_log(
@@ -846,7 +865,10 @@ gui_main :: proc(
 					)
 				}
 			case .Import_Files, .Import_Folder, .Export_Entry:
-				blocked := guided_install.phase != .Closed || create_model.visible
+				blocked :=
+					guided_install.phase != .Closed ||
+					quick_install.visible ||
+					create_model.visible
 				if dialog_result.failed {
 					vm_log(
 						shared,
@@ -883,6 +905,21 @@ gui_main :: proc(
 					_ = action
 				} else {
 					guided_install_dialog_cancel(&guided_install)
+				}
+			case .Quick_Install_ISO:
+				blocked :=
+					create_model.visible || hard_drive_controller_is_open(&hard_drive_controller)
+				allowed := gui_storage_dispatch_allowed(
+					storage_machine_running,
+					storage_install_active,
+					blocked,
+				)
+				if dialog_result.failed {
+					quick_install_dialog_error(&quick_install, dialog_result.diagnostic)
+				} else if allowed && dialog_result.accepted && len(dialog_result.paths) == 1 {
+					quick_install_accept_iso(&quick_install, dialog_result.paths[0])
+				} else if !allowed {
+					quick_install_destroy(&quick_install)
 				}
 			case .Install_Boot_Floppy:
 				blocked :=
@@ -971,6 +1008,7 @@ gui_main :: proc(
 		st.machine_running = machine_running
 		st.storage_actions_blocked =
 			guided_install.phase != .Closed ||
+			quick_install.visible ||
 			create_model.visible ||
 			pending_hard_drive_dialog_active(hard_drive_dialog_pending)
 		st.window_scale = h.window_scale
@@ -1095,6 +1133,20 @@ gui_main :: proc(
 			} else {
 				_ = guided_install_open(&guided_install, active_settings.hard_drive_path)
 			}
+		case .Quick_Install_Windows_98:
+			if !host.menu_action_enabled(&st, .Quick_Install_Windows_98) ||
+			   hard_drive_controller_is_open(&hard_drive_controller) {
+				break
+			} else if st.hard_drive_status != .Ready || active_settings.hard_drive_path == "" {
+				quick_install_resume_after_create = true
+				_ = host.hard_drive_create_open(&create_model, paths.default_image)
+			} else {
+				_ = quick_install_open(
+					&quick_install,
+					active_settings.hard_drive_path,
+					quick_install_builder,
+				)
+			}
 		case .Abandon_Windows_98_Installation:
 			push_cmd(shared, Command{kind = .Abandon_Windows_98_Installation})
 		case .Set_Cpu_Mode:
@@ -1142,6 +1194,7 @@ gui_main :: proc(
 			create_machine_running, create_install_active := gui_storage_lifecycle_snapshot(shared)
 			if worker_result.cancelled {
 				install_resume_after_create = false
+				quick_install_resume_after_create = false
 				host.hard_drive_create_accept_result(
 					&create_model,
 					{kind = .Cancelled, diagnostic = "Hard-drive creation was cancelled."},
@@ -1169,6 +1222,7 @@ gui_main :: proc(
 			} else if create_machine_running || create_install_active {
 				fat32session.image_info_destroy(&worker_result.info)
 				install_resume_after_create = false
+				quick_install_resume_after_create = false
 				host.hard_drive_create_accept_result(
 					&create_model,
 					{
@@ -1191,6 +1245,13 @@ gui_main :: proc(
 					if install_resume_after_create {
 						install_resume_after_create = false
 						_ = guided_install_open(&guided_install, active_settings.hard_drive_path)
+					} else if quick_install_resume_after_create {
+						quick_install_resume_after_create = false
+						_ = quick_install_open(
+							&quick_install,
+							active_settings.hard_drive_path,
+							quick_install_builder,
+						)
 					}
 				} else {
 					host.hard_drive_create_accept_result(
@@ -1205,10 +1266,14 @@ gui_main :: proc(
 		}
 		create_was_visible := create_model.visible
 		create_action := host.hard_drive_create_draw(&create_model)
-		if create_was_visible && !create_model.visible {install_resume_after_create = false}
+		if create_was_visible && !create_model.visible {
+			install_resume_after_create = false
+			quick_install_resume_after_create = false
+		}
 		storage_machine_running, storage_install_active := gui_storage_lifecycle_snapshot(shared)
 		create_blocked :=
 			guided_install.phase != .Closed ||
+			quick_install.visible ||
 			hard_drive_controller_is_open(&hard_drive_controller)
 		if create_action.kind == .Request_Native_Dialog {
 			if gui_storage_dispatch_allowed(
@@ -1258,6 +1323,13 @@ gui_main :: proc(
 				if install_resume_after_create {
 					install_resume_after_create = false
 					_ = guided_install_open(&guided_install, active_settings.hard_drive_path)
+				} else if quick_install_resume_after_create {
+					quick_install_resume_after_create = false
+					_ = quick_install_open(
+						&quick_install,
+						active_settings.hard_drive_path,
+						quick_install_builder,
+					)
 				}
 			} else {
 				host.hard_drive_create_accept_result(
@@ -1311,7 +1383,8 @@ gui_main :: proc(
 			&h.storage_icons,
 		)
 		storage_machine_running, storage_install_active = gui_storage_lifecycle_snapshot(shared)
-		browser_blocked := guided_install.phase != .Closed || create_model.visible
+		browser_blocked :=
+			guided_install.phase != .Closed || quick_install.visible || create_model.visible
 		if browser_action.kind == .Cancel_Close {
 			exit_requested = false
 		} else if browser_action.kind == .Request_Native_Dialog {
@@ -1406,6 +1479,30 @@ gui_main :: proc(
 			guided_install_destroy(&guided_install)
 		case .None:
 		}
+		quick_action := quick_install_draw(&quick_install)
+		quick_action_allowed := gui_storage_dispatch_allowed(
+			storage_machine_running,
+			storage_install_active,
+			create_model.visible || hard_drive_controller_is_open(&hard_drive_controller),
+		)
+		switch quick_action.kind {
+		case .Request_ISO:
+			if quick_action_allowed {
+				if !pending_hard_drive_dialog_show(
+					hard_drive_dialog_pending,
+					h.win,
+					quick_install_iso_dialog(),
+				) {
+					quick_install_dialog_error(
+						&quick_install,
+						"Another file dialog is already open.",
+					)
+				}
+			}
+		case .Close:
+			quick_install_destroy(&quick_install)
+		case .None:
+		}
 		imgui.Render()
 		imgui_impl_sdlrenderer3.RenderDrawData(imgui.GetDrawData(), h.ren)
 		sdl3.RenderPresent(h.ren)
@@ -1475,6 +1572,7 @@ install_state_save_value :: proc(
 install_state_clone :: proc(state: ^profile.Install_State) -> profile.Install_State {
 	if state == nil {return {}}
 	return profile.Install_State {
+		backend = state.backend,
 		phase = state.phase,
 		milestone = state.milestone,
 		source_path = strings.clone(state.source_path),
@@ -1485,6 +1583,12 @@ install_state_clone :: proc(state: ^profile.Install_State) -> profile.Install_St
 		saved_cmos_valid = state.saved_cmos_valid,
 		saved_cmos_38 = state.saved_cmos_38,
 		saved_cmos_3d = state.saved_cmos_3d,
+		builder_version = strings.clone(state.builder_version),
+		builder_protocol = state.builder_protocol,
+		install_profile = strings.clone(state.install_profile),
+		source_fingerprint = strings.clone(state.source_fingerprint),
+		pack_hash = strings.clone(state.pack_hash),
+		update_recipe_set = strings.clone(state.update_recipe_set),
 	}
 }
 

@@ -8,18 +8,31 @@ import "core:path/filepath"
 import "core:slice"
 import "core:strings"
 
-INSTALL_STATE_VERSION :: 4
+INSTALL_STATE_VERSION :: 5
+INSTALL_STATE_VERSION_V4 :: 4
 INSTALL_STATE_VERSION_V3 :: 3
 INSTALL_STATE_VERSION_V2 :: 2
 INSTALL_STATE_VERSION_V1 :: 1
 
 Install_Image_Identity :: [16]u8
 
+Install_Backend :: enum {
+	Legacy_Setup,
+	Local_Pack,
+}
+
 Install_Phase :: enum {
 	None,
 	Preparing,
 	Launch_Pending,
 	Setup_Running,
+	Downloading,
+	Compiling,
+	Importing,
+	DOS_Finalizing,
+	First_Windows_Boot,
+	Applying_Updates,
+	Desktop_Validation,
 }
 
 Install_Milestone :: enum {
@@ -30,6 +43,7 @@ Install_Milestone :: enum {
 }
 
 Install_State :: struct {
+	backend:             Install_Backend,
 	phase:               Install_Phase,
 	milestone:           Install_Milestone,
 	source_path:         string,
@@ -40,6 +54,12 @@ Install_State :: struct {
 	saved_cmos_valid:    bool,
 	saved_cmos_38:       u8,
 	saved_cmos_3d:       u8,
+	builder_version:     string,
+	builder_protocol:    u32,
+	install_profile:     string,
+	source_fingerprint:  string,
+	pack_hash:           string,
+	update_recipe_set:   string,
 }
 
 Install_State_Diagnostic :: enum {
@@ -50,6 +70,7 @@ Install_State_Diagnostic :: enum {
 	Unsupported_Version,
 	Unknown_Phase,
 	Unknown_Milestone,
+	Unknown_Backend,
 	Invalid_State,
 	Unbound_Active,
 	Invalid_Image_Path,
@@ -174,7 +195,10 @@ install_state_milestone_reached :: proc(
 	state: ^Install_State,
 	milestone: Install_Milestone,
 ) -> bool {
-	if state == nil || state.phase != .Setup_Running || milestone == .None {return false}
+	if state == nil ||
+	   state.backend != .Legacy_Setup ||
+	   state.phase != .Setup_Running ||
+	   milestone == .None {return false}
 	normalized := install_state_normalized_milestone(state)
 	if _, known := install_milestone_serialize(normalized); !known {return false}
 	return int(normalized) >= int(milestone)
@@ -184,10 +208,19 @@ install_state_advance_milestone :: proc(
 	state: ^Install_State,
 	milestone: Install_Milestone,
 ) -> bool {
-	if state == nil || state.phase != .Setup_Running || milestone == .None {return false}
+	if state == nil ||
+	   state.backend != .Legacy_Setup ||
+	   state.phase != .Setup_Running ||
+	   milestone == .None {return false}
 	if _, known := install_milestone_serialize(milestone); !known {return false}
 	if int(milestone) < int(state.milestone) {return false}
-	if !install_state_fields_valid(state.phase, milestone, state.source_path, state.reset_count) {
+	if !install_state_fields_valid(
+		state.backend,
+		state.phase,
+		milestone,
+		state.source_path,
+		state.reset_count,
+	) {
 		return false
 	}
 	state.milestone = milestone
@@ -198,6 +231,11 @@ install_state_destroy :: proc(state: ^Install_State, allocator := context.alloca
 	if state == nil {return}
 	delete(state.source_path, allocator)
 	delete(state.image_path, allocator)
+	delete(state.builder_version, allocator)
+	delete(state.install_profile, allocator)
+	delete(state.source_fingerprint, allocator)
+	delete(state.pack_hash, allocator)
+	delete(state.update_recipe_set, allocator)
 	state^ = {}
 }
 
@@ -213,12 +251,19 @@ install_state_load :: proc(path: string) -> (Install_State, Install_State_Diagno
 	defer {
 		delete(disk.phase)
 		delete(disk.milestone)
+		delete(disk.backend)
 		delete(disk.source_path)
 		delete(disk.image_path)
 		delete(disk.image_identity)
+		delete(disk.builder_version)
+		delete(disk.install_profile)
+		delete(disk.source_fingerprint)
+		delete(disk.pack_hash)
+		delete(disk.update_recipe_set)
 	}
 	if jerr := json.unmarshal(data, &disk); jerr != nil {return {}, .Malformed}
 	if disk.version != INSTALL_STATE_VERSION &&
+	   disk.version != INSTALL_STATE_VERSION_V4 &&
 	   disk.version != INSTALL_STATE_VERSION_V3 &&
 	   disk.version != INSTALL_STATE_VERSION_V2 &&
 	   disk.version != INSTALL_STATE_VERSION_V1 {
@@ -227,13 +272,20 @@ install_state_load :: proc(path: string) -> (Install_State, Install_State_Diagno
 	phase, known := install_phase_parse(disk.phase)
 	if !known {return {}, .Unknown_Phase}
 	milestone: Install_Milestone
-	if disk.version == INSTALL_STATE_VERSION || disk.version == INSTALL_STATE_VERSION_V3 {
+	if disk.version == INSTALL_STATE_VERSION ||
+	   disk.version == INSTALL_STATE_VERSION_V4 ||
+	   disk.version == INSTALL_STATE_VERSION_V3 {
 		milestone, known = install_milestone_parse(disk.milestone)
 		if !known {return {}, .Unknown_Milestone}
 	} else {
 		milestone = install_state_legacy_milestone(phase, disk.reset_count)
 	}
-	if !install_state_fields_valid(phase, milestone, disk.source_path, disk.reset_count) {
+	backend := Install_Backend.Legacy_Setup
+	if disk.version == INSTALL_STATE_VERSION {
+		backend, known = install_backend_parse(disk.backend)
+		if !known {return {}, .Unknown_Backend}
+	}
+	if !install_state_fields_valid(backend, phase, milestone, disk.source_path, disk.reset_count) {
 		return {}, .Invalid_State
 	}
 	saved_cmos_valid := disk.saved_cmos_valid
@@ -241,15 +293,26 @@ install_state_load :: proc(path: string) -> (Install_State, Install_State_Diagno
 		saved_cmos_valid = disk.saved_cmos_38 != 0 || disk.saved_cmos_3d != 0
 	}
 	state := Install_State {
-		phase            = phase,
-		milestone        = milestone,
-		source_path      = strings.clone(disk.source_path),
-		reset_count      = disk.reset_count,
-		saved_cmos_valid = saved_cmos_valid,
-		saved_cmos_38    = disk.saved_cmos_38,
-		saved_cmos_3d    = disk.saved_cmos_3d,
+		backend            = backend,
+		phase              = phase,
+		milestone          = milestone,
+		source_path        = strings.clone(disk.source_path),
+		reset_count        = disk.reset_count,
+		saved_cmos_valid   = saved_cmos_valid,
+		saved_cmos_38      = disk.saved_cmos_38,
+		saved_cmos_3d      = disk.saved_cmos_3d,
+		builder_version    = strings.clone(disk.builder_version),
+		builder_protocol   = disk.builder_protocol,
+		install_profile    = strings.clone(disk.install_profile),
+		source_fingerprint = strings.clone(disk.source_fingerprint),
+		pack_hash          = strings.clone(disk.pack_hash),
+		update_recipe_set  = strings.clone(disk.update_recipe_set),
 	}
-	if disk.version != INSTALL_STATE_VERSION {
+	if !install_state_metadata_valid(&state) {
+		install_state_destroy(&state)
+		return {}, .Invalid_State
+	}
+	if disk.version != INSTALL_STATE_VERSION && disk.version != INSTALL_STATE_VERSION_V4 {
 		if install_state_active(&state) {
 			install_state_destroy(&state)
 			return {}, .Unbound_Active
@@ -299,7 +362,14 @@ install_state_save :: proc(path: string, state: ^Install_State) -> Install_State
 	milestone := install_state_normalized_milestone(state)
 	milestone_name, milestone_known := install_milestone_serialize(milestone)
 	if !milestone_known {return .Unknown_Milestone}
-	if !install_state_fields_valid(state.phase, milestone, state.source_path, state.reset_count) {
+	if !install_state_fields_valid(
+		   state.backend,
+		   state.phase,
+		   milestone,
+		   state.source_path,
+		   state.reset_count,
+	   ) ||
+	   !install_state_metadata_valid(state) {
 		return .Invalid_State
 	}
 	binding_present :=
@@ -322,12 +392,19 @@ install_state_save :: proc(path: string, state: ^Install_State) -> Install_State
 	}
 	disk := Disk_Install_State {
 		version             = INSTALL_STATE_VERSION,
+		backend             = install_backend_serialize(state.backend),
 		phase               = phase,
 		milestone           = milestone_name,
 		source_path         = state.source_path,
 		image_path          = normalized_path,
 		image_identity      = identity_text,
 		edit_transaction_id = state.edit_transaction_id,
+		builder_version     = state.builder_version,
+		builder_protocol    = state.builder_protocol,
+		install_profile     = state.install_profile,
+		source_fingerprint  = state.source_fingerprint,
+		pack_hash           = state.pack_hash,
+		update_recipe_set   = state.update_recipe_set,
 		reset_count         = state.reset_count,
 		saved_cmos_valid    = state.saved_cmos_valid,
 		saved_cmos_38       = state.saved_cmos_38,
@@ -400,6 +477,7 @@ install_state_abandon_invalid :: proc(
 @(private)
 Disk_Install_State :: struct {
 	version:             int `json:"version"`,
+	backend:             string `json:"backend"`,
 	phase:               string `json:"phase"`,
 	milestone:           string `json:"milestone"`,
 	source_path:         string `json:"source_path"`,
@@ -410,6 +488,12 @@ Disk_Install_State :: struct {
 	image_path:          string `json:"image_path"`,
 	image_identity:      string `json:"image_identity"`,
 	edit_transaction_id: u64 `json:"edit_transaction_id"`,
+	builder_version:     string `json:"builder_version"`,
+	builder_protocol:    u32 `json:"builder_protocol"`,
+	install_profile:     string `json:"install_profile"`,
+	source_fingerprint:  string `json:"source_fingerprint"`,
+	pack_hash:           string `json:"pack_hash"`,
+	update_recipe_set:   string `json:"update_recipe_set"`,
 }
 
 @(private = "file")
@@ -489,7 +573,7 @@ install_state_legacy_milestone :: proc(
 @(private = "file")
 install_state_normalized_milestone :: proc(state: ^Install_State) -> Install_Milestone {
 	if state == nil {return .None}
-	if state.phase == .Setup_Running {
+	if state.backend == .Legacy_Setup && state.phase == .Setup_Running {
 		inferred := install_state_legacy_milestone(state.phase, state.reset_count)
 		if int(state.milestone) < int(inferred) {return inferred}
 	}
@@ -498,12 +582,28 @@ install_state_normalized_milestone :: proc(state: ^Install_State) -> Install_Mil
 
 @(private = "file")
 install_state_fields_valid :: proc(
+	backend: Install_Backend,
 	phase: Install_Phase,
 	milestone: Install_Milestone,
 	source_path: string,
 	reset_count: u32,
 ) -> bool {
-	switch phase {
+	if backend == .Local_Pack {
+		if source_path == "" || milestone != .None {return false}
+		#partial switch phase {
+		case .Downloading,
+		     .Compiling,
+		     .Importing,
+		     .DOS_Finalizing,
+		     .First_Windows_Boot,
+		     .Applying_Updates,
+		     .Desktop_Validation:
+			return true
+		}
+		return false
+	}
+	if backend != .Legacy_Setup {return false}
+	#partial switch phase {
 	case .None:
 		return milestone == .None && source_path == "" && reset_count == 0
 	case .Preparing, .Launch_Pending:
@@ -518,6 +618,64 @@ install_state_fields_valid :: proc(
 }
 
 @(private = "file")
+install_state_metadata_valid :: proc(state: ^Install_State) -> bool {
+	if state == nil {return false}
+	if state.backend == .Legacy_Setup {
+		return(
+			state.builder_version == "" &&
+			state.builder_protocol == 0 &&
+			state.install_profile == "" &&
+			state.source_fingerprint == "" &&
+			state.pack_hash == "" &&
+			state.update_recipe_set == "" \
+		)
+	}
+	if state.backend != .Local_Pack {return false}
+	if state.builder_version == "" ||
+	   state.builder_protocol == 0 ||
+	   (state.install_profile != "normal" && state.install_profile != "minimal") ||
+	   !install_sha256_lower_valid(state.source_fingerprint) ||
+	   state.update_recipe_set == "" {
+		return false
+	}
+	if state.phase == .Downloading || state.phase == .Compiling {
+		return state.pack_hash == ""
+	}
+	return install_sha256_lower_valid(state.pack_hash)
+}
+
+@(private = "file")
+install_sha256_lower_valid :: proc(value: string) -> bool {
+	if len(value) != 64 {return false}
+	for octet in value {
+		if _, valid := install_hex_lower_value(u8(octet)); !valid {return false}
+	}
+	return true
+}
+
+@(private = "file")
+install_backend_parse :: proc(name: string) -> (Install_Backend, bool) {
+	switch name {
+	case "legacy_setup":
+		return .Legacy_Setup, true
+	case "local_pack":
+		return .Local_Pack, true
+	}
+	return .Legacy_Setup, false
+}
+
+@(private = "file")
+install_backend_serialize :: proc(backend: Install_Backend) -> string {
+	switch backend {
+	case .Legacy_Setup:
+		return "legacy_setup"
+	case .Local_Pack:
+		return "local_pack"
+	}
+	return ""
+}
+
+@(private = "file")
 install_phase_parse :: proc(name: string) -> (Install_Phase, bool) {
 	switch name {
 	case "none":
@@ -528,6 +686,20 @@ install_phase_parse :: proc(name: string) -> (Install_Phase, bool) {
 		return .Launch_Pending, true
 	case "setup_running":
 		return .Setup_Running, true
+	case "downloading":
+		return .Downloading, true
+	case "compiling":
+		return .Compiling, true
+	case "importing":
+		return .Importing, true
+	case "dos_finalizing":
+		return .DOS_Finalizing, true
+	case "first_windows_boot":
+		return .First_Windows_Boot, true
+	case "applying_updates":
+		return .Applying_Updates, true
+	case "desktop_validation":
+		return .Desktop_Validation, true
 	}
 	return .None, false
 }
@@ -543,6 +715,20 @@ install_phase_serialize :: proc(phase: Install_Phase) -> (string, bool) {
 		return "launch_pending", true
 	case .Setup_Running:
 		return "setup_running", true
+	case .Downloading:
+		return "downloading", true
+	case .Compiling:
+		return "compiling", true
+	case .Importing:
+		return "importing", true
+	case .DOS_Finalizing:
+		return "dos_finalizing", true
+	case .First_Windows_Boot:
+		return "first_windows_boot", true
+	case .Applying_Updates:
+		return "applying_updates", true
+	case .Desktop_Validation:
+		return "desktop_validation", true
 	}
 	return "", false
 }

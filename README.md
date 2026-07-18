@@ -262,6 +262,14 @@ one implicitly.
 Media, installed images, registry exports, traces, and screenshots belong in
 ignored scratch directories and must not be committed.
 
+The replacement image compiler is exposed only for development with
+`--quickinstall-dev`. This adds **Tools > Quick Install Windows 98 SE
+(Experimental)...** without changing the existing guided installer or its
+default status. `--quickinstall-builder:<absolute-path>` selects an explicit
+local compiler build and also enables the menu. Phase 0 remains fail-closed:
+the dialog collects the source ISO, profile, and syntax-checked product key,
+but cannot modify a disk until the clean-room Setup/registry gate passes.
+
 ## License
 
 GPL-3.0-only.

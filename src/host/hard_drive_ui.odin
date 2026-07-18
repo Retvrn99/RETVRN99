@@ -43,6 +43,7 @@ Hard_Drive_Dialog_Purpose :: enum {
 	Import_Folder,
 	Export_Entry,
 	Install_ISO,
+	Quick_Install_ISO,
 	Install_Boot_Floppy,
 }
 
@@ -742,7 +743,8 @@ hard_drive_browser_accept_dialog :: proc(
 			entry_id = row.id,
 			recursive = row.kind == .Directory,
 		}
-	case .None, .Select_Image, .Create_Image_Path, .Install_ISO, .Install_Boot_Floppy:
+	case .None, .Select_Image, .Create_Image_Path, .Install_ISO, .Quick_Install_ISO,
+	     .Install_Boot_Floppy:
 	}
 	return {}
 }

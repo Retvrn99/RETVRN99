@@ -209,6 +209,9 @@ host_test_welcome_recovery_and_tools_visibility_models_are_exact :: proc(t: ^tes
 	testing.expect_value(t, menu_center_panel(&st), Menu_Center_Panel.None)
 
 	st.machine_running = false
+	testing.expect(t, !menu_action_visible(&st, .Quick_Install_Windows_98))
+	st.quick_install_enabled = true
+	testing.expect(t, menu_action_visible(&st, .Quick_Install_Windows_98))
 	testing.expect(t, !menu_action_visible(&st, .Abandon_Windows_98_Installation))
 	st.install_active = true
 	testing.expect(t, menu_action_visible(&st, .Abandon_Windows_98_Installation))

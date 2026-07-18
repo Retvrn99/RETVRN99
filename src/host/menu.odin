@@ -24,6 +24,7 @@ MENU_LED_ACTIVE :: u32(0xFF00D838)
 MENU_TOP_LEVEL_ORDER :: [6]cstring{"Machine", "Hard Drive", "Media", "Emulation", "Tools", "Help"}
 MENU_CREATE_HARD_DRIVE_LABEL :: "Create Hard Drive..."
 MENU_INSTALL_WINDOWS_98_LABEL :: "Install Windows 98..."
+MENU_QUICK_INSTALL_WINDOWS_98_LABEL :: "Quick Install Windows 98 SE (Experimental)..."
 MENU_ABANDON_WINDOWS_98_LABEL :: "Abandon Windows 98 Installation..."
 
 WELCOME_PANEL_TITLE :: "Welcome to RETVRN99"
@@ -61,6 +62,7 @@ Menu_Action :: enum {
 	Reveal_Cdrom,
 	Reveal_Floppy,
 	Install_Windows_98,
+	Quick_Install_Windows_98,
 	Abandon_Windows_98_Installation,
 	Set_Cpu_Mode,
 	Set_Window_Scale,
@@ -94,6 +96,7 @@ Menu_State :: struct {
 	user_paused:               bool,
 	install_active:            bool,
 	install_recovery_required: bool,
+	quick_install_enabled:     bool,
 	storage_actions_blocked:   bool,
 	hard_drive_status:         Hard_Drive_Status,
 	hard_drive_path:           string,
@@ -209,6 +212,9 @@ menu_current_hard_drive_label :: proc(st: ^Menu_State) -> cstring {
 }
 
 menu_action_visible :: proc(st: ^Menu_State, action: Menu_Action) -> bool {
+	if action == .Quick_Install_Windows_98 {
+		return st != nil && st.quick_install_enabled
+	}
 	if action == .Abandon_Windows_98_Installation {
 		return st != nil && menu_install_storage_locked(st)
 	}
@@ -249,7 +255,7 @@ menu_action_enabled :: proc(st: ^Menu_State, action: Menu_Action) -> bool {
 			st.hard_drive_status == .Ready &&
 			len(st.hard_drive_path) > 0 \
 		)
-	case .Create_Hard_Drive, .Install_Windows_98:
+	case .Create_Hard_Drive, .Install_Windows_98, .Quick_Install_Windows_98:
 		return !st.machine_running && !install_locked && !st.storage_actions_blocked
 	case .Abandon_Windows_98_Installation:
 		return !st.machine_running && install_locked && !st.storage_actions_blocked
@@ -532,6 +538,16 @@ menu_draw :: proc(
 					menu_action_enabled(st, .Install_Windows_98),
 				) {
 					action = .Install_Windows_98
+				}
+				if menu_action_visible(st, .Quick_Install_Windows_98) {
+					if imgui.MenuItem(
+						MENU_QUICK_INSTALL_WINDOWS_98_LABEL,
+						nil,
+						false,
+						menu_action_enabled(st, .Quick_Install_Windows_98),
+					) {
+						action = .Quick_Install_Windows_98
+					}
 				}
 				if menu_action_visible(st, .Abandon_Windows_98_Installation) {
 					if imgui.MenuItem(

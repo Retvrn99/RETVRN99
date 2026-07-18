@@ -8,7 +8,7 @@ import "core:strings"
 import "core:testing"
 
 @(test)
-install_state_test_v4_milestones_and_binding_round_trip :: proc(t: ^testing.T) {
+install_state_test_v5_legacy_milestones_and_binding_round_trip :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := profile_test_directory(t)
 	defer os.remove_all(dir)
@@ -27,7 +27,8 @@ install_state_test_v4_milestones_and_binding_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, install_state_save(path, &state), Install_State_Diagnostic.None)
 	data, err := os.read_entire_file(path, context.temp_allocator)
 	testing.expect(t, err == nil)
-	testing.expect(t, strings.contains(string(data), `"version": 4`))
+	testing.expect(t, strings.contains(string(data), `"version": 5`))
+	testing.expect(t, strings.contains(string(data), `"backend": "legacy_setup"`))
 	testing.expect(t, strings.contains(string(data), `"milestone": "hardware_detection"`))
 	testing.expect(t, strings.contains(string(data), `"edit_transaction_id": 41`))
 	loaded, diagnostic := install_state_load(path)
@@ -43,6 +44,75 @@ install_state_test_v4_milestones_and_binding_round_trip :: proc(t: ^testing.T) {
 		t,
 		install_state_verify_binding(&loaded, state.image_path, identity, 41),
 		Install_Binding_Diagnostic.None,
+	)
+}
+
+@(test)
+install_state_test_v4_active_install_continues_as_legacy :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := profile_test_directory(t)
+	defer os.remove_all(dir)
+	path, _ := filepath.join({dir, "install-state.json"})
+	image_path, _ := filepath.join({dir, "c_drive.img"})
+	state := Install_State {
+		phase       = .Setup_Running,
+		milestone   = .First_Reboot,
+		source_path = "WIN98SE.ISO",
+		reset_count = 1,
+	}
+	_ = install_state_test_bind(t, &state, image_path, 410)
+	testing.expect_value(t, install_state_save(path, &state), Install_State_Diagnostic.None)
+	data, err := os.read_entire_file(path, context.temp_allocator)
+	if !testing.expect(t, err == nil) {return}
+	v4, _ := strings.replace(string(data), `"version": 5`, `"version": 4`, 1)
+	testing.expect(t, os.write_entire_file(path, v4) == nil)
+	loaded, diagnostic := install_state_load(path)
+	defer install_state_destroy(&loaded)
+	testing.expect_value(t, diagnostic, Install_State_Diagnostic.None)
+	testing.expect_value(t, loaded.backend, Install_Backend.Legacy_Setup)
+	testing.expect_value(t, loaded.phase, Install_Phase.Setup_Running)
+	testing.expect_value(t, loaded.milestone, Install_Milestone.First_Reboot)
+}
+
+@(test)
+install_state_test_v5_local_pack_metadata_round_trip :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := profile_test_directory(t)
+	defer os.remove_all(dir)
+	path, _ := filepath.join({dir, "install-state.json"})
+	image_path, _ := filepath.join({dir, "c_drive.img"})
+	fingerprint := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	pack_hash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	state := Install_State {
+		backend            = .Local_Pack,
+		phase              = .Importing,
+		source_path        = "WIN98SE.ISO",
+		builder_version    = "0.1.0",
+		builder_protocol   = 1,
+		install_profile    = "minimal",
+		source_fingerprint = fingerprint,
+		pack_hash          = pack_hash,
+		update_recipe_set  = "phase0",
+	}
+	_ = install_state_test_bind(t, &state, image_path, 411)
+	testing.expect_value(t, install_state_save(path, &state), Install_State_Diagnostic.None)
+	loaded, diagnostic := install_state_load(path)
+	defer install_state_destroy(&loaded)
+	testing.expect_value(t, diagnostic, Install_State_Diagnostic.None)
+	testing.expect_value(t, loaded.backend, Install_Backend.Local_Pack)
+	testing.expect_value(t, loaded.phase, Install_Phase.Importing)
+	testing.expect_value(t, loaded.builder_version, "0.1.0")
+	testing.expect_value(t, loaded.builder_protocol, u32(1))
+	testing.expect_value(t, loaded.install_profile, "minimal")
+	testing.expect_value(t, loaded.source_fingerprint, fingerprint)
+	testing.expect_value(t, loaded.pack_hash, pack_hash)
+	testing.expect_value(t, loaded.update_recipe_set, "phase0")
+
+	state.pack_hash = "NOT-A-SHA256"
+	testing.expect_value(
+		t,
+		install_state_save(path, &state),
+		Install_State_Diagnostic.Invalid_State,
 	)
 }
 
@@ -391,7 +461,7 @@ install_state_test_invalid_abandon_preserves_exact_evidence_before_clearing :: p
 		testing.expect_value(t, string(retained), item.payload)
 		current, current_error := os.read_entire_file(path, context.temp_allocator)
 		testing.expect(t, current_error == nil)
-		testing.expect(t, strings.contains(string(current), `"version": 4`))
+		testing.expect(t, strings.contains(string(current), `"version": 5`))
 		testing.expect(t, strings.contains(string(current), `"phase": "none"`))
 
 		cleared, clear_diagnostic := install_state_load(path)

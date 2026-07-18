@@ -11,6 +11,9 @@ RETVRN99 never creates a hard drive without asking. If you have not configured
 one, the welcome screen offers two routes:
 
 - **Tools > Install Windows 98...** walks through the normal setup.
+- **Tools > Quick Install Windows 98 SE (Experimental)...** appears only with
+  the developer flag `--quickinstall-dev`; it is not a supported installation
+  path yet.
 - **Tools > Create Hard Drive...** creates a blank FAT32 image for a manual
   installation or an existing DOS setup.
 
