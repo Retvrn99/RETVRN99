@@ -717,6 +717,8 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					regs := format_regs(r, m)
 					publish_freeze(s, msg, regs)
 					fmt.printfln("VM frozen: %s", msg)
+					delete(msg)
+					delete(regs)
 				}
 			}
 		} else {

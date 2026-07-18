@@ -4,8 +4,8 @@
   "status": "ready",
   "reason": "",
   "derived_source_plan": {
-    "relative_path": "gsw3d-smoke-derived-source-plan.json",
-    "sha256": "484e2e8c9750575180c0afa4c09270d829cce7cac4a78755e448789fbb82b66b"
+    "relative_path": "gsw2d-bench-derived-source-plan.json",
+    "sha256": "9bd3062d921eb1f641ad04db9d69df65d457909501a4d7f83333d79a24499497"
   },
   "toolchain_locks": [
     {
@@ -28,22 +28,22 @@
   ],
   "steps": [
     {
-      "name": "build-gsw3d-smoke",
-      "recipe": "gsw3d-smoke",
+      "name": "build-gsw2d-bench",
+      "recipe": "gsw2d-bench",
       "toolchain": "mingw32-gcc",
-      "working_directory": "gsw3d-smoke",
+      "working_directory": "gsw2d-bench",
       "arguments": [
         "-std=gnu99", "-Wall", "-Wextra", "-Werror", "-Os", "-pipe",
         "-ffreestanding", "-fno-builtin", "-fno-ident", "-fomit-frame-pointer",
         "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-stack-protector",
         "-DNDEBUG", "-march=pentium2", "-mtune=core2", "-static", "-nostdlib",
-        "-nodefaultlibs", "-I.", "main.c", "-lkernel32", "-lgcc",
+        "-nodefaultlibs", "main.c", "-lkernel32", "-luser32", "-lgdi32", "-lgcc",
         "-Wl,--entry,_mainCRTStartup,--no-insert-timestamp,--disable-dynamicbase,--disable-nxcompat,--subsystem,console:4.0,--image-base,0x00400000,--strip-all",
-        "-o", "gsw3d-smoke.exe"
+        "-o", "gsw2d-bench.exe"
       ],
       "normalizations": [],
       "outputs": [
-        {"relative_path":"gsw3d-smoke/gsw3d-smoke.exe","origin":"build","bytes":6656,"sha256":"8a17fe6372a1293e1b27d8397969400b9170f339ccd4be39e11b3bc28c7ae9dd"}
+        {"relative_path":"gsw2d-bench/gsw2d-bench.exe","origin":"build","bytes":8192,"sha256":"db5600192cd199fce7a2e272e1dfdef4ba1e6857c4956b6559521dad7f1f9cad"}
       ]
     }
   ]

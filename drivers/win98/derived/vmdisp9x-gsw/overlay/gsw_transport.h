@@ -116,6 +116,7 @@ typedef struct GSWCopyCommand {
 } GSWCopyCommand;
 
 #include "gsw_ddraw_abi.h"
+#include "gsw_gdi_abi.h"
 #include "gsw3d_abi.h"
 
 #pragma pack(pop)
@@ -160,6 +161,7 @@ BOOL GSW_transport_surface_fill(const GSWDDFill *request);
 BOOL GSW_transport_surface_blt(const GSWDDBlt *request);
 BOOL GSW_transport_surface_present(DWORD surface_id);
 BOOL GSW_transport_surface_dirty(const GSWDDDirty *request);
+BOOL GSW_transport_gdi_blt(const GSWGdiBltCommand *request, DWORD byte_count);
 DWORD GSW_transport_register_read(DWORD offset);
 void GSW_transport_register_write(DWORD offset, DWORD value);
 BOOL GSW_DD_ioctl(struct DIOCParams *params, DWORD *result);

@@ -69,8 +69,10 @@ Shared :: struct {
 	running:                          bool,
 	machine_running:                  bool,
 	frozen_msg:                       string,
+	frozen_msg_owned:                 bool,
 	exit_stats:                       [hv.Exit_Kind]u64,
 	regs_text:                        string,
+	regs_text_owned:                  bool,
 	cdrom_mounted:                    bool,
 	floppy_mounted:                   bool,
 	storage_activity:                 machine.Storage_Activity,
@@ -1421,10 +1423,21 @@ install_apply_initial_boot_order :: proc(
 }
 
 publish_freeze :: proc(s: ^Shared, msg: string, regs: string) {
+	if s == nil {return}
+	new_msg := strings.clone(msg)
+	new_regs := strings.clone(regs)
 	sync.lock(&s.mu)
-	s.frozen_msg = msg
-	s.regs_text = regs
+	old_msg := s.frozen_msg
+	old_msg_owned := s.frozen_msg_owned
+	old_regs := s.regs_text
+	old_regs_owned := s.regs_text_owned
+	s.frozen_msg = new_msg
+	s.frozen_msg_owned = true
+	s.regs_text = new_regs
+	s.regs_text_owned = true
 	sync.unlock(&s.mu)
+	if old_msg_owned {delete(old_msg)}
+	if old_regs_owned {delete(old_regs)}
 }
 
 publish_pause_state :: proc(s: ^Shared, state: host.Pause_State) {
@@ -1451,10 +1464,17 @@ vm_log :: proc(s: ^Shared, msg: string) {
 }
 
 vm_log_destroy :: proc(s: ^Shared) {
+	if s == nil {return}
 	sync.lock(&s.mu)
 	for line in s.log_lines {delete(line)}
 	delete(s.log_lines)
 	s.log_lines = nil
+	if s.frozen_msg_owned {delete(s.frozen_msg)}
+	if s.regs_text_owned {delete(s.regs_text)}
+	s.frozen_msg = ""
+	s.regs_text = ""
+	s.frozen_msg_owned = false
+	s.regs_text_owned = false
 	sync.unlock(&s.mu)
 }
 

@@ -11,6 +11,7 @@ GSW_VGA_RING_MAX_SIZE :: u32(1024 * 1024)
 GSW_VGA_COMMAND_VERSION :: u16(1)
 GSW_VGA_COMMAND_VERSION_2 :: u16(2)
 GSW_VGA_COMMAND_VERSION_3 :: u16(3)
+GSW_VGA_COMMAND_VERSION_4 :: u16(4)
 GSW_VGA_MAX_SOFTWARE_PIXELS :: u64(4096 * 2160)
 GSW_VGA_MAX_COMMANDS_PER_DOORBELL :: 1024
 
@@ -35,6 +36,9 @@ GSW_VGA_CAP_FENCE_IRQ :: u32(1 << 1)
 GSW_VGA_CAP_SURFACE_OFFSET :: u32(1 << 2)
 GSW_VGA_CAP_BLT_V2 :: u32(1 << 3)
 GSW_VGA_CAP_SURFACE_IDS :: u32(1 << 4)
+GSW_VGA_CAP_GDI_ROP3 :: u32(1 << 5)
+GSW_VGA_CAP_GDI_FAST_DOORBELL :: u32(1 << 6)
+GSW_VGA_CAP_GDI_SYNC_COOKIE :: u32(1 << 7)
 GSW_CAP_3D_SVGA9 :: u32(1 << 8)
 GSW_CAP_DIRECT_PRESENT :: u32(1 << 9)
 GSW_CAP_ASYNC_FENCES :: u32(1 << 10)
@@ -45,18 +49,19 @@ GSW_VGA_IRQ_2D :: u32(1 << 0)
 GSW_VGA_IRQ_3D :: u32(1 << 1)
 
 Gsw_Vga_Opcode :: enum u16 {
-	Set_Mode    = 1,
-	Present     = 2,
-	Fill        = 3,
-	Copy        = 4,
-	Set_Palette = 5,
-	Blt         = 6,
+	Set_Mode           = 1,
+	Present            = 2,
+	Fill               = 3,
+	Copy               = 4,
+	Set_Palette        = 5,
+	Blt                = 6,
 	Register_Surface   = 7,
 	Unregister_Surface = 8,
 	Surface_Fill       = 9,
 	Surface_Blt        = 10,
 	Surface_Present    = 11,
 	Surface_Dirty      = 12,
+	Gdi_Blt            = 13,
 }
 
 Gsw_Pixel_Format :: enum u32 {
@@ -110,7 +115,7 @@ gsw_vga_init :: proc(g: ^Gsw_Vga, framebuffer: []u8) {
 		memory_space_enabled = true,
 		control_base         = GSW_VGA_CONTROL_BASE,
 		status               = GSW_VGA_STATUS_READY,
-		capabilities         = GSW_VGA_CAP_2D | GSW_VGA_CAP_FENCE_IRQ | GSW_VGA_CAP_SURFACE_OFFSET | GSW_VGA_CAP_BLT_V2 | GSW_VGA_CAP_SURFACE_IDS,
+		capabilities         = GSW_VGA_CAP_2D | GSW_VGA_CAP_FENCE_IRQ | GSW_VGA_CAP_SURFACE_OFFSET | GSW_VGA_CAP_BLT_V2 | GSW_VGA_CAP_SURFACE_IDS | GSW_VGA_CAP_GDI_ROP3 | GSW_VGA_CAP_GDI_FAST_DOORBELL | GSW_VGA_CAP_GDI_SYNC_COOKIE,
 	}
 	gsw3d_init(&g.three_d)
 }
@@ -304,6 +309,14 @@ gsw_ring_read :: proc(g: ^Gsw_Vga, ram: []u8, offset: u32, out: []u8) {
 }
 
 @(private = "file")
+gsw_ring_write_u32 :: proc(g: ^Gsw_Vga, ram: []u8, offset, value: u32) {
+	for shift: uint = 0; shift < 32; shift += 8 {
+		ring_offset := (offset + u32(shift / 8)) & (g.ring_size - 1)
+		ram[int(g.ring_gpa + u64(ring_offset))] = u8(value >> shift)
+	}
+}
+
+@(private = "file")
 gsw_vga_fail :: proc(g: ^Gsw_Vga) {
 	g.status |= GSW_VGA_STATUS_ERROR
 	g.metrics.malformed += 1
@@ -339,7 +352,14 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		height := gsw_rd32(command, 20)
 		pitch := gsw_rd32(command, 24)
 		format := Gsw_Pixel_Format(gsw_rd32(command, 28))
-		if !gsw_vga_present_valid(len(g.framebuffer), 0, width, height, pitch, format) {return false}
+		if !gsw_vga_present_valid(
+			len(g.framebuffer),
+			0,
+			width,
+			height,
+			pitch,
+			format,
+		) {return false}
 		g.width, g.height, g.pitch, g.format = width, height, pitch, format
 	case .Present:
 		offset, width, height, pitch, format := u32(0), g.width, g.height, g.pitch, g.format
@@ -355,7 +375,7 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		}
 		if !gsw_vga_present_valid(len(g.framebuffer), offset, width, height, pitch, format) ||
 		   g.scanout != nil &&
-		   !vga_gsw_present_surface(g.scanout, offset, width, height, pitch, format) {
+			   !vga_gsw_present_surface(g.scanout, offset, width, height, pitch, format) {
 			return false
 		}
 		g.width, g.height, g.pitch, g.format = width, height, pitch, format
@@ -470,7 +490,8 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 			gsw_rd32(command, 44),
 		) {return false}
 	case .Unregister_Surface:
-		if version != GSW_VGA_COMMAND_VERSION_3 || len(command) != 20 ||
+		if version != GSW_VGA_COMMAND_VERSION_3 ||
+		   len(command) != 20 ||
 		   !gsw_surface_unregister(g, gsw_rd32(command, 16)) {
 			return false
 		}
@@ -495,21 +516,34 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		g.metrics.fills += 1
 		g.metrics.software_pixels += u64(width) * u64(height)
 	case .Surface_Blt:
-		if version != GSW_VGA_COMMAND_VERSION_3 || !gsw_vga_execute_surface_blt(g, command) {return false}
+		if version != GSW_VGA_COMMAND_VERSION_3 ||
+		   !gsw_vga_execute_surface_blt(g, command) {return false}
 	case .Surface_Present:
 		if version != GSW_VGA_COMMAND_VERSION_3 || len(command) != 20 {return false}
 		surface, ok := gsw_surface_get(g, gsw_rd32(command, 16))
-		if !ok || surface.flags & GSW_SURFACE_PRESENTABLE == 0 ||
+		if !ok ||
+		   surface.flags & GSW_SURFACE_PRESENTABLE == 0 ||
 		   !gsw_vga_present_valid(
-			len(g.framebuffer), surface.base, surface.width, surface.height,
-			surface.pitch, surface.format,
-		   ) || g.scanout != nil && !vga_gsw_present_surface(
-			g.scanout, surface.base, surface.width, surface.height,
-			surface.pitch, surface.format,
-		   ) {
+				   len(g.framebuffer),
+				   surface.base,
+				   surface.width,
+				   surface.height,
+				   surface.pitch,
+				   surface.format,
+			   ) ||
+		   g.scanout != nil &&
+			   !vga_gsw_present_surface(
+					   g.scanout,
+					   surface.base,
+					   surface.width,
+					   surface.height,
+					   surface.pitch,
+					   surface.format,
+				   ) {
 			return false
 		}
-		g.width, g.height, g.pitch, g.format = surface.width, surface.height, surface.pitch, surface.format
+		g.width, g.height, g.pitch, g.format =
+			surface.width, surface.height, surface.pitch, surface.format
 		g.present_generation += 1
 		g.metrics.presents += 1
 	case .Surface_Dirty:
@@ -521,16 +555,26 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		_, valid := gsw_registered_surface_rect(g, surface, x, y, width, height)
 		if !valid {return false}
 		gsw_vga_note_surface_write(
-			g, surface.base, surface.pitch, x, y, width, height,
+			g,
+			surface.base,
+			surface.pitch,
+			x,
+			y,
+			width,
+			height,
 			gsw_format_bytes(surface.format),
 		)
+	case .Gdi_Blt:
+		if version != GSW_VGA_COMMAND_VERSION_4 || !gsw_vga_execute_gdi_blt(g, command) {
+			return false
+		}
 	case:
 		return false
 	}
 	return true
 }
 
-gsw_vga_process :: proc(g: ^Gsw_Vga, ram: []u8) {
+gsw_vga_process :: proc(g: ^Gsw_Vga, ram: []u8, signal_fence_irq := true) {
 	if !gsw_ring_valid(g, ram) {gsw_vga_fail(g); return}
 	processed := 0
 	for gsw_ring_available(g) > 0 {
@@ -542,8 +586,9 @@ gsw_vga_process :: proc(g: ^Gsw_Vga, ram: []u8) {
 		version := gsw_rd16(header[:], 2)
 		length := gsw_rd32(header[:], 4)
 		if version != GSW_VGA_COMMAND_VERSION &&
-		   version != GSW_VGA_COMMAND_VERSION_2 &&
-		   version != GSW_VGA_COMMAND_VERSION_3 ||
+			   version != GSW_VGA_COMMAND_VERSION_2 &&
+			   version != GSW_VGA_COMMAND_VERSION_3 &&
+			   version != GSW_VGA_COMMAND_VERSION_4 ||
 		   length < 16 ||
 		   length & 3 != 0 ||
 		   length > available ||
@@ -559,8 +604,10 @@ gsw_vga_process :: proc(g: ^Gsw_Vga, ram: []u8) {
 		g.ring_head = (g.ring_head + length) & (g.ring_size - 1)
 		if fence != 0 {
 			g.completed_fence = fence
-			g.irq_status |= GSW_VGA_IRQ_2D
-			gsw_vga_sync_irq(g)
+			if signal_fence_irq {
+				g.irq_status |= GSW_VGA_IRQ_2D
+				gsw_vga_sync_irq(g)
+			}
 		}
 	}
 }
@@ -645,6 +692,44 @@ gsw_vga_mmio_write :: proc(g: ^Gsw_Vga, offset: u32, data: []u8, ram: []u8) {
 	case GSW_VGA_REG_RING_TAIL:
 		g.ring_tail = value
 	case GSW_VGA_REG_DOORBELL:
+		if value & GSW_GDI_DOORBELL_TAIL_FLAG != 0 {
+			cookie_requested := value & GSW_GDI_DOORBELL_COOKIE_FLAG != 0
+			new_tail := value &~ (GSW_GDI_DOORBELL_TAIL_FLAG | GSW_GDI_DOORBELL_COOKIE_FLAG)
+			if new_tail >= g.ring_size || new_tail & 3 != 0 || g.ring_head != g.ring_tail {
+				gsw_vga_fail(g)
+				return
+			}
+			command_head := g.ring_head
+			if cookie_requested {
+				command_bytes: u32
+				if new_tail >= command_head {
+					command_bytes = new_tail - command_head
+				} else {
+					command_bytes = g.ring_size - command_head + new_tail
+				}
+				header: [16]u8
+				if command_bytes != GSW_GDI_BLT_COMMAND_BYTES || !gsw_ring_valid(g, ram) {
+					gsw_vga_fail(g)
+					return
+				}
+				gsw_ring_read(g, ram, command_head, header[:])
+				if gsw_rd16(header[:], 0) != u16(Gsw_Vga_Opcode.Gdi_Blt) ||
+				   gsw_rd16(header[:], 2) != GSW_VGA_COMMAND_VERSION_4 ||
+				   gsw_rd32(header[:], 4) != GSW_GDI_BLT_COMMAND_BYTES {
+					gsw_vga_fail(g)
+					return
+				}
+			}
+			g.ring_tail = new_tail
+			gsw_vga_process(g, ram, !cookie_requested)
+			if cookie_requested &&
+			   gsw_ring_valid(g, ram) &&
+			   (g.status & GSW_VGA_STATUS_ERROR) == 0 &&
+			   g.ring_head == new_tail {
+				gsw_ring_write_u32(g, ram, command_head, GSW_GDI_COMPLETION_COOKIE)
+			}
+			return
+		}
 		gsw_vga_process(g, ram)
 	case GSW_VGA_REG_IRQ_ENABLE:
 		g.irq_enable = value & (GSW_VGA_IRQ_2D | GSW_VGA_IRQ_3D)

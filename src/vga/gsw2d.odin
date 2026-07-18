@@ -15,7 +15,7 @@ gsw_rop3_supported :: proc(rop: u8) -> bool {
 	return false
 }
 
-@(private = "file")
+@(private = "package")
 gsw_pixel_mask :: proc(bytes: int) -> u32 {
 	switch bytes {
 	case 1:
@@ -30,19 +30,19 @@ gsw_pixel_mask :: proc(bytes: int) -> u32 {
 	return 0
 }
 
-@(private = "file")
+@(private = "package")
 gsw_pixel_read :: proc(data: []u8, offset, bytes: int) -> u32 {
 	value: u32
 	for i in 0 ..< bytes {value |= u32(data[offset + i]) << (8 * uint(i))}
 	return value
 }
 
-@(private = "file")
+@(private = "package")
 gsw_pixel_write :: proc(data: []u8, offset, bytes: int, value: u32) {
 	for i in 0 ..< bytes {data[offset + i] = u8(value >> (8 * uint(i)))}
 }
 
-@(private = "file")
+@(private = "package")
 gsw_rop3 :: proc(rop: u8, source, destination, pattern, mask: u32) -> u32 {
 	result: u32
 	for combination in 0 ..< 8 {
@@ -199,19 +199,31 @@ gsw_vga_execute_surface_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 	pattern := gsw_rd32(command, 68)
 	rop_value := gsw_rd32(command, 72)
 	if flags &~ (GSW_BLT_SRC_COLOR_KEY | GSW_BLT_DST_COLOR_KEY) != 0 ||
-	   rop_value > 0xFF || !gsw_rop3_supported(u8(rop_value)) {
+	   rop_value > 0xFF ||
+	   !gsw_rop3_supported(u8(rop_value)) {
 		return false
 	}
 	source_start, source_ok := gsw_registered_surface_rect(
-		g, source_surface, source_x, source_y, source_width, source_height,
+		g,
+		source_surface,
+		source_x,
+		source_y,
+		source_width,
+		source_height,
 	)
 	destination_start, destination_ok := gsw_registered_surface_rect(
-		g, destination_surface,
-		destination_x, destination_y, destination_width, destination_height,
+		g,
+		destination_surface,
+		destination_x,
+		destination_y,
+		destination_width,
+		destination_height,
 	)
 	source_pixels_count := u64(source_width) * u64(source_height)
 	destination_pixels_count := u64(destination_width) * u64(destination_height)
-	if !source_ok || !destination_ok || source_pixels_count == 0 ||
+	if !source_ok ||
+	   !destination_ok ||
+	   source_pixels_count == 0 ||
 	   source_pixels_count > GSW_VGA_MAX_SOFTWARE_PIXELS ||
 	   destination_pixels_count > GSW_VGA_MAX_SOFTWARE_PIXELS {
 		return false
@@ -239,7 +251,8 @@ gsw_vga_execute_surface_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 			if flags & GSW_BLT_SRC_COLOR_KEY != 0 && source == source_key & mask {continue}
 			offset := int(destination_row + u64(x * bytes))
 			destination := gsw_pixel_read(g.framebuffer, offset, bytes)
-			if flags & GSW_BLT_DST_COLOR_KEY != 0 && destination != destination_key & mask {continue}
+			if flags & GSW_BLT_DST_COLOR_KEY != 0 &&
+			   destination != destination_key & mask {continue}
 			result := gsw_rop3(u8(rop_value), source, destination, pattern, mask)
 			if result != destination {
 				gsw_pixel_write(g.framebuffer, offset, bytes, result)
@@ -249,8 +262,14 @@ gsw_vga_execute_surface_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 	}
 	if wrote {
 		gsw_vga_note_surface_write(
-			g, destination_surface.base, destination_surface.pitch,
-			destination_x, destination_y, destination_width, destination_height, bytes,
+			g,
+			destination_surface.base,
+			destination_surface.pitch,
+			destination_x,
+			destination_y,
+			destination_width,
+			destination_height,
+			bytes,
 		)
 	}
 	g.metrics.blits += 1

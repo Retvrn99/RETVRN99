@@ -1,0 +1,19 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 2,
+  "status": "ready",
+  "reason": "",
+  "recipes": [
+    {
+      "name": "gsw2d-bench",
+      "upstream_name": "vmdisp9x",
+      "source_directory": "vmdisp9x",
+      "destination_directory": "gsw2d-bench-source",
+      "patches": [],
+      "overlays": [
+        {"relative_path":"guest-tools/gsw2d-bench","destination_relative_path":"gsw2d-bench","replace_existing":false,"tree":{"file_count":1,"directory_count":0,"total_entries":1,"aggregate_bytes":12092,"maximum_file_bytes":12092,"maximum_path_bytes":6,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"1b94c3ab9f8b1e141efc9524c600ad1f94479955ec53954e0d1b8a7852a7ba14"}}
+      ],
+      "output_tree": {"file_count":140,"directory_count":8,"total_entries":148,"aggregate_bytes":1299489,"maximum_file_bytes":113466,"maximum_path_bytes":26,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"ffd50552dfce1d34395b907a18cca4f32d87692a43c75d899b64460281c9b61e"}
+    }
+  ]
+}

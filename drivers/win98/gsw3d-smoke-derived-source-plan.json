@@ -12,9 +12,9 @@
       "patches": [],
       "overlays": [
         {"relative_path":"guest-tools/gsw3d-smoke","destination_relative_path":"gsw3d-smoke","replace_existing":false,"tree":{"file_count":1,"directory_count":0,"total_entries":1,"aggregate_bytes":12649,"maximum_file_bytes":12649,"maximum_path_bytes":6,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"5f854be546251cc04e1b5e371f4c2fc681c6c9c3987f74ebff2e5fc0de931408"}},
-        {"relative_path":"derived/shared","destination_relative_path":"gsw3d-smoke","replace_existing":false,"tree":{"file_count":2,"directory_count":0,"total_entries":2,"aggregate_bytes":9021,"maximum_file_bytes":5053,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"3017fa753f794f69f9a6c4a5c45c029832b91acdd2a264574fdc244d894abe25"}}
+        {"relative_path":"derived/shared","destination_relative_path":"gsw3d-smoke","replace_existing":false,"tree":{"file_count":3,"directory_count":0,"total_entries":3,"aggregate_bytes":10495,"maximum_file_bytes":5053,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"12a77ff5ae763ff469e9d734cabaafd24867f557b3415947680e8863d7ccd72f"}}
       ],
-      "output_tree": {"file_count":142,"directory_count":8,"total_entries":150,"aggregate_bytes":1309067,"maximum_file_bytes":113466,"maximum_path_bytes":27,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"ea02fd0b8e9c8da30d1eaac818f02bd862b50843976ed98355e6e9f2d107f1ba"}
+      "output_tree": {"file_count":143,"directory_count":8,"total_entries":151,"aggregate_bytes":1310541,"maximum_file_bytes":113466,"maximum_path_bytes":27,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"77b9c6e398d08126e91c4b7d5582e013ad8ed18cf40ae29efe705682db5a1b22"}
     }
   ]
 }
