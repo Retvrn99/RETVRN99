@@ -51,6 +51,8 @@ host_test_theme_apply_headless :: proc(t: ^testing.T) {
 	theme_apply()
 	io := imgui.GetIO()
 	testing.expect(t, io.FontDefault != nil)
+	testing.expect(t, theme_title_font != nil)
+	testing.expect(t, theme_title_font != io.FontDefault)
 	io.IniFilename = nil
 	io.DisplaySize = {640, 480}
 	io.DeltaTime = 1.0 / 60.0
@@ -72,6 +74,7 @@ host_test_theme_apply_headless :: proc(t: ^testing.T) {
 	testing.expect_value(t, style.FrameBorderSize, f32(1))
 	testing.expect_value(t, style.Colors[imgui.Col.Text], theme_color(THEME_BLACK))
 	testing.expect_value(t, style.Colors[imgui.Col.WindowBg], theme_color(THEME_FACE))
-	testing.expect_value(t, style.Colors[imgui.Col.HeaderHovered], theme_color(THEME_NAVY))
+	testing.expect_value(t, style.Colors[imgui.Col.HeaderHovered], theme_color(THEME_LIGHT))
+	testing.expect_value(t, style.Colors[imgui.Col.HeaderActive], theme_color(THEME_LIGHT))
 	testing.expect_value(t, style.Colors[imgui.Col.TextSelectedBg].w, f32(0.85))
 }

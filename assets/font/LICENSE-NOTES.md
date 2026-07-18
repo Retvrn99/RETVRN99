@@ -10,3 +10,5 @@
 - `libre-franklin.ttf` is `LibreFranklin[wght].ttf` from Google Fonts, blob
   `8cf5549196f5e98dc27be05fc2b3691e77eaa89c`. It is licensed under the SIL
   Open Font License 1.1; the full license is in `OFL-Libre-Franklin.txt`.
+- `libre-franklin-regular.ttf` and `libre-franklin-bold.ttf` are static 400 and
+  700 weight instances generated from that same variable font with fontTools.

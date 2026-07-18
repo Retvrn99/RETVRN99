@@ -439,6 +439,7 @@ gui_main :: proc(
 		active_settings.hdd_clicking_enabled,
 		active_settings.floppy_noise_enabled,
 	)
+	host.host_mechanical_audio_set_hdd_attached(shared.mechanical_audio, false)
 	host.host_mechanical_audio_set_machine_state(shared.mechanical_audio, false, false)
 	if gsw3d_proof {
 		if !host.host_gsw3d_proof_enable(&h) {
@@ -1164,13 +1165,13 @@ gui_main :: proc(
 			if host.host_mechanical_audio_test_hard_drive(&h.mechanical_audio) {
 				st.general_status = "Testing hard drive clicking"
 			} else {
-				st.general_status = "Device sound output is unavailable"
+				st.general_status = host.host_mechanical_audio_sample_status_text(&h.mechanical_audio)
 			}
 		case .Test_Floppy:
 			if host.host_mechanical_audio_test_floppy(&h.mechanical_audio) {
 				st.general_status = "Testing floppy drive noise"
 			} else {
-				st.general_status = "Device sound output is unavailable"
+				st.general_status = host.host_mechanical_audio_sample_status_text(&h.mechanical_audio)
 			}
 		case .Apply, .Ok:
 			active_settings.hdd_clicking_enabled = device_sounds_result.hard_drive_clicking
@@ -1702,6 +1703,14 @@ publish_machine_running :: proc(s: ^Shared, running: bool) {
 	mechanical_audio := s.mechanical_audio
 	sync.unlock(&s.mu)
 	host.host_mechanical_audio_set_machine_state(mechanical_audio, running, paused)
+}
+
+publish_hard_drive_attached :: proc(s: ^Shared, attached: bool) {
+	if s == nil {return}
+	sync.lock(&s.mu)
+	mechanical_audio := s.mechanical_audio
+	sync.unlock(&s.mu)
+	host.host_mechanical_audio_set_hdd_attached(mechanical_audio, attached)
 }
 // line to the device-log panel
 vm_log :: proc(s: ^Shared, msg: string) {

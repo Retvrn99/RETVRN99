@@ -464,38 +464,12 @@ menu_draw :: proc(
 			}
 
 			if menu_begin(MENU_TOP_LEVEL_ORDER[2]) {
-				floppy_mount_label: cstring = st.floppy_mounted ? "Change Floppy..." : "Mount Floppy..."
-				if imgui.MenuItem(
-					floppy_mount_label,
-					nil,
-					false,
-					menu_action_enabled(st, .Mount_Floppy),
-				) {
-					action = .Mount_Floppy
-				}
-				if st.floppy_mounted {
-					if imgui.MenuItem("Eject Floppy", nil, false, menu_action_enabled(st, .Eject_Floppy)) {
-						action = .Eject_Floppy
+				for device in storage_sidebar_device_order {
+					if menu_begin(fmt.ctprintf("%s", storage_sidebar_device_label(device))) {
+						device_action := storage_device_menu_contents(st, device)
+						if device_action != .None {action = device_action}
+						menu_end()
 					}
-					current := len(st.floppy_path) > 0 ? filepath.base(st.floppy_path) : "Unknown image"
-					_ = imgui.MenuItem(fmt.ctprintf("Current: %s", current), nil, false, false)
-				}
-				imgui.Separator()
-				cdrom_mount_label: cstring = st.cdrom_mounted ? "Change DVD-ROM..." : "Mount DVD-ROM..."
-				if imgui.MenuItem(
-					cdrom_mount_label,
-					nil,
-					false,
-					menu_action_enabled(st, .Mount_Cdrom),
-				) {
-					action = .Mount_Cdrom
-				}
-				if st.cdrom_mounted {
-					if imgui.MenuItem("Eject DVD-ROM", nil, false, menu_action_enabled(st, .Eject_Cdrom)) {
-						action = .Eject_Cdrom
-					}
-					current := len(st.cdrom_path) > 0 ? filepath.base(st.cdrom_path) : "Unknown image"
-					_ = imgui.MenuItem(fmt.ctprintf("Current: %s", current), nil, false, false)
 				}
 				menu_end()
 			}

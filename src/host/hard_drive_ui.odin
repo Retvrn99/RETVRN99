@@ -901,7 +901,7 @@ hard_drive_browser_draw :: proc(
 	window_open := model.visible
 	if win98_begin_window(HARD_DRIVE_BROWSER_TITLE, &window_open, {.NoCollapse}) {
 		if len(model.image_path) > 0 {
-			imgui.TextDisabled("Image: %s", fmt.ctprintf("%s", model.image_path))
+			imgui.Text("Image: %s", fmt.ctprintf("%s", model.image_path))
 		}
 		if model.machine_running {
 			imgui.TextUnformatted("Browsing is unavailable while the machine is running.")
@@ -1081,7 +1081,18 @@ hard_drive_browser_draw_tree :: proc(
 				imgui.SameLine()
 			}
 		}
-		if imgui.Selectable(fmt.ctprintf("%s", node.name), node.selected, {.SpanAllColumns}) &&
+		if node.selected {
+			imgui.PushStyleColorImVec4(.Text, theme_color(THEME_LIGHT))
+			imgui.PushStyleColorImVec4(.HeaderHovered, theme_color(THEME_NAVY))
+			imgui.PushStyleColorImVec4(.HeaderActive, theme_color(THEME_NAVY))
+		}
+		selected_clicked := imgui.Selectable(
+			fmt.ctprintf("%s", node.name),
+			node.selected,
+			{.SpanAllColumns},
+		)
+		if node.selected {imgui.PopStyleColor(3)}
+		if selected_clicked &&
 		   hard_drive_browser_can_browse(model) &&
 		   action.kind == .None {
 			action^ = Hard_Drive_UI_Action {
@@ -1209,7 +1220,17 @@ hard_drive_browser_draw_rows :: proc(
 			row_flags: imgui.SelectableFlags = {.SpanAllColumns, .AllowDoubleClick}
 			if row.pending_deletion {row_flags += {.Disabled}}
 			selected := hard_drive_browser_selection_contains(model, row.id)
-			_ = imgui.Selectable("##hard-drive-entry", selected, row_flags, {0, 20})
+			if selected {
+				imgui.PushStyleColorImVec4(.HeaderHovered, theme_color(THEME_NAVY))
+				imgui.PushStyleColorImVec4(.HeaderActive, theme_color(THEME_NAVY))
+			}
+			_ = imgui.Selectable(
+				"##hard-drive-entry",
+				selected,
+				row_flags,
+				{0, f32(THEME_FONT_PX + 5)},
+			)
+			if selected {imgui.PopStyleColor(2)}
 			item_min := imgui.GetItemRectMin()
 			item_max := imgui.GetItemRectMax()
 			draw := imgui.GetWindowDrawList()
@@ -1248,12 +1269,14 @@ hard_drive_browser_draw_rows :: proc(
 			}
 			hard_drive_browser_draw_row_context_menu(model, &row, action)
 			imgui.PopID()
+			if selected {imgui.PushStyleColorImVec4(.Text, theme_color(THEME_LIGHT))}
 			_ = imgui.TableSetColumnIndex(1)
 			imgui.TextUnformatted(row.kind == .Directory ? "Folder" : "File")
 			_ = imgui.TableSetColumnIndex(2)
 			if row.kind == .File {imgui.Text("%s", hard_drive_browser_size_text(row.size))}
 			_ = imgui.TableSetColumnIndex(3)
 			menu_text(row.modified_text)
+			if selected {imgui.PopStyleColor()}
 		}
 		selection_io = imgui.EndMultiSelect()
 		hard_drive_browser_selection_apply_requests(model, selection_io)

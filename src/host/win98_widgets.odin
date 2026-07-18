@@ -13,7 +13,9 @@ win98_begin_window :: proc(
 	flags: imgui.WindowFlags = {},
 ) -> bool {
 	imgui.PushStyleColorImVec4(.Text, theme_color(THEME_LIGHT))
+	if theme_title_font != nil {imgui.PushFontFloat(theme_title_font, f32(THEME_FONT_PX))}
 	result := imgui.Begin(name, open, flags)
+	if theme_title_font != nil {imgui.PopFont()}
 	imgui.PopStyleColor()
 	return result
 }
@@ -24,9 +26,34 @@ win98_begin_popup_modal :: proc(
 	flags: imgui.WindowFlags = {},
 ) -> bool {
 	imgui.PushStyleColorImVec4(.Text, theme_color(THEME_LIGHT))
+	if theme_title_font != nil {imgui.PushFontFloat(theme_title_font, f32(THEME_FONT_PX))}
 	result := imgui.BeginPopupModal(name, open, flags)
+	if theme_title_font != nil {imgui.PopFont()}
 	imgui.PopStyleColor()
 	return result
+}
+
+win98_draw_title_text :: proc(
+	draw: ^imgui.DrawList,
+	position: imgui.Vec2,
+	text: string,
+	color: u32,
+) {
+	if draw == nil || len(text) == 0 {return}
+	data := raw_data(text)
+	if theme_title_font != nil {
+		imgui.DrawList_AddTextImFontPtr(
+			draw,
+			theme_title_font,
+			f32(THEME_FONT_PX),
+			position,
+			color,
+			cstring(data),
+			cstring(data[len(text):]),
+		)
+		return
+	}
+	imgui.DrawList_AddText(draw, position, color, cstring(data), cstring(data[len(text):]))
 }
 
 win98_draw_bevel :: proc(
@@ -131,13 +158,11 @@ win98_section_title :: proc(label: string, width: f32) {
 	maximum := imgui.Vec2{position.x + width, position.y + height}
 	imgui.DrawList_AddRectFilled(draw, position, maximum, win98_color(THEME_NAVY))
 	if len(label) > 0 {
-		data := raw_data(label)
-		imgui.DrawList_AddText(
+		win98_draw_title_text(
 			draw,
 			{position.x + 4, position.y + 3},
+			label,
 			win98_color(THEME_LIGHT),
-			cstring(data),
-			cstring(data[len(label):]),
 		)
 	}
 }

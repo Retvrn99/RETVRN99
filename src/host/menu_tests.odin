@@ -324,6 +324,56 @@ host_test_storage_sidebar_order_is_hdd_dvd_floppy :: proc(t: ^testing.T) {
 }
 
 @(test)
+host_test_media_menu_uses_sidebar_device_order_and_current_paths :: proc(t: ^testing.T) {
+	st := Menu_State {
+		hard_drive_path = `D:\images\c_drive.img`,
+		cdrom_path      = `D:\images\Windows 98.iso`,
+		floppy_path     = `D:\images\boot.img`,
+		cdrom_mounted   = true,
+	}
+	testing.expect_value(t, storage_sidebar_device_label(storage_sidebar_device_order[0]), "Hard disk")
+	testing.expect_value(t, storage_sidebar_device_label(storage_sidebar_device_order[1]), "DVD-ROM")
+	testing.expect_value(t, storage_sidebar_device_label(storage_sidebar_device_order[2]), "Floppy")
+	testing.expect_value(
+		t,
+		storage_device_menu_current_label(&st, .Hard_Drive),
+		cstring("Current: c_drive.img"),
+	)
+	testing.expect_value(
+		t,
+		storage_device_menu_current_label(&st, .Dvd_Rom),
+		cstring("Current: Windows 98.iso"),
+	)
+	testing.expect_value(
+		t,
+		storage_device_menu_current_label(&st, .Floppy),
+		cstring("Current: boot.img"),
+	)
+	testing.expect_value(t, storage_device_menu_mount_label(&st, .Dvd_Rom), cstring("Change..."))
+	testing.expect_value(t, storage_device_menu_mount_label(&st, .Floppy), cstring("Mount..."))
+	testing.expect(t, menu_action_enabled(&st, .Mount_Cdrom))
+	testing.expect(t, menu_action_enabled(&st, .Eject_Cdrom))
+	testing.expect(t, menu_action_enabled(&st, .Reveal_Cdrom))
+	testing.expect(t, menu_action_enabled(&st, .Mount_Floppy))
+	testing.expect(t, !menu_action_enabled(&st, .Eject_Floppy))
+	testing.expect(t, menu_action_enabled(&st, .Reveal_Floppy))
+
+	empty: Menu_State
+	testing.expect_value(
+		t,
+		storage_device_menu_current_label(&empty, .Hard_Drive),
+		cstring("Current: None"),
+	)
+	testing.expect_value(
+		t,
+		storage_device_menu_current_label(&empty, .Dvd_Rom),
+		cstring("Current: No image"),
+	)
+	testing.expect(t, !menu_action_enabled(&empty, .Reveal_Cdrom))
+	testing.expect(t, !menu_action_enabled(&empty, .Reveal_Floppy))
+}
+
+@(test)
 host_test_status_bar_reports_only_machine_state :: proc(t: ^testing.T) {
 	st: Menu_State
 	testing.expect_value(t, status_bar_machine_text(&st), "Machine stopped")

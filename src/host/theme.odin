@@ -4,9 +4,9 @@ package host
 import imgui "../../vendor_local/imgui"
 import "core:math"
 
-THEME_FONT_PX :: 15
+THEME_FONT_PX :: 16
 THEME_FRAME_PAD_X :: 7
-THEME_FRAME_PAD_Y :: 2
+THEME_FRAME_PAD_Y :: 3
 THEME_WINDOW_PAD_X :: 8
 THEME_WINDOW_PAD_Y :: 6
 THEME_MENU_INSET_X :: 3
@@ -20,7 +20,10 @@ THEME_DARK :: u32(0xFF808080)
 THEME_SHADOW :: u32(0xFF404040)
 THEME_NAVY :: u32(0xFF000080)
 THEME_HIGHLIGHT :: u32(0xFF1084D0)
-THEME_FONT := #load("../../assets/font/libre-franklin.ttf")
+THEME_FONT := #load("../../assets/font/libre-franklin-regular.ttf")
+THEME_TITLE_FONT := #load("../../assets/font/libre-franklin-bold.ttf")
+
+theme_title_font: ^imgui.Font
 
 theme_color :: proc(argb: u32) -> imgui.Vec4 {
 	return {
@@ -35,6 +38,7 @@ theme_color :: proc(argb: u32) -> imgui.Vec4 {
 // Call once after imgui.CreateContext and before the first frame.
 theme_apply :: proc() {
 	io := imgui.GetIO()
+	theme_title_font = nil
 	font_config := imgui.FontConfig {
 		FontDataOwnedByAtlas = false,
 		GlyphMaxAdvanceX     = math.F32_MAX,
@@ -51,6 +55,13 @@ theme_apply :: proc() {
 	); font != nil {
 		io.FontDefault = font
 	}
+	theme_title_font = imgui.FontAtlas_AddFontFromMemoryTTF(
+		io.Fonts,
+		raw_data(THEME_TITLE_FONT),
+		i32(len(THEME_TITLE_FONT)),
+		f32(THEME_FONT_PX),
+		&font_config,
+	)
 	style := imgui.GetStyle()
 	style.FontSizeBase = f32(THEME_FONT_PX)
 	style.FontScaleMain = 1
@@ -122,8 +133,10 @@ theme_apply :: proc() {
 	style.Colors[imgui.Col.ButtonHovered] = light
 	style.Colors[imgui.Col.ButtonActive] = dark
 	style.Colors[imgui.Col.Header] = navy
-	style.Colors[imgui.Col.HeaderHovered] = navy
-	style.Colors[imgui.Col.HeaderActive] = navy
+	// Generic hovered controls retain black text, so use the classic raised face.
+	// Selected browser rows override these colors and draw light text on navy.
+	style.Colors[imgui.Col.HeaderHovered] = light
+	style.Colors[imgui.Col.HeaderActive] = light
 	style.Colors[imgui.Col.Separator] = dark
 	style.Colors[imgui.Col.SeparatorHovered] = navy
 	style.Colors[imgui.Col.SeparatorActive] = navy

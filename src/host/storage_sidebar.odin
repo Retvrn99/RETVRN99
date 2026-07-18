@@ -106,7 +106,12 @@ storage_sidebar_header :: proc(st: ^Menu_State, width: f32) {
 	maximum := imgui.Vec2{position.x + width, position.y + STORAGE_HEADER_H}
 	imgui.DrawList_AddRectFilled(draw, position, maximum, win98_color(THEME_NAVY))
 	if !st.sidebar_collapsed {
-		storage_sidebar_draw_text(draw, {position.x + 5, position.y + 5}, "Storage", win98_color(THEME_LIGHT))
+		win98_draw_title_text(
+			draw,
+			{position.x + 5, position.y + 5},
+			"Storage",
+			win98_color(THEME_LIGHT),
+		)
 	}
 	button_size := f32(21)
 	button_min := imgui.Vec2{
@@ -141,17 +146,31 @@ storage_sidebar_header :: proc(st: ^Menu_State, width: f32) {
 	}
 }
 
-storage_sidebar_context_menu :: proc(
+storage_device_menu_current_label :: proc(
+	st: ^Menu_State,
+	device: Storage_Sidebar_Device,
+) -> cstring {
+	path := storage_sidebar_device_path(st, device)
+	if len(path) == 0 {
+		return device == .Hard_Drive ? "Current: None" : "Current: No image"
+	}
+	return fmt.ctprintf("Current: %s", filepath.base(path))
+}
+
+storage_device_menu_mount_label :: proc(
+	st: ^Menu_State,
+	device: Storage_Sidebar_Device,
+) -> cstring {
+	if device == .Hard_Drive {return ""}
+	mounted := device == .Dvd_Rom ? st.cdrom_mounted : st.floppy_mounted
+	return mounted ? "Change..." : "Mount..."
+}
+
+storage_device_menu_contents :: proc(
 	st: ^Menu_State,
 	device: Storage_Sidebar_Device,
 ) -> Menu_Action {
 	action := Menu_Action.None
-	if !imgui.BeginPopupContextItem(
-		fmt.ctprintf("##storage_context_%d", int(device)),
-		imgui.PopupFlags_MouseButtonRight,
-	) {
-		return action
-	}
 	path := storage_sidebar_device_path(st, device)
 	if device == .Hard_Drive {
 		if imgui.MenuItem("Browse C:", nil, false, menu_action_enabled(st, .Browse_C_Drive)) {
@@ -164,19 +183,25 @@ storage_sidebar_context_menu :: proc(
 			action = .Create_Hard_Drive
 		}
 		imgui.Separator()
+		_ = imgui.MenuItem(storage_device_menu_current_label(st, device), nil, false, false)
+		if len(path) > 0 {imgui.SetItemTooltip("%s", fmt.ctprintf("%s", path))}
+		imgui.Separator()
 		if imgui.MenuItem("Properties") {st.show_hard_drive_properties = true}
 	} else {
 		mounted := device == .Dvd_Rom ? st.cdrom_mounted : st.floppy_mounted
 		mount_action := device == .Dvd_Rom ? Menu_Action.Mount_Cdrom : .Mount_Floppy
 		eject_action := device == .Dvd_Rom ? Menu_Action.Eject_Cdrom : .Eject_Floppy
 		reveal_action := device == .Dvd_Rom ? Menu_Action.Reveal_Cdrom : .Reveal_Floppy
-		mount_label: cstring = mounted ? "Change..." : "Mount..."
+		mount_label := storage_device_menu_mount_label(st, device)
 		if imgui.MenuItem(mount_label, nil, false, menu_action_enabled(st, mount_action)) {
 			action = mount_action
 		}
 		if imgui.MenuItem("Eject", nil, false, menu_action_enabled(st, eject_action)) {
 			action = eject_action
 		}
+		imgui.Separator()
+		_ = imgui.MenuItem(storage_device_menu_current_label(st, device), nil, false, false)
+		if len(path) > 0 {imgui.SetItemTooltip("%s", fmt.ctprintf("%s", path))}
 		imgui.Separator()
 		if imgui.MenuItem("Reveal Image in Folder", nil, false, menu_action_enabled(st, reveal_action)) {
 			action = reveal_action
@@ -191,6 +216,20 @@ storage_sidebar_context_menu :: proc(
 			else {st.show_floppy_properties = true}
 		}
 	}
+	return action
+}
+
+storage_sidebar_context_menu :: proc(
+	st: ^Menu_State,
+	device: Storage_Sidebar_Device,
+) -> Menu_Action {
+	if !imgui.BeginPopupContextItem(
+		fmt.ctprintf("##storage_context_%d", int(device)),
+		imgui.PopupFlags_MouseButtonRight,
+	) {
+		return .None
+	}
+	action := storage_device_menu_contents(st, device)
 	imgui.EndPopup()
 	return action
 }
