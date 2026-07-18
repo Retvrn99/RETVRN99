@@ -304,9 +304,10 @@ hard_drive_controller_test_stopped_open_pagination_apply_and_discard :: proc(t: 
 			),
 		)
 		last_folder_visible := false
+		last_folder_name := fmt.tprintf("D%07d", HARD_DRIVE_BROWSER_PAGE_SIZE + 1)
 		previous_page := -1
 		for node in controller.tree_nodes {
-			if node.path == "D0000129" {last_folder_visible = true}
+			if node.path == last_folder_name {last_folder_visible = true}
 			if node.load_more && node.name == "Previous folders..." {
 				previous_page = node.page_index
 			}

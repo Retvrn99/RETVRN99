@@ -5,7 +5,7 @@
   "reason": "",
   "derived_source_plan": {
     "relative_path": "derived-source-plan.json",
-    "sha256": "5500f307ba37dcaeabe535f3570242bf15460336a55e490cc9dbb54b25e04946"
+    "sha256": "1ac0432b8ba2ebb7e6fa4b0e2d36b1b2e7a259f30e466e73ade207e3f2277f00"
   },
   "toolchain_locks": [
     {
@@ -48,9 +48,9 @@
         {"kind":"win16-version-date","relative_path":"gswmini.drv"}
       ],
       "outputs": [
-        {"relative_path":"gswmini.drv","origin":"build","bytes":14756,"sha256":"fe9e8cecb90212deb41835de7167f629ee631233540fa482fad6a705d85f9146"},
-        {"relative_path":"gswmini.vxd","origin":"build","bytes":38669,"sha256":"fff33344a8ee01b6ca48546e9433c7bb1aae2247fb8a0d25c99ce8d3017572fe"},
-        {"relative_path":"gswmini.inf","origin":"derived","bytes":3188,"sha256":"d14bb2396f5f3f7899506c0652fe941a657e18d7a903397fdff85a10c6b6c186"}
+        {"relative_path":"gswmini.drv","origin":"build","bytes":16732,"sha256":"c26acc98913474fd7d306d094694f38e226c88e386d567d716d15c39904b540a"},
+        {"relative_path":"gswmini.vxd","origin":"build","bytes":38897,"sha256":"716ce252412aa2474b303bab4ef181f325bb260b4d60eeaff1612242da9a5748"},
+        {"relative_path":"gswmini.inf","origin":"derived","bytes":3188,"sha256":"950b4df8c5aa7a976a267632092df22ae421402f60d9a02a6c7a981de352119c"}
       ]
     },
     {

@@ -2,6 +2,7 @@
 package main
 
 import "core:os"
+import "core:fmt"
 import "core:testing"
 import "core:time"
 import "fat32session"
@@ -27,6 +28,17 @@ gui_vm_thread_test_guest_power_off_stops_machine_without_closing_gui :: proc(t: 
 		shared.log_lines[0],
 		"machine: stopped (guest requested APM power off)",
 	)
+}
+
+@(test)
+gui_vm_thread_test_freeze_diagnostic_survives_publisher_temp_allocator_reset :: proc(t: ^testing.T) {
+	shared: Shared
+	defer vm_log_destroy(&shared)
+	message := fmt.tprintf("disk recovery failed at checkpoint %d", 414)
+	publish_freeze(&shared, message, "EIP=12345678")
+	free_all(context.temp_allocator)
+	testing.expect_value(t, shared.frozen_msg, "disk recovery failed at checkpoint 414")
+	testing.expect_value(t, shared.regs_text, "EIP=12345678")
 }
 
 @(test)

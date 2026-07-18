@@ -18,6 +18,7 @@ typedef char GSWSurfaceFillSizeCheck[(sizeof(GSWSurfaceFillCommand) == 40) ? 1 :
 typedef char GSWSurfaceBltSizeCheck[(sizeof(GSWSurfaceBltCommand) == 76) ? 1 : -1];
 typedef char GSWSurfacePresentSizeCheck[(sizeof(GSWSurfacePresentCommand) == 20) ? 1 : -1];
 typedef char GSWSurfaceDirtySizeCheck[(sizeof(GSWSurfaceDirtyCommand) == 36) ? 1 : -1];
+typedef char GSWGdiBltSizeCheck[(sizeof(GSWGdiBltCommand) == GSW_GDI_BLT_COMMAND_BYTES) ? 1 : -1];
 
 static PCIAddress gsw_pci_address;
 static volatile DWORD *gsw_registers = NULL;
@@ -33,6 +34,7 @@ static DWORD gsw_semaphore = 0;
 static WORD gsw_original_pci_command = 0;
 static BOOL gsw_pci_command_saved = FALSE;
 static BOOL gsw_is_ready = FALSE;
+static volatile DWORD gsw_barrier_word = 0;
 
 typedef struct GSWSurfaceRecord {
 	DWORD id;
@@ -93,6 +95,30 @@ static DWORD gsw_pixel_format(DWORD bpp)
 		case 16: return GSW_PIXEL_FORMAT_RGB_565;
 		case 24: return GSW_PIXEL_FORMAT_RGB_888;
 		case 32: return GSW_PIXEL_FORMAT_XRGB_8888;
+	}
+	return 0;
+}
+
+static DWORD gsw_format_bytes(DWORD format)
+{
+	switch(format)
+	{
+		case GSW_PIXEL_FORMAT_INDEXED_8: return 1;
+		case GSW_PIXEL_FORMAT_RGB_565:   return 2;
+		case GSW_PIXEL_FORMAT_RGB_888:   return 3;
+		case GSW_PIXEL_FORMAT_XRGB_8888: return 4;
+	}
+	return 0;
+}
+
+static DWORD gsw_format_mask(DWORD format)
+{
+	switch(format)
+	{
+		case GSW_PIXEL_FORMAT_INDEXED_8: return 0x000000FFUL;
+		case GSW_PIXEL_FORMAT_RGB_565:   return 0x0000FFFFUL;
+		case GSW_PIXEL_FORMAT_RGB_888:   return 0x00FFFFFFUL;
+		case GSW_PIXEL_FORMAT_XRGB_8888: return 0xFFFFFFFFUL;
 	}
 	return 0;
 }
@@ -166,9 +192,16 @@ static void gsw_advance_fence(void)
 
 static void gsw_ring_copy(DWORD offset, const BYTE *source, DWORD length)
 {
-	DWORD i;
-	for(i = 0; i < length; i++)
-		gsw_ring[(offset + i) & (GSW_VGA_RING_BYTES - 1)] = source[i];
+	DWORD first = GSW_VGA_RING_BYTES - offset;
+	if(first > length) first = length;
+	memcpy((void *)(gsw_ring + offset), source, first);
+	if(first < length)
+		memcpy((void *)gsw_ring, source + first, length - first);
+}
+
+static void gsw_write_barrier(void)
+{
+	_asm { lock or dword ptr [gsw_barrier_word], 0 }
 }
 
 static void gsw_recover_failed_submission(void)
@@ -208,13 +241,17 @@ static BOOL gsw_submit_locked(void *command, DWORD length)
 		goto done;
 
 	header = (GSWCommandHeader *)command;
-	header->version = header->opcode >= GSW_VGA_OPCODE_REGISTER_SURFACE ?
-		GSW_VGA_COMMAND_VERSION_3 : GSW_VGA_COMMAND_VERSION_2;
+	if(header->opcode == GSW_VGA_OPCODE_GDI_BLT)
+		header->version = GSW_VGA_COMMAND_VERSION_4;
+	else
+		header->version = header->opcode >= GSW_VGA_OPCODE_REGISTER_SURFACE ?
+			GSW_VGA_COMMAND_VERSION_3 : GSW_VGA_COMMAND_VERSION_2;
 	header->length = length;
 	header->fence_low = gsw_fence_low;
 	header->fence_high = gsw_fence_high;
 
 	gsw_ring_copy(gsw_ring_tail, (const BYTE *)command, length);
+	gsw_write_barrier();
 	new_tail = (gsw_ring_tail + length) & (GSW_VGA_RING_BYTES - 1);
 	gsw_register_write(GSW_VGA_REG_RING_TAIL, new_tail);
 	gsw_register_write(GSW_VGA_REG_DOORBELL, 1);
@@ -236,6 +273,57 @@ done:
 	if(!success)
 		gsw_recover_failed_submission();
 	return success;
+}
+
+static BOOL gsw_submit_gdi_locked(void *command, DWORD length)
+{
+	GSWCommandHeader *header;
+	DWORD command_offset;
+	DWORD new_tail;
+	DWORD status;
+	volatile DWORD *completion;
+	if(!gsw_is_ready || command == NULL || length != GSW_GDI_BLT_COMMAND_BYTES)
+		return FALSE;
+	header = (GSWCommandHeader *)command;
+	header->version = GSW_VGA_COMMAND_VERSION_4;
+	header->length = length;
+	header->fence_low = gsw_fence_low;
+	header->fence_high = gsw_fence_high;
+	command_offset = gsw_ring_tail;
+	gsw_ring_copy(command_offset, (const BYTE *)command, length);
+	gsw_write_barrier();
+	new_tail = (command_offset + length) & (GSW_VGA_RING_BYTES - 1);
+	if((gsw_capabilities & GSW_VGA_CAP_GDI_SYNC_COOKIE) != 0)
+	{
+		completion = (volatile DWORD *)(gsw_ring + command_offset);
+		gsw_register_write(
+			GSW_VGA_REG_DOORBELL,
+			GSW_GDI_DOORBELL_TAIL_FLAG | GSW_GDI_DOORBELL_COOKIE_FLAG | new_tail
+		);
+		gsw_write_barrier();
+		if(*completion != GSW_GDI_COMPLETION_COOKIE)
+		{
+			gsw_recover_failed_submission();
+			return FALSE;
+		}
+		gsw_ring_tail = new_tail;
+		gsw_advance_fence();
+		return TRUE;
+	}
+	gsw_register_write(
+		GSW_VGA_REG_DOORBELL,
+		GSW_GDI_DOORBELL_TAIL_FLAG | new_tail
+	);
+	status = gsw_register_read(GSW_VGA_REG_STATUS);
+	if((status & (GSW_VGA_STATUS_READY | GSW_VGA_STATUS_ERROR)) !=
+	   GSW_VGA_STATUS_READY)
+	{
+		gsw_recover_failed_submission();
+		return FALSE;
+	}
+	gsw_ring_tail = new_tail;
+	gsw_advance_fence();
+	return TRUE;
 }
 
 static BOOL gsw_begin(void)
@@ -779,4 +867,101 @@ BOOL GSW_transport_surface_dirty(const GSWDDDirty *request)
 done:
 	gsw_end();
 	return success;
+}
+
+static BOOL gsw_gdi_source_dependent(BYTE rop)
+{
+	return ((rop ^ (rop >> 2)) & 0x33) != 0;
+}
+
+static BOOL gsw_gdi_pattern_dependent(BYTE rop)
+{
+	return ((rop ^ (rop >> 4)) & 0x0F) != 0;
+}
+
+static BOOL gsw_gdi_rect_valid(
+	DWORD offset,
+	DWORD pitch,
+	DWORD x,
+	DWORD y,
+	DWORD width,
+	DWORD height,
+	DWORD bytes
+)
+{
+	DWORD x_bytes;
+	DWORD row_bytes;
+	DWORD remaining;
+	if(bytes == 0 || width == 0 || height == 0 || pitch == 0 ||
+	   x > 0xFFFFFFFFUL / bytes || width > 0xFFFFFFFFUL / bytes)
+		return FALSE;
+	x_bytes = x * bytes;
+	row_bytes = width * bytes;
+	if(x_bytes > pitch || row_bytes > pitch - x_bytes || offset > gsw_framebuffer_size)
+		return FALSE;
+	remaining = gsw_framebuffer_size - offset;
+	if(y > remaining / pitch) return FALSE;
+	remaining -= y * pitch;
+	if(x_bytes > remaining) return FALSE;
+	remaining -= x_bytes;
+	if(row_bytes > remaining) return FALSE;
+	return height - 1 <= (remaining - row_bytes) / pitch;
+}
+
+BOOL GSW_transport_gdi_blt(const GSWGdiBltCommand *request, DWORD byte_count)
+{
+	GSWGdiBltCommand command;
+	DWORD bytes;
+	DWORD mask;
+	DWORD index;
+	BYTE rop;
+	if(request == NULL || byte_count != sizeof(command) ||
+	   (gsw_capabilities & GSW_VGA_CAP_GDI_ROP3) == 0)
+		return FALSE;
+	memcpy(&command, request, sizeof(command));
+	bytes = gsw_format_bytes(command.format);
+	mask = gsw_format_mask(command.format);
+	if(bytes == 0 || command.flags & ~(GSW_GDI_SOURCE_VALID | GSW_GDI_PATTERN_VALID) ||
+	   command.rop3 > 0xFF || command.width == 0 || command.height == 0 ||
+	   command.height > GSW_VGA_MAX_SOFTWARE_PIXELS / command.width ||
+	   !gsw_gdi_rect_valid(
+		command.destination_offset, command.destination_pitch,
+		command.destination_x, command.destination_y,
+		command.width, command.height, bytes
+	   ))
+		return FALSE;
+	rop = (BYTE)command.rop3;
+	if(gsw_gdi_source_dependent(rop))
+	{
+		if((command.flags & GSW_GDI_SOURCE_VALID) == 0 ||
+		   !gsw_gdi_rect_valid(
+			command.source_offset, command.source_pitch,
+			command.source_x, command.source_y,
+			command.width, command.height, bytes
+		   ))
+			return FALSE;
+	}
+	else if((command.flags & GSW_GDI_SOURCE_VALID) != 0 &&
+	        !gsw_gdi_rect_valid(
+			command.source_offset, command.source_pitch,
+			command.source_x, command.source_y,
+			command.width, command.height, bytes
+	        ))
+		return FALSE;
+	if(gsw_gdi_pattern_dependent(rop) && (command.flags & GSW_GDI_PATTERN_VALID) == 0)
+		return FALSE;
+	if((command.flags & GSW_GDI_PATTERN_VALID) != 0)
+		for(index = 0; index < GSW_GDI_PATTERN_PIXELS; index++)
+			if(command.pattern[index] & ~mask) return FALSE;
+	command.header.opcode = GSW_VGA_OPCODE_GDI_BLT;
+	if((gsw_capabilities & GSW_VGA_CAP_GDI_FAST_DOORBELL) == 0)
+		return gsw_submit(&command, sizeof(command));
+	if(!gsw_begin()) return FALSE;
+	if(!gsw_submit_gdi_locked(&command, sizeof(command)))
+	{
+		gsw_end();
+		return FALSE;
+	}
+	gsw_end();
+	return TRUE;
 }

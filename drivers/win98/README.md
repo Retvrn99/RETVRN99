@@ -62,9 +62,9 @@ The final package payloads are:
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `gswmini.drv` | 14,756 | `fe9e8cecb90212deb41835de7167f629ee631233540fa482fad6a705d85f9146` |
-| `gswmini.vxd` | 38,669 | `fff33344a8ee01b6ca48546e9433c7bb1aae2247fb8a0d25c99ce8d3017572fe` |
-| `gswmini.inf` | 3,188 | `d14bb2396f5f3f7899506c0652fe941a657e18d7a903397fdff85a10c6b6c186` |
+| `gswmini.drv` | 16,732 | `c26acc98913474fd7d306d094694f38e226c88e386d567d716d15c39904b540a` |
+| `gswmini.vxd` | 38,897 | `716ce252412aa2474b303bab4ef181f325bb260b4d60eeaff1612242da9a5748` |
+| `gswmini.inf` | 3,188 | `950b4df8c5aa7a976a267632092df22ae421402f60d9a02a6c7a981de352119c` |
 | `gswhal9x.dll` | 46,592 | `8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38` |
 | `gswdd32.dll` | 32,256 | `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4` |
 
@@ -74,6 +74,15 @@ an OpenGL ICD, Direct3D driver, Mesa component, VESA helper, or tray utility.
 The mini-VDD contains the capability-gated GSW3D guest transport, but it exposes
 no usable 3D path unless the host explicitly advertises the guarded proof
 backend.
+
+GSW-VGA 0.2.0.2 also provides capability-gated screen and offscreen VRAM GDI
+`BitBlt` acceleration for packed 8-, 16-, 24-, and 32-bit modes. Its private
+pointer-free command supports all 256 ROP3 truth tables with solid or opaque
+native-color 8x8 brushes. Unsupported surfaces, brushes, formats, and failed
+submissions immediately return to the DIB Engine for that operation.
+The synchronous GDI hot path uses a separately negotiated shared-memory
+completion cookie, reducing successful submissions to one MMIO doorbell while
+retaining the two-exit and generic fenced paths for older hosts.
 
 ## Stageable package
 

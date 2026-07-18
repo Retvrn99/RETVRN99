@@ -2,9 +2,10 @@
 
 RETVRN99_GSW_RELEASE = 1
 !include makefile
+FLAGS += -DHWBLT
 
 GSW_DRV_OBJS = &
-  dibcall.obj dibthunk.obj dddrv_gsw.obj drvlib.obj enable.obj &
+  dibcall.obj dibthunk.obj dddrv_gsw.obj drvlib.obj enable.obj gsw_gdi.obj &
   init.obj control_gsw.obj pm16_calls_gsw.obj palette.obj sswhook.obj &
   modes.obj scrsw.obj
 
@@ -32,6 +33,9 @@ gsw3d_ioctl.obj : gsw3d_ioctl.c gsw_transport.h gsw3d_abi.h .autodepend
 
 gsw_ddraw.obj : gsw_ddraw.c gsw_transport.h .autodepend
 	$(CC32) $(CFLAGS32) $(INCS) $(FLAGS) gsw_ddraw.c
+
+gsw_gdi.obj : gsw_gdi.c gsw_gdi.h gsw_gdi_abi.h .autodepend
+	$(CC) $(CFLAGS) -zW $(INCS) $(FLAGS) gsw_gdi.c
 
 dddrv_gsw.obj : dddrv_gsw.c .autodepend
 	$(CC) $(CFLAGS) -zW $(INCS) $(FLAGS) dddrv_gsw.c
@@ -62,6 +66,7 @@ file dibthunk.obj
 file dddrv_gsw.obj
 file drvlib.obj
 file enable.obj
+file gsw_gdi.obj
 file init.obj
 file control_gsw.obj
 file pm16_calls_gsw.obj

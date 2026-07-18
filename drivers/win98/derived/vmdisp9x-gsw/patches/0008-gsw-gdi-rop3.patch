@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/modes.c b/modes.c
+--- a/modes.c
++++ b/modes.c
+@@ -41,6 +41,7 @@
+ #include "3d_accel.h"
+ 
+ #include "drvlib.h"
++#include "gsw_gdi.h"
+ #include "dpmi.h"
+ 
+ #include <string.h> /* _fmemset */
+@@ -51,7 +52,8 @@
+ 
+ WORD wScreenX       = 0;
+ WORD wScreenY       = 0;
+-WORD BitBltDevProc  = 0;
++BOOL WINAPI (* BitBltDevProc)( LPDIBENGINE, WORD, WORD, LPPDEVICE, WORD, WORD,
++                               WORD, WORD, DWORD, LPBRUSH, LPDRAWMODE ) = 0;
+ WORD wPDeviceFlags  = 0;
+ 
+ /* FBHDA structure pointers */
+@@ -230,7 +231,7 @@ static int SetDisplayMode( WORD wXRes, WORD wYRes, int bFullSet )
+         wScreenY = hda->height;
+         wScreenPitchBytes = hda->pitch;
+ 
+-        BitBltDevProc     = NULL;       /* No acceleration implemented. */
++        BitBltDevProc     = GSW_BitBlt;
+ 
+         wPDeviceFlags     = MINIDRIVER | VRAM | OFFSCREEN;
+         if( wBpp == 16 ) {
+diff --git a/vxd_main.c b/vxd_main.c
+--- a/vxd_main.c
++++ b/vxd_main.c
+@@ -417,6 +417,30 @@ WORD __stdcall VXD_API_Proc(PCRS_32 state)
+ 			state->Client_ECX = FBHDA_gamma_set((void *)state->Client_ESI, state->Client_ECX);
+ 			rc = 1;
+ 			break;
++#ifdef GSW
++		case GSW_GDI_PM16_QUERY:
++			state->Client_ECX = GSW_transport_capabilities() &
++				(GSW_VGA_CAP_GDI_ROP3 | GSW_VGA_CAP_GDI_FAST_DOORBELL |
++				 GSW_VGA_CAP_GDI_SYNC_COOKIE);
++			rc = 1;
++			break;
++		case GSW_GDI_PM16_SUBMIT:
++			{
++				GSWGdiBltCommand request;
++				DWORD byte_count = state->Client_ECX;
++				DWORD request_linear = state->Client_ESI;
++				state->Client_ECX = 0;
++				if(byte_count == sizeof(request) && request_linear != 0)
++				{
++					memcpy(&request, (const void *)request_linear, sizeof(request));
++					state->Client_ECX = GSW_transport_gdi_blt(
++						&request, sizeof(request)
++					);
++				}
++				rc = 1;
++				break;
++			}
++#endif
+ 		case OP_FBHDA_REFRESH:
+ 			FBHDA_refresh(state->Client_ECX);
+ 			break;

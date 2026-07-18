@@ -492,3 +492,105 @@ fat32image_test_dirty_image_opens_for_recovery_but_cannot_close_clean_while_inva
 	testing.expect_value(t, close(recovery, .Clean).code, Error_Code.Invalid_FAT32)
 	testing.expect_value(t, close(recovery, .Retain).code, Error_Code.None)
 }
+
+@(test)
+fat32image_test_recovery_conservatively_merges_fat_status_bits :: proc(t: ^testing.T) {
+	directory, directory_ok := fat32image_test_directory(t)
+	if !directory_ok {return}
+	defer os.remove_all(directory)
+	path, created, create_ok := fat32image_test_create(t, directory, "recover-fat-status.img")
+	if !create_ok {return}
+	defer info_destroy(&created)
+	image, open_error := open(path, .Read_Write)
+	if !testing.expect_value(t, open_error.code, Error_Code.None) {return}
+	first_fat_lba := u64(image.info.partition_lba) + u64(image.info.reserved_sectors)
+	second_fat_lba := first_fat_lba + u64(image.geometry.sectors_per_fat)
+	first, second: [SECTOR_BYTES]u8
+	testing.expect_value(t, block_read(image, first_fat_lba, first[:]).code, Error_Code.None)
+	testing.expect_value(t, block_read(image, second_fat_lba, second[:]).code, Error_Code.None)
+	put_u32le(first[:], 4, get_u32le(first[:], 4) & ~u32(0x0400_0000))
+	testing.expect_value(t, block_write(image, first_fat_lba, first[:]).code, Error_Code.None)
+	testing.expect_value(t, close(image, .Retain).code, Error_Code.None)
+
+	recovery, recovery_error := open_staged(path, true)
+	if !testing.expect_value(t, recovery_error.code, Error_Code.None) {return}
+	testing.expect_value(t, activate(recovery).code, Error_Code.None)
+	testing.expect_value(t, check_filesystem(recovery).code, Error_Code.Invalid_FAT32)
+	testing.expect_value(t, complete_recovery(recovery).code, Error_Code.None)
+	testing.expect_value(t, block_read(recovery, first_fat_lba, first[:]).code, Error_Code.None)
+	testing.expect_value(t, block_read(recovery, second_fat_lba, second[:]).code, Error_Code.None)
+	testing.expect_value(t, string(first[:]), string(second[:]))
+	testing.expect_value(
+		t,
+		get_u32le(first[:], 4) & FAT_ENTRY1_STATUS_MASK,
+		u32(0x0800_0000),
+	)
+	testing.expect_value(t, close(recovery, .Clean).code, Error_Code.None)
+}
+
+@(test)
+fat32image_test_recovery_status_merge_is_bidirectional_idempotent_and_narrow :: proc(t: ^testing.T) {
+	directory, directory_ok := fat32image_test_directory(t)
+	if !directory_ok {return}
+	defer os.remove_all(directory)
+	cases := [?]struct {
+		name:          string,
+		clear_mask:    u32,
+		second_mirror: bool,
+		allowed:       bool,
+	} {
+		{"fat1-clean.img", 0x0800_0000, false, true},
+		{"fat2-hard.img", 0x0400_0000, true, true},
+		{"fat2-both.img", FAT_ENTRY1_STATUS_MASK, true, true},
+		{"fat1-nonstatus.img", 0x0200_0000, false, false},
+	}
+	for item in cases {
+		path, created, create_ok := fat32image_test_create(t, directory, item.name)
+		if !create_ok {continue}
+		image, open_error := open(path, .Read_Write)
+		if !testing.expect_value(t, open_error.code, Error_Code.None) {
+			info_destroy(&created)
+			continue
+		}
+		first_fat_lba := u64(image.info.partition_lba) + u64(image.info.reserved_sectors)
+		second_fat_lba := first_fat_lba + u64(image.geometry.sectors_per_fat)
+		target_lba := item.second_mirror ? second_fat_lba : first_fat_lba
+		sector: [SECTOR_BYTES]u8
+		testing.expect_value(t, block_read(image, target_lba, sector[:]).code, Error_Code.None)
+		original_status := get_u32le(sector[:], 4)
+		put_u32le(sector[:], 4, original_status & ~item.clear_mask)
+		if item.allowed {
+			testing.expect_value(t, block_write(image, target_lba, sector[:]).code, Error_Code.None)
+		} else {
+			target_offset, offset_ok := sector_offset(target_lba)
+			testing.expect(t, offset_ok && write_exact_at(image.file, sector[:], target_offset))
+		}
+		testing.expect_value(t, close(image, .Retain).code, Error_Code.None)
+
+		recovery, recovery_error := open_staged(path, true)
+		if !testing.expect_value(t, recovery_error.code, Error_Code.None) {
+			info_destroy(&created)
+			continue
+		}
+		testing.expect_value(t, activate(recovery).code, Error_Code.None)
+		result := complete_recovery(recovery)
+		if item.allowed {
+			testing.expect_value(t, result.code, Error_Code.None)
+			testing.expect_value(t, complete_recovery(recovery).code, Error_Code.None)
+			first, second: [SECTOR_BYTES]u8
+			testing.expect_value(t, block_read(recovery, first_fat_lba, first[:]).code, Error_Code.None)
+			testing.expect_value(t, block_read(recovery, second_fat_lba, second[:]).code, Error_Code.None)
+			testing.expect_value(t, string(first[:]), string(second[:]))
+			testing.expect_value(
+				t,
+				get_u32le(first[:], 4) & FAT_ENTRY1_STATUS_MASK,
+				(original_status & ~item.clear_mask) & FAT_ENTRY1_STATUS_MASK,
+			)
+			testing.expect_value(t, close(recovery, .Clean).code, Error_Code.None)
+		} else {
+			testing.expect_value(t, result.code, Error_Code.Invalid_FAT32)
+			testing.expect_value(t, close(recovery, .Retain).code, Error_Code.None)
+		}
+		info_destroy(&created)
+	}
+}

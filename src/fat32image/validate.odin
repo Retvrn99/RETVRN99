@@ -130,8 +130,28 @@ validate_backup_vbr :: proc(
 	return slice.equal(primary[11:90], sector[11:90])
 }
 
+FAT_ENTRY1_STATUS_MASK :: u32(0x0C00_0000)
+
 @(private = "file")
-validate_fat_headers :: proc(file: ^os.File, geometry: ^Geometry, root_cluster: u32) -> bool {
+fat_mirror_chunk_equal :: proc(first, second: []u8, first_chunk: bool, allow_status_divergence: bool) -> bool {
+	if len(first) != len(second) {return false}
+	if !first_chunk || !allow_status_divergence {
+		return slice.equal(first, second)
+	}
+	if len(first) < 8 || !slice.equal(first[:4], second[:4]) {return false}
+	first_status := get_u32le(first, 4)
+	second_status := get_u32le(second, 4)
+	if (first_status ~ second_status) & ~FAT_ENTRY1_STATUS_MASK != 0 {return false}
+	return slice.equal(first[8:], second[8:])
+}
+
+@(private = "file")
+validate_fat_headers :: proc(
+	file: ^os.File,
+	geometry: ^Geometry,
+	root_cluster: u32,
+	allow_status_divergence: bool = false,
+) -> bool {
 	FAT_SCAN_BUFFER_BYTES :: MAX_BLOCK_BYTES / 2
 	FAT_SCAN_BUFFER_SECTORS :: FAT_SCAN_BUFFER_BYTES / SECTOR_BYTES
 	first, second: [FAT_SCAN_BUFFER_BYTES]u8
@@ -150,7 +170,12 @@ validate_fat_headers :: proc(file: ^os.File, geometry: ^Geometry, root_cluster: 
 		   !second_ok ||
 		   !read_exact_at(file, first[:byte_count], first_offset) ||
 		   !read_exact_at(file, second[:byte_count], second_offset) ||
-		   !slice.equal(first[:byte_count], second[:byte_count]) {
+		   !fat_mirror_chunk_equal(
+			   first[:byte_count],
+			   second[:byte_count],
+			   sector_index == 0,
+			   allow_status_divergence,
+		   ) {
 			return false
 		}
 		sector_index += sector_count
@@ -176,6 +201,38 @@ validate_fat_headers :: proc(file: ^os.File, geometry: ^Geometry, root_cluster: 
 		root_entry != 0x0FFF_FFF7 &&
 		(root_entry < geometry.cluster_count + 2 || root_entry >= 0x0FFF_FFF8) \
 	)
+}
+
+@(private = "file")
+recover_fat_status_mirror :: proc(image: ^Image) -> Image_Error {
+	if image == nil || image.closed || image.file == nil {
+		return error_make(.Closed, false, "hard-drive image is closed")
+	}
+	first_lba := u64(image.geometry.partition_lba) + u64(image.geometry.reserved_sectors)
+	second_lba := first_lba + u64(image.geometry.sectors_per_fat)
+	first, second: [SECTOR_BYTES]u8
+	if block_read(image, first_lba, first[:]).code != .None ||
+	   block_read(image, second_lba, second[:]).code != .None {
+		return error_make(.IO, false, "cannot inspect the FAT32 status entries")
+	}
+	first_status := get_u32le(first[:], 4)
+	second_status := get_u32le(second[:], 4)
+	merged_status :=
+		(first_status & ~FAT_ENTRY1_STATUS_MASK) |
+		(first_status & second_status & FAT_ENTRY1_STATUS_MASK)
+	if first_status != merged_status {
+		put_u32le(first[:], 4, merged_status)
+		if write_error := block_write(image, first_lba, first[:]); write_error.code != .None {
+			return write_error
+		}
+	}
+	if second_status != merged_status {
+		put_u32le(second[:], 4, merged_status)
+		if write_error := block_write(image, second_lba, second[:]); write_error.code != .None {
+			return write_error
+		}
+	}
+	return sync(image)
 }
 
 @(private = "package")
@@ -382,9 +439,11 @@ materialize_filesystem :: proc(
 		(!allow_external_boot_layout || string(vbr[71:82]) == "RETVRN99   ")
 	if !validate_backup_vbr(image.file, &image.geometry, vbr[:], require_retvrn_boot) ||
 	   require_retvrn_boot && !boot_sector_valid_for_geometry(vbr[:], &image.geometry) ||
-	   !validate_fat_headers(image.file, &image.geometry, root_cluster) {
+	   !validate_fat_headers(image.file, &image.geometry, root_cluster, true) {
 		return error_make(.Invalid_FAT32, false, "FAT32 mirrors or root allocation are invalid")
 	}
+	fat_status_error := recover_fat_status_mirror(image)
+	if fat_status_error.code != .None {return fat_status_error}
 	fsinfo_error := recover_fsinfo_mirror(image)
 	if fsinfo_error.code != .None {return fsinfo_error}
 	return check_filesystem(image, allow_external_boot_layout)
