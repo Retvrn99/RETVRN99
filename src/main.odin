@@ -1015,7 +1015,7 @@ gui_main :: proc(
 			frame_mailbox_release(&shared.frames, frame_slot)
 		}
 		_ = host.host_gsw3d_proof_drain(&h)
-		host.host_render_guest(&h)
+		host.host_render_guest(&h, st.machine_running)
 
 		imgui_impl_sdlrenderer3.NewFrame()
 		imgui_impl_sdl3.NewFrame()

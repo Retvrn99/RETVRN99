@@ -163,17 +163,22 @@ host_cpu_frame_metadata_publish :: proc(h: ^Host, aspect_width, aspect_height: i
 	h.has_frame = true
 }
 
-host_render_guest :: proc(h: ^Host) {
+host_render_guest :: proc(h: ^Host, machine_running: bool) {
 	sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
 	sdl3.RenderClear(h.ren)
+	output_width, output_height := WIN_W, WIN_H
+	w, hh: c.int
+	if sdl3.GetRenderOutputSize(h.ren, &w, &hh) {
+		output_width = int(w)
+		output_height = int(hh)
+	}
+	if !machine_running {
+		host_clear_frame(h)
+		host_render_stopped_screen(h, output_width, output_height)
+		return
+	}
 	texture, source, has_source, gpu_present := host_active_texture(h)
 	if texture != nil && h.has_frame {
-		output_width, output_height := WIN_W, WIN_H
-		w, hh: c.int
-		if sdl3.GetRenderOutputSize(h.ren, &w, &hh) {
-			output_width = int(w)
-			output_height = int(hh)
-		}
 		dst := guest_view_rect_insets(
 			h.aspect_width,
 			h.aspect_height,
@@ -218,5 +223,5 @@ render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	h.aspect_width = 4
 	h.aspect_height = 3
 	h.has_frame = true
-	host_render_guest(h)
+	host_render_guest(h, true)
 }

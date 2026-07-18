@@ -47,6 +47,7 @@ Host :: struct {
 	sidebar_collapsed:   bool,
 	visual_shader:       Visual_Shader,
 	storage_icons:       Storage_Icon_Textures,
+	stopped_logo:        Ui_Icon_Texture,
 	has_frame:           bool,
 	vsync:               bool, // presents are paced by the display; else the UI loop sleeps
 	mouse_captured:      bool,
@@ -103,6 +104,10 @@ host_init :: proc(h: ^Host) -> (ok: bool) {
 	}
 	h.ren = sdl3.CreateGPURenderer(h.gpu, h.win)
 	if h.ren == nil {return false}
+	if !stopped_screen_init(h) {
+		_ = sdl3.SetError("built-in stopped-screen logo could not be loaded")
+		return false
+	}
 	if !storage_icon_textures_init(&h.storage_icons, h.ren) {
 		_ = sdl3.SetError("built-in storage icons could not be loaded")
 		return false
@@ -136,6 +141,7 @@ host_destroy :: proc(h: ^Host) {
 	if h.tex != nil {sdl3.DestroyTexture(h.tex)}
 	host_gpu_surfaces_destroy(h)
 	storage_icon_textures_destroy(&h.storage_icons)
+	stopped_screen_destroy(h)
 	if h.ren != nil {sdl3.DestroyRenderer(h.ren)}
 	if h.gpu != nil {sdl3.DestroyGPUDevice(h.gpu)}
 	if h.win != nil {sdl3.DestroyWindow(h.win)}

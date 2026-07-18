@@ -70,7 +70,6 @@ Ui_Icon_Textures :: struct {
 Storage_Icon_Texture :: Ui_Icon_Texture
 Storage_Icon_Textures :: Ui_Icon_Textures
 
-@(private = "file")
 ui_icon_texture_load :: proc(renderer: ^sdl3.Renderer, encoded: []u8) -> (result: Ui_Icon_Texture, ok: bool) {
 	if renderer == nil || len(encoded) == 0 {return {}, false}
 	img, decode_error := png.load_from_bytes(encoded, {.alpha_add_if_missing})
