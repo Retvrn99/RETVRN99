@@ -245,6 +245,12 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				quit = true
 			case .Mount_Floppy:
 				if install_state_storage_locked(&c.install_state, c.install_state_diagnostic) {
+					publish_media_failure(
+						s,
+						.Floppy,
+						cmd.path,
+						"Windows 98 installation locks removable media",
+					)
 					vm_log(
 						s,
 						"floppy: Windows 98 installation or recovery state locks media controls",
@@ -260,13 +266,20 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						c.floppy = img
 						delete(c.floppy_path)
 						c.floppy_path = strings.clone(cmd.path)
-						publish_floppy_state(s, true)
+						delete(c.user_floppy)
+						c.user_floppy = media_clone_bytes(img)
+						delete(c.user_floppy_path)
+						c.user_floppy_path = strings.clone(cmd.path)
+						publish_floppy_state(s, true, c.floppy_path, "", "", true)
 						vm_log(s, fmt.tprintf("floppy: mounted %s", cmd.path))
 					} else {
-						vm_log(s, fmt.tprintf("floppy: %s is not a 1.44MB image", cmd.path))
+						diagnostic := fmt.tprintf("%s is not a readable 1.44MB image", cmd.path)
+						publish_media_failure(s, .Floppy, cmd.path, diagnostic)
+						vm_log(s, fmt.tprintf("floppy: %s", diagnostic))
 						delete(img)
 					}
 				} else {
+					publish_media_failure(s, .Floppy, cmd.path, "The image could not be read")
 					vm_log(s, fmt.tprintf("floppy: cannot read %s", cmd.path))
 				}
 				delete(cmd.path)
@@ -283,10 +296,20 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				c.floppy = nil
 				delete(c.floppy_path)
 				c.floppy_path = ""
-				publish_floppy_state(s, false)
+				delete(c.user_floppy)
+				c.user_floppy = nil
+				delete(c.user_floppy_path)
+				c.user_floppy_path = ""
+				publish_floppy_state(s, false, "", "", "", true)
 				vm_log(s, "floppy: ejected")
 			case .Mount_Cdrom:
 				if install_state_storage_locked(&c.install_state, c.install_state_diagnostic) {
+					publish_media_failure(
+						s,
+						.Cdrom,
+						cmd.path,
+						"Windows 98 installation locks removable media",
+					)
 					vm_log(
 						s,
 						"CD-ROM: Windows 98 installation or recovery state locks media controls",
@@ -295,9 +318,22 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					continue
 				}
 				if !machine_live {
+					if !cdrom_path_supported(cmd.path) {
+						publish_media_failure(
+							s,
+							.Cdrom,
+							cmd.path,
+							"The disc image is unsupported or unreadable",
+						)
+						vm_log(s, fmt.tprintf("CD-ROM: unsupported or unreadable image %s", cmd.path))
+						delete(cmd.path)
+						continue
+					}
 					delete(c.cdrom_path)
 					c.cdrom_path = strings.clone(cmd.path)
-					publish_cdrom_state(s, true)
+					delete(c.user_cdrom_path)
+					c.user_cdrom_path = strings.clone(cmd.path)
+					publish_cdrom_state(s, true, c.cdrom_path, "", "", true)
 					vm_log(s, fmt.tprintf("CD-ROM: selected %s", c.cdrom_path))
 					delete(cmd.path)
 					continue
@@ -305,9 +341,12 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				if machine.machine_mount_cdrom(m, cmd.path) {
 					delete(c.cdrom_path)
 					c.cdrom_path = strings.clone(cmd.path)
-					publish_cdrom_state(s, true)
+					delete(c.user_cdrom_path)
+					c.user_cdrom_path = strings.clone(cmd.path)
+					publish_cdrom_state(s, true, c.cdrom_path, "", "", true)
 					vm_log(s, fmt.tprintf("CD-ROM: mounted %s", c.cdrom_path))
 				} else {
+					publish_media_failure(s, .Cdrom, cmd.path, "The disc image is unsupported or unreadable")
 					vm_log(s, fmt.tprintf("CD-ROM: unsupported or unreadable image %s", cmd.path))
 				}
 				delete(cmd.path)
@@ -322,14 +361,18 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				if !machine_live {
 					delete(c.cdrom_path)
 					c.cdrom_path = ""
-					publish_cdrom_state(s, false)
+					delete(c.user_cdrom_path)
+					c.user_cdrom_path = ""
+					publish_cdrom_state(s, false, "", "", "", true)
 					vm_log(s, "CD-ROM: ejected")
 					continue
 				}
 				machine.machine_eject_cdrom(m)
 				delete(c.cdrom_path)
 				c.cdrom_path = ""
-				publish_cdrom_state(s, false)
+				delete(c.user_cdrom_path)
+				c.user_cdrom_path = ""
+				publish_cdrom_state(s, false, "", "", "", true)
 				vm_log(s, "CD-ROM: ejected")
 			case .Install_Windows_98:
 				if machine_live {
@@ -436,7 +479,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				install_prepare_status_finish(s, true, "Windows 98 installation is ready")
 				delete(c.cdrom_path)
 				c.cdrom_path = strings.clone(cmd.path)
-				publish_cdrom_state(s, true)
+				publish_cdrom_state(s, true, c.cdrom_path)
 				if c.floppy_path != "" {
 					delete(c.floppy)
 					c.floppy = nil
@@ -541,9 +584,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					)
 					continue
 				}
-				delete(c.cdrom_path)
-				c.cdrom_path = ""
-				publish_cdrom_state(s, false)
+				vm_restore_user_media(c, m, machine_live)
 				preparation_blocked = false
 				frozen = false
 				publish_freeze(s, "", "")
@@ -563,6 +604,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			case .Set_Volume:
 				c.volume_gain = clamp(cmd.volume_gain, 0, 1)
 				_ = host.host_audio_set_gain(&c.audio, c.volume_gain)
+				_ = host.host_mechanical_audio_set_gain(s.mechanical_audio, c.volume_gain)
 			}
 		}
 		delete(cmds)
@@ -741,6 +783,8 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						s,
 						"Windows 98: detected the completed desktop, but could not finish the installation session",
 					)
+				} else {
+					vm_restore_user_media(c, m, machine_live)
 				}
 			}
 		}
@@ -770,5 +814,8 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 	delete(c.floppy)
 	delete(c.floppy_path)
 	delete(c.cdrom_path)
+	delete(c.user_floppy)
+	delete(c.user_floppy_path)
+	delete(c.user_cdrom_path)
 	free(m)
 }

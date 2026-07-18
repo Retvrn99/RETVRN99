@@ -162,6 +162,21 @@ host_input_test_keyboard_ignores_host_repeat_and_releases_focus_state :: proc(t:
 }
 
 @(test)
+host_input_test_machine_stop_discards_queue_without_break_codes :: proc(t: ^testing.T) {
+	q: Host_Input_Queue
+	k: Host_Keyboard
+	testing.expect(t, host_input_push_key(&q, &k, .A, true, false))
+	testing.expect(t, host_input_push_motion(&q, 10, -5, MOUSE_LEFT))
+	sequence := q.next_sequence
+	host_input_discard_after_stop(&q, &k)
+	testing.expect_value(t, q.count, 0)
+	testing.expect_value(t, q.head, 0)
+	testing.expect_value(t, q.next_sequence, sequence)
+	testing.expect_value(t, k.held_count, 0)
+	for held in k.held {testing.expect(t, !held)}
+}
+
+@(test)
 host_input_test_print_screen_and_pause_sequences :: proc(t: ^testing.T) {
 	q: Host_Input_Queue
 	k: Host_Keyboard

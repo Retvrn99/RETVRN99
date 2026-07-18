@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
-import "core:bytes"
 import "core:image/png"
 import "core:testing"
 import sdl3 "vendor:sdl3"
@@ -306,107 +305,69 @@ host_test_storage_activity_new_machine_zero_is_baseline_then_first_io_pulses :: 
 	testing.expect(t, activity_light_step(&light, 1, 2, true, 0.01))
 }
 
-@(test)
-host_test_storage_indicators_are_anchored_to_menu_bar_right_edge :: proc(t: ^testing.T) {
-	left := menu_storage_indicator_left(40, 1440)
-	testing.expect_value(t, left + MENU_STORAGE_TOTAL_WIDTH + MENU_STORAGE_RIGHT_INSET, f32(1480))
-	testing.expect(t, menu_storage_indicators_fit(600, left))
-	narrow_left := menu_storage_indicator_left(0, 640)
-	testing.expect(t, !menu_storage_indicators_fit(560, narrow_left))
-}
-
-@(test)
-host_test_storage_icon_rect_draws_equal_square_canvases :: proc(t: ^testing.T) {
-	floppy_min, floppy_max := menu_storage_icon_rect(256, 256, 100, 10)
-	testing.expect_value(t, floppy_max.x - floppy_min.x, MENU_STORAGE_ICON_SIZE)
-	testing.expect_value(t, floppy_max.y - floppy_min.y, MENU_STORAGE_ICON_SIZE)
-	testing.expect_value(t, floppy_min.x, f32(100))
-
-	hdd_min, hdd_max := menu_storage_icon_rect(240, 240, 200, 10)
-	testing.expect_value(t, hdd_max.x - hdd_min.x, MENU_STORAGE_ICON_SIZE)
-	testing.expect_value(t, hdd_max.y - hdd_min.y, MENU_STORAGE_ICON_SIZE)
-}
-
-@(test)
-host_test_storage_icon_alpha_bounds_remove_transparent_canvas :: proc(t: ^testing.T) {
-	pixels := [5 * 4 * 4]u8{}
-	for y in 1 ..= 2 {
-		for x in 2 ..= 4 {
-			pixels[(y * 5 + x) * 4 + 3] = 255
-		}
-	}
-	bounds, ok := storage_icon_alpha_bounds(pixels[:], 5, 4, 4)
-	testing.expect(t, ok)
-	testing.expect_value(t, bounds, Storage_Icon_Alpha_Bounds{x = 2, y = 1, width = 3, height = 2})
-}
-
-@(test)
-host_test_storage_icon_square_bounds_center_content_without_distortion :: proc(t: ^testing.T) {
-	floppy, floppy_ok := storage_icon_square_bounds(
-		{x = 142, y = 146, width = 256, height = 200},
-		540,
-		500,
-	)
-	testing.expect(t, floppy_ok)
-	testing.expect_value(
-		t,
-		floppy,
-		Storage_Icon_Alpha_Bounds{x = 142, y = 118, width = 256, height = 256},
-	)
-
-	hdd, hdd_ok := storage_icon_square_bounds(
-		{x = 150, y = 242, width = 240, height = 112},
-		540,
-		500,
-	)
-	testing.expect(t, hdd_ok)
-	testing.expect_value(
-		t,
-		hdd,
-		Storage_Icon_Alpha_Bounds{x = 150, y = 178, width = 240, height = 240},
-	)
-}
-
-host_expect_storage_icon_png_bounds :: proc(
-	t: ^testing.T,
-	encoded: []u8,
-	expected_content, expected_square: Storage_Icon_Alpha_Bounds,
-) {
+host_expect_ui_icon_png_size :: proc(t: ^testing.T, encoded: []u8, expected_size: int) {
 	img, err := png.load_from_bytes(encoded, {.alpha_add_if_missing})
 	defer png.destroy(img)
 	testing.expect(t, err == nil)
 	if err != nil || img == nil {return}
-	testing.expect_value(t, img.width, 540)
-	testing.expect_value(t, img.height, 500)
+	testing.expect_value(t, img.width, expected_size)
+	testing.expect_value(t, img.height, expected_size)
 	testing.expect_value(t, img.channels, 4)
 	testing.expect_value(t, img.depth, 8)
-	pixels := bytes.buffer_to_bytes(&img.pixels)
-	bounds, ok := storage_icon_alpha_bounds(pixels, img.width, img.height, img.channels)
-	testing.expect(t, ok)
-	testing.expect_value(t, bounds, expected_content)
-	square, square_ok := storage_icon_square_bounds(bounds, img.width, img.height)
-	testing.expect(t, square_ok)
-	testing.expect_value(t, square, expected_square)
 }
 
 @(test)
-host_test_embedded_storage_icon_pngs_decode_with_expected_content_bounds :: proc(t: ^testing.T) {
-	host_expect_storage_icon_png_bounds(
-		t,
-		STORAGE_ICON_FLOPPY_PNG,
-		{x = 142, y = 146, width = 256, height = 200},
-		{x = 142, y = 118, width = 256, height = 256},
-	)
-	host_expect_storage_icon_png_bounds(
-		t,
-		STORAGE_ICON_HARD_DRIVE_PNG,
-		{x = 150, y = 242, width = 240, height = 112},
-		{x = 150, y = 178, width = 240, height = 240},
-	)
-	host_expect_storage_icon_png_bounds(
-		t,
-		STORAGE_ICON_DVD_ROM_PNG,
-		{x = 142, y = 122, width = 256, height = 256},
-		{x = 142, y = 122, width = 256, height = 256},
-	)
+host_test_storage_sidebar_order_is_hdd_dvd_floppy :: proc(t: ^testing.T) {
+	testing.expect_value(t, storage_sidebar_device_order[0], Storage_Sidebar_Device.Hard_Drive)
+	testing.expect_value(t, storage_sidebar_device_order[1], Storage_Sidebar_Device.Dvd_Rom)
+	testing.expect_value(t, storage_sidebar_device_order[2], Storage_Sidebar_Device.Floppy)
+}
+
+@(test)
+host_test_status_bar_reports_only_machine_state :: proc(t: ^testing.T) {
+	st: Menu_State
+	testing.expect_value(t, status_bar_machine_text(&st), "Machine stopped")
+	st.machine_running = true
+	testing.expect_value(t, status_bar_machine_text(&st), "Machine running")
+	st.machine_paused = true
+	testing.expect_value(t, status_bar_machine_text(&st), "Machine paused")
+}
+
+@(test)
+host_test_storage_sidebar_collapse_changes_client_inset :: proc(t: ^testing.T) {
+	h := Host{menu_reveal = 1}
+	expanded := host_client_insets(&h)
+	testing.expect_value(t, expanded.top, f32(MENU_BAR_H))
+	testing.expect_value(t, expanded.right, f32(STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP))
+	testing.expect_value(t, expanded.bottom, f32(STATUS_BAR_H))
+	h.sidebar_collapsed = true
+	collapsed := host_client_insets(&h)
+	testing.expect_value(t, collapsed.right, f32(STORAGE_SIDEBAR_COLLAPSED_W + STORAGE_SIDEBAR_GAP))
+}
+
+@(test)
+host_test_storage_sidebar_arrow_points_toward_movement :: proc(t: ^testing.T) {
+	testing.expect_value(t, storage_sidebar_toggle_direction(false), Storage_Sidebar_Toggle_Direction.Right)
+	testing.expect_value(t, storage_sidebar_toggle_direction(true), Storage_Sidebar_Toggle_Direction.Left)
+}
+
+@(test)
+host_test_embedded_chicago95_icons_decode_at_native_sizes :: proc(t: ^testing.T) {
+	host_expect_ui_icon_png_size(t, UI_ICON_COMPUTER_16_PNG, 16)
+	host_expect_ui_icon_png_size(t, UI_ICON_HARD_DRIVE_16_PNG, 16)
+	host_expect_ui_icon_png_size(t, UI_ICON_DVD_ROM_16_PNG, 16)
+	host_expect_ui_icon_png_size(t, UI_ICON_FLOPPY_16_PNG, 16)
+	host_expect_ui_icon_png_size(t, UI_ICON_FOLDER_16_PNG, 16)
+	host_expect_ui_icon_png_size(t, UI_ICON_FOLDER_OPEN_16_PNG, 16)
+	host_expect_ui_icon_png_size(t, UI_ICON_GENERIC_FILE_16_PNG, 16)
+	host_expect_ui_icon_png_size(t, UI_ICON_TEXT_FILE_16_PNG, 16)
+	host_expect_ui_icon_png_size(t, UI_ICON_EXECUTABLE_16_PNG, 16)
+	host_expect_ui_icon_png_size(t, UI_ICON_COMPUTER_32_PNG, 32)
+	host_expect_ui_icon_png_size(t, UI_ICON_HARD_DRIVE_32_PNG, 32)
+	host_expect_ui_icon_png_size(t, UI_ICON_DVD_ROM_32_PNG, 32)
+	host_expect_ui_icon_png_size(t, UI_ICON_FLOPPY_32_PNG, 32)
+	host_expect_ui_icon_png_size(t, UI_ICON_SETTINGS_32_PNG, 32)
+	host_expect_ui_icon_png_size(t, UI_ICON_SOUND_32_PNG, 32)
+	host_expect_ui_icon_png_size(t, UI_ICON_ERROR_32_PNG, 32)
+	host_expect_ui_icon_png_size(t, UI_ICON_WARNING_32_PNG, 32)
 }

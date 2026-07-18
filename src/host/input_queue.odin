@@ -249,3 +249,14 @@ host_input_release_held_keys :: proc(q: ^Host_Input_Queue, k: ^Host_Keyboard) ->
 	}
 	return released
 }
+
+host_input_discard_after_stop :: proc(q: ^Host_Input_Queue, k: ^Host_Keyboard) {
+	if q != nil {
+		q.head = 0
+		q.count = 0
+	}
+	if k != nil {
+		k.held = {}
+		k.held_count = 0
+	}
+}

@@ -207,7 +207,7 @@ guided_install_draw :: proc(
 	}
 	imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
 	open := true
-	if !imgui.Begin(
+	if !host.win98_begin_window(
 		"Install Windows 98",
 		&open,
 		{.AlwaysAutoResize, .NoCollapse, .NoSavedSettings},
@@ -218,7 +218,7 @@ guided_install_draw :: proc(
 	action: Guided_Install_Action
 	switch model.phase {
 	case .Awaiting_ISO:
-		guided_install_text("Choose a Windows 98 Second Edition ISO to continue.")
+		guided_install_text("Choose a Windows installation ISO to continue.")
 		guided_install_text(
 			"The selected image will not be modified until the final confirmation.",
 		)

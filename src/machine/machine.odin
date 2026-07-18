@@ -90,6 +90,7 @@ Machine :: struct {
 	primary_ide_kernel_dma_transactions: u64,
 	primary_ide_kernel_dma_bytes:        u64,
 	audio:                               sound.Audio_Mixer,
+	mechanical_event_sink:               sound.Mechanical_Event_Sink,
 	sb16:                                sound.Sb16,
 	opl3:                                sound.Opl3,
 	sb16_dreq_channel:                   int,
@@ -477,6 +478,7 @@ machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
 	disk.bmide_reset_channel(&m.bmide, 0)
 	m.primary_ide_kernel_dma_request = false
 	disk.ide_init(&m.ide, bd)
+	disk.ide_set_mechanical_access(&m.ide, m, machine_ide_mechanical_access)
 	cmos_set_primary_disk(&m.cmos, bd.sector_count)
 	m.ide.irq_ctx = m
 	m.ide.irq = machine_irq14
@@ -509,6 +511,7 @@ machine_detach_disk :: proc(m: ^Machine) -> bool {
 // registers the FDC on the bus and installs IRQ6 and the DMA ch2 glue
 machine_init_fdc :: proc(m: ^Machine) {
 	disk.fdc_init(&m.fdc)
+	disk.fdc_set_mechanical_events(&m.fdc, m, machine_fdc_mechanical_event)
 	m.fdc.irq_ctx = m
 	m.fdc.irq = machine_irq6
 	m.fdc.dma_ctx = m
@@ -1596,6 +1599,57 @@ machine_storage_activity :: proc(m: ^Machine) -> Storage_Activity {
 		hard_drive = m.ide.activity_generation,
 		dvd_rom = m.atapi.activity_generation,
 	}
+}
+
+machine_set_mechanical_event_sink :: proc(
+	m: ^Machine,
+	sink: sound.Mechanical_Event_Sink,
+) {
+	if m == nil {return}
+	m.mechanical_event_sink = sink
+	disk.ide_set_mechanical_access(&m.ide, m, machine_ide_mechanical_access)
+	disk.fdc_set_mechanical_events(&m.fdc, m, machine_fdc_mechanical_event)
+}
+
+@(private = "package")
+machine_ide_mechanical_access :: proc(
+	ctx: rawptr,
+	lba: u64,
+	sectors: u32,
+	is_write: bool,
+) {
+	m := (^Machine)(ctx)
+	if m == nil {return}
+	sound.mechanical_event_sink_emit(m.mechanical_event_sink, {
+		kind = .Hard_Drive_Access,
+		position = u32(min(lba, u64(max(u32)))),
+		amount = u16(min(sectors, u32(max(u16)))),
+		write = is_write,
+	})
+}
+
+@(private = "package")
+machine_fdc_mechanical_event :: proc(
+	ctx: rawptr,
+	kind: disk.Fdc_Mechanical_Event_Kind,
+	track: u8,
+	amount: u16,
+) {
+	m := (^Machine)(ctx)
+	if m == nil {return}
+	event := sound.Mechanical_Event {
+		position = u32(track),
+		amount = amount,
+	}
+	switch kind {
+	case .Motor:
+		event.kind = .Floppy_Motor
+	case .Seek:
+		event.kind = .Floppy_Seek
+	case .Transfer:
+		event.kind = .Floppy_Transfer
+	}
+	sound.mechanical_event_sink_emit(m.mechanical_event_sink, event)
 }
 
 // VGA owns the legacy aperture; known probe zones read FF / swallow writes.

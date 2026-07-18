@@ -6,6 +6,7 @@
 | Bochs VGABIOS (`vgabios.bin`) | commit `6563908d0f54b7699b6adb13e0f0503ef8d84cfc` | LGPL-2.0-or-later | `vendor_local/vgabios/`, `assets/vgabios/` |
 | IBM VGA 8x16 font (`vga8x16.bin`) | int10h vga-text-mode-fonts `PC-IBM/VGA8.F16` | not copyrightable bitmap data; CC BY-SA 4.0 renditions | `assets/font/` |
 | Libre Franklin (`libre-franklin.ttf`) | Google Fonts blob `8cf5549196f5e98dc27be05fc2b3691e77eaa89c` | SIL Open Font License 1.1 | `assets/font/` |
+| Chicago95 icon theme | commit `abadacfbda68c0031e051d15dadd3c287b75afe2` | GPL-3.0-or-later (upstream also declares MIT) | `assets/icons/chicago95/` |
 | odin-imgui (Dear ImGui v1.92.8-docking bindings + prebuilt `imgui_windows_x64.lib`, SDL3/SDLRenderer3 backends) | commit `a116eb1` (2026-07-07) | MIT | `vendor_local/imgui/` |
 | IzarraVM algorithm and test references | commits `d930de57acccbc6a70cda8cc5a603173bf23cd1c` and `b88a9fe68a8109f26632ff2802262cc38a6a5ad9` | GPL-3.0-only | selectively adapted in `src/`; see `src/IZARRAVM_NOTICE.md` |
 | patcher9x Windows 98 TLB patch data and W3/W4 decoding reference | commit `b6e30d4b5a396dcd453b6c8e6733fd5b5cbce59e` | MIT | adapted in `src/win98imageprep/`; see `src/win98imageprep/PATCHER9X_NOTICE.md` |

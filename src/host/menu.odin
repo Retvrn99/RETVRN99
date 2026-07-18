@@ -16,6 +16,7 @@ MENU_STORAGE_RIGHT_INSET :: f32(8)
 MENU_STORAGE_ITEM_WIDTH ::
 	MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP + MENU_STORAGE_ICON_SIZE
 MENU_STORAGE_TOTAL_WIDTH :: MENU_STORAGE_ITEM_WIDTH * 3 + MENU_STORAGE_ITEM_GAP * 2
+MENU_MESSAGE_WIDTH :: f32(510)
 
 MENU_LED_IDLE :: u32(0xFF305830)
 MENU_LED_ACTIVE :: u32(0xFF00D838)
@@ -57,12 +58,15 @@ Menu_Action :: enum {
 	Eject_Floppy,
 	Mount_Cdrom,
 	Eject_Cdrom,
+	Reveal_Cdrom,
+	Reveal_Floppy,
 	Install_Windows_98,
 	Abandon_Windows_98_Installation,
 	Set_Cpu_Mode,
 	Set_Window_Scale,
 	Toggle_Fullscreen,
 	Set_Visual_Shader,
+	Set_Hotkeys,
 	Open_Documentation,
 	Open_Github,
 	Open_Third_Party,
@@ -86,6 +90,7 @@ Menu_Center_Panel :: enum {
 
 Menu_State :: struct {
 	machine_running:           bool,
+	machine_paused:            bool,
 	user_paused:               bool,
 	install_active:            bool,
 	install_recovery_required: bool,
@@ -95,6 +100,12 @@ Menu_State :: struct {
 	hard_drive_diagnostic:     string,
 	floppy_mounted:            bool,
 	cdrom_mounted:             bool,
+	floppy_unavailable:        bool,
+	cdrom_unavailable:         bool,
+	floppy_path:               string,
+	cdrom_path:                string,
+	floppy_diagnostic:         string,
+	cdrom_diagnostic:          string,
 	floppy_active:             bool,
 	hard_drive_active:         bool,
 	dvd_rom_active:            bool,
@@ -102,10 +113,20 @@ Menu_State :: struct {
 	window_scale:              int,
 	fullscreen:                bool,
 	menu_reveal:               f32,
+	sidebar_collapsed:         bool,
 	visual_shader:             Visual_Shader,
 	shaders_available:         bool,
 	show_hotkeys:              bool,
+	hotkeys:                   Hotkey_Config,
+	hotkey_editor:             Hotkey_Editor_State,
 	show_about:                bool,
+	show_device_sounds:        bool,
+	show_hard_drive_properties: bool,
+	show_cdrom_properties:      bool,
+	show_floppy_properties:     bool,
+	floppy_noise_enabled:       bool,
+	hdd_clicking_enabled:       bool,
+	general_status:             string,
 }
 
 Activity_Light_State :: struct {
@@ -236,17 +257,21 @@ menu_action_enabled :: proc(st: ^Menu_State, action: Menu_Action) -> bool {
 	case .Abandon_Windows_98_Installation:
 		return !st.machine_running && install_locked && !st.storage_actions_blocked
 	case .Mount_Floppy:
-		return !install_locked && !st.storage_actions_blocked && !st.floppy_mounted
+		return !install_locked && !st.storage_actions_blocked
 	case .Eject_Floppy:
 		return !install_locked && !st.storage_actions_blocked && st.floppy_mounted
 	case .Mount_Cdrom:
-		return !install_locked && !st.storage_actions_blocked && !st.cdrom_mounted
+		return !install_locked && !st.storage_actions_blocked
 	case .Eject_Cdrom:
 		return !install_locked && !st.storage_actions_blocked && st.cdrom_mounted
 	case .Set_Window_Scale:
 		return !st.fullscreen
 	case .Set_Visual_Shader:
 		return st.shaders_available
+	case .Reveal_Cdrom:
+		return len(st.cdrom_path) > 0
+	case .Reveal_Floppy:
+		return len(st.floppy_path) > 0
 	}
 	return true
 }
@@ -329,19 +354,19 @@ menu_draw_storage_indicators :: proc(st: ^Menu_State, icons: Storage_Icon_Textur
 	if !menu_storage_indicators_fit(imgui.GetCursorScreenPos().x, x) {return}
 	center_y := window_pos.y + window_size.y * 0.5
 
-	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.floppy_active)
-	icon_x := x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
-	menu_draw_storage_icon(draw, icons.floppy, icon_x, center_y)
-	x += MENU_STORAGE_ITEM_WIDTH + MENU_STORAGE_ITEM_GAP
-
 	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.hard_drive_active)
-	icon_x = x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
-	menu_draw_storage_icon(draw, icons.hard_drive, icon_x, center_y)
+	icon_x := x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
+	menu_draw_storage_icon(draw, icons.hard_drive_16, icon_x, center_y)
 	x += MENU_STORAGE_ITEM_WIDTH + MENU_STORAGE_ITEM_GAP
 
 	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.dvd_rom_active)
 	icon_x = x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
-	menu_draw_storage_icon(draw, icons.dvd_rom, icon_x, center_y)
+	menu_draw_storage_icon(draw, icons.dvd_rom_16, icon_x, center_y)
+	x += MENU_STORAGE_ITEM_WIDTH + MENU_STORAGE_ITEM_GAP
+
+	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.floppy_active)
+	icon_x = x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
+	menu_draw_storage_icon(draw, icons.floppy_16, icon_x, center_y)
 }
 
 menu_draw :: proc(
@@ -439,20 +464,38 @@ menu_draw :: proc(
 			}
 
 			if menu_begin(MENU_TOP_LEVEL_ORDER[2]) {
-				floppy_label: cstring = st.floppy_mounted ? "Eject Floppy" : "Mount Floppy..."
-				floppy_action := st.floppy_mounted ? Menu_Action.Eject_Floppy : .Mount_Floppy
+				floppy_mount_label: cstring = st.floppy_mounted ? "Change Floppy..." : "Mount Floppy..."
 				if imgui.MenuItem(
-					floppy_label,
+					floppy_mount_label,
 					nil,
 					false,
-					menu_action_enabled(st, floppy_action),
+					menu_action_enabled(st, .Mount_Floppy),
 				) {
-					action = floppy_action
+					action = .Mount_Floppy
 				}
-				cdrom_label: cstring = st.cdrom_mounted ? "Eject CD-ROM" : "Mount CD-ROM..."
-				cdrom_action := st.cdrom_mounted ? Menu_Action.Eject_Cdrom : .Mount_Cdrom
-				if imgui.MenuItem(cdrom_label, nil, false, menu_action_enabled(st, cdrom_action)) {
-					action = cdrom_action
+				if st.floppy_mounted {
+					if imgui.MenuItem("Eject Floppy", nil, false, menu_action_enabled(st, .Eject_Floppy)) {
+						action = .Eject_Floppy
+					}
+					current := len(st.floppy_path) > 0 ? filepath.base(st.floppy_path) : "Unknown image"
+					_ = imgui.MenuItem(fmt.ctprintf("Current: %s", current), nil, false, false)
+				}
+				imgui.Separator()
+				cdrom_mount_label: cstring = st.cdrom_mounted ? "Change DVD-ROM..." : "Mount DVD-ROM..."
+				if imgui.MenuItem(
+					cdrom_mount_label,
+					nil,
+					false,
+					menu_action_enabled(st, .Mount_Cdrom),
+				) {
+					action = .Mount_Cdrom
+				}
+				if st.cdrom_mounted {
+					if imgui.MenuItem("Eject DVD-ROM", nil, false, menu_action_enabled(st, .Eject_Cdrom)) {
+						action = .Eject_Cdrom
+					}
+					current := len(st.cdrom_path) > 0 ? filepath.base(st.cdrom_path) : "Unknown image"
+					_ = imgui.MenuItem(fmt.ctprintf("Current: %s", current), nil, false, false)
 				}
 				menu_end()
 			}
@@ -498,6 +541,7 @@ menu_draw :: proc(
 					menu_end()
 				}
 				imgui.Separator()
+				if imgui.MenuItem("Device Sounds...") {st.show_device_sounds = true}
 				if imgui.MenuItem("Hotkeys") {st.show_hotkeys = true}
 				menu_end()
 			}
@@ -539,7 +583,6 @@ menu_draw :: proc(
 				if imgui.MenuItem("About...") {st.show_about = true}
 				menu_end()
 			}
-			menu_draw_storage_indicators(st, storage_icons)
 			imgui.EndMenuBar()
 		}
 		imgui.End()
@@ -554,12 +597,17 @@ menu_draw :: proc(
 	center_panel := menu_center_panel(st)
 	if center_panel == .Welcome {
 		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
-		if imgui.Begin(
+		if win98_begin_window(
 			WELCOME_PANEL_TITLE,
 			nil,
 			{.AlwaysAutoResize, .NoCollapse, .NoSavedSettings},
 		) {
-			menu_text(WELCOME_PANEL_FIRST_TIME)
+			menu_message_intro(
+				storage_icons.computer_32,
+				"Initial Setup",
+				WELCOME_PANEL_FIRST_TIME,
+				MENU_MESSAGE_WIDTH,
+			)
 			imgui.Separator()
 			menu_text(WELCOME_PANEL_QUICK_START)
 			menu_text(WELCOME_PANEL_QUICK_START_TEXT)
@@ -573,16 +621,20 @@ menu_draw :: proc(
 		imgui.End()
 	} else if center_panel == .Hard_Drive_Unavailable {
 		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
-		if imgui.Begin(
+		if win98_begin_window(
 			RECOVERY_PANEL_TITLE,
 			nil,
 			{.AlwaysAutoResize, .NoCollapse, .NoSavedSettings},
 		) {
-			menu_text(RECOVERY_PANEL_MESSAGE)
+			menu_message_intro(
+				storage_icons.warning_32,
+				RECOVERY_PANEL_TITLE,
+				RECOVERY_PANEL_MESSAGE,
+				MENU_MESSAGE_WIDTH,
+			)
 			if len(st.hard_drive_path) > 0 {menu_text(st.hard_drive_path)}
 			if len(st.hard_drive_diagnostic) > 0 {
-				imgui.Separator()
-				menu_text(st.hard_drive_diagnostic)
+				menu_message_details(st.hard_drive_diagnostic, MENU_MESSAGE_WIDTH)
 			}
 			imgui.Separator()
 			menu_text(RECOVERY_PANEL_ACTION)
@@ -590,12 +642,17 @@ menu_draw :: proc(
 		imgui.End()
 	} else if center_panel == .Install_State_Recovery {
 		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
-		if imgui.Begin(
+		if win98_begin_window(
 			INSTALL_RECOVERY_PANEL_TITLE,
 			nil,
 			{.AlwaysAutoResize, .NoCollapse, .NoSavedSettings},
 		) {
-			menu_text(INSTALL_RECOVERY_PANEL_MESSAGE)
+			menu_message_intro(
+				storage_icons.warning_32,
+				INSTALL_RECOVERY_PANEL_TITLE,
+				INSTALL_RECOVERY_PANEL_MESSAGE,
+				MENU_MESSAGE_WIDTH,
+			)
 			menu_text(INSTALL_RECOVERY_PANEL_LOCK)
 			imgui.Separator()
 			menu_text(INSTALL_RECOVERY_PANEL_ACTION)
@@ -605,23 +662,23 @@ menu_draw :: proc(
 
 	if st.show_hotkeys {
 		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
-		if imgui.Begin("Hotkeys", &st.show_hotkeys, {.AlwaysAutoResize, .NoCollapse}) {
-			menu_text("Release input lock ([Windows/Super]+Shift+F1)")
-			menu_text("Toggle full screen ([Windows/Super]+Shift+F3)")
-			menu_text("Toggle Turbo ([Windows/Super]+Shift+F5)")
-			menu_text("Volume Up ([Windows/Super]+Shift+F10)")
-			menu_text("Volume Down ([Windows/Super]+Shift+F9)")
-			imgui.Separator()
-			if imgui.Button("Accept") {st.show_hotkeys = false}
-			imgui.SameLine()
-			if imgui.Button("Cancel") {st.show_hotkeys = false}
+		window_open := st.show_hotkeys
+		if win98_begin_window("Hotkeys", &window_open, {.AlwaysAutoResize, .NoCollapse, .NoSavedSettings}) {
+			apply_hotkeys, close_hotkeys := hotkey_editor_draw(st, storage_icons.settings_32)
+			if apply_hotkeys {action = .Set_Hotkeys}
+			if close_hotkeys {window_open = false}
 		}
 		imgui.End()
+		if !window_open {
+			st.show_hotkeys = false
+			st.hotkey_editor.initialized = false
+			hotkey_editor_cancel(&st.hotkey_editor)
+		}
 	}
 
 	if st.show_about {
 		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
-		if imgui.Begin("About RETVRN99", &st.show_about, {.AlwaysAutoResize, .NoCollapse}) {
+		if win98_begin_window("About RETVRN99", &st.show_about, {.AlwaysAutoResize, .NoCollapse}) {
 			menu_text("RETVRN99 (c) 2026 - General Simulation Works")
 			menu_text("GPLv3-only")
 			if imgui.TextLink("Github") {action = .Open_Github}
@@ -636,15 +693,22 @@ menu_draw :: proc(
 
 	if len(info.frozen_msg) > 0 {
 		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
-		if imgui.Begin("VM frozen", nil, {.AlwaysAutoResize, .NoCollapse}) {
-			menu_text(info.frozen_msg)
+		if win98_begin_window("VM frozen", nil, {.AlwaysAutoResize, .NoCollapse}) {
+			menu_message_intro(
+				storage_icons.error_32,
+				"Virtual Machine Error",
+				info.frozen_msg,
+				MENU_MESSAGE_WIDTH,
+			)
 			if len(info.regs_text) > 0 {
-				imgui.Separator()
-				menu_text(info.regs_text)
+				menu_message_details(info.regs_text, MENU_MESSAGE_WIDTH)
 			}
 		}
 		imgui.End()
 	}
+	sidebar_action := storage_sidebar_draw(st, storage_icons)
+	if action == .None && sidebar_action != .None {action = sidebar_action}
+	status_bar_draw(st)
 	return action
 }
 
@@ -655,4 +719,41 @@ menu_text :: proc(s: string) {
 	}
 	d := raw_data(s)
 	imgui.TextUnformatted(cstring(d), cstring(d[len(s):]))
+}
+
+menu_message_intro :: proc(
+	icon: Ui_Icon_Texture,
+	title, summary: string,
+	width: f32,
+) {
+	win98_section_title(title, width)
+	imgui.Spacing()
+	imgui.Image(win98_texture_ref(icon), {32, 32})
+	imgui.SameLine()
+	imgui.BeginGroup()
+	win98_dialog_wrapped_text(summary, width - 48)
+	imgui.EndGroup()
+	imgui.Spacing()
+}
+
+menu_message_details :: proc(details: string, width: f32) {
+	if len(details) == 0 {return}
+	imgui.Spacing()
+	minimum := imgui.GetCursorScreenPos()
+	imgui.BeginGroup()
+	imgui.Dummy({width - 12, 1})
+	win98_dialog_wrapped_text(details, width - 24)
+	imgui.Spacing()
+	if imgui.Button("Copy Details") {
+		imgui.SetClipboardText(fmt.ctprintf("%s", details))
+	}
+	imgui.EndGroup()
+	maximum := imgui.GetItemRectMax()
+	win98_draw_bevel(
+		imgui.GetWindowDrawList(),
+		{minimum.x - 4, minimum.y - 3},
+		{maximum.x + 4, maximum.y + 3},
+		true,
+	)
+	imgui.Spacing()
 }

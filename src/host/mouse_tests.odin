@@ -29,7 +29,7 @@ mouse_test_guest_view_hit :: proc(t: ^testing.T) {
 		aspect_height = 3,
 		menu_reveal   = 1,
 	}
-	r := guest_view_rect(4, 3)
+	r := guest_view_rect_insets(4, 3, WIN_W, WIN_H, host_client_insets(&h))
 	testing.expect(t, mouse_inside_guest(&h, r.x + r.w * 0.5, r.y + r.h * 0.5))
 	testing.expect(t, !mouse_inside_guest(&h, r.x - 1, r.y))
 	testing.expect(t, !mouse_inside_guest(&h, r.x, r.y + r.h))

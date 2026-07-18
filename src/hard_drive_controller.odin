@@ -11,14 +11,14 @@ import "host"
 import "securehost"
 
 HARD_DRIVE_BROWSER_PAGE_SIZE :: fat32session.EDIT_PAGE_ENTRY_LIMIT
+#assert(HARD_DRIVE_BROWSER_PAGE_SIZE == host.HARD_DRIVE_BROWSER_SELECTION_CAPACITY)
 HARD_DRIVE_EXPORT_MAX_DEPTH :: 64
 HARD_DRIVE_TREE_MAX_DEPTH :: 64
 HARD_DRIVE_TREE_PAGE_SIZE :: min(
 	max(1, #config(HARD_DRIVE_TREE_PAGE_SIZE, fat32session.EDIT_PAGE_ENTRY_LIMIT)),
 	fat32session.EDIT_PAGE_ENTRY_LIMIT,
 )
-HARD_DRIVE_TREE_MAX_NODES ::
-	(HARD_DRIVE_TREE_MAX_DEPTH + 1) * (HARD_DRIVE_TREE_PAGE_SIZE + 2) + 1
+HARD_DRIVE_TREE_MAX_NODES :: (HARD_DRIVE_TREE_MAX_DEPTH + 1) * (HARD_DRIVE_TREE_PAGE_SIZE + 2) + 1
 
 Hard_Drive_Controller_Operation :: enum u8 {
 	None,
@@ -47,6 +47,13 @@ Hard_Drive_Tree_State :: struct {
 	page_index: int,
 }
 
+Hard_Drive_Delete_Item :: struct {
+	id:   u64,
+	path: string,
+	name: string,
+	kind: host.Hard_Drive_Entry_Kind,
+}
+
 Hard_Drive_Controller :: struct {
 	adapter:               fat32session.Adapter_Kind,
 	session:               ^fat32session.Edit_Session,
@@ -62,6 +69,11 @@ Hard_Drive_Controller :: struct {
 	session_serial:        u64,
 	operation:             Hard_Drive_Controller_Operation,
 	job_active:            bool,
+	delete_items:          [host.HARD_DRIVE_BROWSER_SELECTION_CAPACITY]Hard_Drive_Delete_Item,
+	delete_count:          int,
+	delete_index:          int,
+	delete_completed:      int,
+	delete_current_items:  u64,
 	imports:               [dynamic]Hard_Drive_Import_Item,
 	import_index:          int,
 	conflict_pending:      bool,
@@ -196,6 +208,19 @@ hard_drive_controller_clear_imports :: proc(controller: ^Hard_Drive_Controller) 
 	hard_drive_controller_clear_conflict(controller)
 }
 
+hard_drive_controller_clear_delete :: proc(controller: ^Hard_Drive_Controller) {
+	if controller == nil {return}
+	for index in 0 ..< controller.delete_count {
+		delete(controller.delete_items[index].path)
+		delete(controller.delete_items[index].name)
+		controller.delete_items[index] = {}
+	}
+	controller.delete_count = 0
+	controller.delete_index = 0
+	controller.delete_completed = 0
+	controller.delete_current_items = 0
+}
+
 hard_drive_controller_export_frame_destroy :: proc(frame: ^Hard_Drive_Export_Frame) {
 	if frame == nil {return}
 	securehost.close_directory(&frame.directory)
@@ -204,9 +229,7 @@ hard_drive_controller_export_frame_destroy :: proc(frame: ^Hard_Drive_Export_Fra
 	frame^ = {}
 }
 
-hard_drive_controller_clear_export :: proc(
-	controller: ^Hard_Drive_Controller,
-) {
+hard_drive_controller_clear_export :: proc(controller: ^Hard_Drive_Controller) {
 	if controller == nil {return}
 	for index in 0 ..< controller.export_depth {
 		hard_drive_controller_export_frame_destroy(&controller.export_frames[index])
@@ -228,11 +251,14 @@ hard_drive_controller_destroy :: proc(controller: ^Hard_Drive_Controller) {
 		_ = fat32session.edit_job_cancel(controller.session)
 		controller.job_active = false
 	}
-	if controller.operation == .Apply && controller.apply_cancellable && controller.session != nil {
+	if controller.operation == .Apply &&
+	   controller.apply_cancellable &&
+	   controller.session != nil {
 		_ = fat32session.edit_cancel_apply(controller.session)
 	}
 	hard_drive_controller_close_retain(controller)
 	hard_drive_controller_clear_imports(controller)
+	hard_drive_controller_clear_delete(controller)
 	hard_drive_controller_clear_export(controller)
 	hard_drive_controller_clear_view(controller)
 	hard_drive_controller_clear_tree_state(controller)
@@ -283,13 +309,11 @@ hard_drive_controller_open :: proc(
 		hard_drive_controller_close_retain(controller)
 	}
 	hard_drive_controller_clear_imports(controller)
+	hard_drive_controller_clear_delete(controller)
 	hard_drive_controller_clear_export(controller)
 	hard_drive_controller_clear_view(controller)
 	hard_drive_controller_clear_tree_state(controller)
-	append(
-		&controller.tree_state,
-		Hard_Drive_Tree_State{path = strings.clone(""), page_index = 0},
-	)
+	append(&controller.tree_state, Hard_Drive_Tree_State{path = strings.clone(""), page_index = 0})
 	hard_drive_controller_clear_progress(controller)
 	delete(controller.image_path)
 	controller.image_path = strings.clone(image_path)
@@ -306,7 +330,8 @@ hard_drive_controller_open :: proc(
 	controller.model.machine_running = false
 	controller.model.image_path = controller.image_path
 	controller.model.current_path = controller.current_path
-	controller.model.selected_index = -1
+	host.hard_drive_browser_clear_selection(&controller.model)
+	controller.model.pending_delete_count = 0
 	hard_drive_controller_set_diagnostic(controller, "")
 	if !hard_drive_controller_open_session(controller) {return false}
 	return hard_drive_controller_refresh(controller, "", 0)
@@ -372,17 +397,14 @@ hard_drive_controller_tree_state_index :: proc(
 	return -1
 }
 
-hard_drive_controller_tree_expand :: proc(
-	controller: ^Hard_Drive_Controller,
-	path: string,
-) {
+hard_drive_controller_tree_expand :: proc(controller: ^Hard_Drive_Controller, path: string) {
 	if controller == nil || hard_drive_controller_tree_state_index(controller, path) >= 0 {return}
 	prefix := path == "" ? "" : fmt.tprintf("%s/", path)
 	for index := len(controller.tree_state) - 1; index >= 0; index -= 1 {
 		candidate := controller.tree_state[index].path
 		candidate_prefix := candidate == "" ? "" : fmt.tprintf("%s/", candidate)
-		candidate_is_ancestor := candidate == "" || candidate == path ||
-			strings.has_prefix(path, candidate_prefix)
+		candidate_is_ancestor :=
+			candidate == "" || candidate == path || strings.has_prefix(path, candidate_prefix)
 		path_is_ancestor := path == "" || strings.has_prefix(candidate, prefix)
 		if candidate_is_ancestor || path_is_ancestor {continue}
 		delete(controller.tree_state[index].path)
@@ -394,10 +416,7 @@ hard_drive_controller_tree_expand :: proc(
 	)
 }
 
-hard_drive_controller_tree_collapse :: proc(
-	controller: ^Hard_Drive_Controller,
-	path: string,
-) {
+hard_drive_controller_tree_collapse :: proc(controller: ^Hard_Drive_Controller, path: string) {
 	if controller == nil {return}
 	prefix := path == "" ? "" : fmt.tprintf("%s/", path)
 	for index := len(controller.tree_state) - 1; index >= 0; index -= 1 {
@@ -411,10 +430,7 @@ hard_drive_controller_tree_collapse :: proc(
 	}
 }
 
-hard_drive_controller_tree_reveal :: proc(
-	controller: ^Hard_Drive_Controller,
-	path: string,
-) {
+hard_drive_controller_tree_reveal :: proc(controller: ^Hard_Drive_Controller, path: string) {
 	if path == "" {return}
 	hard_drive_controller_tree_expand(controller, "")
 	components := strings.split(path, "/", context.temp_allocator)
@@ -448,13 +464,13 @@ hard_drive_controller_build_tree_branch :: proc(
 	append(
 		&controller.tree_nodes,
 		host.Hard_Drive_Tree_Node {
-			id           = hard_drive_controller_path_id(path, true),
-			name         = strings.clone(name),
-			path         = strings.clone(path),
-			depth        = depth,
+			id = hard_drive_controller_path_id(path, true),
+			name = strings.clone(name),
+			path = strings.clone(path),
+			depth = depth,
 			has_children = true,
-			expanded     = expanded,
-			selected     = controller.current_path == path,
+			expanded = expanded,
+			selected = controller.current_path == path,
 		},
 	)
 	if !expanded {return true}
@@ -463,11 +479,11 @@ hard_drive_controller_build_tree_branch :: proc(
 		append(
 			&controller.tree_nodes,
 			host.Hard_Drive_Tree_Node {
-				id         = hard_drive_controller_path_id(fmt.tprintf("%s#%d", path, page_index - 1)),
-				name       = strings.clone("Previous folders..."),
-				path       = strings.clone(path),
-				depth      = depth + 1,
-				load_more  = true,
+				id = hard_drive_controller_path_id(fmt.tprintf("%s#%d", path, page_index - 1)),
+				name = strings.clone("Previous folders..."),
+				path = strings.clone(path),
+				depth = depth + 1,
+				load_more = true,
 				page_index = page_index - 1,
 			},
 		)
@@ -503,11 +519,11 @@ hard_drive_controller_build_tree_branch :: proc(
 		append(
 			&controller.tree_nodes,
 			host.Hard_Drive_Tree_Node {
-				id         = hard_drive_controller_path_id(fmt.tprintf("%s#%d", path, page_index + 1)),
-				name       = strings.clone("More folders..."),
-				path       = strings.clone(path),
-				depth      = depth + 1,
-				load_more  = true,
+				id = hard_drive_controller_path_id(fmt.tprintf("%s#%d", path, page_index + 1)),
+				name = strings.clone("More folders..."),
+				path = strings.clone(path),
+				depth = depth + 1,
+				load_more = true,
 				page_index = page_index + 1,
 			},
 		)
@@ -576,7 +592,7 @@ hard_drive_controller_refresh :: proc(
 	controller.model.page_count_exact = !page.has_more
 	controller.model.total_entries = total_lower_bound
 	controller.model.total_entries_exact = !page.has_more
-	controller.model.selected_index = -1
+	host.hard_drive_browser_clear_selection(&controller.model)
 	controller.model.pending_changes = max(
 		controller.pending_operations,
 		fat32session.edit_changed_sector_count(controller.session) > 0 ? 1 : 0,
@@ -612,6 +628,142 @@ hard_drive_controller_find_row :: proc(
 		if row.id == entry_id {return &row, true}
 	}
 	return nil, false
+}
+
+hard_drive_controller_mark_delete_pending :: proc(
+	controller: ^Hard_Drive_Controller,
+	entry_id: u64,
+) {
+	if controller == nil {return}
+	for &row in controller.rows {
+		if row.id != entry_id || row.pending_deletion {continue}
+		row.pending_deletion = true
+		controller.model.pending_delete_count += 1
+		break
+	}
+	host.hard_drive_browser_selection_prune(&controller.model)
+}
+
+hard_drive_controller_delete_progress :: proc(
+	controller: ^Hard_Drive_Controller,
+	items_processed: u64,
+) {
+	if controller == nil || controller.delete_index >= controller.delete_count {return}
+	item := &controller.delete_items[controller.delete_index]
+	hard_drive_controller_set_progress(
+		controller,
+		fmt.tprintf(
+			"Deleting %d of %d: %s — %d entries processed",
+			controller.delete_index + 1,
+			controller.delete_count,
+			item.name,
+			items_processed,
+		),
+		u64(controller.delete_index),
+		u64(controller.delete_count),
+	)
+}
+
+hard_drive_controller_delete_stop :: proc(controller: ^Hard_Drive_Controller, diagnostic: string) {
+	if controller == nil {return}
+	controller.operation = .None
+	controller.job_active = false
+	host.hard_drive_browser_clear_selection(&controller.model)
+	hard_drive_controller_clear_progress(controller)
+	hard_drive_controller_set_diagnostic(controller, diagnostic)
+	hard_drive_controller_clear_delete(controller)
+}
+
+hard_drive_controller_delete_start_current :: proc(controller: ^Hard_Drive_Controller) -> bool {
+	if controller == nil ||
+	   controller.operation != .Delete ||
+	   controller.delete_index < 0 ||
+	   controller.delete_index >= controller.delete_count {
+		return false
+	}
+	item := &controller.delete_items[controller.delete_index]
+	err := fat32session.edit_begin_remove_recursive(controller.session, item.path)
+	if err.code != .None {
+		diagnostic := strings.clone(
+			fmt.tprintf(
+				"Could not delete %s: %s Apply or Discard the staged C-drive changes.",
+				item.name,
+				fat32session.error_text(&err),
+			),
+		)
+		hard_drive_controller_delete_stop(controller, diagnostic)
+		delete(diagnostic)
+		return false
+	}
+	controller.job_active = true
+	controller.delete_current_items = 0
+	hard_drive_controller_delete_progress(controller, 0)
+	return true
+}
+
+hard_drive_controller_begin_delete_batch :: proc(
+	controller: ^Hard_Drive_Controller,
+	snapshot: host.Hard_Drive_Delete_Snapshot,
+) -> bool {
+	if !hard_drive_controller_ready(controller) ||
+	   controller.operation != .None ||
+	   snapshot.count <= 0 ||
+	   snapshot.count > host.HARD_DRIVE_BROWSER_SELECTION_CAPACITY ||
+	   snapshot.file_count < 0 ||
+	   snapshot.directory_count < 0 ||
+	   snapshot.file_count + snapshot.directory_count != snapshot.count {
+		return false
+	}
+	hard_drive_controller_clear_delete(controller)
+	files, directories := 0, 0
+	for snapshot_index in 0 ..< snapshot.count {
+		entry_id := snapshot.entry_ids[snapshot_index]
+		if entry_id == 0 {
+			hard_drive_controller_set_diagnostic(controller, "The delete selection is invalid.")
+			hard_drive_controller_clear_delete(controller)
+			return false
+		}
+		for previous in 0 ..< snapshot_index {
+			if snapshot.entry_ids[previous] == entry_id {
+				hard_drive_controller_set_diagnostic(
+					controller,
+					"The delete selection contains duplicates.",
+				)
+				hard_drive_controller_clear_delete(controller)
+				return false
+			}
+		}
+		row, found := hard_drive_controller_find_row(controller, entry_id)
+		if !found || row.pending_deletion {
+			hard_drive_controller_set_diagnostic(
+				controller,
+				"The delete selection changed. Select the items again and retry.",
+			)
+			hard_drive_controller_clear_delete(controller)
+			return false
+		}
+		controller.delete_items[snapshot_index] = {
+			id   = row.id,
+			path = strings.clone(row.path),
+			name = strings.clone(row.name),
+			kind = row.kind,
+		}
+		controller.delete_count += 1
+		if row.kind == .Directory {directories += 1} else {files += 1}
+	}
+	if files != snapshot.file_count || directories != snapshot.directory_count {
+		hard_drive_controller_set_diagnostic(
+			controller,
+			"The delete selection metadata changed. Select the items again and retry.",
+		)
+		hard_drive_controller_clear_delete(controller)
+		return false
+	}
+	controller.operation = .Delete
+	if !hard_drive_controller_delete_start_current(controller) {return false}
+	host.hard_drive_browser_clear_selection(&controller.model)
+	hard_drive_controller_set_diagnostic(controller, "")
+	return true
 }
 
 hard_drive_controller_note_change :: proc(controller: ^Hard_Drive_Controller) {
@@ -818,10 +970,7 @@ hard_drive_controller_begin_export :: proc(
 	root, join_error := filepath.join({destination, row.name})
 	if join_error != nil {
 		delete(root)
-		hard_drive_controller_set_diagnostic(
-			controller,
-			"Export destination is invalid.",
-		)
+		hard_drive_controller_set_diagnostic(controller, "Export destination is invalid.")
 		return false
 	}
 	parent, parent_ok := securehost.open_directory(destination)
@@ -955,8 +1104,19 @@ hard_drive_controller_step_job :: proc(controller: ^Hard_Drive_Controller) {
 	if step_error.code != .None {
 		_ = fat32session.edit_job_cancel(controller.session)
 		controller.job_active = false
-		if controller.operation == .Delete && progress.items_completed > 0 {
-			hard_drive_controller_note_change(controller)
+		if controller.operation == .Delete {
+			if max(progress.items_completed, controller.delete_current_items) > 0 {
+				hard_drive_controller_note_change(controller)
+			}
+			diagnostic := strings.clone(
+				fmt.tprintf(
+					"Delete stopped: %s Apply or Discard the staged C-drive changes.",
+					fat32session.error_text(&step_error),
+				),
+			)
+			hard_drive_controller_delete_stop(controller, diagnostic)
+			delete(diagnostic)
+			return
 		}
 		hard_drive_controller_set_diagnostic(controller, fat32session.error_text(&step_error))
 		if controller.operation == .Export_Tree {
@@ -980,16 +1140,11 @@ hard_drive_controller_step_job :: proc(controller: ^Hard_Drive_Controller) {
 	completed := progress.completed_bytes
 	total := progress.total_bytes
 	if controller.operation == .Delete {
-		message = "Deleting C-drive contents"
-		completed = progress.items_completed
-		total = 0
+		controller.delete_current_items = progress.items_completed
+		hard_drive_controller_delete_progress(controller, progress.items_completed)
+	} else {
+		hard_drive_controller_set_progress(controller, message, completed, total)
 	}
-	hard_drive_controller_set_progress(
-		controller,
-		message,
-		completed,
-		total,
-	)
 	if progress.state != .Complete {return}
 	controller.job_active = false
 	switch controller.operation {
@@ -1004,14 +1159,25 @@ hard_drive_controller_step_job :: proc(controller: ^Hard_Drive_Controller) {
 		hard_drive_controller_set_progress(controller, "Exporting folder", 0, 0)
 	case .Delete:
 		hard_drive_controller_note_change(controller)
-		controller.operation = .None
-		hard_drive_controller_clear_progress(controller)
-		hard_drive_controller_set_diagnostic(controller, "")
-		_ = hard_drive_controller_refresh(
-			controller,
-			controller.current_path,
-			controller.page_index,
-		)
+		item := &controller.delete_items[controller.delete_index]
+		hard_drive_controller_mark_delete_pending(controller, item.id)
+		controller.delete_completed += 1
+		controller.delete_index += 1
+		controller.delete_current_items = 0
+		if controller.delete_index < controller.delete_count {
+			_ = hard_drive_controller_delete_start_current(controller)
+		} else {
+			staged_count := controller.delete_completed
+			diagnostic := strings.clone(
+				fmt.tprintf(
+					"%d item%s staged for deletion. Click Apply to commit or Discard to restore.",
+					staged_count,
+					staged_count == 1 ? "" : "s",
+				),
+			)
+			hard_drive_controller_delete_stop(controller, diagnostic)
+			delete(diagnostic)
+		}
 	case .None, .Apply:
 	}
 }
@@ -1066,11 +1232,24 @@ hard_drive_controller_cancel_operation :: proc(controller: ^Hard_Drive_Controlle
 		)
 		return
 	}
+	if controller.operation == .Delete {
+		partial := controller.delete_current_items > 0
+		completed := controller.delete_completed
+		if controller.job_active && controller.session != nil {
+			_ = fat32session.edit_job_cancel(controller.session)
+			controller.job_active = false
+		}
+		if partial {hard_drive_controller_note_change(controller)}
+		diagnostic := "Delete cancelled."
+		if completed > 0 || partial || controller.model.pending_changes > 0 {
+			diagnostic = "Delete cancelled. Apply or Discard the staged C-drive changes."
+		}
+		hard_drive_controller_delete_stop(controller, diagnostic)
+		return
+	}
 	if controller.job_active && controller.session != nil {
-		delete_changed := controller.operation == .Delete && controller.model.progress.completed > 0
 		_ = fat32session.edit_job_cancel(controller.session)
 		controller.job_active = false
-		if delete_changed {hard_drive_controller_note_change(controller)}
 	}
 	if controller.operation == .Import {hard_drive_controller_clear_imports(controller)}
 	export_cancelled := controller.operation == .Export_Tree
@@ -1145,6 +1324,7 @@ hard_drive_controller_apply_failure :: proc(
 		controller.apply_failed = false
 		controller.pending_operations = 0
 		controller.model.pending_changes = 0
+		controller.model.pending_delete_count = 0
 		controller.model.read_only = true
 		hard_drive_controller_clear_progress(controller)
 		hard_drive_controller_set_diagnostic(
@@ -1175,6 +1355,7 @@ hard_drive_controller_apply_failure :: proc(
 	controller.close_after_finish = false
 	controller.pending_operations = 0
 	controller.model.pending_changes = 0
+	controller.model.pending_delete_count = 0
 	controller.model.read_only = true
 	hard_drive_controller_clear_progress(controller)
 	hard_drive_controller_set_diagnostic(controller, diagnostic)
@@ -1194,6 +1375,7 @@ hard_drive_controller_apply_complete :: proc(controller: ^Hard_Drive_Controller)
 	controller.close_after_finish = false
 	controller.pending_operations = 0
 	controller.model.pending_changes = 0
+	controller.model.pending_delete_count = 0
 	hard_drive_controller_clear_progress(controller)
 	if close_after {
 		controller.model.visible = false
@@ -1249,7 +1431,8 @@ hard_drive_controller_load_tree_page :: proc(
 	page_index: int,
 ) -> bool {
 	state_index := hard_drive_controller_tree_state_index(controller, path)
-	if state_index < 0 || page_index < 0 ||
+	if state_index < 0 ||
+	   page_index < 0 ||
 	   u64(page_index) > max(u64) / u64(HARD_DRIVE_TREE_PAGE_SIZE) {
 		return false
 	}
@@ -1282,6 +1465,7 @@ hard_drive_controller_finish :: proc(
 			controller.session = nil
 			controller.pending_operations = 0
 			controller.model.pending_changes = 0
+			controller.model.pending_delete_count = 0
 			controller.model.read_only = true
 			hard_drive_controller_set_diagnostic(
 				controller,
@@ -1303,6 +1487,7 @@ hard_drive_controller_finish :: proc(
 	controller.session = nil
 	controller.pending_operations = 0
 	controller.model.pending_changes = 0
+	controller.model.pending_delete_count = 0
 	if close_after {
 		controller.model.visible = false
 		delete(path)
@@ -1348,8 +1533,7 @@ hard_drive_controller_prepare_machine_start :: proc(controller: ^Hard_Drive_Cont
 			controller,
 			"Apply or discard pending C-drive changes before starting the machine.",
 		)
-		if controller.operation == .None &&
-		   controller.model.prompt != .Close_With_Changes {
+		if controller.operation == .None && controller.model.prompt != .Close_With_Changes {
 			host.hard_drive_browser_begin_prompt(&controller.model, .Close_With_Changes)
 		}
 		return false
@@ -1487,17 +1671,7 @@ hard_drive_controller_handle :: proc(
 			controller.page_index,
 		)
 	case .Delete:
-		row, found := hard_drive_controller_find_row(controller, action.entry_id)
-		if !found || controller.operation != .None {return false}
-		err := fat32session.edit_begin_remove_recursive(controller.session, row.path)
-		if err.code != .None {
-			hard_drive_controller_set_diagnostic(controller, fat32session.error_text(&err))
-			return false
-		}
-		controller.operation = .Delete
-		controller.job_active = true
-		hard_drive_controller_set_progress(controller, "Deleting C-drive contents", 0, 0)
-		return true
+		return hard_drive_controller_begin_delete_batch(controller, action.delete_snapshot)
 	case .Apply:
 		return hard_drive_controller_begin_apply(controller, action.close_after)
 	case .Discard:

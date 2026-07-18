@@ -262,6 +262,10 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine, clock_running: bool = true) -> 
 	host.host_audio_close(&c.audio)
 	m^ = {}
 	if !machine.machine_init(m, RAM_SIZE) {return false}
+	machine.machine_set_mechanical_event_sink(
+		m,
+		host.host_mechanical_audio_sink(c.shared.mechanical_audio),
+	)
 	if c.gsw3d_host != nil {
 		backend, backend_ready := host.host_gsw3d_proof_machine_backend(c.gsw3d_host)
 		if !backend_ready || !machine.machine_set_gsw3d_backend(m, backend) {return false}
@@ -287,9 +291,15 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine, clock_running: bool = true) -> 
 	if c.floppy != nil {_ = machine.machine_mount_floppy(m, c.floppy)}
 	if c.cdrom_path != "" {
 		if machine.machine_attach_cdrom(m, c.cdrom_path) {
-			publish_cdrom_state(c.shared, true)
+			publish_cdrom_state(c.shared, true, c.cdrom_path)
 		} else {
-			publish_cdrom_state(c.shared, false)
+			publish_cdrom_state(
+				c.shared,
+				false,
+				"",
+				c.cdrom_path,
+				"The selected disc image could not be reopened",
+			)
 			vm_log(c.shared, fmt.tprintf("CD-ROM: cannot reopen %s", c.cdrom_path))
 		}
 	}

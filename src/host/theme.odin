@@ -19,7 +19,7 @@ THEME_LIGHT :: u32(0xFFFFFFFF)
 THEME_DARK :: u32(0xFF808080)
 THEME_SHADOW :: u32(0xFF404040)
 THEME_NAVY :: u32(0xFF000080)
-THEME_HIGHLIGHT :: u32(0xFFA0A0FF)
+THEME_HIGHLIGHT :: u32(0xFF1084D0)
 THEME_FONT := #load("../../assets/font/libre-franklin.ttf")
 
 theme_color :: proc(argb: u32) -> imgui.Vec4 {
@@ -107,7 +107,7 @@ theme_apply :: proc() {
 	style.Colors[imgui.Col.FrameBgHovered] = face
 	style.Colors[imgui.Col.FrameBgActive] = dark
 	style.Colors[imgui.Col.TitleBg] = dark
-	style.Colors[imgui.Col.TitleBgActive] = highlight
+	style.Colors[imgui.Col.TitleBgActive] = navy
 	style.Colors[imgui.Col.TitleBgCollapsed] = dark
 	style.Colors[imgui.Col.MenuBarBg] = face
 	style.Colors[imgui.Col.ScrollbarBg] = light
@@ -121,9 +121,9 @@ theme_apply :: proc() {
 	style.Colors[imgui.Col.Button] = face
 	style.Colors[imgui.Col.ButtonHovered] = light
 	style.Colors[imgui.Col.ButtonActive] = dark
-	style.Colors[imgui.Col.Header] = face
-	style.Colors[imgui.Col.HeaderHovered] = highlight
-	style.Colors[imgui.Col.HeaderActive] = highlight
+	style.Colors[imgui.Col.Header] = navy
+	style.Colors[imgui.Col.HeaderHovered] = navy
+	style.Colors[imgui.Col.HeaderActive] = navy
 	style.Colors[imgui.Col.Separator] = dark
 	style.Colors[imgui.Col.SeparatorHovered] = navy
 	style.Colors[imgui.Col.SeparatorActive] = navy
@@ -144,7 +144,7 @@ theme_apply :: proc() {
 	style.Colors[imgui.Col.TableRowBg] = light
 	style.Colors[imgui.Col.TableRowBgAlt] = face
 	style.Colors[imgui.Col.TextLink] = navy
-	style.Colors[imgui.Col.TextSelectedBg] = {highlight.x, highlight.y, highlight.z, 0.65}
+	style.Colors[imgui.Col.TextSelectedBg] = {navy.x, navy.y, navy.z, 0.85}
 	style.Colors[imgui.Col.TreeLines] = dark
 	style.Colors[imgui.Col.DragDropTarget] = navy
 	style.Colors[imgui.Col.DragDropTargetBg] = transparent

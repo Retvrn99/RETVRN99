@@ -15,12 +15,12 @@ mouse_inside_guest :: proc(h: ^Host, x, y: f32) -> bool {
 		output_width = int(w)
 		output_height = int(hh)
 	}
-	r := guest_view_rect(
+	r := guest_view_rect_insets(
 		h.aspect_width,
 		h.aspect_height,
 		output_width,
 		output_height,
-		f32(MENU_BAR_H) * h.menu_reveal,
+		host_client_insets(h),
 	)
 	return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
@@ -66,7 +66,9 @@ mouse_capture :: proc(h: ^Host, enabled: bool) -> bool {
 		relative_released := sdl3.SetWindowRelativeMouseMode(h.win, false)
 		keyboard_released := sdl3.SetWindowKeyboardGrab(h.win, false)
 		mouse_released := sdl3.SetWindowMouseGrab(h.win, false)
-		if !relative_released || !keyboard_released || !mouse_released {return false}
+		h.mouse_captured = false
+		h.mouse_buttons = 0
+		return relative_released && keyboard_released && mouse_released
 	}
 	h.mouse_captured = enabled
 	if !enabled {h.mouse_buttons = 0}

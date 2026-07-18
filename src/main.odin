@@ -75,6 +75,8 @@ Shared :: struct {
 	regs_text_owned:                  bool,
 	cdrom_mounted:                    bool,
 	floppy_mounted:                   bool,
+	cdrom_media:                      Mounted_Media_State,
+	floppy_media:                     Mounted_Media_State,
 	storage_activity:                 machine.Storage_Activity,
 	storage_activity_session:         u64,
 	installing_windows_98:            bool,
@@ -87,6 +89,7 @@ Shared :: struct {
 	pause_state:                      host.Pause_State,
 	input:                            host.Host_Input_Queue,
 	guard:                            ^Vm_Guard,
+	mechanical_audio:                 ^host.Host_Mechanical_Audio,
 }
 
 Vm_Ctx :: struct {
@@ -103,6 +106,9 @@ Vm_Ctx :: struct {
 	floppy:                   []u8, // retained copy of the mounted image so Reset keeps it in the drive
 	floppy_path:              string,
 	cdrom_path:               string, // retained path; each machine instance opens its own handle
+	user_floppy:              []u8,
+	user_floppy_path:         string,
+	user_cdrom_path:          string,
 	cpu_mode:                 vmconfig.Cpu_Mode,
 	paths:                    profile.Paths,
 	cmos:                     profile.Cmos_Data,
@@ -223,9 +229,9 @@ run_main :: proc() -> int {
 			settings,
 			settings_migration,
 		); migration_diagnostic != .None {
-			fmt.eprintfln("settings v1 migration failed: %v", migration_diagnostic)
+			fmt.eprintfln("settings migration failed: %v", migration_diagnostic)
 		} else {
-			fmt.println("settings: migrated v1 CPU selection to v2; no hard drive selected")
+			fmt.printfln("settings: migrated profile preferences to v%d", profile.SETTINGS_VERSION)
 		}
 	}
 	cmos, cmos_diag := profile.cmos_load(paths.cmos)
@@ -325,9 +331,23 @@ gui_main :: proc(
 ) -> (
 	result: int,
 ) {
-	active_settings := settings
-	active_settings.hard_drive_path = strings.clone(settings.hard_drive_path)
+	active_settings := profile.settings_clone(settings)
 	defer profile.settings_destroy(&active_settings)
+	settings_save_pending := false
+	startup_settings_dirty := false
+	if media_settings_reconcile_missing(&active_settings, .Floppy) == .Missing {
+		startup_settings_dirty = true
+	}
+	if media_settings_reconcile_missing(&active_settings, .Cdrom) == .Missing {
+		startup_settings_dirty = true
+	}
+	if startup_settings_dirty {
+		if diagnostic := profile.settings_save(paths.settings, active_settings);
+		   diagnostic != .None {
+			settings_save_pending = true
+			fmt.eprintfln("settings: missing removable-media path could not be cleared (%v)", diagnostic)
+		}
+	}
 	auto_close_after := auto_close
 	ctx := new(Vm_Ctx)
 	shared := new(Shared)
@@ -356,6 +376,7 @@ gui_main :: proc(
 		frame_mailbox_destroy(&shared.frames)
 		command_queue_destroy(shared)
 		vm_log_destroy(shared)
+		shared_media_destroy(shared)
 		delete(shared.install_prepare_message)
 		free(shared)
 		if !guard_storage_retained {free(ctx)}
@@ -371,6 +392,8 @@ gui_main :: proc(
 	ctx.has_cmos = has_cmos
 	ctx.firmware_log_all = firmware_log_all
 	ctx.hard_drive_path = strings.clone(active_settings.hard_drive_path)
+	ctx.user_floppy_path = strings.clone(active_settings.floppy_path)
+	ctx.user_cdrom_path = strings.clone(active_settings.cdrom_path)
 	ctx.attach = ctx.allow_hard_drive && ctx.hard_drive_path != ""
 	install_state, install_diagnostic := profile.install_state_load(paths.install_state)
 	ctx.install_state = install_state
@@ -381,6 +404,16 @@ gui_main :: proc(
 	if profile.install_state_active(&ctx.install_state) {
 		shared.installing_windows_98 = true
 		ctx.cdrom_path = strings.clone(ctx.install_state.source_path)
+		media_state_publish_result(
+			shared,
+			.Cdrom,
+			true,
+			true,
+			ctx.cdrom_path,
+			"",
+			"",
+			false,
+		)
 	}
 	if install_diagnostic != .None && install_diagnostic != .Missing {
 		vm_log(
@@ -400,6 +433,13 @@ gui_main :: proc(
 		fmt.eprintfln("host_init failed: %s", sdl3.GetError())
 		return 1
 	}
+	shared.mechanical_audio = &h.mechanical_audio
+	host.host_mechanical_audio_set_enabled(
+		shared.mechanical_audio,
+		active_settings.hdd_clicking_enabled,
+		active_settings.floppy_noise_enabled,
+	)
+	host.host_mechanical_audio_set_machine_state(shared.mechanical_audio, false, false)
 	if gsw3d_proof {
 		if !host.host_gsw3d_proof_enable(&h) {
 			fmt.eprintfln("GSW3D proof renderer initialization failed: %s", sdl3.GetError())
@@ -450,6 +490,20 @@ gui_main :: proc(
 		}
 	}
 	vm_thr := thread.create_and_start_with_poly_data(ctx, vm_thread_proc)
+	if !shared.installing_windows_98 {
+		if active_settings.floppy_path != "" {
+			push_cmd(
+				shared,
+				Command{kind = .Mount_Floppy, path = strings.clone(active_settings.floppy_path)},
+			)
+		}
+		if active_settings.cdrom_path != "" {
+			push_cmd(
+				shared,
+				Command{kind = .Mount_Cdrom, path = strings.clone(active_settings.cdrom_path)},
+			)
+		}
+	}
 	if start_requested {push_cmd(shared, Command{kind = .Start})}
 
 	st := host.Menu_State {
@@ -460,7 +514,10 @@ gui_main :: proc(
 		visual_shader     = h.visual_shader,
 		shaders_available = h.shader_state != nil,
 		hard_drive_path   = active_settings.hard_drive_path,
+		floppy_noise_enabled = active_settings.floppy_noise_enabled,
+		hdd_clicking_enabled = active_settings.hdd_clicking_enabled,
 	}
+	device_sounds_dialog: host.Device_Sounds_Dialog_State
 	floppy_activity_light: host.Activity_Light_State
 	hard_drive_activity_light: host.Activity_Light_State
 	dvd_rom_activity_light: host.Activity_Light_State
@@ -485,7 +542,48 @@ gui_main :: proc(
 	host_rgui_down := false
 	host_lshift_down := false
 	host_rshift_down := false
+	hotkey_config := host.host_hotkey_defaults()
+	if !host.host_hotkey_config_set_text(
+		&hotkey_config,
+		.Release_Input,
+		active_settings.hotkeys.release_input,
+	) {
+		vm_log(shared, "settings: invalid release-input hotkey; using the default")
+	}
+	if !host.host_hotkey_config_set_text(
+		&hotkey_config,
+		.Toggle_Fullscreen,
+		active_settings.hotkeys.toggle_fullscreen,
+	) {
+		vm_log(shared, "settings: invalid fullscreen hotkey; using the default")
+	}
+	if !host.host_hotkey_config_set_text(
+		&hotkey_config,
+		.Toggle_Turbo,
+		active_settings.hotkeys.toggle_turbo,
+	) {
+		vm_log(shared, "settings: invalid Turbo hotkey; using the default")
+	}
+	if !host.host_hotkey_config_set_text(
+		&hotkey_config,
+		.Volume_Down,
+		active_settings.hotkeys.volume_down,
+	) {
+		vm_log(shared, "settings: invalid volume-down hotkey; using the default")
+	}
+	if !host.host_hotkey_config_set_text(
+		&hotkey_config,
+		.Volume_Up,
+		active_settings.hotkeys.volume_up,
+	) {
+		vm_log(shared, "settings: invalid volume-up hotkey; using the default")
+	}
+	release_binding_title := gui_release_binding_title(hotkey_config)
+	defer delete(release_binding_title)
+	st.hotkeys = hotkey_config
 	audio_gain := f32(1)
+	floppy_media_generation: u64
+	cdrom_media_generation: u64
 	exit_requested := false
 	keyboard: host.Host_Keyboard
 	start := time.tick_now()
@@ -542,11 +640,21 @@ gui_main :: proc(
 				if host_rgui_down {host_modifiers += {.RGUI}}
 				if host_lshift_down {host_modifiers += {.LSHIFT}}
 				if host_rshift_down {host_modifiers += {.RSHIFT}}
+				if host.hotkey_editor_capture_event(
+					&st.hotkey_editor,
+					ev.key.scancode,
+					host_modifiers,
+					ev.key.down,
+					ev.key.repeat,
+				) {
+					continue
+				}
 				hotkey := host.host_hotkey_from_key(
 					ev.key.scancode,
 					host_modifiers,
 					ev.key.down,
 					ev.key.repeat,
+					&hotkey_config,
 				)
 				if hotkey != .None {
 					host_hotkey_scancode = ev.key.scancode
@@ -556,6 +664,7 @@ gui_main :: proc(
 						release_held_keys(shared, &keyboard)
 						if h.mouse_captured {
 							_ = host.mouse_capture(&h, false)
+							host.host_set_input_title(&h, false)
 							push_mouse_buttons(shared, 0, true)
 						}
 					case .Toggle_Fullscreen:
@@ -580,7 +689,10 @@ gui_main :: proc(
 				   ((ev.key.down && h.mouse_captured) || release_mouse_key) {
 					if ev.key.down {
 						release_mouse_key = true
-						if host.mouse_capture(&h, false) {push_mouse_buttons(shared, 0, true)}
+						release_held_keys(shared, &keyboard)
+						_ = host.mouse_capture(&h, false)
+						host.host_set_input_title(&h, false)
+						push_mouse_buttons(shared, 0, true)
 					} else {
 						release_mouse_key = false
 					}
@@ -608,6 +720,7 @@ gui_main :: proc(
 					   !host.mouse_capture(&h, true) {
 						continue
 					}
+					host.host_set_input_title(&h, true, release_binding_title)
 				}
 				h.mouse_buttons = host.mouse_set_button(
 					h.mouse_buttons,
@@ -632,6 +745,7 @@ gui_main :: proc(
 				release_held_keys(shared, &keyboard)
 				if h.mouse_captured {
 					_ = host.mouse_capture(&h, false)
+					host.host_set_input_title(&h, false)
 					push_mouse_buttons(shared, 0, true)
 				}
 			}
@@ -813,13 +927,58 @@ gui_main :: proc(
 		st.user_paused = host.pause_reason_active(&shared.pause_state, .User)
 		st.install_active = shared.installing_windows_98
 		st.install_recovery_required = shared.install_recovery_required
-		st.floppy_mounted = shared.floppy_mounted
-		st.cdrom_mounted = shared.cdrom_mounted
+		st.machine_paused = host.pause_active(&shared.pause_state)
 		storage_activity := shared.storage_activity
 		storage_activity_session := shared.storage_activity_session
 		sync.unlock(&shared.mu)
+		floppy_media := media_state_snapshot(shared, .Floppy, context.temp_allocator)
+		cdrom_media := media_state_snapshot(shared, .Cdrom, context.temp_allocator)
+		st.floppy_mounted = floppy_media.mounted
+		st.cdrom_mounted = cdrom_media.mounted
+		st.floppy_unavailable = floppy_media.unavailable
+		st.cdrom_unavailable = cdrom_media.unavailable
+		st.floppy_path = floppy_media.mounted ? floppy_media.actual_path : floppy_media.requested_path
+		st.cdrom_path = cdrom_media.mounted ? cdrom_media.actual_path : cdrom_media.requested_path
+		st.floppy_diagnostic = floppy_media.diagnostic
+		st.cdrom_diagnostic = cdrom_media.diagnostic
+		media_settings_changed := false
+		if media_settings_consume(
+			&active_settings,
+			.Floppy,
+			&floppy_media,
+			&floppy_media_generation,
+		) {
+			media_settings_changed = true
+		}
+		if media_settings_consume(
+			&active_settings,
+			.Cdrom,
+			&cdrom_media,
+			&cdrom_media_generation,
+		) {
+			media_settings_changed = true
+		}
+		if media_settings_changed {
+			settings_save_pending = profile.settings_save(paths.settings, active_settings) != .None
+			if settings_save_pending {
+				vm_log(shared, "settings: mounted-media change could not be saved; it will be retried")
+			}
+		}
 
-		if st.machine_running && !machine_running {host.host_clear_frame(&h)}
+		if st.machine_running && !machine_running {
+			release_mouse_key = false
+			host_hotkey_scancode = .UNKNOWN
+			host_lgui_down = false
+			host_rgui_down = false
+			host_lshift_down = false
+			host_rshift_down = false
+			_ = host.mouse_capture(&h, false)
+			host.host_set_input_title(&h, false)
+			sync.lock(&shared.mu)
+			host.host_input_discard_after_stop(&shared.input, &keyboard)
+			sync.unlock(&shared.mu)
+			host.host_clear_frame(&h)
+		}
 		st.machine_running = machine_running
 		st.storage_actions_blocked =
 			guided_install.phase != .Closed ||
@@ -828,6 +987,7 @@ gui_main :: proc(
 		st.window_scale = h.window_scale
 		st.fullscreen = h.fullscreen
 		st.visual_shader = h.visual_shader
+		h.sidebar_collapsed = st.sidebar_collapsed
 		menu_animation_now := time.tick_now()
 		menu_animation_seconds := f32(
 			time.duration_seconds(time.tick_diff(menu_animation_tick, menu_animation_now)),
@@ -880,6 +1040,14 @@ gui_main :: proc(
 			if host.menu_action_enabled(&st, .Start) &&
 			   !st.storage_actions_blocked &&
 			   hard_drive_controller_prepare_machine_start(&hard_drive_controller) {
+				if gui_media_queue_before_start(
+					shared,
+					&active_settings,
+					st.install_active || st.install_recovery_required,
+				) {
+					settings_save_pending =
+						profile.settings_save(paths.settings, active_settings) != .None
+				}
 				push_cmd(shared, Command{kind = .Start})
 			}
 		case .Stop:
@@ -955,12 +1123,74 @@ gui_main :: proc(
 		case .Set_Visual_Shader:
 			_ = host.host_set_visual_shader(&h, st.visual_shader)
 			st.visual_shader = h.visual_shader
+		case .Set_Hotkeys:
+			hotkey_config = st.hotkeys
+			if gui_hotkey_settings_store(&active_settings, hotkey_config) {
+				settings_save_pending =
+					profile.settings_save(paths.settings, active_settings) != .None
+				delete(release_binding_title)
+				release_binding_title = gui_release_binding_title(hotkey_config)
+				if h.mouse_captured {
+					host.host_set_input_title(&h, true, release_binding_title)
+				}
+			} else {
+				vm_log(shared, "settings: hotkey configuration could not be serialized")
+			}
+		case .Reveal_Cdrom:
+			_ = host.host_reveal_path(st.cdrom_path)
+		case .Reveal_Floppy:
+			_ = host.host_reveal_path(st.floppy_path)
 		case .Open_Github:
 			_ = sdl3.OpenURL("https://github.com/vorvek/RETVRN99")
 		case .Open_Documentation:
 			_ = sdl3.OpenURL("https://github.com/vorvek/RETVRN99/blob/main/docs/user-guide.md")
 		case .Open_Third_Party:
 			_ = sdl3.OpenURL("https://github.com/vorvek/RETVRN99/blob/main/THIRDPARTY.md")
+		case .None:
+		}
+		if st.show_device_sounds && !device_sounds_dialog.visible {
+			host.device_sounds_dialog_open(
+				&device_sounds_dialog,
+				active_settings.hdd_clicking_enabled,
+				active_settings.floppy_noise_enabled,
+			)
+		}
+		device_sounds_result := host.device_sounds_dialog_draw(
+			&device_sounds_dialog,
+			&h.storage_icons,
+		)
+		switch device_sounds_result.action {
+		case .Test_Hard_Drive:
+			if host.host_mechanical_audio_test_hard_drive(&h.mechanical_audio) {
+				st.general_status = "Testing hard drive clicking"
+			} else {
+				st.general_status = "Device sound output is unavailable"
+			}
+		case .Test_Floppy:
+			if host.host_mechanical_audio_test_floppy(&h.mechanical_audio) {
+				st.general_status = "Testing floppy drive noise"
+			} else {
+				st.general_status = "Device sound output is unavailable"
+			}
+		case .Apply, .Ok:
+			active_settings.hdd_clicking_enabled = device_sounds_result.hard_drive_clicking
+			active_settings.floppy_noise_enabled = device_sounds_result.floppy_noise
+			st.hdd_clicking_enabled = device_sounds_result.hard_drive_clicking
+			st.floppy_noise_enabled = device_sounds_result.floppy_noise
+			host.host_mechanical_audio_set_enabled(
+				&h.mechanical_audio,
+				device_sounds_result.hard_drive_clicking,
+				device_sounds_result.floppy_noise,
+			)
+			settings_save_pending = profile.settings_save(paths.settings, active_settings) != .None
+			if settings_save_pending {
+				st.general_status = "Device sound settings could not be saved"
+			} else {
+				st.general_status = "Device sound settings applied"
+			}
+			if device_sounds_result.action == .Ok {st.show_device_sounds = false}
+		case .Cancel:
+			st.show_device_sounds = false
 		case .None:
 		}
 		worker_result := hard_drive_create_worker_poll(&create_worker)
@@ -1132,7 +1362,10 @@ gui_main :: proc(
 		}
 		hard_drive_controller.model.machine_running = st.machine_running
 		hard_drive_controller_step(&hard_drive_controller)
-		browser_action := host.hard_drive_browser_draw(&hard_drive_controller.model)
+		browser_action := host.hard_drive_browser_draw(
+			&hard_drive_controller.model,
+			&h.storage_icons,
+		)
 		storage_machine_running, storage_install_active = gui_storage_lifecycle_snapshot(shared)
 		browser_blocked := guided_install.phase != .Closed || create_model.visible
 		if browser_action.kind == .Cancel_Close {
@@ -1240,6 +1473,12 @@ gui_main :: proc(
 		   time.duration_seconds(time.tick_since(start)) >= f64(auto_close_after) {
 			exit_requested = true
 			auto_close_after = -1
+		}
+	}
+	if settings_save_pending {
+		if diagnostic := profile.settings_save(paths.settings, active_settings);
+		   diagnostic != .None {
+			fmt.eprintfln("settings: final retry failed (%v)", diagnostic)
 		}
 	}
 	sdl3.RemoveEventWatch(lifecycle_event_watch, &lifecycle_watch)
@@ -1441,15 +1680,28 @@ publish_freeze :: proc(s: ^Shared, msg: string, regs: string) {
 }
 
 publish_pause_state :: proc(s: ^Shared, state: host.Pause_State) {
+	if s == nil {return}
+	pause_state := state
 	sync.lock(&s.mu)
 	s.pause_state = state
+	running := s.machine_running
+	mechanical_audio := s.mechanical_audio
 	sync.unlock(&s.mu)
+	host.host_mechanical_audio_set_machine_state(
+		mechanical_audio,
+		running,
+		host.pause_active(&pause_state),
+	)
 }
 
 publish_machine_running :: proc(s: ^Shared, running: bool) {
+	if s == nil {return}
 	sync.lock(&s.mu)
 	s.machine_running = running
+	paused := host.pause_active(&s.pause_state)
+	mechanical_audio := s.mechanical_audio
 	sync.unlock(&s.mu)
+	host.host_mechanical_audio_set_machine_state(mechanical_audio, running, paused)
 }
 // line to the device-log panel
 vm_log :: proc(s: ^Shared, msg: string) {
@@ -2394,16 +2646,58 @@ console_dump_frame :: proc(path: string, frame: ^vga.Display_Frame) {
 	}
 }
 
-publish_cdrom_state :: proc(s: ^Shared, mounted: bool) {
+publish_cdrom_state :: proc(
+	s: ^Shared,
+	mounted: bool,
+	actual_path: string = "",
+	requested_path: string = "",
+	diagnostic: string = "",
+	persist: bool = false,
+) {
+	media_state_publish_result(
+		s,
+		.Cdrom,
+		true,
+		mounted,
+		actual_path,
+		requested_path,
+		diagnostic,
+		persist,
+	)
 	sync.lock(&s.mu)
 	s.cdrom_mounted = mounted
 	sync.unlock(&s.mu)
 }
 
-publish_floppy_state :: proc(s: ^Shared, mounted: bool) {
+publish_floppy_state :: proc(
+	s: ^Shared,
+	mounted: bool,
+	actual_path: string = "",
+	requested_path: string = "",
+	diagnostic: string = "",
+	persist: bool = false,
+) {
+	media_state_publish_result(
+		s,
+		.Floppy,
+		true,
+		mounted,
+		actual_path,
+		requested_path,
+		diagnostic,
+		persist,
+	)
 	sync.lock(&s.mu)
 	s.floppy_mounted = mounted
 	sync.unlock(&s.mu)
+}
+
+publish_media_failure :: proc(
+	s: ^Shared,
+	kind: Media_Kind,
+	requested_path, diagnostic: string,
+) {
+	media_state_publish_result(s, kind, false, false, "", requested_path, diagnostic, false)
 }
 
 publish_install_state :: proc(s: ^Shared, installing: bool) {

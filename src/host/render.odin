@@ -82,11 +82,30 @@ guest_view_rect :: proc(
 	output_height: int = WIN_H,
 	menu_height: f32 = f32(MENU_BAR_H),
 ) -> sdl3.FRect {
+	return guest_view_rect_insets(
+		aspect_width,
+		aspect_height,
+		output_width,
+		output_height,
+		{top = menu_height},
+	)
+}
+
+guest_view_rect_insets :: proc(
+	aspect_width, aspect_height: int,
+	output_width, output_height: int,
+	insets: Host_Client_Insets,
+) -> sdl3.FRect {
 	aw := max(1, aspect_width)
 	ah := max(1, aspect_height)
-	area_w := f32(max(1, output_width))
-	menu_h := clamp(menu_height, f32(0), f32(max(0, output_height - 1)))
-	area_h := max(f32(1), f32(output_height) - menu_h)
+	max_width := f32(max(1, output_width))
+	max_height := f32(max(1, output_height))
+	left := clamp(insets.left, f32(0), max_width - 1)
+	top := clamp(insets.top, f32(0), max_height - 1)
+	right := clamp(insets.right, f32(0), max_width - left - 1)
+	bottom := clamp(insets.bottom, f32(0), max_height - top - 1)
+	area_w := max(f32(1), max_width - left - right)
+	area_h := max(f32(1), max_height - top - bottom)
 	target := f32(aw) / f32(ah)
 	w, h := area_w, area_h
 	if area_w / area_h > target {
@@ -94,7 +113,7 @@ guest_view_rect :: proc(
 	} else {
 		h = area_w / target
 	}
-	return {(area_w - w) * 0.5, menu_h + (area_h - h) * 0.5, w, h}
+	return {left + (area_w - w) * 0.5, top + (area_h - h) * 0.5, w, h}
 }
 
 host_ensure_texture :: proc(h: ^Host, width, height: int) -> bool {
@@ -155,12 +174,12 @@ host_render_guest :: proc(h: ^Host) {
 			output_width = int(w)
 			output_height = int(hh)
 		}
-		dst := guest_view_rect(
+		dst := guest_view_rect_insets(
 			h.aspect_width,
 			h.aspect_height,
 			output_width,
 			output_height,
-			f32(MENU_BAR_H) * h.menu_reveal,
+			host_client_insets(h),
 		)
 		if gpu_present != nil {dst = host_gpu_present_destination(dst, gpu_present^)}
 		source_width, source_height := h.tex_width, h.tex_height

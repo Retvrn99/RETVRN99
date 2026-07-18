@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
+import imgui "../../vendor_local/imgui"
 import "core:testing"
 
 @(test)
@@ -191,12 +192,12 @@ hard_drive_ui_test_browser_mutation_and_selection_gates :: proc(t: ^testing.T) {
 	model.rows = []Hard_Drive_Browser_Row {
 		{id = 7, kind = .File, name = "README.TXT", path = "/README.TXT", size = 12},
 	}
-	testing.expect_value(t, model.selected_index, -1)
+	testing.expect_value(t, model.selection_count, 0)
 	testing.expect(t, hard_drive_browser_can_mutate(&model))
 	testing.expect(t, !hard_drive_browser_can_use_selection(&model))
 	testing.expect(t, !hard_drive_browser_can_apply(&model))
 
-	model.selected_index = 0
+	testing.expect(t, hard_drive_browser_selection_set(&model, 7, true))
 	model.pending_changes = 2
 	testing.expect(t, hard_drive_browser_can_use_selection(&model))
 	testing.expect(t, hard_drive_browser_can_apply(&model))
@@ -225,7 +226,7 @@ hard_drive_ui_test_browser_picker_results_and_drag_drop :: proc(t: ^testing.T) {
 		{id = 11, kind = .File, name = "SAVE.DAT", path = "/SAVE.DAT"},
 		{id = 12, kind = .Directory, name = "GAMES", path = "/GAMES"},
 	}
-	model.selected_index = 0
+	testing.expect(t, hard_drive_browser_selection_set(&model, 11, true))
 	file_export := hard_drive_browser_export_request(&model)
 	testing.expect_value(t, file_export.kind, Hard_Drive_Native_Dialog_Kind.Save_File)
 	testing.expect_value(t, file_export.purpose, Hard_Drive_Dialog_Purpose.Export_Entry)
@@ -239,7 +240,7 @@ hard_drive_ui_test_browser_picker_results_and_drag_drop :: proc(t: ^testing.T) {
 	testing.expect_value(t, export_action.entry_id, u64(11))
 	testing.expect(t, !export_action.recursive)
 
-	model.selected_index = 1
+	testing.expect(t, hard_drive_browser_select_only(&model, 12))
 	folder_export := hard_drive_browser_export_request(&model)
 	testing.expect_value(t, folder_export.kind, Hard_Drive_Native_Dialog_Kind.Select_Folder)
 	export_action = hard_drive_browser_accept_dialog(
@@ -289,7 +290,7 @@ hard_drive_ui_test_browser_close_prompt_rename_and_conflict :: proc(t: ^testing.
 	model.rows = []Hard_Drive_Browser_Row {
 		{id = 99, kind = .File, name = "한글 이름.txt", path = "/한글 이름.txt"},
 	}
-	model.selected_index = 0
+	testing.expect(t, hard_drive_browser_selection_set(&model, 99, true))
 	hard_drive_browser_begin_prompt(&model, .Rename)
 	testing.expect_value(t, hard_drive_ui_buffer_string(model.name_input[:]), "한글 이름.txt")
 
@@ -325,7 +326,7 @@ hard_drive_ui_test_browser_typed_results_replace_page_and_bound_progress :: proc
 	testing.expect_value(t, model.page_index, 0)
 	testing.expect_value(t, model.page_count, 1)
 	testing.expect_value(t, model.pending_changes, 3)
-	testing.expect_value(t, model.selected_index, -1)
+	testing.expect_value(t, model.selection_count, 0)
 
 	progress := Hard_Drive_Browser_Progress {
 		active    = true,
@@ -344,6 +345,101 @@ hard_drive_ui_test_browser_typed_results_replace_page_and_bound_progress :: proc
 	)
 	testing.expect(t, !model.progress.active)
 	testing.expect_value(t, model.pending_changes, 0)
+}
+
+@(test)
+hard_drive_ui_test_page_local_selection_uses_stable_entry_ids :: proc(t: ^testing.T) {
+	model: Hard_Drive_Browser_Model
+	hard_drive_browser_init(&model)
+	model.visible = true
+	model.rows = []Hard_Drive_Browser_Row {
+		{id = 101, kind = .File, name = "ONE.TXT"},
+		{id = 202, kind = .Directory, name = "GAMES"},
+		{id = 303, kind = .File, name = "SETUP.EXE", pending_deletion = true},
+	}
+	testing.expect(t, hard_drive_browser_selection_set(&model, 202, true))
+	testing.expect(t, hard_drive_browser_selection_set(&model, 101, true))
+	testing.expect_value(t, model.selection_count, 2)
+	testing.expect(t, hard_drive_browser_selection_contains(&model, 101))
+	testing.expect(t, hard_drive_browser_selection_contains(&model, 202))
+
+	snapshot, valid := hard_drive_browser_delete_snapshot(&model)
+	testing.expect(t, valid)
+	testing.expect_value(t, snapshot.count, 2)
+	testing.expect_value(t, snapshot.file_count, 1)
+	testing.expect_value(t, snapshot.directory_count, 1)
+
+	hard_drive_browser_select_all(&model)
+	testing.expect_value(t, model.selection_count, 2)
+	testing.expect(t, !hard_drive_browser_selection_contains(&model, 303))
+	model.rows[0].pending_deletion = true
+	hard_drive_browser_selection_prune(&model)
+	testing.expect_value(t, model.selection_count, 1)
+	testing.expect(t, hard_drive_browser_selection_contains(&model, 202))
+
+	hard_drive_browser_clear_selection(&model)
+	testing.expect_value(t, model.selection_count, 0)
+}
+
+@(test)
+hard_drive_ui_test_multi_select_requests_map_ranges_to_stable_ids :: proc(t: ^testing.T) {
+	model: Hard_Drive_Browser_Model
+	hard_drive_browser_init(&model)
+	model.rows = []Hard_Drive_Browser_Row {
+		{id = 10, name = "A"},
+		{id = 20, name = "B"},
+		{id = 30, name = "C", pending_deletion = true},
+		{id = 40, name = "D"},
+	}
+	range_requests := [1]imgui.SelectionRequest {
+		{Type = .SetRange, Selected = true, RangeFirstItem = 0, RangeLastItem = 3},
+	}
+	io := imgui.MultiSelectIO{}
+	io.Requests.Data = &range_requests[0]
+	io.Requests.Size = 1
+	hard_drive_browser_selection_apply_requests(&model, &io)
+	testing.expect_value(t, model.selection_count, 3)
+	testing.expect(t, hard_drive_browser_selection_contains(&model, 10))
+	testing.expect(t, hard_drive_browser_selection_contains(&model, 20))
+	testing.expect(t, hard_drive_browser_selection_contains(&model, 40))
+
+	all_requests := [1]imgui.SelectionRequest{{Type = .SetAll, Selected = false}}
+	io.Requests.Data = &all_requests[0]
+	hard_drive_browser_selection_apply_requests(&model, &io)
+	testing.expect_value(t, model.selection_count, 0)
+	all_requests[0].Selected = true
+	hard_drive_browser_selection_apply_requests(&model, &io)
+	testing.expect_value(t, model.selection_count, 3)
+}
+
+@(test)
+hard_drive_ui_test_browser_icon_roles_are_pack_agnostic :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	folder := Hard_Drive_Browser_Row {
+		kind = .Directory,
+		name = "GAMES",
+	}
+	text_file := Hard_Drive_Browser_Row {
+		kind = .File,
+		name = "README.TXT",
+	}
+	executable := Hard_Drive_Browser_Row {
+		kind = .File,
+		name = "SETUP.ExE",
+	}
+	data := Hard_Drive_Browser_Row {
+		kind = .File,
+		name = "SAVE.DAT",
+	}
+	testing.expect_value(t, hard_drive_browser_icon_role(&folder), Ui_Icon_Role.Folder_16)
+	testing.expect_value(
+		t,
+		hard_drive_browser_icon_role(&folder, true),
+		Ui_Icon_Role.Folder_Open_16,
+	)
+	testing.expect_value(t, hard_drive_browser_icon_role(&text_file), Ui_Icon_Role.Text_File_16)
+	testing.expect_value(t, hard_drive_browser_icon_role(&executable), Ui_Icon_Role.Executable_16)
+	testing.expect_value(t, hard_drive_browser_icon_role(&data), Ui_Icon_Role.Generic_File_16)
 }
 
 @(test)

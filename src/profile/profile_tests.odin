@@ -2,6 +2,7 @@
 package profile
 
 import config "../vmconfig"
+import "core:encoding/json"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
@@ -167,8 +168,12 @@ test_install_state_validation :: proc(t: ^testing.T) {
 test_settings_default_and_missing :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	defaults := settings_default()
+	defer settings_destroy(&defaults)
 	testing.expect_value(t, defaults.cpu_mode, config.Cpu_Mode.GSW_886)
 	testing.expect_value(t, defaults.hard_drive_path, "")
+	testing.expect(t, defaults.floppy_noise_enabled)
+	testing.expect(t, defaults.hdd_clicking_enabled)
+	testing.expect_value(t, defaults.hotkeys.release_input, HOTKEY_DEFAULT_RELEASE_INPUT)
 
 	dir := profile_test_directory(t)
 	defer os.remove_all(dir)
@@ -190,8 +195,14 @@ test_settings_round_trip :: proc(t: ^testing.T) {
 
 	image_path, _ := filepath.join({dir, "images", "..", "c_drive.img"})
 	expected_image_path, normalized := settings_normalize_hard_drive_path(image_path)
+	defer delete(expected_image_path)
 	testing.expect(t, normalized)
-	diagnostic := settings_save(path, Settings{cpu_mode = .Turbo, hard_drive_path = image_path})
+	settings := settings_default()
+	defer settings_destroy(&settings)
+	settings.cpu_mode = .Turbo
+	settings.hard_drive_path = strings.clone(image_path)
+	settings.floppy_noise_enabled = false
+	diagnostic := settings_save(path, settings)
 	testing.expect_value(t, diagnostic, Settings_Diagnostic.None)
 	loaded, load_diagnostic, migration := settings_load(path)
 	defer settings_destroy(&loaded)
@@ -199,18 +210,19 @@ test_settings_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, migration, Settings_Migration_Status.None)
 	testing.expect_value(t, loaded.cpu_mode, config.Cpu_Mode.Turbo)
 	testing.expect_value(t, loaded.hard_drive_path, expected_image_path)
+	testing.expect(t, !loaded.floppy_noise_enabled)
+	testing.expect(t, loaded.hdd_clicking_enabled)
 
 	data, rerr := os.read_entire_file(path, context.allocator)
+	defer delete(data)
 	testing.expect(t, rerr == nil)
-	testing.expect(t, strings.contains(string(data), `"version": 2`))
+	testing.expect(t, strings.contains(string(data), `"version": 3`))
 	testing.expect(t, strings.contains(string(data), `"cpu_mode": "Turbo"`))
 	testing.expect(t, strings.contains(string(data), `"hard_drive_path"`))
 
-	testing.expect_value(
-		t,
-		settings_save(path, Settings{cpu_mode = .GSW_886}),
-		Settings_Diagnostic.None,
-	)
+	replacement := settings_default()
+	defer settings_destroy(&replacement)
+	testing.expect_value(t, settings_save(path, replacement), Settings_Diagnostic.None)
 	replaced, replace_diagnostic, replace_migration := settings_load(path)
 	defer settings_destroy(&replaced)
 	testing.expect_value(t, replace_diagnostic, Settings_Diagnostic.None)
@@ -220,7 +232,7 @@ test_settings_round_trip :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_settings_v1_migrates_cpu_to_v2_and_clears_hard_drive :: proc(t: ^testing.T) {
+test_settings_v1_migrates_cpu_to_v3_and_clears_hard_drive :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := profile_test_directory(t)
 	defer os.remove_all(dir)
@@ -231,7 +243,7 @@ test_settings_v1_migrates_cpu_to_v2_and_clears_hard_drive :: proc(t: ^testing.T)
 	loaded, diagnostic, migration := settings_load(path)
 	defer settings_destroy(&loaded)
 	testing.expect_value(t, diagnostic, Settings_Diagnostic.None)
-	testing.expect_value(t, migration, Settings_Migration_Status.Version_1_To_2)
+	testing.expect_value(t, migration, Settings_Migration_Status.Version_1_To_3)
 	testing.expect_value(t, loaded.cpu_mode, config.Cpu_Mode.Turbo)
 	testing.expect_value(t, loaded.hard_drive_path, "")
 	testing.expect_value(
@@ -242,7 +254,7 @@ test_settings_v1_migrates_cpu_to_v2_and_clears_hard_drive :: proc(t: ^testing.T)
 
 	contents, read_error := os.read_entire_file(path, context.temp_allocator)
 	testing.expect(t, read_error == nil)
-	testing.expect(t, strings.contains(string(contents), `"version": 2`))
+	testing.expect(t, strings.contains(string(contents), `"version": 3`))
 	testing.expect(t, strings.contains(string(contents), `"cpu_mode": "Turbo"`))
 	testing.expect(t, strings.contains(string(contents), `"hard_drive_path": ""`))
 	testing.expect(t, !strings.contains(string(contents), `D:\\legacy\\c_drive`))
@@ -253,6 +265,37 @@ test_settings_v1_migrates_cpu_to_v2_and_clears_hard_drive :: proc(t: ^testing.T)
 	testing.expect_value(t, reload_migration, Settings_Migration_Status.None)
 	testing.expect_value(t, reloaded.cpu_mode, config.Cpu_Mode.Turbo)
 	testing.expect_value(t, reloaded.hard_drive_path, "")
+}
+
+@(test)
+test_settings_v2_migrates_to_v3_and_preserves_hard_drive :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	dir := profile_test_directory(t)
+	defer os.remove_all(dir)
+	path, _ := filepath.join({dir, "settings.json"})
+	image_path, _ := filepath.join({dir, "c_drive.img"})
+	legacy, marshal_error := json.marshal(
+		Disk_Settings{version = 2, cpu_mode = "Turbo", hard_drive_path = image_path},
+	)
+	testing.expect(t, marshal_error == nil)
+	defer delete(legacy)
+	testing.expect(t, os.write_entire_file(path, legacy) == nil)
+
+	loaded, diagnostic, migration := settings_load(path)
+	defer settings_destroy(&loaded)
+	testing.expect_value(t, diagnostic, Settings_Diagnostic.None)
+	testing.expect_value(t, migration, Settings_Migration_Status.Version_2_To_3)
+	testing.expect_value(t, loaded.cpu_mode, config.Cpu_Mode.Turbo)
+	testing.expect(t, loaded.hard_drive_path != "")
+	testing.expect(t, loaded.floppy_noise_enabled)
+	testing.expect(t, loaded.hdd_clicking_enabled)
+	testing.expect_value(t, settings_migrate(path, loaded, migration), Settings_Diagnostic.None)
+
+	reloaded, reload_diagnostic, reload_migration := settings_load(path)
+	defer settings_destroy(&reloaded)
+	testing.expect_value(t, reload_diagnostic, Settings_Diagnostic.None)
+	testing.expect_value(t, reload_migration, Settings_Migration_Status.None)
+	testing.expect_value(t, reloaded.hard_drive_path, loaded.hard_drive_path)
 }
 
 @(test)
@@ -276,7 +319,7 @@ test_settings_unknown_cpu_uses_default :: proc(t: ^testing.T) {
 	dir := profile_test_directory(t)
 	defer os.remove_all(dir)
 	path, _ := filepath.join({dir, "settings.json"})
-	testing.expect(t, os.write_entire_file(path, `{"version":2,"cpu_mode":"Pentium-III"}`) == nil)
+	testing.expect(t, os.write_entire_file(path, `{"version":3,"cpu_mode":"Pentium-III"}`) == nil)
 
 	loaded, diagnostic, migration := settings_load(path)
 	defer settings_destroy(&loaded)
@@ -291,7 +334,7 @@ test_settings_unknown_keys_are_ignored :: proc(t: ^testing.T) {
 	dir := profile_test_directory(t)
 	defer os.remove_all(dir)
 	path, _ := filepath.join({dir, "settings.json"})
-	contents := `{"version":2,"cpu_mode":"Turbo","future":{"enabled":true}}`
+	contents := `{"version":3,"cpu_mode":"Turbo","future":{"enabled":true}}`
 	testing.expect(t, os.write_entire_file(path, contents) == nil)
 
 	loaded, diagnostic, migration := settings_load(path)

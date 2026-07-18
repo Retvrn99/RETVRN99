@@ -5,10 +5,21 @@ import "core:fmt"
 import sdl3 "vendor:sdl3"
 
 DEFAULT_WINDOW_SCALE :: 2
-WIN_W :: TEXT_W * DEFAULT_WINDOW_SCALE // 1440
-WIN_H :: TEXT_H * DEFAULT_WINDOW_SCALE + MENU_BAR_H
+STORAGE_SIDEBAR_EXPANDED_W :: 198
+STORAGE_SIDEBAR_COLLAPSED_W :: 54
+STORAGE_SIDEBAR_GAP :: 2
+STATUS_BAR_H :: 28
+WIN_W :: TEXT_W * DEFAULT_WINDOW_SCALE + STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP
+WIN_H :: TEXT_H * DEFAULT_WINDOW_SCALE + MENU_BAR_H + STATUS_BAR_H
 HOST_GPU_DRIVER :: "vulkan"
 HOST_VULKAN_API_VERSION :: u32(0x0040_1000) // VK_MAKE_API_VERSION(0, 1, 1, 0)
+
+Host_Client_Insets :: struct {
+	top:    f32,
+	right:  f32,
+	bottom: f32,
+	left:   f32,
+}
 
 Host :: struct {
 	win:                 ^sdl3.Window,
@@ -33,8 +44,10 @@ Host :: struct {
 	window_scale:        int,
 	fullscreen:          bool,
 	menu_reveal:         f32,
+	sidebar_collapsed:   bool,
 	visual_shader:       Visual_Shader,
 	storage_icons:       Storage_Icon_Textures,
+	mechanical_audio:    Host_Mechanical_Audio,
 	has_frame:           bool,
 	vsync:               bool, // presents are paced by the display; else the UI loop sleeps
 	mouse_captured:      bool,
@@ -78,6 +91,10 @@ host_init :: proc(h: ^Host) -> (ok: bool) {
 	if h.win == nil {
 		return false
 	}
+	if !ui_window_icon_apply(h.win) {
+		fmt.eprintfln("window icon: Chicago95 icon could not be applied (%s)", sdl3.GetError())
+		_ = sdl3.ClearError()
+	}
 	h.gpu = host_create_gpu_device()
 	if h.gpu == nil {return false}
 	driver := sdl3.GetGPUDeviceDriver(h.gpu)
@@ -108,10 +125,14 @@ host_init :: proc(h: ^Host) -> (ok: bool) {
 	} else {
 		_ = host_set_visual_shader(h, .None)
 	}
+	if !host_mechanical_audio_open(&h.mechanical_audio) {
+		fmt.eprintfln("device sounds: SDL3 output unavailable (%s)", sdl3.GetError())
+	}
 	return true
 }
 
 host_destroy :: proc(h: ^Host) {
+	host_mechanical_audio_close(&h.mechanical_audio)
 	if h.mouse_captured {_ = mouse_capture(h, false)}
 	gsw3d_bridge_shutdown(&h.gsw3d_bridge)
 	if h.gsw3d_proof_enabled {_ = host_gsw3d_proof_reset(h, 0)}
@@ -128,7 +149,11 @@ host_destroy :: proc(h: ^Host) {
 
 host_set_window_scale :: proc(h: ^Host, scale: int) -> bool {
 	if h == nil || h.win == nil || h.fullscreen || scale < 2 || scale > 4 {return false}
-	if !sdl3.SetWindowSize(h.win, i32(TEXT_W * scale), i32(TEXT_H * scale + MENU_BAR_H)) {
+	if !sdl3.SetWindowSize(
+		h.win,
+		i32(TEXT_W * scale + STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP),
+		i32(TEXT_H * scale + MENU_BAR_H + STATUS_BAR_H),
+	) {
 		return false
 	}
 	_ = sdl3.SetWindowPosition(h.win, sdl3.WINDOWPOS_CENTERED, sdl3.WINDOWPOS_CENTERED)
@@ -162,8 +187,8 @@ host_set_fullscreen :: proc(h: ^Host, enabled: bool) -> bool {
 		if !sdl3.SetWindowBordered(h.win, true) {return false}
 		_ = sdl3.SetWindowSize(
 			h.win,
-			i32(TEXT_W * h.window_scale),
-			i32(TEXT_H * h.window_scale + MENU_BAR_H),
+			i32(TEXT_W * h.window_scale + STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP),
+			i32(TEXT_H * h.window_scale + MENU_BAR_H + STATUS_BAR_H),
 		)
 		_ = sdl3.SetWindowPosition(h.win, sdl3.WINDOWPOS_CENTERED, sdl3.WINDOWPOS_CENTERED)
 		_ = sdl3.SyncWindow(h.win)
@@ -174,4 +199,29 @@ host_set_fullscreen :: proc(h: ^Host, enabled: bool) -> bool {
 
 host_toggle_fullscreen :: proc(h: ^Host) -> bool {
 	return h != nil && host_set_fullscreen(h, !h.fullscreen)
+}
+
+host_client_insets :: proc(h: ^Host) -> Host_Client_Insets {
+	if h == nil {return {top = f32(MENU_BAR_H)}}
+	reveal := clamp(h.menu_reveal, f32(0), f32(1))
+	sidebar_width := h.sidebar_collapsed ? STORAGE_SIDEBAR_COLLAPSED_W : STORAGE_SIDEBAR_EXPANDED_W
+	return {
+		top = f32(MENU_BAR_H) * reveal,
+		right = f32(sidebar_width + STORAGE_SIDEBAR_GAP) * reveal,
+		bottom = f32(STATUS_BAR_H) * reveal,
+	}
+}
+
+host_set_input_title :: proc(h: ^Host, captured: bool, release_binding: string = "") {
+	if h == nil || h.win == nil {return}
+	if !captured {
+		_ = sdl3.SetWindowTitle(h.win, "RETVRN99")
+		return
+	}
+	binding := release_binding
+	if len(binding) == 0 {binding = "Right Ctrl"}
+	_ = sdl3.SetWindowTitle(
+		h.win,
+		fmt.ctprintf("RETVRN99 — Input captured: %s to release", binding),
+	)
 }

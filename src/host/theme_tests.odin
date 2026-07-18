@@ -8,16 +8,29 @@ import sdl3 "vendor:sdl3"
 @(test)
 host_test_theme_layout_invariant :: proc(t: ^testing.T) {
 	testing.expect_value(t, MENU_BAR_H, THEME_FONT_PX + THEME_FRAME_PAD_Y * 2)
-	testing.expect_value(t, WIN_H, TEXT_H * 2 + MENU_BAR_H)
+	testing.expect_value(t, WIN_W, TEXT_W * 2 + STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP)
+	testing.expect_value(t, WIN_H, TEXT_H * 2 + MENU_BAR_H + STATUS_BAR_H)
 
-	r := guest_view_rect(9, 5)
+	r := guest_view_rect_insets(
+		9,
+		5,
+		WIN_W,
+		WIN_H,
+		{top = MENU_BAR_H, right = STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP, bottom = STATUS_BAR_H},
+	)
 	testing.expect_value(t, r.x, f32(0))
 	testing.expect_value(t, r.y, f32(MENU_BAR_H))
 	testing.expect_value(t, r.w, f32(TEXT_W * 2))
 	testing.expect_value(t, r.h, f32(TEXT_H * 2))
-	testing.expect_value(t, int(r.y + r.h), WIN_H)
+	testing.expect_value(t, int(r.y + r.h + STATUS_BAR_H), WIN_H)
 
-	r = guest_view_rect(4, 3)
+	r = guest_view_rect_insets(
+		4,
+		3,
+		WIN_W,
+		WIN_H,
+		{top = MENU_BAR_H, right = STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP, bottom = STATUS_BAR_H},
+	)
 	testing.expect_value(t, int(r.x + 0.5), 187)
 	testing.expect_value(t, int(r.y), MENU_BAR_H)
 	testing.expect_value(t, int(r.w + 0.5), 1067)
@@ -59,6 +72,6 @@ host_test_theme_apply_headless :: proc(t: ^testing.T) {
 	testing.expect_value(t, style.FrameBorderSize, f32(1))
 	testing.expect_value(t, style.Colors[imgui.Col.Text], theme_color(THEME_BLACK))
 	testing.expect_value(t, style.Colors[imgui.Col.WindowBg], theme_color(THEME_FACE))
-	testing.expect_value(t, style.Colors[imgui.Col.HeaderHovered], theme_color(THEME_HIGHLIGHT))
-	testing.expect_value(t, style.Colors[imgui.Col.TextSelectedBg].w, f32(0.65))
+	testing.expect_value(t, style.Colors[imgui.Col.HeaderHovered], theme_color(THEME_NAVY))
+	testing.expect_value(t, style.Colors[imgui.Col.TextSelectedBg].w, f32(0.85))
 }

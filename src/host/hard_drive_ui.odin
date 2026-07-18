@@ -3,12 +3,14 @@ package host
 
 import imgui "../../vendor_local/imgui"
 import "core:fmt"
+import "core:strings"
 
 HARD_DRIVE_CREATE_DEFAULT_GIB :: i32(20)
 HARD_DRIVE_CREATE_MIN_GIB :: i32(1)
 HARD_DRIVE_CREATE_MAX_GIB :: i32(127)
 HARD_DRIVE_UI_PATH_CAPACITY :: 32768
 HARD_DRIVE_UI_NAME_CAPACITY :: 1024
+HARD_DRIVE_BROWSER_SELECTION_CAPACITY :: 64
 
 HARD_DRIVE_CREATE_TITLE :: "Create Hard Drive"
 HARD_DRIVE_BROWSER_TITLE :: "Browse C drive"
@@ -99,6 +101,7 @@ Hard_Drive_UI_Action :: struct {
 	paths:                 []string,
 	name:                  string,
 	entry_id:              u64,
+	delete_snapshot:       Hard_Drive_Delete_Snapshot,
 	page_index:            int,
 	size_gib:              i32,
 	allow_full_allocation: bool,
@@ -148,6 +151,13 @@ Hard_Drive_Entry_Kind :: enum {
 	Directory,
 }
 
+Hard_Drive_Delete_Snapshot :: struct {
+	entry_ids:       [HARD_DRIVE_BROWSER_SELECTION_CAPACITY]u64,
+	count:           int,
+	file_count:      int,
+	directory_count: int,
+}
+
 Hard_Drive_Breadcrumb :: struct {
 	label: string,
 	path:  string,
@@ -166,12 +176,13 @@ Hard_Drive_Tree_Node :: struct {
 }
 
 Hard_Drive_Browser_Row :: struct {
-	id:            u64,
-	kind:          Hard_Drive_Entry_Kind,
-	name:          string,
-	path:          string,
-	size:          u64,
-	modified_text: string,
+	id:               u64,
+	kind:             Hard_Drive_Entry_Kind,
+	name:             string,
+	path:             string,
+	size:             u64,
+	modified_text:    string,
+	pending_deletion: bool,
 }
 
 Hard_Drive_Browser_Progress :: struct {
@@ -187,6 +198,7 @@ Hard_Drive_Browser_Prompt :: enum {
 	New_Folder,
 	Rename,
 	Delete,
+	Properties,
 	Discard,
 	Close_With_Changes,
 }
@@ -212,7 +224,9 @@ Hard_Drive_Browser_Model :: struct {
 	page_count_exact:        bool,
 	total_entries:           u64,
 	total_entries_exact:     bool,
-	selected_index:          int,
+	selected_entry_ids:      [HARD_DRIVE_BROWSER_SELECTION_CAPACITY]u64,
+	selection_count:         int,
+	pending_delete_count:    int,
 	pending_changes:         int,
 	progress:                Hard_Drive_Browser_Progress,
 	diagnostic:              string,
@@ -433,7 +447,110 @@ hard_drive_create_accept_result :: proc(
 hard_drive_browser_init :: proc(model: ^Hard_Drive_Browser_Model) {
 	if model == nil {return}
 	model^ = {}
-	model.selected_index = -1
+}
+
+hard_drive_browser_clear_selection :: proc(model: ^Hard_Drive_Browser_Model) {
+	if model == nil {return}
+	for &entry_id in model.selected_entry_ids {entry_id = 0}
+	model.selection_count = 0
+}
+
+hard_drive_browser_selection_contains :: proc(
+	model: ^Hard_Drive_Browser_Model,
+	entry_id: u64,
+) -> bool {
+	if model == nil || entry_id == 0 {return false}
+	for index in 0 ..< model.selection_count {
+		if model.selected_entry_ids[index] == entry_id {return true}
+	}
+	return false
+}
+
+hard_drive_browser_selection_set :: proc(
+	model: ^Hard_Drive_Browser_Model,
+	entry_id: u64,
+	selected: bool,
+) -> bool {
+	if model == nil || entry_id == 0 {return false}
+	found_index := -1
+	for index in 0 ..< model.selection_count {
+		if model.selected_entry_ids[index] == entry_id {
+			found_index = index
+			break
+		}
+	}
+	if selected {
+		if found_index >= 0 {return true}
+		if model.selection_count >= HARD_DRIVE_BROWSER_SELECTION_CAPACITY {return false}
+		model.selected_entry_ids[model.selection_count] = entry_id
+		model.selection_count += 1
+		return true
+	}
+	if found_index < 0 {return true}
+	model.selection_count -= 1
+	model.selected_entry_ids[found_index] = model.selected_entry_ids[model.selection_count]
+	model.selected_entry_ids[model.selection_count] = 0
+	return true
+}
+
+hard_drive_browser_select_only :: proc(model: ^Hard_Drive_Browser_Model, entry_id: u64) -> bool {
+	hard_drive_browser_clear_selection(model)
+	return hard_drive_browser_selection_set(model, entry_id, true)
+}
+
+hard_drive_browser_select_all :: proc(model: ^Hard_Drive_Browser_Model) {
+	if model == nil {return}
+	hard_drive_browser_clear_selection(model)
+	for &row in model.rows {
+		if row.pending_deletion {continue}
+		if !hard_drive_browser_selection_set(model, row.id, true) {break}
+	}
+}
+
+hard_drive_browser_selection_prune :: proc(model: ^Hard_Drive_Browser_Model) {
+	if model == nil {return}
+	for index := model.selection_count - 1; index >= 0; index -= 1 {
+		entry_id := model.selected_entry_ids[index]
+		keep := false
+		for &row in model.rows {
+			if row.id == entry_id && !row.pending_deletion {
+				keep = true
+				break
+			}
+		}
+		if !keep {_ = hard_drive_browser_selection_set(model, entry_id, false)}
+	}
+}
+
+hard_drive_browser_selection_apply_requests :: proc(
+	model: ^Hard_Drive_Browser_Model,
+	requests: ^imgui.MultiSelectIO,
+) {
+	if model == nil || requests == nil {return}
+	request_data := transmute([^]imgui.SelectionRequest)requests.Requests.Data
+	for request_index in 0 ..< int(requests.Requests.Size) {
+		request := request_data[request_index]
+		switch request.Type {
+		case .SetAll:
+			if request.Selected {
+				hard_drive_browser_select_all(model)
+			} else {
+				hard_drive_browser_clear_selection(model)
+			}
+		case .SetRange:
+			if len(model.rows) == 0 {continue}
+			first := clamp(int(request.RangeFirstItem), 0, len(model.rows) - 1)
+			last := clamp(int(request.RangeLastItem), 0, len(model.rows) - 1)
+			if first > last {first, last = last, first}
+			for index in first ..= last {
+				row := &model.rows[index]
+				if row.pending_deletion {continue}
+				_ = hard_drive_browser_selection_set(model, row.id, request.Selected)
+			}
+		case .None:
+		}
+	}
+	hard_drive_browser_selection_prune(model)
 }
 
 hard_drive_browser_selected_row :: proc(
@@ -442,10 +559,59 @@ hard_drive_browser_selected_row :: proc(
 	^Hard_Drive_Browser_Row,
 	bool,
 ) {
-	if model == nil || model.selected_index < 0 || model.selected_index >= len(model.rows) {
-		return nil, false
+	if model == nil || model.selection_count != 1 {return nil, false}
+	entry_id := model.selected_entry_ids[0]
+	for &row in model.rows {
+		if row.id == entry_id && !row.pending_deletion {return &row, true}
 	}
-	return &model.rows[model.selected_index], true
+	return nil, false
+}
+
+hard_drive_browser_delete_snapshot :: proc(
+	model: ^Hard_Drive_Browser_Model,
+) -> (
+	Hard_Drive_Delete_Snapshot,
+	bool,
+) {
+	snapshot: Hard_Drive_Delete_Snapshot
+	if model == nil || model.selection_count <= 0 {return snapshot, false}
+	for &row in model.rows {
+		if row.pending_deletion || !hard_drive_browser_selection_contains(model, row.id) {continue}
+		if snapshot.count >= HARD_DRIVE_BROWSER_SELECTION_CAPACITY {return {}, false}
+		snapshot.entry_ids[snapshot.count] = row.id
+		snapshot.count += 1
+		if row.kind == .Directory {
+			snapshot.directory_count += 1
+		} else {
+			snapshot.file_count += 1
+		}
+	}
+	return snapshot, snapshot.count == model.selection_count
+}
+
+hard_drive_browser_icon_role :: proc(row: ^Hard_Drive_Browser_Row, open := false) -> Ui_Icon_Role {
+	if row == nil {return .Generic_File_16}
+	if row.kind == .Directory {return open ? .Folder_Open_16 : .Folder_16}
+	extension := ""
+	for index := len(row.name) - 1; index >= 0; index -= 1 {
+		if row.name[index] == '.' {
+			extension = strings.to_lower(row.name[index + 1:], context.temp_allocator)
+			break
+		}
+	}
+	if extension == "txt" || extension == "ini" || extension == "log" {
+		return .Text_File_16
+	}
+	if extension == "exe" ||
+	   extension == "com" ||
+	   extension == "dll" ||
+	   extension == "sys" ||
+	   extension == "bat" ||
+	   extension == "cmd" ||
+	   extension == "scr" {
+		return .Executable_16
+	}
+	return .Generic_File_16
 }
 
 hard_drive_browser_can_mutate :: proc(model: ^Hard_Drive_Browser_Model) -> bool {
@@ -461,6 +627,10 @@ hard_drive_browser_can_apply :: proc(model: ^Hard_Drive_Browser_Model) -> bool {
 }
 
 hard_drive_browser_can_use_selection :: proc(model: ^Hard_Drive_Browser_Model) -> bool {
+	return hard_drive_browser_can_mutate(model) && model.selection_count > 0
+}
+
+hard_drive_browser_can_use_single_selection :: proc(model: ^Hard_Drive_Browser_Model) -> bool {
 	_, selected := hard_drive_browser_selected_row(model)
 	return hard_drive_browser_can_mutate(model) && selected
 }
@@ -608,7 +778,8 @@ hard_drive_browser_accept_result :: proc(
 		model.total_entries = result.total_entries
 		model.total_entries_exact = result.total_entries_exact
 		model.pending_changes = max(0, result.pending_changes)
-		model.selected_index = -1
+		model.pending_delete_count = 0
+		hard_drive_browser_clear_selection(model)
 		model.progress = {}
 		model.diagnostic = ""
 	case .Busy, .Progress:
@@ -635,7 +806,7 @@ hard_drive_create_draw :: proc(model: ^Hard_Drive_Create_Model) -> Hard_Drive_UI
 	hard_drive_create_invalidate_sparse_confirmation(model)
 	imgui.SetNextWindowSize({620, 0}, .FirstUseEver)
 	window_open := model.visible
-	if imgui.Begin(HARD_DRIVE_CREATE_TITLE, &window_open, {.AlwaysAutoResize, .NoCollapse}) {
+	if win98_begin_window(HARD_DRIVE_CREATE_TITLE, &window_open, {.AlwaysAutoResize, .NoCollapse}) {
 		imgui.TextUnformatted("Create a sparse, MBR-partitioned FAT32 image.")
 		imgui.BeginDisabled(model.busy || model.created_unselected)
 		imgui.SetNextItemWidth(480)
@@ -720,12 +891,15 @@ hard_drive_create_draw :: proc(model: ^Hard_Drive_Create_Model) -> Hard_Drive_UI
 	return action
 }
 
-hard_drive_browser_draw :: proc(model: ^Hard_Drive_Browser_Model) -> Hard_Drive_UI_Action {
+hard_drive_browser_draw :: proc(
+	model: ^Hard_Drive_Browser_Model,
+	icons: ^Ui_Icon_Textures = nil,
+) -> Hard_Drive_UI_Action {
 	action: Hard_Drive_UI_Action
 	if model == nil || !model.visible {return action}
 	imgui.SetNextWindowSize({1000, 680}, .FirstUseEver)
 	window_open := model.visible
-	if imgui.Begin(HARD_DRIVE_BROWSER_TITLE, &window_open, {.NoCollapse}) {
+	if win98_begin_window(HARD_DRIVE_BROWSER_TITLE, &window_open, {.NoCollapse}) {
 		if len(model.image_path) > 0 {
 			imgui.TextDisabled("Image: %s", fmt.ctprintf("%s", model.image_path))
 		}
@@ -743,12 +917,12 @@ hard_drive_browser_draw :: proc(model: ^Hard_Drive_Browser_Model) -> Hard_Drive_
 		available := imgui.GetContentRegionAvail()
 		content_height := max(f32(180), available.y - 92)
 		if imgui.BeginChild("##hard-drive-tree", {240, content_height}, {.Borders, .ResizeX}) {
-			hard_drive_browser_draw_tree(model, &action)
+			hard_drive_browser_draw_tree(model, icons, &action)
 		}
 		imgui.EndChild()
 		imgui.SameLine()
 		if imgui.BeginChild("##hard-drive-rows", {0, content_height}, {.Borders}) {
-			hard_drive_browser_draw_rows(model, &action)
+			hard_drive_browser_draw_rows(model, icons, &action)
 		}
 		imgui.EndChild()
 
@@ -775,6 +949,7 @@ hard_drive_browser_draw_toolbar :: proc(
 ) {
 	mutate := hard_drive_browser_can_mutate(model)
 	selected := hard_drive_browser_can_use_selection(model)
+	single_selected := hard_drive_browser_can_use_single_selection(model)
 	exportable := hard_drive_browser_can_export(model)
 	imgui.BeginDisabled(!mutate)
 	if imgui.Button(HARD_DRIVE_IMPORT_FILES_LABEL) && action.kind == .None {
@@ -807,11 +982,13 @@ hard_drive_browser_draw_toolbar :: proc(
 	}
 	imgui.EndDisabled()
 	imgui.SameLine()
-	imgui.BeginDisabled(!selected)
+	imgui.BeginDisabled(!single_selected)
 	if imgui.Button(HARD_DRIVE_RENAME_LABEL) {
 		hard_drive_browser_begin_prompt(model, .Rename)
 	}
+	imgui.EndDisabled()
 	imgui.SameLine()
+	imgui.BeginDisabled(!selected)
 	if imgui.Button(HARD_DRIVE_DELETE_LABEL) {
 		hard_drive_browser_begin_prompt(model, .Delete)
 	}
@@ -853,6 +1030,7 @@ hard_drive_browser_draw_breadcrumbs :: proc(
 
 hard_drive_browser_draw_tree :: proc(
 	model: ^Hard_Drive_Browser_Model,
+	icons: ^Ui_Icon_Textures,
 	action: ^Hard_Drive_UI_Action,
 ) {
 	if len(model.tree_nodes) == 0 {
@@ -890,6 +1068,19 @@ hard_drive_browser_draw_tree :: proc(
 			}
 			imgui.SameLine()
 		}
+		if icons != nil {
+			role: Ui_Icon_Role = .Folder_16
+			if node.depth == 0 {
+				role = .Hard_Drive_16
+			} else if node.expanded {
+				role = .Folder_Open_16
+			}
+			icon := ui_icon_texture(icons, role)
+			if icon.texture != nil {
+				imgui.Image(win98_texture_ref(icon), {16, 16})
+				imgui.SameLine()
+			}
+		}
 		if imgui.Selectable(fmt.ctprintf("%s", node.name), node.selected, {.SpanAllColumns}) &&
 		   hard_drive_browser_can_browse(model) &&
 		   action.kind == .None {
@@ -904,8 +1095,92 @@ hard_drive_browser_draw_tree :: proc(
 	}
 }
 
+hard_drive_browser_draw_row_context_menu :: proc(
+	model: ^Hard_Drive_Browser_Model,
+	row: ^Hard_Drive_Browser_Row,
+	action: ^Hard_Drive_UI_Action,
+) {
+	if model == nil || row == nil || action == nil {return}
+	if !imgui.BeginPopupContextItem() {return}
+	if !row.pending_deletion && !hard_drive_browser_selection_contains(model, row.id) {
+		_ = hard_drive_browser_select_only(model, row.id)
+	}
+	single := model.selection_count == 1 && !row.pending_deletion
+	browsable := hard_drive_browser_can_browse(model)
+	mutable := hard_drive_browser_can_mutate(model)
+	if imgui.MenuItem("Open", "Enter", false, single && row.kind == .Directory && browsable) &&
+	   action.kind == .None {
+		action^ = {
+			kind     = .Navigate,
+			entry_id = row.id,
+			path     = row.path,
+		}
+	}
+	if imgui.MenuItem(HARD_DRIVE_EXPORT_LABEL, nil, false, single && browsable) &&
+	   action.kind == .None {
+		action^ = {
+			kind   = .Request_Native_Dialog,
+			dialog = hard_drive_browser_export_request(model),
+		}
+	}
+	if imgui.MenuItem(HARD_DRIVE_RENAME_LABEL, nil, false, single && mutable) {
+		hard_drive_browser_begin_prompt(model, .Rename)
+	}
+	delete_label :=
+		model.selection_count == 1 ? "Delete 1 Item..." : fmt.ctprintf("Delete %d Items...", model.selection_count)
+	if imgui.MenuItem(delete_label, "Delete", false, model.selection_count > 0 && mutable) {
+		hard_drive_browser_begin_prompt(model, .Delete)
+	}
+	if imgui.MenuItem("Properties", nil, false, single) {
+		hard_drive_browser_begin_prompt(model, .Properties)
+	}
+	imgui.EndPopup()
+}
+
+hard_drive_browser_draw_background_context_menu :: proc(
+	model: ^Hard_Drive_Browser_Model,
+	action: ^Hard_Drive_UI_Action,
+) {
+	if model == nil ||
+	   action == nil ||
+	   !imgui.BeginPopupContextWindow(
+			   "##hard-drive-background-menu",
+			   imgui.PopupFlags(
+				   imgui.PopupFlags_MouseButtonRight | imgui.PopupFlags_NoOpenOverItems,
+			   ),
+		   ) {
+		return
+	}
+	mutable := hard_drive_browser_can_mutate(model)
+	if imgui.MenuItem(HARD_DRIVE_IMPORT_FILES_LABEL, nil, false, mutable) && action.kind == .None {
+		action^ = {
+			kind   = .Request_Native_Dialog,
+			dialog = hard_drive_browser_import_files_request(),
+		}
+	}
+	if imgui.MenuItem(HARD_DRIVE_IMPORT_FOLDER_LABEL, nil, false, mutable) &&
+	   action.kind == .None {
+		action^ = {
+			kind   = .Request_Native_Dialog,
+			dialog = hard_drive_browser_import_folder_request(),
+		}
+	}
+	if imgui.MenuItem(HARD_DRIVE_NEW_FOLDER_LABEL, nil, false, mutable) {
+		hard_drive_browser_begin_prompt(model, .New_Folder)
+	}
+	if imgui.MenuItem("Refresh", nil, false, hard_drive_browser_can_browse(model)) &&
+	   action.kind == .None {
+		action.kind = .Refresh
+	}
+	if imgui.MenuItem("Select All", "Ctrl+A", false, len(model.rows) > 0) {
+		hard_drive_browser_select_all(model)
+	}
+	imgui.EndPopup()
+}
+
 hard_drive_browser_draw_rows :: proc(
 	model: ^Hard_Drive_Browser_Model,
+	icons: ^Ui_Icon_Textures,
 	action: ^Hard_Drive_UI_Action,
 ) {
 	table_flags := imgui.TableFlags(
@@ -920,28 +1195,58 @@ hard_drive_browser_draw_rows :: proc(
 		imgui.TableSetupColumn("Size", {.WidthFixed}, 100)
 		imgui.TableSetupColumn("Modified", {.WidthFixed}, 150)
 		imgui.TableHeadersRow()
-		for row, index in model.rows {
+		selection_io := imgui.BeginMultiSelect(
+			{.BoxSelect1d, .ClearOnClickVoid, .ClearOnEscape, .ScopeRect},
+			i32(model.selection_count),
+			i32(len(model.rows)),
+		)
+		hard_drive_browser_selection_apply_requests(model, selection_io)
+		for &row, index in model.rows {
 			imgui.TableNextRow()
 			_ = imgui.TableSetColumnIndex(0)
 			imgui.PushIDInt(i32(index))
-			if imgui.Selectable(
-				fmt.ctprintf("%s", row.name),
-				model.selected_index == index,
-				{.SpanAllColumns},
-			) {
-				model.selected_index = index
+			imgui.SetNextItemSelectionUserData(imgui.SelectionUserData(index))
+			row_flags: imgui.SelectableFlags = {.SpanAllColumns, .AllowDoubleClick}
+			if row.pending_deletion {row_flags += {.Disabled}}
+			selected := hard_drive_browser_selection_contains(model, row.id)
+			_ = imgui.Selectable("##hard-drive-entry", selected, row_flags, {0, 20})
+			item_min := imgui.GetItemRectMin()
+			item_max := imgui.GetItemRectMax()
+			draw := imgui.GetWindowDrawList()
+			text_x := item_min.x + 3
+			if icons != nil {
+				icon := ui_icon_texture(icons, hard_drive_browser_icon_role(&row))
+				if icon.texture != nil {
+					win98_draw_icon(draw, icon, {item_min.x + 2, item_min.y + 2}, 16)
+					text_x = item_min.x + 22
+				}
 			}
+			text_color := imgui.GetColorU32(.Text)
+			if selected {text_color = win98_color(THEME_LIGHT)}
+			if row.pending_deletion {text_color = imgui.GetColorU32(.TextDisabled)}
+			display_name := fmt.ctprintf("%s", row.name)
+			if row.pending_deletion {
+				display_name = fmt.ctprintf("%s (Pending deletion)", row.name)
+			}
+			imgui.DrawList_AddText(
+				draw,
+				{text_x, item_min.y + (item_max.y - item_min.y - imgui.GetTextLineHeight()) * 0.5},
+				text_color,
+				display_name,
+			)
 			if row.kind == .Directory &&
+			   !row.pending_deletion &&
 			   hard_drive_browser_can_browse(model) &&
 			   imgui.IsItemHovered() &&
 			   imgui.IsMouseDoubleClicked(.Left) &&
 			   action.kind == .None {
-				action^ = Hard_Drive_UI_Action {
+				action^ = {
 					kind     = .Navigate,
 					entry_id = row.id,
 					path     = row.path,
 				}
 			}
+			hard_drive_browser_draw_row_context_menu(model, &row, action)
 			imgui.PopID()
 			_ = imgui.TableSetColumnIndex(1)
 			imgui.TextUnformatted(row.kind == .Directory ? "Folder" : "File")
@@ -950,6 +1255,23 @@ hard_drive_browser_draw_rows :: proc(
 			_ = imgui.TableSetColumnIndex(3)
 			menu_text(row.modified_text)
 		}
+		selection_io = imgui.EndMultiSelect()
+		hard_drive_browser_selection_apply_requests(model, selection_io)
+		if imgui.IsWindowFocused() && action.kind == .None {
+			if imgui.IsKeyPressed(.Delete, false) && hard_drive_browser_can_use_selection(model) {
+				hard_drive_browser_begin_prompt(model, .Delete)
+			} else if imgui.IsKeyPressed(.Enter, false) {
+				if row, selected := hard_drive_browser_selected_row(model);
+				   selected && row.kind == .Directory && hard_drive_browser_can_browse(model) {
+					action^ = {
+						kind     = .Navigate,
+						entry_id = row.id,
+						path     = row.path,
+					}
+				}
+			}
+		}
+		hard_drive_browser_draw_background_context_menu(model, action)
 		imgui.EndTable()
 	}
 
@@ -1003,7 +1325,28 @@ hard_drive_browser_draw_status :: proc(
 			}
 		}
 	} else {
-		imgui.TextUnformatted(hard_drive_browser_pending_label(model))
+		if model.selection_count > 0 && model.pending_delete_count > 0 {
+			imgui.Text(
+				"%d selected; %d staged for deletion; %s",
+				model.selection_count,
+				model.pending_delete_count,
+				hard_drive_browser_pending_label(model),
+			)
+		} else if model.selection_count > 0 {
+			imgui.Text(
+				"%d selected; %s",
+				model.selection_count,
+				hard_drive_browser_pending_label(model),
+			)
+		} else if model.pending_delete_count > 0 {
+			imgui.Text(
+				"%d staged for deletion; %s",
+				model.pending_delete_count,
+				hard_drive_browser_pending_label(model),
+			)
+		} else {
+			imgui.TextUnformatted(hard_drive_browser_pending_label(model))
+		}
 	}
 	imgui.SameLine()
 	imgui.BeginDisabled(!hard_drive_browser_can_apply(model))
@@ -1036,7 +1379,7 @@ hard_drive_browser_draw_prompt :: proc(
 		imgui.OpenPopup(popup_name)
 		model.prompt_open_requested = false
 	}
-	if !imgui.BeginPopupModal(popup_name, nil, {.AlwaysAutoResize}) {return}
+	if !win98_begin_popup_modal(popup_name, nil, {.AlwaysAutoResize}) {return}
 	switch model.prompt {
 	case .New_Folder, .Rename:
 		message: cstring = model.prompt == .New_Folder ? "New folder name" : "New name"
@@ -1067,15 +1410,28 @@ hard_drive_browser_draw_prompt :: proc(
 			imgui.CloseCurrentPopup()
 		}
 	case .Delete:
-		if row, selected := hard_drive_browser_selected_row(model); selected {
-			menu_text(fmt.tprintf("Delete %s from the staged C drive?", row.name))
-			if row.kind ==
-			   .Directory {menu_text("The folder and all of its contents will be removed.")}
+		snapshot, valid := hard_drive_browser_delete_snapshot(model)
+		if valid {
+			if snapshot.count == 1 {
+				if row, selected := hard_drive_browser_selected_row(model); selected {
+					menu_text(fmt.tprintf("Delete %s from the staged C drive?", row.name))
+				}
+			} else {
+				menu_text(
+					fmt.tprintf(
+						"Delete %d selected items from the staged C drive?",
+						snapshot.count,
+					),
+				)
+			}
+			if snapshot.directory_count > 0 {
+				menu_text("Selected folders and all of their contents will be removed.")
+			}
+			menu_text("The image is unchanged until you click Apply.")
 			if imgui.Button("Delete") {
-				action^ = Hard_Drive_UI_Action {
-					kind      = .Delete,
-					entry_id  = row.id,
-					recursive = row.kind == .Directory,
+				action^ = {
+					kind            = .Delete,
+					delete_snapshot = snapshot,
 				}
 				model.prompt = .None
 				imgui.CloseCurrentPopup()
@@ -1083,6 +1439,22 @@ hard_drive_browser_draw_prompt :: proc(
 			imgui.SameLine()
 		}
 		if imgui.Button("Cancel") {
+			model.prompt = .None
+			imgui.CloseCurrentPopup()
+		}
+	case .Properties:
+		if row, selected := hard_drive_browser_selected_row(model); selected {
+			menu_text(row.name)
+			menu_text(fmt.tprintf("Type: %s", row.kind == .Directory ? "Folder" : "File"))
+			if row.kind == .File {
+				menu_text(fmt.tprintf("Size: %s", hard_drive_browser_size_text(row.size)))
+			}
+			if len(row.modified_text) > 0 {
+				menu_text(fmt.tprintf("Modified: %s", row.modified_text))
+			}
+			menu_text(fmt.tprintf("Path: C:\\%s", row.path))
+		}
+		if imgui.Button("OK") {
 			model.prompt = .None
 			imgui.CloseCurrentPopup()
 		}
@@ -1139,7 +1511,7 @@ hard_drive_browser_draw_conflict :: proc(
 		imgui.OpenPopup("File conflict")
 		model.conflict_open_requested = false
 	}
-	if !imgui.BeginPopupModal("File conflict", nil, {.AlwaysAutoResize}) {return}
+	if !win98_begin_popup_modal("File conflict", nil, {.AlwaysAutoResize}) {return}
 	menu_text(fmt.tprintf("%s already exists.", model.conflict.target_name))
 	if len(model.conflict.source_name) > 0 {
 		menu_text(fmt.tprintf("Incoming item: %s", model.conflict.source_name))
@@ -1170,7 +1542,9 @@ hard_drive_browser_prompt_name :: proc(prompt: Hard_Drive_Browser_Prompt) -> cst
 	case .Rename:
 		return "Rename"
 	case .Delete:
-		return "Delete"
+		return "Delete Selected Items"
+	case .Properties:
+		return "Properties"
 	case .Discard:
 		return "Discard Changes"
 	case .Close_With_Changes:
