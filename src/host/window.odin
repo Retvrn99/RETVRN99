@@ -64,6 +64,11 @@ host_create_gpu_device :: proc() -> ^sdl3.GPUDevice {
 host_init :: proc(h: ^Host) -> (ok: bool) {
 	h^ = {}
 	defer if !ok {host_destroy(h)}
+	if !sdl3.SetHintWithPriority(
+		sdl3.HINT_ALLOW_ALT_TAB_WHILE_GRABBED,
+		"0",
+		.OVERRIDE,
+	) {return false}
 	if !sdl3.Init({.VIDEO}) {
 		return false
 	}
@@ -107,7 +112,7 @@ host_init :: proc(h: ^Host) -> (ok: bool) {
 }
 
 host_destroy :: proc(h: ^Host) {
-	if h.mouse_captured {_ = sdl3.SetWindowRelativeMouseMode(h.win, false)}
+	if h.mouse_captured {_ = mouse_capture(h, false)}
 	gsw3d_bridge_shutdown(&h.gsw3d_bridge)
 	if h.gsw3d_proof_enabled {_ = host_gsw3d_proof_reset(h, 0)}
 	gsw3d_triangle_renderer_destroy(&h.gsw3d_triangle)

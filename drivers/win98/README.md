@@ -62,9 +62,9 @@ The final package payloads are:
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `gswmini.drv` | 14,732 | `88a53d70230ad74e062dffcb1347619eef02c7bbe5dd07e242aea3ddbb8d75e2` |
+| `gswmini.drv` | 14,756 | `fe9e8cecb90212deb41835de7167f629ee631233540fa482fad6a705d85f9146` |
 | `gswmini.vxd` | 38,669 | `fff33344a8ee01b6ca48546e9433c7bb1aae2247fb8a0d25c99ce8d3017572fe` |
-| `gswmini.inf` | 3,188 | `12f28bcb5df117a0e1175edf18aac38c2b05de3216a228e56e0814e9af00523f` |
+| `gswmini.inf` | 3,188 | `d14bb2396f5f3f7899506c0652fe941a657e18d7a903397fdff85a10c6b6c186` |
 | `gswhal9x.dll` | 46,592 | `8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38` |
 | `gswdd32.dll` | 32,256 | `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4` |
 

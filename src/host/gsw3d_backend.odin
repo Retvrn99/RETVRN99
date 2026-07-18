@@ -370,9 +370,7 @@ gsw3d_proof_upload_work :: proc(executor: ^Gsw3d_Proof_Executor, work: ^vga.Gsw3
 	   work == nil ||
 	   work.generation != executor.generation ||
 	   work.kind != .Resource_Upload ||
-	   work.resource_id != GSW3D_PROOF_VERTEX_BUFFER_ID ||
-	   work.region_id != 1 ||
-	   work.source_offset != 0x80 {return false}
+	   work.resource_id != GSW3D_PROOF_VERTEX_BUFFER_ID {return false}
 	resource := gsw3d_proof_find_resource(executor, work.resource_id)
 	if resource == nil ||
 	   resource.kind != .Buffer ||

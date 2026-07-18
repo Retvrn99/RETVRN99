@@ -661,6 +661,8 @@ host_gsw3d_proof_test_vertices_upload_and_present_are_bounded :: proc(t: ^testin
 
 	gsw3d_proof_test_wr32(vertices[:], 0, 0x7fc0_0000)
 	overflow.destination_offset = 0
+	overflow.region_id = 0x4753_fff0
+	overflow.source_offset = 0
 	testing.expect(t, gsw3d_proof_upload_work(&executor, &overflow))
 	render_bytes := gsw3d_proof_test_render()
 	render := vga.Gsw3d_Work {

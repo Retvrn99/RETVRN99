@@ -51,7 +51,23 @@ mouse_set_button :: proc(buttons: u8, button: u8, down: bool) -> u8 {
 mouse_capture :: proc(h: ^Host, enabled: bool) -> bool {
 	if h == nil || h.win == nil {return false}
 	if h.mouse_captured == enabled {return true}
-	if !sdl3.SetWindowRelativeMouseMode(h.win, enabled) {return false}
+	if enabled {
+		if !sdl3.SetWindowMouseGrab(h.win, true) {return false}
+		if !sdl3.SetWindowKeyboardGrab(h.win, true) {
+			_ = sdl3.SetWindowMouseGrab(h.win, false)
+			return false
+		}
+		if !sdl3.SetWindowRelativeMouseMode(h.win, true) {
+			_ = sdl3.SetWindowKeyboardGrab(h.win, false)
+			_ = sdl3.SetWindowMouseGrab(h.win, false)
+			return false
+		}
+	} else {
+		relative_released := sdl3.SetWindowRelativeMouseMode(h.win, false)
+		keyboard_released := sdl3.SetWindowKeyboardGrab(h.win, false)
+		mouse_released := sdl3.SetWindowMouseGrab(h.win, false)
+		if !relative_released || !keyboard_released || !mouse_released {return false}
+	}
 	h.mouse_captured = enabled
 	if !enabled {h.mouse_buttons = 0}
 	return true
