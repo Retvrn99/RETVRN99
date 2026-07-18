@@ -31,6 +31,5 @@ license. Chicago95 credits Grassmunk, AdrianoML, and EMH-Mark-I.
 | `32/optical-drive.png` | `Icons/Chicago95/devices/32/drive-optical.png` | `9c9e1a0e898ef82471d026b72dd2d0d5c764b530969c498c95a50b5908b0b2e0` |
 | `32/floppy-drive.png` | `Icons/Chicago95/devices/32/media-floppy.png` (target of `drive-removable-media-floppy.png`) | `3f09b6cf816915a27e99dc1d54a4f3554cfa32a409c3d7aaba677b1dc168861a` |
 | `32/settings.png` | `Icons/Chicago95/apps/32/gnome-desktop-config.png` (target of `preferences-system.png`) | `c24688fb6b82ef6f2b5b347429bf81362fdb0b592c0fa116ed86de2d1e2a401d` |
-| `32/sound.png` | `Icons/Chicago95/apps/32/multimedia-volume-control.png` | `1f4e1fd4256da11369176e1aadcdb81fdddf2a7b4b5b76af510f3f2ea51bfeb0` |
 | `32/error.png` | `Icons/Chicago95/status/32/dialog-error.png` | `c541501ab6876cd56a8291a648952f7eb6717fc8ae25264a74205eb302426e2d` |
 | `32/warning.png` | `Icons/Chicago95/status/32/dialog-warning.png` | `21bd960b71694f0bd9729336c8ae8e50c936a0f4e879fdf9e0902b8cac08d292` |

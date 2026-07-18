@@ -20,7 +20,6 @@ UI_ICON_HARD_DRIVE_32_PNG := #load("../../assets/icons/chicago95/32/hard-drive.p
 UI_ICON_DVD_ROM_32_PNG := #load("../../assets/icons/chicago95/32/optical-drive.png")
 UI_ICON_FLOPPY_32_PNG := #load("../../assets/icons/chicago95/32/floppy-drive.png")
 UI_ICON_SETTINGS_32_PNG := #load("../../assets/icons/chicago95/32/settings.png")
-UI_ICON_SOUND_32_PNG := #load("../../assets/icons/chicago95/32/sound.png")
 UI_ICON_ERROR_32_PNG := #load("../../assets/icons/chicago95/32/error.png")
 UI_ICON_WARNING_32_PNG := #load("../../assets/icons/chicago95/32/warning.png")
 
@@ -39,7 +38,6 @@ Ui_Icon_Role :: enum {
 	Text_File_16,
 	Executable_16,
 	Settings_32,
-	Sound_32,
 	Error_32,
 	Warning_32,
 }
@@ -65,7 +63,6 @@ Ui_Icon_Textures :: struct {
 	text_file_16:    Ui_Icon_Texture,
 	executable_16:   Ui_Icon_Texture,
 	settings_32:     Ui_Icon_Texture,
-	sound_32:        Ui_Icon_Texture,
 	error_32:        Ui_Icon_Texture,
 	warning_32:      Ui_Icon_Texture,
 }
@@ -110,7 +107,6 @@ ui_icon_texture :: proc(textures: ^Ui_Icon_Textures, role: Ui_Icon_Role) -> Ui_I
 	case .Text_File_16:    return textures.text_file_16
 	case .Executable_16:   return textures.executable_16
 	case .Settings_32:     return textures.settings_32
-	case .Sound_32:        return textures.sound_32
 	case .Error_32:        return textures.error_32
 	case .Warning_32:      return textures.warning_32
 	}
@@ -139,7 +135,6 @@ ui_icon_textures_destroy :: proc(textures: ^Ui_Icon_Textures) {
 	ui_icon_texture_destroy(&textures.text_file_16)
 	ui_icon_texture_destroy(&textures.executable_16)
 	ui_icon_texture_destroy(&textures.settings_32)
-	ui_icon_texture_destroy(&textures.sound_32)
 	ui_icon_texture_destroy(&textures.error_32)
 	ui_icon_texture_destroy(&textures.warning_32)
 	textures^ = {}
@@ -183,7 +178,6 @@ ui_icon_textures_init :: proc(textures: ^Ui_Icon_Textures, renderer: ^sdl3.Rende
 		ui_icon_texture_assign(textures, &textures.text_file_16, renderer, UI_ICON_TEXT_FILE_16_PNG) &&
 		ui_icon_texture_assign(textures, &textures.executable_16, renderer, UI_ICON_EXECUTABLE_16_PNG) &&
 		ui_icon_texture_assign(textures, &textures.settings_32, renderer, UI_ICON_SETTINGS_32_PNG) &&
-		ui_icon_texture_assign(textures, &textures.sound_32, renderer, UI_ICON_SOUND_32_PNG) &&
 		ui_icon_texture_assign(textures, &textures.error_32, renderer, UI_ICON_ERROR_32_PNG) &&
 		ui_icon_texture_assign(textures, &textures.warning_32, renderer, UI_ICON_WARNING_32_PNG)
 	)

@@ -171,8 +171,6 @@ test_settings_default_and_missing :: proc(t: ^testing.T) {
 	defer settings_destroy(&defaults)
 	testing.expect_value(t, defaults.cpu_mode, config.Cpu_Mode.GSW_886)
 	testing.expect_value(t, defaults.hard_drive_path, "")
-	testing.expect(t, defaults.floppy_noise_enabled)
-	testing.expect(t, defaults.hdd_clicking_enabled)
 	testing.expect_value(t, defaults.hotkeys.release_input, HOTKEY_DEFAULT_RELEASE_INPUT)
 
 	dir := profile_test_directory(t)
@@ -201,7 +199,6 @@ test_settings_round_trip :: proc(t: ^testing.T) {
 	defer settings_destroy(&settings)
 	settings.cpu_mode = .Turbo
 	settings.hard_drive_path = strings.clone(image_path)
-	settings.floppy_noise_enabled = false
 	diagnostic := settings_save(path, settings)
 	testing.expect_value(t, diagnostic, Settings_Diagnostic.None)
 	loaded, load_diagnostic, migration := settings_load(path)
@@ -210,8 +207,6 @@ test_settings_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, migration, Settings_Migration_Status.None)
 	testing.expect_value(t, loaded.cpu_mode, config.Cpu_Mode.Turbo)
 	testing.expect_value(t, loaded.hard_drive_path, expected_image_path)
-	testing.expect(t, !loaded.floppy_noise_enabled)
-	testing.expect(t, loaded.hdd_clicking_enabled)
 
 	data, rerr := os.read_entire_file(path, context.allocator)
 	defer delete(data)
@@ -287,8 +282,6 @@ test_settings_v2_migrates_to_v3_and_preserves_hard_drive :: proc(t: ^testing.T) 
 	testing.expect_value(t, migration, Settings_Migration_Status.Version_2_To_3)
 	testing.expect_value(t, loaded.cpu_mode, config.Cpu_Mode.Turbo)
 	testing.expect(t, loaded.hard_drive_path != "")
-	testing.expect(t, loaded.floppy_noise_enabled)
-	testing.expect(t, loaded.hdd_clicking_enabled)
 	testing.expect_value(t, settings_migrate(path, loaded, migration), Settings_Diagnostic.None)
 
 	reloaded, reload_diagnostic, reload_migration := settings_load(path)
@@ -334,7 +327,7 @@ test_settings_unknown_keys_are_ignored :: proc(t: ^testing.T) {
 	dir := profile_test_directory(t)
 	defer os.remove_all(dir)
 	path, _ := filepath.join({dir, "settings.json"})
-	contents := `{"version":3,"cpu_mode":"Turbo","future":{"enabled":true}}`
+	contents := `{"version":3,"cpu_mode":"Turbo","floppy_noise_enabled":true,"hdd_clicking_enabled":true,"future":{"enabled":true}}`
 	testing.expect(t, os.write_entire_file(path, contents) == nil)
 
 	loaded, diagnostic, migration := settings_load(path)

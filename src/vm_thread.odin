@@ -67,7 +67,6 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 
 	preparation_blocked := !install_state_boot_allowed(&c.install_state)
 	machine_live := false
-	publish_hard_drive_attached(s, false)
 	publish_machine_running(s, machine_live)
 	if preparation_blocked {
 		message := "Windows 98: interrupted preparation is blocked; choose Install Windows 98 to retry"
@@ -217,7 +216,6 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					frozen = true
 					publish_freeze(s, "reset failed: machine init error", "")
 				}
-				publish_hard_drive_attached(s, machine_live && m.has_disk)
 				publish_machine_running(s, machine_live)
 			case .Stop:
 				if !machine_live {continue}
@@ -523,7 +521,6 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					}
 					publish_freeze(s, message, "")
 				}
-				publish_hard_drive_attached(s, machine_live && m.has_disk)
 				publish_machine_running(s, machine_live)
 				continue
 			case .Abandon_Windows_98_Installation:
@@ -607,7 +604,6 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			case .Set_Volume:
 				c.volume_gain = clamp(cmd.volume_gain, 0, 1)
 				_ = host.host_audio_set_gain(&c.audio, c.volume_gain)
-				_ = host.host_mechanical_audio_set_gain(s.mechanical_audio, c.volume_gain)
 			}
 		}
 		delete(cmds)
@@ -753,7 +749,6 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						frozen = true
 						publish_freeze(s, "guest reset failed: machine init error", "")
 					}
-					publish_hard_drive_attached(s, machine_live && m.has_disk)
 					publish_machine_running(s, machine_live)
 					delete(reset_reason)
 				} else {

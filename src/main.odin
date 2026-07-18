@@ -89,7 +89,6 @@ Shared :: struct {
 	pause_state:                      host.Pause_State,
 	input:                            host.Host_Input_Queue,
 	guard:                            ^Vm_Guard,
-	mechanical_audio:                 ^host.Host_Mechanical_Audio,
 }
 
 Vm_Ctx :: struct {
@@ -433,14 +432,6 @@ gui_main :: proc(
 		fmt.eprintfln("host_init failed: %s", sdl3.GetError())
 		return 1
 	}
-	shared.mechanical_audio = &h.mechanical_audio
-	host.host_mechanical_audio_set_enabled(
-		shared.mechanical_audio,
-		active_settings.hdd_clicking_enabled,
-		active_settings.floppy_noise_enabled,
-	)
-	host.host_mechanical_audio_set_hdd_attached(shared.mechanical_audio, false)
-	host.host_mechanical_audio_set_machine_state(shared.mechanical_audio, false, false)
 	if gsw3d_proof {
 		if !host.host_gsw3d_proof_enable(&h) {
 			fmt.eprintfln("GSW3D proof renderer initialization failed: %s", sdl3.GetError())
@@ -515,10 +506,7 @@ gui_main :: proc(
 		visual_shader     = h.visual_shader,
 		shaders_available = h.shader_state != nil,
 		hard_drive_path   = active_settings.hard_drive_path,
-		floppy_noise_enabled = active_settings.floppy_noise_enabled,
-		hdd_clicking_enabled = active_settings.hdd_clicking_enabled,
 	}
-	device_sounds_dialog: host.Device_Sounds_Dialog_State
 	floppy_activity_light: host.Activity_Light_State
 	hard_drive_activity_light: host.Activity_Light_State
 	dvd_rom_activity_light: host.Activity_Light_State
@@ -1149,51 +1137,6 @@ gui_main :: proc(
 			_ = sdl3.OpenURL("https://github.com/vorvek/RETVRN99/blob/main/THIRDPARTY.md")
 		case .None:
 		}
-		if st.show_device_sounds && !device_sounds_dialog.visible {
-			host.device_sounds_dialog_open(
-				&device_sounds_dialog,
-				active_settings.hdd_clicking_enabled,
-				active_settings.floppy_noise_enabled,
-			)
-		}
-		device_sounds_result := host.device_sounds_dialog_draw(
-			&device_sounds_dialog,
-			&h.storage_icons,
-		)
-		switch device_sounds_result.action {
-		case .Test_Hard_Drive:
-			if host.host_mechanical_audio_test_hard_drive(&h.mechanical_audio) {
-				st.general_status = "Testing hard drive clicking"
-			} else {
-				st.general_status = host.host_mechanical_audio_sample_status_text(&h.mechanical_audio)
-			}
-		case .Test_Floppy:
-			if host.host_mechanical_audio_test_floppy(&h.mechanical_audio) {
-				st.general_status = "Testing floppy drive noise"
-			} else {
-				st.general_status = host.host_mechanical_audio_sample_status_text(&h.mechanical_audio)
-			}
-		case .Apply, .Ok:
-			active_settings.hdd_clicking_enabled = device_sounds_result.hard_drive_clicking
-			active_settings.floppy_noise_enabled = device_sounds_result.floppy_noise
-			st.hdd_clicking_enabled = device_sounds_result.hard_drive_clicking
-			st.floppy_noise_enabled = device_sounds_result.floppy_noise
-			host.host_mechanical_audio_set_enabled(
-				&h.mechanical_audio,
-				device_sounds_result.hard_drive_clicking,
-				device_sounds_result.floppy_noise,
-			)
-			settings_save_pending = profile.settings_save(paths.settings, active_settings) != .None
-			if settings_save_pending {
-				st.general_status = "Device sound settings could not be saved"
-			} else {
-				st.general_status = "Device sound settings applied"
-			}
-			if device_sounds_result.action == .Ok {st.show_device_sounds = false}
-		case .Cancel:
-			st.show_device_sounds = false
-		case .None:
-		}
 		worker_result := hard_drive_create_worker_poll(&create_worker)
 		if worker_result.ready {
 			create_machine_running, create_install_active := gui_storage_lifecycle_snapshot(shared)
@@ -1682,35 +1625,16 @@ publish_freeze :: proc(s: ^Shared, msg: string, regs: string) {
 
 publish_pause_state :: proc(s: ^Shared, state: host.Pause_State) {
 	if s == nil {return}
-	pause_state := state
 	sync.lock(&s.mu)
 	s.pause_state = state
-	running := s.machine_running
-	mechanical_audio := s.mechanical_audio
 	sync.unlock(&s.mu)
-	host.host_mechanical_audio_set_machine_state(
-		mechanical_audio,
-		running,
-		host.pause_active(&pause_state),
-	)
 }
 
 publish_machine_running :: proc(s: ^Shared, running: bool) {
 	if s == nil {return}
 	sync.lock(&s.mu)
 	s.machine_running = running
-	paused := host.pause_active(&s.pause_state)
-	mechanical_audio := s.mechanical_audio
 	sync.unlock(&s.mu)
-	host.host_mechanical_audio_set_machine_state(mechanical_audio, running, paused)
-}
-
-publish_hard_drive_attached :: proc(s: ^Shared, attached: bool) {
-	if s == nil {return}
-	sync.lock(&s.mu)
-	mechanical_audio := s.mechanical_audio
-	sync.unlock(&s.mu)
-	host.host_mechanical_audio_set_hdd_attached(mechanical_audio, attached)
 }
 // line to the device-log panel
 vm_log :: proc(s: ^Shared, msg: string) {

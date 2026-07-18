@@ -30,19 +30,6 @@ Fdc_Phase :: enum {
 	Result,
 }
 
-Fdc_Mechanical_Event_Kind :: enum u8 {
-	Motor,
-	Seek,
-	Transfer,
-}
-
-Fdc_Mechanical_Event_Proc :: proc(
-	ctx: rawptr,
-	kind: Fdc_Mechanical_Event_Kind,
-	track: u8,
-	amount: u16,
-)
-
 Fdc :: struct {
 	img:                 Floppy_Img,
 	has_media:           bool,
@@ -86,35 +73,11 @@ Fdc :: struct {
 	dma_from_mem:        proc(ctx: rawptr, buf: []u8) -> int,
 	dma_tc:              proc(ctx: rawptr) -> bool,
 	dma_ctx:             rawptr,
-	mechanical_ctx:      rawptr,
-	mechanical_event:    Fdc_Mechanical_Event_Proc,
 }
 
 fdc_init :: proc(f: ^Fdc) {
 	f^ = {
 		configure = 0x20,
-	}
-}
-
-fdc_set_mechanical_events :: proc(
-	f: ^Fdc,
-	ctx: rawptr,
-	callback: Fdc_Mechanical_Event_Proc,
-) {
-	if f == nil {return}
-	f.mechanical_ctx = ctx
-	f.mechanical_event = callback
-}
-
-@(private = "file")
-fdc_emit_mechanical_event :: proc(
-	f: ^Fdc,
-	kind: Fdc_Mechanical_Event_Kind,
-	track: u8,
-	amount: u16,
-) {
-	if f != nil && f.mechanical_event != nil {
-		f.mechanical_event(f.mechanical_ctx, kind, track, amount)
 	}
 }
 
@@ -164,11 +127,6 @@ fdc_out :: proc(f: ^Fdc, port: u16, v: u8) {
 		// DOR
 		old := f.dor
 		f.dor = v
-		old_motor := old & 0x10 != 0
-		new_motor := v & 0x10 != 0
-		if old_motor != new_motor {
-			fdc_emit_mechanical_event(f, .Motor, f.pcn[0], new_motor ? u16(1) : u16(0))
-		}
 		if v & FDC_DOR_RESET == 0 {
 			f.deadline_pending = false
 			f.phase = .Idle
@@ -322,22 +280,12 @@ fdc_execute :: proc(f: ^Fdc) {
 		f.phase = .Idle
 	case f.cmd & 0x1F == 0x07:
 		// RECALIBRATE
-		unit := f.params[0] & 3
-		old_track := f.pcn[unit]
-		f.pcn[unit] = 0
-		if old_track != 0 {fdc_emit_mechanical_event(f, .Seek, 0, u16(old_track))}
-		fdc_seek_done(f, unit)
+		f.pcn[f.params[0] & 3] = 0
+		fdc_seek_done(f, f.params[0] & 3)
 	case f.cmd & 0x1F == 0x0F:
 		// SEEK
-		unit := f.params[0] & 3
-		old_track := f.pcn[unit]
-		new_track := f.params[1]
-		f.pcn[unit] = new_track
-		if old_track != new_track {
-			distance := old_track > new_track ? old_track - new_track : new_track - old_track
-			fdc_emit_mechanical_event(f, .Seek, new_track, u16(distance))
-		}
-		fdc_seek_done(f, unit)
+		f.pcn[f.params[0] & 3] = f.params[1]
+		fdc_seek_done(f, f.params[0] & 3)
 	case f.cmd & 0x1F == 0x08:
 		// SENSE INTERRUPT
 		fdc_sense_interrupt(f)
@@ -539,7 +487,6 @@ fdc_transfer_unit :: proc(f: ^Fdc) {
 		copy(sec, f.rw_buf[:])
 		f.img.dirty = true
 	}
-	fdc_emit_mechanical_event(f, .Transfer, u8(f.rw_c), FLOPPY_SECTOR)
 	tc := f.dma_tc != nil && f.dma_tc(f.dma_ctx)
 	end_of_cylinder := fdc_advance_chs(f)
 	if tc {fdc_finish_rw(f, 0, 0); return}

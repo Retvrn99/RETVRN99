@@ -262,10 +262,6 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine, clock_running: bool = true) -> 
 	host.host_audio_close(&c.audio)
 	m^ = {}
 	if !machine.machine_init(m, RAM_SIZE) {return false}
-	machine.machine_set_mechanical_event_sink(
-		m,
-		host.host_mechanical_audio_sink(c.shared.mechanical_audio),
-	)
 	if c.gsw3d_host != nil {
 		backend, backend_ready := host.host_gsw3d_proof_machine_backend(c.gsw3d_host)
 		if !backend_ready || !machine.machine_set_gsw3d_backend(m, backend) {return false}

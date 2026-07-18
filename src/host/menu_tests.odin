@@ -417,7 +417,6 @@ host_test_embedded_chicago95_icons_decode_at_native_sizes :: proc(t: ^testing.T)
 	host_expect_ui_icon_png_size(t, UI_ICON_DVD_ROM_32_PNG, 32)
 	host_expect_ui_icon_png_size(t, UI_ICON_FLOPPY_32_PNG, 32)
 	host_expect_ui_icon_png_size(t, UI_ICON_SETTINGS_32_PNG, 32)
-	host_expect_ui_icon_png_size(t, UI_ICON_SOUND_32_PNG, 32)
 	host_expect_ui_icon_png_size(t, UI_ICON_ERROR_32_PNG, 32)
 	host_expect_ui_icon_png_size(t, UI_ICON_WARNING_32_PNG, 32)
 }

@@ -49,12 +49,6 @@ ide_complete_write :: proc(ide: ^Ide) {
 		return
 	}
 	ide.activity_generation += 1
-	ide_emit_mechanical_access(
-		ide,
-		ide.pio_start_lba,
-		u32(ide.pio_staged_bytes / IDE_SECTOR_SIZE),
-		true,
-	)
 	ide_note_writeback(ide)
 	sectors := u64(ide.pio_staged_bytes / IDE_SECTOR_SIZE)
 	ide_dma_set_taskfile_lba(ide, ide.pio_start_lba + sectors)

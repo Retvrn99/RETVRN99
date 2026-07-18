@@ -120,12 +120,9 @@ Menu_State :: struct {
 	hotkeys:                   Hotkey_Config,
 	hotkey_editor:             Hotkey_Editor_State,
 	show_about:                bool,
-	show_device_sounds:        bool,
 	show_hard_drive_properties: bool,
 	show_cdrom_properties:      bool,
 	show_floppy_properties:     bool,
-	floppy_noise_enabled:       bool,
-	hdd_clicking_enabled:       bool,
 	general_status:             string,
 }
 
@@ -515,7 +512,6 @@ menu_draw :: proc(
 					menu_end()
 				}
 				imgui.Separator()
-				if imgui.MenuItem("Device Sounds...") {st.show_device_sounds = true}
 				if imgui.MenuItem("Hotkeys") {st.show_hotkeys = true}
 				menu_end()
 			}

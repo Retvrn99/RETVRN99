@@ -30,8 +30,6 @@ Settings :: struct {
 	hard_drive_path:       string,
 	floppy_path:           string,
 	cdrom_path:            string,
-	floppy_noise_enabled:  bool,
-	hdd_clicking_enabled:  bool,
 	hotkeys:               Hotkey_Settings,
 }
 
@@ -61,9 +59,7 @@ Settings_Migration_Status :: enum {
 
 settings_default :: proc() -> Settings {
 	return Settings {
-		cpu_mode             = .GSW_886,
-		floppy_noise_enabled = true,
-		hdd_clicking_enabled = true,
+		cpu_mode = .GSW_886,
 		hotkeys = {
 			release_input     = strings.clone(HOTKEY_DEFAULT_RELEASE_INPUT),
 			toggle_fullscreen = strings.clone(HOTKEY_DEFAULT_FULLSCREEN),
@@ -115,10 +111,7 @@ settings_load :: proc(path: string) -> (
 	}
 	defer delete(data)
 
-	disk := Disk_Settings {
-		floppy_noise_enabled = true,
-		hdd_clicking_enabled = true,
-	}
+	disk: Disk_Settings
 	defer delete(disk.cpu_mode)
 	defer delete(disk.hard_drive_path)
 	defer delete(disk.floppy_path)
@@ -156,8 +149,6 @@ settings_load :: proc(path: string) -> (
 		result.hard_drive_path = normalized
 	}
 	if disk.version == SETTINGS_VERSION {
-		result.floppy_noise_enabled = disk.floppy_noise_enabled
-		result.hdd_clicking_enabled = disk.hdd_clicking_enabled
 		delete(result.hotkeys.release_input)
 		delete(result.hotkeys.toggle_fullscreen)
 		delete(result.hotkeys.toggle_turbo)
@@ -238,8 +229,6 @@ settings_save :: proc(path: string, settings: Settings) -> Settings_Diagnostic {
 		hard_drive_path        = normalized_path,
 		floppy_path            = normalized_floppy_path,
 		cdrom_path             = normalized_cdrom_path,
-		floppy_noise_enabled   = settings.floppy_noise_enabled,
-		hdd_clicking_enabled   = settings.hdd_clicking_enabled,
 		hotkey_release_input     = hotkeys.release_input,
 		hotkey_toggle_fullscreen = hotkeys.toggle_fullscreen,
 		hotkey_toggle_turbo      = hotkeys.toggle_turbo,
@@ -274,8 +263,6 @@ Disk_Settings :: struct {
 	hard_drive_path:        string `json:"hard_drive_path"`,
 	floppy_path:            string `json:"floppy_path"`,
 	cdrom_path:             string `json:"cdrom_path"`,
-	floppy_noise_enabled:   bool `json:"floppy_noise_enabled"`,
-	hdd_clicking_enabled:   bool `json:"hdd_clicking_enabled"`,
 	hotkey_release_input:     string `json:"hotkey_release_input"`,
 	hotkey_toggle_fullscreen: string `json:"hotkey_toggle_fullscreen"`,
 	hotkey_toggle_turbo:      string `json:"hotkey_toggle_turbo"`,

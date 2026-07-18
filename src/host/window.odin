@@ -47,7 +47,6 @@ Host :: struct {
 	sidebar_collapsed:   bool,
 	visual_shader:       Visual_Shader,
 	storage_icons:       Storage_Icon_Textures,
-	mechanical_audio:    Host_Mechanical_Audio,
 	has_frame:           bool,
 	vsync:               bool, // presents are paced by the display; else the UI loop sleeps
 	mouse_captured:      bool,
@@ -125,14 +124,10 @@ host_init :: proc(h: ^Host) -> (ok: bool) {
 	} else {
 		_ = host_set_visual_shader(h, .None)
 	}
-	if !host_mechanical_audio_open(&h.mechanical_audio) {
-		fmt.eprintfln("device sounds: SDL3 output unavailable (%s)", sdl3.GetError())
-	}
 	return true
 }
 
 host_destroy :: proc(h: ^Host) {
-	host_mechanical_audio_close(&h.mechanical_audio)
 	if h.mouse_captured {_ = mouse_capture(h, false)}
 	gsw3d_bridge_shutdown(&h.gsw3d_bridge)
 	if h.gsw3d_proof_enabled {_ = host_gsw3d_proof_reset(h, 0)}

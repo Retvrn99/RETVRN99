@@ -34,9 +34,6 @@ The virtual machine currently exposes:
   path includes 2-operator and 4-operator voices, envelopes, feedback, eight
   waveforms, rhythm mode, stereo routing, and timers. The Windows GSW-SOUND
   driver does not ship yet.
-- Optional sampled drive audio using user-supplied Quantum Bigfoot HDD and Alps
-  floppy recordings from 86Box; see [drive-sound setup](docs/drive-sounds.md).
-
 ## Requirements
 
 - x86-64 Windows with an AVX2-capable processor.

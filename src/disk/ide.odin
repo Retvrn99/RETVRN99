@@ -54,13 +54,6 @@ Ide_Deadline_Action :: enum u8 {
 	Flush_Complete,
 }
 
-Ide_Mechanical_Access_Proc :: proc(
-	ctx: rawptr,
-	lba: u64,
-	sectors: u32,
-	is_write: bool,
-)
-
 Ide :: struct {
 	bd:                      Block_Device,
 	state:                   Ide_State,
@@ -110,8 +103,6 @@ Ide :: struct {
 	dma_bytes:               int,
 	dma_buf:                 [IDE_DMA_MAX_BYTES]u8,
 	activity_generation:     u64,
-	mechanical_ctx:          rawptr,
-	mechanical_access:       Ide_Mechanical_Access_Proc,
 }
 
 ide_init :: proc(ide: ^Ide, bd: Block_Device) {
@@ -122,23 +113,6 @@ ide_init :: proc(ide: ^Ide, bd: Block_Device) {
 		channel_enabled  = true,
 	}
 	ide_reset_signature(ide)
-}
-
-ide_set_mechanical_access :: proc(
-	ide: ^Ide,
-	ctx: rawptr,
-	callback: Ide_Mechanical_Access_Proc,
-) {
-	if ide == nil {return}
-	ide.mechanical_ctx = ctx
-	ide.mechanical_access = callback
-}
-
-@(private = "package")
-ide_emit_mechanical_access :: proc(ide: ^Ide, lba: u64, sectors: u32, is_write: bool) {
-	if ide != nil && ide.mechanical_access != nil && sectors > 0 {
-		ide.mechanical_access(ide.mechanical_ctx, lba, sectors, is_write)
-	}
 }
 
 @(private = "package")
@@ -380,12 +354,6 @@ ide_load_sector :: proc(ide: ^Ide) -> bool {
 			return false
 		}
 		ide.activity_generation += 1
-		ide_emit_mechanical_access(
-			ide,
-			ide.pio_read_start_lba,
-			u32(ide.pio_read_sectors),
-			false,
-		)
 		ide.pio_read_loaded = true
 	}
 	sector := ide.pio_read_sectors - ide.pending
@@ -585,7 +553,6 @@ ide_dma_begin_adapter :: proc(
 			return false
 		}
 		ide.activity_generation += 1
-		ide_emit_mechanical_access(ide, ide.dma_lba, ide.dma_sectors, false)
 	}
 	return true
 }
@@ -625,7 +592,6 @@ ide_dma_commit_adapter :: proc(ctx: rawptr, channel: u8) -> bool {
 			return false
 		}
 		ide.activity_generation += 1
-		ide_emit_mechanical_access(ide, ide.dma_lba, ide.dma_sectors, true)
 		ide_note_writeback(ide)
 	}
 	ide_dma_set_taskfile_lba(ide, ide.dma_lba + u64(ide.dma_sectors))
