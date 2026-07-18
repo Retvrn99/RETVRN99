@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package profile
 
+import opticaldrive "../opticaldrive"
 import config "../vmconfig"
 import "core:encoding/json"
 import "core:os"
@@ -12,10 +13,10 @@ SETTINGS_LEGACY_VERSION :: 1
 SETTINGS_PREVIOUS_VERSION :: 2
 
 HOTKEY_DEFAULT_RELEASE_INPUT :: "Super+Shift+F1"
-HOTKEY_DEFAULT_FULLSCREEN    :: "Super+Shift+F3"
-HOTKEY_DEFAULT_TURBO         :: "Super+Shift+F5"
-HOTKEY_DEFAULT_VOLUME_DOWN   :: "Super+Shift+F9"
-HOTKEY_DEFAULT_VOLUME_UP     :: "Super+Shift+F10"
+HOTKEY_DEFAULT_FULLSCREEN :: "Super+Shift+F3"
+HOTKEY_DEFAULT_TURBO :: "Super+Shift+F5"
+HOTKEY_DEFAULT_VOLUME_DOWN :: "Super+Shift+F9"
+HOTKEY_DEFAULT_VOLUME_UP :: "Super+Shift+F10"
 
 Hotkey_Settings :: struct {
 	release_input:     string,
@@ -26,11 +27,11 @@ Hotkey_Settings :: struct {
 }
 
 Settings :: struct {
-	cpu_mode:              config.Cpu_Mode,
-	hard_drive_path:       string,
-	floppy_path:           string,
-	cdrom_path:            string,
-	hotkeys:               Hotkey_Settings,
+	cpu_mode:        config.Cpu_Mode,
+	hard_drive_path: string,
+	floppy_path:     string,
+	cdrom_path:      string,
+	hotkeys:         Hotkey_Settings,
 }
 
 Settings_Diagnostic :: enum {
@@ -61,11 +62,11 @@ settings_default :: proc() -> Settings {
 	return Settings {
 		cpu_mode = .GSW_886,
 		hotkeys = {
-			release_input     = strings.clone(HOTKEY_DEFAULT_RELEASE_INPUT),
+			release_input = strings.clone(HOTKEY_DEFAULT_RELEASE_INPUT),
 			toggle_fullscreen = strings.clone(HOTKEY_DEFAULT_FULLSCREEN),
-			toggle_turbo      = strings.clone(HOTKEY_DEFAULT_TURBO),
-			volume_down       = strings.clone(HOTKEY_DEFAULT_VOLUME_DOWN),
-			volume_up         = strings.clone(HOTKEY_DEFAULT_VOLUME_UP),
+			toggle_turbo = strings.clone(HOTKEY_DEFAULT_TURBO),
+			volume_down = strings.clone(HOTKEY_DEFAULT_VOLUME_DOWN),
+			volume_up = strings.clone(HOTKEY_DEFAULT_VOLUME_UP),
 		},
 	}
 }
@@ -96,11 +97,7 @@ settings_destroy :: proc(settings: ^Settings, allocator := context.allocator) {
 	settings^ = {}
 }
 
-settings_load :: proc(path: string) -> (
-	Settings,
-	Settings_Diagnostic,
-	Settings_Migration_Status,
-) {
+settings_load :: proc(path: string) -> (Settings, Settings_Diagnostic, Settings_Migration_Status) {
 	result := settings_default()
 	data, rerr := os.read_entire_file(path, context.allocator)
 	if rerr != nil {
@@ -154,13 +151,15 @@ settings_load :: proc(path: string) -> (
 		delete(result.hotkeys.toggle_turbo)
 		delete(result.hotkeys.volume_down)
 		delete(result.hotkeys.volume_up)
-		result.hotkeys = hotkey_settings_clone_or_default({
-			release_input     = disk.hotkey_release_input,
-			toggle_fullscreen = disk.hotkey_toggle_fullscreen,
-			toggle_turbo      = disk.hotkey_toggle_turbo,
-			volume_down       = disk.hotkey_volume_down,
-			volume_up         = disk.hotkey_volume_up,
-		})
+		result.hotkeys = hotkey_settings_clone_or_default(
+			{
+				release_input = disk.hotkey_release_input,
+				toggle_fullscreen = disk.hotkey_toggle_fullscreen,
+				toggle_turbo = disk.hotkey_toggle_turbo,
+				volume_down = disk.hotkey_volume_down,
+				volume_up = disk.hotkey_volume_up,
+			},
+		)
 		if len(disk.floppy_path) > 0 {
 			normalized, valid := settings_normalize_media_path(disk.floppy_path)
 			if !valid {return result, .Invalid_Floppy_Path, .None}
@@ -224,11 +223,11 @@ settings_save :: proc(path: string, settings: Settings) -> Settings_Diagnostic {
 	}
 	hotkeys := hotkey_settings_with_defaults(settings.hotkeys)
 	disk := Disk_Settings {
-		version                = SETTINGS_VERSION,
-		cpu_mode               = name,
-		hard_drive_path        = normalized_path,
-		floppy_path            = normalized_floppy_path,
-		cdrom_path             = normalized_cdrom_path,
+		version                  = SETTINGS_VERSION,
+		cpu_mode                 = name,
+		hard_drive_path          = normalized_path,
+		floppy_path              = normalized_floppy_path,
+		cdrom_path               = normalized_cdrom_path,
 		hotkey_release_input     = hotkeys.release_input,
 		hotkey_toggle_fullscreen = hotkeys.toggle_fullscreen,
 		hotkey_toggle_turbo      = hotkeys.toggle_turbo,
@@ -258,11 +257,11 @@ settings_save :: proc(path: string, settings: Settings) -> Settings_Diagnostic {
 
 @(private)
 Disk_Settings :: struct {
-	version:                int `json:"version"`,
-	cpu_mode:               string `json:"cpu_mode"`,
-	hard_drive_path:        string `json:"hard_drive_path"`,
-	floppy_path:            string `json:"floppy_path"`,
-	cdrom_path:             string `json:"cdrom_path"`,
+	version:                  int `json:"version"`,
+	cpu_mode:                 string `json:"cpu_mode"`,
+	hard_drive_path:          string `json:"hard_drive_path"`,
+	floppy_path:              string `json:"floppy_path"`,
+	cdrom_path:               string `json:"cdrom_path"`,
 	hotkey_release_input:     string `json:"hotkey_release_input"`,
 	hotkey_toggle_fullscreen: string `json:"hotkey_toggle_fullscreen"`,
 	hotkey_toggle_turbo:      string `json:"hotkey_toggle_turbo"`,
@@ -273,11 +272,11 @@ Disk_Settings :: struct {
 @(private = "file")
 hotkey_settings_with_defaults :: proc(settings: Hotkey_Settings) -> Hotkey_Settings {
 	return {
-		release_input     = settings.release_input != "" ? settings.release_input : HOTKEY_DEFAULT_RELEASE_INPUT,
+		release_input = settings.release_input != "" ? settings.release_input : HOTKEY_DEFAULT_RELEASE_INPUT,
 		toggle_fullscreen = settings.toggle_fullscreen != "" ? settings.toggle_fullscreen : HOTKEY_DEFAULT_FULLSCREEN,
-		toggle_turbo      = settings.toggle_turbo != "" ? settings.toggle_turbo : HOTKEY_DEFAULT_TURBO,
-		volume_down       = settings.volume_down != "" ? settings.volume_down : HOTKEY_DEFAULT_VOLUME_DOWN,
-		volume_up         = settings.volume_up != "" ? settings.volume_up : HOTKEY_DEFAULT_VOLUME_UP,
+		toggle_turbo = settings.toggle_turbo != "" ? settings.toggle_turbo : HOTKEY_DEFAULT_TURBO,
+		volume_down = settings.volume_down != "" ? settings.volume_down : HOTKEY_DEFAULT_VOLUME_DOWN,
+		volume_up = settings.volume_up != "" ? settings.volume_up : HOTKEY_DEFAULT_VOLUME_UP,
 	}
 }
 
@@ -285,11 +284,11 @@ hotkey_settings_with_defaults :: proc(settings: Hotkey_Settings) -> Hotkey_Setti
 hotkey_settings_clone_or_default :: proc(settings: Hotkey_Settings) -> Hotkey_Settings {
 	values := hotkey_settings_with_defaults(settings)
 	return {
-		release_input     = strings.clone(values.release_input),
+		release_input = strings.clone(values.release_input),
 		toggle_fullscreen = strings.clone(values.toggle_fullscreen),
-		toggle_turbo      = strings.clone(values.toggle_turbo),
-		volume_down       = strings.clone(values.volume_down),
-		volume_up         = strings.clone(values.volume_up),
+		toggle_turbo = strings.clone(values.toggle_turbo),
+		volume_down = strings.clone(values.volume_down),
+		volume_up = strings.clone(values.volume_up),
 	}
 }
 
@@ -309,7 +308,16 @@ settings_normalize_hard_drive_path :: proc(
 	return normalized, true
 }
 
-settings_normalize_media_path :: settings_normalize_hard_drive_path
+settings_normalize_media_path :: proc(
+	path: string,
+	allocator := context.allocator,
+) -> (
+	string,
+	bool,
+) {
+	if opticaldrive.is_path(path) {return strings.clone(path, allocator), true}
+	return settings_normalize_hard_drive_path(path, allocator)
+}
 
 @(private = "file")
 cpu_mode_parse :: proc(name: string) -> (config.Cpu_Mode, bool) {

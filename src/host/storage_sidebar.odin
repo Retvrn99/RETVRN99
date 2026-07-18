@@ -2,6 +2,7 @@
 package host
 
 import imgui "../../vendor_local/imgui"
+import opticaldrive "../opticaldrive"
 import "core:fmt"
 import "core:path/filepath"
 
@@ -20,17 +21,16 @@ Storage_Sidebar_Toggle_Direction :: enum {
 	Right,
 }
 
-storage_sidebar_device_order :: [3]Storage_Sidebar_Device {
-	.Hard_Drive,
-	.Dvd_Rom,
-	.Floppy,
-}
+storage_sidebar_device_order :: [3]Storage_Sidebar_Device{.Hard_Drive, .Dvd_Rom, .Floppy}
 
 storage_sidebar_device_label :: proc(device: Storage_Sidebar_Device) -> string {
 	switch device {
-	case .Hard_Drive: return "Hard disk"
-	case .Dvd_Rom:    return "DVD-ROM"
-	case .Floppy:     return "Floppy"
+	case .Hard_Drive:
+		return "Hard disk"
+	case .Dvd_Rom:
+		return "DVD-ROM"
+	case .Floppy:
+		return "Floppy"
 	}
 	return "Storage"
 }
@@ -38,9 +38,12 @@ storage_sidebar_device_label :: proc(device: Storage_Sidebar_Device) -> string {
 storage_sidebar_device_path :: proc(st: ^Menu_State, device: Storage_Sidebar_Device) -> string {
 	if st == nil {return ""}
 	switch device {
-	case .Hard_Drive: return st.hard_drive_path
-	case .Dvd_Rom:    return st.cdrom_path
-	case .Floppy:     return st.floppy_path
+	case .Hard_Drive:
+		return st.hard_drive_path
+	case .Dvd_Rom:
+		return st.cdrom_path
+	case .Floppy:
+		return st.floppy_path
 	}
 	return ""
 }
@@ -51,9 +54,12 @@ storage_sidebar_device_icon :: proc(
 	large: bool,
 ) -> Ui_Icon_Texture {
 	switch device {
-	case .Hard_Drive: return large ? icons.hard_drive_32 : icons.hard_drive_16
-	case .Dvd_Rom:    return large ? icons.dvd_rom_32 : icons.dvd_rom_16
-	case .Floppy:     return large ? icons.floppy_32 : icons.floppy_16
+	case .Hard_Drive:
+		return large ? icons.hard_drive_32 : icons.hard_drive_16
+	case .Dvd_Rom:
+		return large ? icons.dvd_rom_32 : icons.dvd_rom_16
+	case .Floppy:
+		return large ? icons.floppy_32 : icons.floppy_16
 	}
 	return {}
 }
@@ -61,9 +67,12 @@ storage_sidebar_device_icon :: proc(
 storage_sidebar_device_active :: proc(st: ^Menu_State, device: Storage_Sidebar_Device) -> bool {
 	if st == nil {return false}
 	switch device {
-	case .Hard_Drive: return st.hard_drive_active
-	case .Dvd_Rom:    return st.dvd_rom_active
-	case .Floppy:     return st.floppy_active
+	case .Hard_Drive:
+		return st.hard_drive_active
+	case .Dvd_Rom:
+		return st.dvd_rom_active
+	case .Floppy:
+		return st.floppy_active
 	}
 	return false
 }
@@ -73,11 +82,16 @@ storage_sidebar_device_state :: proc(st: ^Menu_State, device: Storage_Sidebar_De
 	switch device {
 	case .Hard_Drive:
 		switch st.hard_drive_status {
-		case .Ready: return "Ready"
-		case .None_Configured: return "Not configured"
-		case .Missing: return "Missing"
-		case .Invalid: return "Invalid"
-		case .Unavailable, .Unknown: return "Unavailable"
+		case .Ready:
+			return "Ready"
+		case .None_Configured:
+			return "Not configured"
+		case .Missing:
+			return "Missing"
+		case .Invalid:
+			return "Invalid"
+		case .Unavailable, .Unknown:
+			return "Unavailable"
 		}
 	case .Dvd_Rom:
 		if st.cdrom_unavailable {return "Unavailable"}
@@ -89,7 +103,12 @@ storage_sidebar_device_state :: proc(st: ^Menu_State, device: Storage_Sidebar_De
 	return "Unavailable"
 }
 
-storage_sidebar_draw_text :: proc(draw: ^imgui.DrawList, position: imgui.Vec2, text: string, color: u32) {
+storage_sidebar_draw_text :: proc(
+	draw: ^imgui.DrawList,
+	position: imgui.Vec2,
+	text: string,
+	color: u32,
+) {
 	if draw == nil || len(text) == 0 {return}
 	data := raw_data(text)
 	imgui.DrawList_AddText(draw, position, color, cstring(data), cstring(data[len(text):]))
@@ -114,7 +133,7 @@ storage_sidebar_header :: proc(st: ^Menu_State, width: f32) {
 		)
 	}
 	button_size := f32(21)
-	button_min := imgui.Vec2{
+	button_min := imgui.Vec2 {
 		st.sidebar_collapsed ? position.x + (width - button_size) * 0.5 : maximum.x - button_size - 3,
 		position.y + 3,
 	}
@@ -142,7 +161,9 @@ storage_sidebar_header :: proc(st: ^Menu_State, width: f32) {
 	}
 	if imgui.IsItemClicked() {st.sidebar_collapsed = !st.sidebar_collapsed}
 	if imgui.IsItemHovered() {
-		imgui.SetTooltipUnformatted(st.sidebar_collapsed ? "Expand storage sidebar" : "Collapse storage sidebar")
+		imgui.SetTooltipUnformatted(
+			st.sidebar_collapsed ? "Expand storage sidebar" : "Collapse storage sidebar",
+		)
 	}
 }
 
@@ -153,6 +174,9 @@ storage_device_menu_current_label :: proc(
 	path := storage_sidebar_device_path(st, device)
 	if len(path) == 0 {
 		return device == .Hard_Drive ? "Current: None" : "Current: No image"
+	}
+	if letter, physical := opticaldrive.path_letter(path); physical {
+		return fmt.ctprintf("Current: Host drive %c:", letter)
 	}
 	return fmt.ctprintf("Current: %s", filepath.base(path))
 }
@@ -176,10 +200,20 @@ storage_device_menu_contents :: proc(
 		if imgui.MenuItem("Browse C:", nil, false, menu_action_enabled(st, .Browse_C_Drive)) {
 			action = .Browse_C_Drive
 		}
-		if imgui.MenuItem("Select Hard Disk...", nil, false, menu_action_enabled(st, .Select_Hard_Drive)) {
+		if imgui.MenuItem(
+			"Select Hard Disk...",
+			nil,
+			false,
+			menu_action_enabled(st, .Select_Hard_Drive),
+		) {
 			action = .Select_Hard_Drive
 		}
-		if imgui.MenuItem("Create Hard Disk...", nil, false, menu_action_enabled(st, .Create_Hard_Drive)) {
+		if imgui.MenuItem(
+			"Create Hard Disk...",
+			nil,
+			false,
+			menu_action_enabled(st, .Create_Hard_Drive),
+		) {
 			action = .Create_Hard_Drive
 		}
 		imgui.Separator()
@@ -196,6 +230,21 @@ storage_device_menu_contents :: proc(
 		if imgui.MenuItem(mount_label, nil, false, menu_action_enabled(st, mount_action)) {
 			action = mount_action
 		}
+		if device == .Dvd_Rom &&
+		   menu_begin("Use Host Optical Drive", menu_action_enabled(st, .Mount_Host_Cdrom)) {
+			found := false
+			for index in 0 ..< len(st.host_optical_drives) {
+				if !st.host_optical_drives[index] {continue}
+				found = true
+				letter := u8('A' + index)
+				if imgui.MenuItem(fmt.ctprintf("%c:", letter)) {
+					st.requested_host_optical = letter
+					action = .Mount_Host_Cdrom
+				}
+			}
+			if !found {_ = imgui.MenuItem("No host optical drives found", nil, false, false)}
+			menu_end()
+		}
 		if imgui.MenuItem("Eject", nil, false, menu_action_enabled(st, eject_action)) {
 			action = eject_action
 		}
@@ -203,7 +252,13 @@ storage_device_menu_contents :: proc(
 		_ = imgui.MenuItem(storage_device_menu_current_label(st, device), nil, false, false)
 		if len(path) > 0 {imgui.SetItemTooltip("%s", fmt.ctprintf("%s", path))}
 		imgui.Separator()
-		if imgui.MenuItem("Reveal Image in Folder", nil, false, menu_action_enabled(st, reveal_action)) {
+		_, physical := opticaldrive.path_letter(path)
+		if imgui.MenuItem(
+			"Reveal Image in Folder",
+			nil,
+			false,
+			!physical && menu_action_enabled(st, reveal_action),
+		) {
 			action = reveal_action
 		}
 		if imgui.MenuItem("Copy Path", nil, false, len(path) > 0) {
@@ -212,8 +267,8 @@ storage_device_menu_contents :: proc(
 		}
 		imgui.Separator()
 		if imgui.MenuItem("Properties") {
-			if device == .Dvd_Rom {st.show_cdrom_properties = true}
-			else {st.show_floppy_properties = true}
+			if device ==
+			   .Dvd_Rom {st.show_cdrom_properties = true} else {st.show_floppy_properties = true}
 		}
 	}
 	return action
@@ -249,9 +304,18 @@ storage_sidebar_expanded_row :: proc(
 	win98_draw_bevel(draw, minimum, maximum, true)
 	icon := storage_sidebar_device_icon(icons, device, true)
 	win98_draw_icon(draw, icon, {minimum.x + 9, minimum.y + 12}, 32)
-	win98_draw_activity_led(draw, {minimum.x + 25, maximum.y - 14}, storage_sidebar_device_active(st, device))
+	win98_draw_activity_led(
+		draw,
+		{minimum.x + 25, maximum.y - 14},
+		storage_sidebar_device_active(st, device),
+	)
 	text_x := minimum.x + 50
-	storage_sidebar_draw_text(draw, {text_x, minimum.y + 8}, storage_sidebar_device_label(device), win98_color(THEME_BLACK))
+	storage_sidebar_draw_text(
+		draw,
+		{text_x, minimum.y + 8},
+		storage_sidebar_device_label(device),
+		win98_color(THEME_BLACK),
+	)
 	path := storage_sidebar_device_path(st, device)
 	basename := len(path) > 0 ? filepath.base(path) : "No image"
 	storage_sidebar_draw_text(draw, {text_x, minimum.y + 30}, basename, win98_color(THEME_NAVY))
@@ -262,8 +326,8 @@ storage_sidebar_expanded_row :: proc(
 		win98_color(THEME_SHADOW),
 	)
 	if imgui.IsItemHovered() {
-		if len(path) > 0 {imgui.SetTooltip("%s", fmt.ctprintf("%s", path))}
-		else {imgui.SetTooltipUnformatted("No image mounted")}
+		if len(path) >
+		   0 {imgui.SetTooltip("%s", fmt.ctprintf("%s", path))} else {imgui.SetTooltipUnformatted("No image mounted")}
 	}
 	return storage_sidebar_context_menu(st, device)
 }
@@ -272,8 +336,18 @@ storage_sidebar_separator :: proc(width: f32) {
 	position := imgui.GetCursorScreenPos()
 	imgui.Dummy({width, 5})
 	draw := imgui.GetWindowDrawList()
-	imgui.DrawList_AddLine(draw, {position.x + 3, position.y + 2}, {position.x + width - 3, position.y + 2}, win98_color(THEME_DARK))
-	imgui.DrawList_AddLine(draw, {position.x + 3, position.y + 3}, {position.x + width - 3, position.y + 3}, win98_color(THEME_LIGHT))
+	imgui.DrawList_AddLine(
+		draw,
+		{position.x + 3, position.y + 2},
+		{position.x + width - 3, position.y + 2},
+		win98_color(THEME_DARK),
+	)
+	imgui.DrawList_AddLine(
+		draw,
+		{position.x + 3, position.y + 3},
+		{position.x + width - 3, position.y + 3},
+		win98_color(THEME_LIGHT),
+	)
 }
 
 storage_sidebar_collapsed_row :: proc(
@@ -283,13 +357,20 @@ storage_sidebar_collapsed_row :: proc(
 	width: f32,
 ) -> Menu_Action {
 	position := imgui.GetCursorScreenPos()
-	imgui.InvisibleButton(fmt.ctprintf("##storage_rail_%d", int(device)), {width, STORAGE_COLLAPSED_ROW_H})
+	imgui.InvisibleButton(
+		fmt.ctprintf("##storage_rail_%d", int(device)),
+		{width, STORAGE_COLLAPSED_ROW_H},
+	)
 	minimum := imgui.GetItemRectMin()
 	maximum := imgui.GetItemRectMax()
 	draw := imgui.GetWindowDrawList()
 	icon := storage_sidebar_device_icon(icons, device, true)
 	win98_draw_icon(draw, icon, {minimum.x + (width - 32) * 0.5, minimum.y + 10}, 32)
-	win98_draw_activity_led(draw, {minimum.x + width * 0.5, minimum.y + 57}, storage_sidebar_device_active(st, device))
+	win98_draw_activity_led(
+		draw,
+		{minimum.x + width * 0.5, minimum.y + 57},
+		storage_sidebar_device_active(st, device),
+	)
 	if imgui.IsItemHovered() {
 		path := storage_sidebar_device_path(st, device)
 		if len(path) > 0 {
@@ -318,7 +399,10 @@ storage_properties_window :: proc(
 ) {
 	if open == nil || !open^ {return}
 	viewport := imgui.GetMainViewport()
-	center := imgui.Vec2{viewport.Pos.x + viewport.Size.x * 0.5, viewport.Pos.y + viewport.Size.y * 0.5}
+	center := imgui.Vec2 {
+		viewport.Pos.x + viewport.Size.x * 0.5,
+		viewport.Pos.y + viewport.Size.y * 0.5,
+	}
 	imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
 	if win98_begin_window(title, open, {.AlwaysAutoResize, .NoCollapse, .NoSavedSettings}) {
 		imgui.Image(win98_texture_ref(icon), {32, 32})
@@ -344,7 +428,9 @@ storage_sidebar_draw :: proc(st: ^Menu_State, icons: Ui_Icon_Textures) -> Menu_A
 	top := f32(MENU_BAR_H) * st.menu_reveal
 	bottom := f32(STATUS_BAR_H) * st.menu_reveal
 	height := max(f32(1), viewport.Size.y - top - bottom)
-	imgui.SetNextWindowPos({viewport.Pos.x + viewport.Size.x - width * st.menu_reveal, viewport.Pos.y + top})
+	imgui.SetNextWindowPos(
+		{viewport.Pos.x + viewport.Size.x - width * st.menu_reveal, viewport.Pos.y + top},
+	)
 	imgui.SetNextWindowSize({width, height})
 	imgui.SetNextWindowViewport(viewport.ID_)
 	imgui.PushStyleVarImVec2(.WindowPadding, {3, 3})

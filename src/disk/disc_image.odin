@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package disk
 
+import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strconv"
@@ -23,6 +24,7 @@ Disc_Media_Class :: enum u8 {
 Disc_Track_Mode :: enum u8 {
 	Mode1_2048,
 	Mode1_2352,
+	Mode2_2352,
 	Audio_2352,
 }
 
@@ -32,6 +34,7 @@ Disc_Track :: struct {
 	start_lba:    u32,
 	sector_count: u32,
 	file_offset:  u64,
+	file_index:   u8,
 }
 
 Disc_Msf :: struct {
@@ -42,6 +45,8 @@ Disc_Msf :: struct {
 
 Disc_Image :: struct {
 	file:          ^os.File,
+	extra_files:   [DISC_MAX_TRACKS - 1]^os.File,
+	file_count:    u8,
 	tracks:        [DISC_MAX_TRACKS]Disc_Track,
 	track_count:   u8,
 	total_sectors: u32,
@@ -65,8 +70,13 @@ disc_image_mount_classified :: proc(
 
 	candidate: Disc_Image
 	ok := false
-	if strings.equal_fold(filepath.ext(path), ".cue") {
+	extension := filepath.ext(path)
+	if strings.equal_fold(extension, ".cue") {
 		ok = media_class != .Dvd_Rom && disc_image_mount_cue(&candidate, path)
+	} else if strings.equal_fold(extension, ".ccd") {
+		ok = media_class != .Dvd_Rom && disc_image_mount_ccd(&candidate, path)
+	} else if strings.equal_fold(extension, ".mds") {
+		ok = disc_image_mount_companion(&candidate, path, {".mdf", ".MDF"}, media_class)
 	} else {
 		ok = disc_image_mount_direct(&candidate, path, media_class)
 	}
@@ -80,18 +90,48 @@ disc_image_mount_classified :: proc(
 	return true
 }
 
+@(private = "file")
+disc_image_mount_companion :: proc(
+	image: ^Disc_Image,
+	descriptor_path: string,
+	extensions: []string,
+	media_class: Disc_Media_Class,
+) -> bool {
+	descriptor_extension := filepath.ext(descriptor_path)
+	if len(descriptor_extension) == 0 || len(descriptor_extension) >= len(descriptor_path) {
+		return false
+	}
+	base := descriptor_path[:len(descriptor_path) - len(descriptor_extension)]
+	for extension in extensions {
+		path := fmt.tprintf("%s%s", base, extension)
+		if disc_image_mount_direct(image, path, media_class) {
+			return true
+		}
+		disc_image_eject(image)
+	}
+	return false
+}
+
 disc_image_eject :: proc(image: ^Disc_Image) {
 	if image == nil {
 		return
 	}
-	if image.file != nil {
-		os.close(image.file)
+	if image.file != nil {os.close(image.file)}
+	for i in 1 ..< int(image.file_count) {
+		if image.extra_files[i - 1] != nil {os.close(image.extra_files[i - 1])}
 	}
 	image^ = {}
 }
 
 disc_image_present :: proc(image: ^Disc_Image) -> bool {
-	return image != nil && image.file != nil && image.track_count > 0
+	return image != nil && image.file != nil && image.file_count > 0 && image.track_count > 0
+}
+
+@(private = "file")
+disc_image_file :: proc(image: ^Disc_Image, index: u8) -> ^os.File {
+	if image == nil || index >= image.file_count {return nil}
+	if index == 0 {return image.file}
+	return image.extra_files[index - 1]
 }
 
 disc_image_track_at_lba :: proc(image: ^Disc_Image, lba: u32) -> (^Disc_Track, bool) {
@@ -121,15 +161,13 @@ disc_image_read_data_sector :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> 
 	offset := track.file_offset + u64(lba - track.start_lba) * raw_size
 	if track.mode == .Mode1_2352 {
 		offset += 16
+	} else if track.mode == .Mode2_2352 {
+		offset += 24
 	}
-	return disc_image_read_exact(image.file, offset, out)
+	return disc_image_read_exact(disc_image_file(image, track.file_index), offset, out)
 }
 
-disc_image_read_data_sectors :: proc(
-	image: ^Disc_Image,
-	lba, count: u32,
-	out: []u8,
-) -> bool {
+disc_image_read_data_sectors :: proc(image: ^Disc_Image, lba, count: u32, out: []u8) -> bool {
 	if count == 0 {return len(out) == 0}
 	if u64(count) * DISC_DATA_SECTOR_SIZE != u64(len(out)) {return false}
 	cursor := lba
@@ -144,7 +182,11 @@ disc_image_read_data_sectors :: proc(
 		if track.mode == .Mode1_2048 {
 			bytes := int(run) * DISC_DATA_SECTOR_SIZE
 			offset := track.file_offset + u64(cursor - track.start_lba) * DISC_DATA_SECTOR_SIZE
-			if !disc_image_read_exact(image.file, offset, out[written:written + bytes]) {return false}
+			if !disc_image_read_exact(
+				disc_image_file(image, track.file_index),
+				offset,
+				out[written:written + bytes],
+			) {return false}
 			written += bytes
 		} else {
 			for index in 0 ..< run {
@@ -168,7 +210,7 @@ disc_image_read_audio_frame :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> 
 		return false
 	}
 	offset := track.file_offset + u64(lba - track.start_lba) * DISC_RAW_SECTOR_SIZE
-	return disc_image_read_exact(image.file, offset, out)
+	return disc_image_read_exact(disc_image_file(image, track.file_index), offset, out)
 }
 
 disc_image_read_raw_sector :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> bool {
@@ -177,7 +219,7 @@ disc_image_read_raw_sector :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> b
 	if !ok {return false}
 	if track.mode != .Mode1_2048 {
 		offset := track.file_offset + u64(lba - track.start_lba) * DISC_RAW_SECTOR_SIZE
-		return disc_image_read_exact(image.file, offset, out)
+		return disc_image_read_exact(disc_image_file(image, track.file_index), offset, out)
 	}
 	for &byte in out {byte = 0}
 	for i in 1 ..= 10 {out[i] = 0xFF}
@@ -220,6 +262,7 @@ disc_image_mount_direct :: proc(
 		return false
 	}
 	image.file = f
+	image.file_count = 1
 
 	size_i64, size_error := os.file_size(f)
 	if size_error != nil || size_i64 <= 0 {
@@ -269,16 +312,175 @@ disc_image_mount_direct :: proc(
 	return true
 }
 
+Disc_Ccd_Track :: struct {
+	number:         u8,
+	mode:           Disc_Track_Mode,
+	index_zero:     u32,
+	index_one:      u32,
+	has_mode:       bool,
+	has_index_zero: bool,
+	has_index_one:  bool,
+}
+
+Disc_Ccd :: struct {
+	tracks:      [DISC_MAX_TRACKS]Disc_Ccd_Track,
+	track_count: int,
+	sessions:    int,
+	scrambled:   bool,
+}
+
+@(private = "file")
+disc_image_mount_ccd :: proc(image: ^Disc_Image, ccd_path: string) -> bool {
+	data, read_error := os.read_entire_file(ccd_path, context.temp_allocator)
+	if read_error != nil {return false}
+	defer delete(data, context.temp_allocator)
+
+	parsed, ok := disc_image_parse_ccd(string(data))
+	if !ok || parsed.sessions != 1 || parsed.scrambled {return false}
+	if !disc_image_open_companion(image, ccd_path, {".img", ".IMG"}) {return false}
+
+	size_i64, size_error := os.file_size(image.file)
+	if size_error != nil || size_i64 <= 0 || size_i64 % DISC_RAW_SECTOR_SIZE != 0 {
+		return false
+	}
+	frames := u64(size_i64) / DISC_RAW_SECTOR_SIZE
+	if frames == 0 || frames > u64(max(u32)) {return false}
+
+	for i in 0 ..< parsed.track_count {
+		entry := parsed.tracks[i]
+		start := u64(entry.index_one)
+		end := frames
+		if i + 1 < parsed.track_count {
+			next := parsed.tracks[i + 1]
+			end = u64(next.index_one)
+			if next.has_index_zero {end = u64(next.index_zero)}
+		}
+		if start >= frames || end <= start || end > frames {return false}
+		count := end - start
+		if entry.mode == .Mode1_2352 &&
+		   !disc_image_validate_raw_mode1_range(image.file, start, count) {
+			return false
+		}
+		image.tracks[i] = Disc_Track {
+			number       = entry.number,
+			mode         = entry.mode,
+			start_lba    = entry.index_one,
+			sector_count = u32(count),
+			file_offset  = start * DISC_RAW_SECTOR_SIZE,
+		}
+	}
+	image.track_count = u8(parsed.track_count)
+	image.total_sectors = u32(frames)
+	image.media_class = .Compact_Disc
+	return true
+}
+
+@(private = "file")
+disc_image_open_companion :: proc(
+	image: ^Disc_Image,
+	descriptor_path: string,
+	extensions: []string,
+) -> bool {
+	descriptor_extension := filepath.ext(descriptor_path)
+	if len(descriptor_extension) == 0 || len(descriptor_extension) >= len(descriptor_path) {
+		return false
+	}
+	base := descriptor_path[:len(descriptor_path) - len(descriptor_extension)]
+	for extension in extensions {
+		path := fmt.tprintf("%s%s", base, extension)
+		f, open_error := os.open(path, {.Read})
+		if open_error == nil {
+			image.file = f
+			image.file_count = 1
+			return true
+		}
+	}
+	return false
+}
+
+@(private)
+disc_image_parse_ccd :: proc(text: string) -> (Disc_Ccd, bool) {
+	result := Disc_Ccd {
+		sessions = 1,
+	}
+	section := ""
+	track_index := -1
+	rest := text
+	for raw_line in strings.split_lines_iterator(&rest) {
+		line := strings.trim_space(raw_line)
+		if len(line) == 0 || line[0] == ';' || line[0] == '#' {continue}
+		if line[0] == '[' {
+			if line[len(line) - 1] != ']' {return {}, false}
+			section = strings.trim_space(line[1:len(line) - 1])
+			track_index = -1
+			if len(section) > 6 && strings.equal_fold(section[:6], "TRACK ") {
+				number, number_ok := strconv.parse_int(strings.trim_space(section[6:]), 10)
+				if !number_ok || number != result.track_count + 1 || number > DISC_MAX_TRACKS {
+					return {}, false
+				}
+				track_index = result.track_count
+				result.tracks[track_index].number = u8(number)
+				result.track_count += 1
+			}
+			continue
+		}
+
+		equals := strings.index_byte(line, '=')
+		if equals <= 0 {return {}, false}
+		key := strings.trim_space(line[:equals])
+		value := strings.trim_space(line[equals + 1:])
+		if track_index >= 0 {
+			track := &result.tracks[track_index]
+			if strings.equal_fold(key, "MODE") {
+				mode, mode_ok := strconv.parse_int(value, 10)
+				if !mode_ok || (mode != 0 && mode != 1) {return {}, false}
+				track.mode = .Audio_2352 if mode == 0 else .Mode1_2352
+				track.has_mode = true
+			} else if strings.equal_fold(key, "INDEX 0") {
+				index, index_ok := strconv.parse_int(value, 10)
+				if !index_ok || index < 0 || u64(index) > u64(max(u32)) {return {}, false}
+				track.index_zero = u32(index)
+				track.has_index_zero = true
+			} else if strings.equal_fold(key, "INDEX 1") {
+				index, index_ok := strconv.parse_int(value, 10)
+				if !index_ok || index < 0 || u64(index) > u64(max(u32)) {return {}, false}
+				track.index_one = u32(index)
+				track.has_index_one = true
+			}
+		} else if strings.equal_fold(section, "Disc") {
+			if strings.equal_fold(key, "Sessions") {
+				sessions, sessions_ok := strconv.parse_int(value, 10)
+				if !sessions_ok || sessions <= 0 {return {}, false}
+				result.sessions = sessions
+			} else if strings.equal_fold(key, "DataTracksScrambled") {
+				scrambled, scrambled_ok := strconv.parse_int(value, 10)
+				if !scrambled_ok || (scrambled != 0 && scrambled != 1) {return {}, false}
+				result.scrambled = scrambled == 1
+			}
+		}
+	}
+	if result.track_count == 0 {return {}, false}
+	for i in 0 ..< result.track_count {
+		track := result.tracks[i]
+		if !track.has_mode || !track.has_index_one {return {}, false}
+		if track.has_index_zero && track.index_zero >= track.index_one {return {}, false}
+		if i > 0 && track.index_one <= result.tracks[i - 1].index_one {return {}, false}
+	}
+	return result, true
+}
+
 Disc_Cue_Track :: struct {
 	number:           u8,
 	mode:             Disc_Track_Mode,
+	file_index:       u8,
 	start_frame:      u32,
 	index_zero_frame: u32,
 	has_index_zero:   bool,
 }
 
 Disc_Cue :: struct {
-	file_name:   string,
+	file_names:  [DISC_MAX_TRACKS]string,
+	file_count:  int,
 	tracks:      [DISC_MAX_TRACKS]Disc_Cue_Track,
 	track_count: int,
 }
@@ -296,83 +498,85 @@ disc_image_mount_cue :: proc(image: ^Disc_Image, cue_path: string) -> bool {
 		return false
 	}
 
-	bin_path := parsed.file_name
-	joined: string
-	if !filepath.is_abs(bin_path) {
-		joined, _ = filepath.join({filepath.dir(cue_path), bin_path}, context.temp_allocator)
-		if len(joined) == 0 {
-			return false
+	file_sizes: [DISC_MAX_TRACKS]u64
+	for file_index in 0 ..< parsed.file_count {
+		bin_path := parsed.file_names[file_index]
+		joined: string
+		if !filepath.is_abs(bin_path) {
+			joined, _ = filepath.join({filepath.dir(cue_path), bin_path}, context.temp_allocator)
+			if len(joined) == 0 {return false}
+			defer delete(joined, context.temp_allocator)
+			bin_path = joined
 		}
-		defer delete(joined, context.temp_allocator)
-		bin_path = joined
+		f, open_error := os.open(bin_path, {.Read})
+		if open_error != nil {return false}
+		if file_index == 0 {image.file = f} else {image.extra_files[file_index - 1] = f}
+		image.file_count = u8(file_index + 1)
+		size_i64, size_error := os.file_size(f)
+		if size_error != nil || size_i64 <= 0 {return false}
+		file_sizes[file_index] = u64(size_i64)
 	}
 
-	f, open_error := os.open(bin_path, {.Read})
-	if open_error != nil {
-		return false
-	}
-	image.file = f
-	size_i64, size_error := os.file_size(f)
-	if size_error != nil || size_i64 <= 0 {
-		return false
-	}
-	size := u64(size_i64)
-
-	first := parsed.tracks[0]
-	offset := u64(first.start_frame) * disc_track_raw_size(first.mode)
-	if offset > size {return false}
 	total: u64
-	for i in 0 ..< parsed.track_count {
-		entry := parsed.tracks[i]
-		raw_size := disc_track_raw_size(entry.mode)
-		sectors: u64
-		if i + 1 < parsed.track_count {
-			next := parsed.tracks[i + 1]
-			end_frame := next.start_frame
-			if next.has_index_zero {
-				end_frame = next.index_zero_frame
+	for file_index in 0 ..< parsed.file_count {
+		first_track := -1
+		last_track := -1
+		for i in 0 ..< parsed.track_count {
+			if int(parsed.tracks[i].file_index) == file_index {
+				if first_track < 0 {first_track = i}
+				last_track = i
 			}
-			if end_frame <= entry.start_frame || end_frame > next.start_frame {
+		}
+		if first_track < 0 {return false}
+		size := file_sizes[file_index]
+		first := parsed.tracks[first_track]
+		offset := u64(first.start_frame) * disc_track_raw_size(first.mode)
+		if offset > size {return false}
+		file_base := total
+		for i in first_track ..= last_track {
+			entry := parsed.tracks[i]
+			if int(entry.file_index) != file_index {return false}
+			raw_size := disc_track_raw_size(entry.mode)
+			sectors: u64
+			if i < last_track {
+				next := parsed.tracks[i + 1]
+				end_frame := next.start_frame
+				if next.has_index_zero {end_frame = next.index_zero_frame}
+				if end_frame <= entry.start_frame || end_frame > next.start_frame {return false}
+				sectors = u64(end_frame - entry.start_frame)
+			} else {
+				remaining := size - min(size, offset)
+				if remaining == 0 || remaining % raw_size != 0 {return false}
+				sectors = remaining / raw_size
+			}
+			span := sectors * raw_size
+			if sectors == 0 || sectors > u64(max(u32)) || offset > size || span > size - offset {
 				return false
 			}
-			sectors = u64(end_frame - entry.start_frame)
-		} else {
-			remaining := size - min(size, offset)
-			if remaining == 0 || remaining % raw_size != 0 {
-				return false
+			start := file_base + u64(entry.start_frame)
+			end := start + sectors
+			if end > u64(max(u32)) {return false}
+			image.tracks[i] = Disc_Track {
+				number       = entry.number,
+				mode         = entry.mode,
+				start_lba    = u32(start),
+				sector_count = u32(sectors),
+				file_offset  = offset,
+				file_index   = entry.file_index,
 			}
-			sectors = remaining / raw_size
-		}
-
-		span := sectors * raw_size
-		if sectors == 0 || sectors > u64(max(u32)) || offset > size || span > size - offset {
-			return false
-		}
-		end := u64(entry.start_frame) + sectors
-		if end > u64(max(u32)) {
-			return false
-		}
-		image.tracks[i] = Disc_Track {
-			number       = entry.number,
-			mode         = entry.mode,
-			start_lba    = entry.start_frame,
-			sector_count = u32(sectors),
-			file_offset  = offset,
-		}
-		offset += span
-		total = max(total, end)
-		if i + 1 < parsed.track_count {
-			next := parsed.tracks[i + 1]
-			if next.has_index_zero {
-				gap_frames := u64(next.start_frame - next.index_zero_frame)
-				gap_bytes := gap_frames * disc_track_raw_size(next.mode)
-				if gap_bytes > size - min(size, offset) {return false}
-				offset += gap_bytes
+			offset += span
+			total = max(total, end)
+			if i < last_track {
+				next := parsed.tracks[i + 1]
+				if next.has_index_zero {
+					gap_frames := u64(next.start_frame - next.index_zero_frame)
+					gap_bytes := gap_frames * disc_track_raw_size(next.mode)
+					if gap_bytes > size - min(size, offset) {return false}
+					offset += gap_bytes
+				}
 			}
 		}
-	}
-	if offset != size {
-		return false
+		if offset != size {return false}
 	}
 
 	image.track_count = u8(parsed.track_count)
@@ -396,7 +600,11 @@ disc_image_parse_cue :: proc(text: string) -> (Disc_Cue, bool) {
 		}
 
 		if strings.equal_fold(keyword, "FILE") {
-			if len(result.file_name) != 0 || result.track_count != 0 || has_pending {
+			if has_pending || result.file_count >= DISC_MAX_TRACKS {return {}, false}
+			if result.file_count > 0 &&
+			   (result.track_count == 0 ||
+					   int(result.tracks[result.track_count - 1].file_index) !=
+						   result.file_count - 1) {
 				return {}, false
 			}
 			name, has_name := disc_cue_next_word(line, &pos)
@@ -404,9 +612,10 @@ disc_image_parse_cue :: proc(text: string) -> (Disc_Cue, bool) {
 			if !has_name || !has_kind || len(name) == 0 || !strings.equal_fold(kind, "BINARY") {
 				return {}, false
 			}
-			result.file_name = name
+			result.file_names[result.file_count] = name
+			result.file_count += 1
 		} else if strings.equal_fold(keyword, "TRACK") {
-			if len(result.file_name) == 0 || has_pending || result.track_count >= DISC_MAX_TRACKS {
+			if result.file_count == 0 || has_pending || result.track_count >= DISC_MAX_TRACKS {
 				return {}, false
 			}
 			number_text, has_number := disc_cue_next_word(line, &pos)
@@ -424,8 +633,9 @@ disc_image_parse_cue :: proc(text: string) -> (Disc_Cue, bool) {
 				return {}, false
 			}
 			pending = Disc_Cue_Track {
-				number = u8(number),
-				mode   = mode,
+				number     = u8(number),
+				mode       = mode,
+				file_index = u8(result.file_count - 1),
 			}
 			has_pending = true
 			last_number = number
@@ -450,6 +660,7 @@ disc_image_parse_cue :: proc(text: string) -> (Disc_Cue, bool) {
 				return {}, false
 			}
 			if result.track_count > 0 &&
+			   pending.file_index == result.tracks[result.track_count - 1].file_index &&
 			   start <= result.tracks[result.track_count - 1].start_frame {
 				return {}, false
 			}
@@ -457,12 +668,11 @@ disc_image_parse_cue :: proc(text: string) -> (Disc_Cue, bool) {
 			result.tracks[result.track_count] = pending
 			result.track_count += 1
 			has_pending = false
-		} else if strings.equal_fold(keyword, "PREGAP") ||
-		          strings.equal_fold(keyword, "POSTGAP") {
+		} else if strings.equal_fold(keyword, "PREGAP") || strings.equal_fold(keyword, "POSTGAP") {
 			return {}, false
 		}
 	}
-	if len(result.file_name) == 0 || result.track_count == 0 || has_pending {
+	if result.file_count == 0 || result.track_count == 0 || has_pending {
 		return {}, false
 	}
 	return result, true
@@ -505,6 +715,9 @@ disc_cue_track_mode :: proc(text: string) -> (Disc_Track_Mode, bool) {
 	}
 	if strings.equal_fold(text, "MODE1/2352") {
 		return .Mode1_2352, true
+	}
+	if strings.equal_fold(text, "MODE2/2352") {
+		return .Mode2_2352, true
 	}
 	if strings.equal_fold(text, "AUDIO") || strings.equal_fold(text, "AUDIO/2352") {
 		return .Audio_2352, true
@@ -554,7 +767,7 @@ disc_track_raw_size :: proc(mode: Disc_Track_Mode) -> u64 {
 	switch mode {
 	case .Mode1_2048:
 		return DISC_DATA_SECTOR_SIZE
-	case .Mode1_2352, .Audio_2352:
+	case .Mode1_2352, .Mode2_2352, .Audio_2352:
 		return DISC_RAW_SECTOR_SIZE
 	}
 	return 0
@@ -577,15 +790,24 @@ disc_image_has_pvd :: proc(f: ^os.File, raw_size, payload_offset: u64) -> bool {
 
 @(private = "file")
 disc_image_validate_raw_mode1 :: proc(f: ^os.File, sectors: u64) -> bool {
+	return disc_image_validate_raw_mode1_range(f, 0, sectors)
+}
+
+@(private = "file")
+disc_image_validate_raw_mode1_range :: proc(f: ^os.File, first_sector, sectors: u64) -> bool {
 	if f == nil || sectors < 17 {
 		return false
 	}
 	buffer := make([]u8, DISC_VALIDATE_CHUNK_FRAMES * DISC_RAW_SECTOR_SIZE, context.temp_allocator)
 	defer delete(buffer, context.temp_allocator)
-	for first: u64 = 0; first < sectors; {
-		count := min(u64(DISC_VALIDATE_CHUNK_FRAMES), sectors - first)
+	for checked: u64 = 0; checked < sectors; {
+		count := min(u64(DISC_VALIDATE_CHUNK_FRAMES), sectors - checked)
 		bytes := int(count) * DISC_RAW_SECTOR_SIZE
-		if !disc_image_read_exact(f, first * DISC_RAW_SECTOR_SIZE, buffer[:bytes]) {
+		if !disc_image_read_exact(
+			f,
+			(first_sector + checked) * DISC_RAW_SECTOR_SIZE,
+			buffer[:bytes],
+		) {
 			return false
 		}
 		for i in 0 ..< int(count) {
@@ -594,7 +816,7 @@ disc_image_validate_raw_mode1 :: proc(f: ^os.File, sectors: u64) -> bool {
 				return false
 			}
 		}
-		first += count
+		checked += count
 	}
 	return true
 }

@@ -199,6 +199,7 @@ test_settings_round_trip :: proc(t: ^testing.T) {
 	defer settings_destroy(&settings)
 	settings.cpu_mode = .Turbo
 	settings.hard_drive_path = strings.clone(image_path)
+	settings.cdrom_path = strings.clone("hostcd://D:")
 	diagnostic := settings_save(path, settings)
 	testing.expect_value(t, diagnostic, Settings_Diagnostic.None)
 	loaded, load_diagnostic, migration := settings_load(path)
@@ -207,6 +208,7 @@ test_settings_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, migration, Settings_Migration_Status.None)
 	testing.expect_value(t, loaded.cpu_mode, config.Cpu_Mode.Turbo)
 	testing.expect_value(t, loaded.hard_drive_path, expected_image_path)
+	testing.expect_value(t, loaded.cdrom_path, "hostcd://D:")
 
 	data, rerr := os.read_entire_file(path, context.allocator)
 	defer delete(data)
@@ -241,11 +243,7 @@ test_settings_v1_migrates_cpu_to_v3_and_clears_hard_drive :: proc(t: ^testing.T)
 	testing.expect_value(t, migration, Settings_Migration_Status.Version_1_To_3)
 	testing.expect_value(t, loaded.cpu_mode, config.Cpu_Mode.Turbo)
 	testing.expect_value(t, loaded.hard_drive_path, "")
-	testing.expect_value(
-		t,
-		settings_migrate(path, loaded, migration),
-		Settings_Diagnostic.None,
-	)
+	testing.expect_value(t, settings_migrate(path, loaded, migration), Settings_Diagnostic.None)
 
 	contents, read_error := os.read_entire_file(path, context.temp_allocator)
 	testing.expect(t, read_error == nil)
