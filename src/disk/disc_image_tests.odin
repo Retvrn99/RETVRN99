@@ -176,6 +176,86 @@ disc_image_test_cue_mixed_mode_track_table_and_reads :: proc(t: ^testing.T) {
 }
 
 @(test)
+disc_image_test_multifile_mode2_cue_mounts_game_disc :: proc(t: ^testing.T) {
+	data_path := disc_image_test_path("multifile track 01.bin")
+	audio_path := disc_image_test_path("multifile track 02.bin")
+	cue_path := disc_image_test_path("multifile game.cue")
+	defer os.remove(data_path)
+	defer os.remove(audio_path)
+	defer os.remove(cue_path)
+
+	data := make([]u8, 18 * DISC_RAW_SECTOR_SIZE, context.temp_allocator)
+	for lba in 0 ..< 18 {
+		frame := data[lba * DISC_RAW_SECTOR_SIZE:][:DISC_RAW_SECTOR_SIZE]
+		disc_image_test_raw_header(frame)
+		frame[15] = 2
+	}
+	pvd := data[16 * DISC_RAW_SECTOR_SIZE + 24:]
+	copy(pvd[:7], "\x01CD001\x01")
+	pvd[7] = 0x51
+	testing.expect(t, os.write_entire_file(data_path, data) == nil)
+
+	audio := make([]u8, 5 * DISC_RAW_SECTOR_SIZE, context.temp_allocator)
+	audio[2 * DISC_RAW_SECTOR_SIZE] = 0xA2
+	testing.expect(t, os.write_entire_file(audio_path, audio) == nil)
+	cue := fmt.tprintf(
+		"FILE \"%s\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\nFILE \"%s\" BINARY\n  TRACK 02 AUDIO\n    INDEX 00 00:00:00\n    INDEX 01 00:00:02\n",
+		filepath.base(data_path),
+		filepath.base(audio_path),
+	)
+	testing.expect(t, os.write_entire_file(cue_path, transmute([]u8)cue) == nil)
+
+	image: Disc_Image
+	testing.expect(t, disc_image_mount(&image, cue_path))
+	defer disc_image_eject(&image)
+	testing.expect_value(t, image.file_count, u8(2))
+	testing.expect_value(t, image.track_count, u8(2))
+	testing.expect_value(t, image.tracks[0].mode, Disc_Track_Mode.Mode2_2352)
+	testing.expect_value(t, image.tracks[1].start_lba, u32(20))
+	testing.expect_value(t, image.total_sectors, u32(23))
+
+	sector: [DISC_DATA_SECTOR_SIZE]u8
+	testing.expect(t, disc_image_read_data_sector(&image, 16, sector[:]))
+	testing.expect_value(t, sector[0], u8(1))
+	testing.expect_value(t, string(sector[1:6]), "CD001")
+	testing.expect_value(t, sector[7], u8(0x51))
+	audio_frame: [DISC_RAW_SECTOR_SIZE]u8
+	testing.expect(t, disc_image_read_audio_frame(&image, 20, audio_frame[:]))
+	testing.expect_value(t, audio_frame[0], u8(0xA2))
+}
+
+@(test)
+disc_image_test_ccd_img_and_mds_mdf_descriptors :: proc(t: ^testing.T) {
+	ccd_path := disc_image_test_path("clone.ccd")
+	img_path := fmt.tprintf("%s.img", ccd_path[:len(ccd_path) - 4])
+	mds_path := disc_image_test_path("alcohol.mds")
+	mdf_path := fmt.tprintf("%s.mdf", mds_path[:len(mds_path) - 4])
+	defer os.remove(ccd_path)
+	defer os.remove(img_path)
+	defer os.remove(mds_path)
+	defer os.remove(mdf_path)
+
+	raw := make([]u8, 24 * DISC_RAW_SECTOR_SIZE, context.temp_allocator)
+	for lba in 0 ..< 24 {disc_image_test_raw_header(raw[lba * DISC_RAW_SECTOR_SIZE:])}
+	pvd := raw[16 * DISC_RAW_SECTOR_SIZE + 16:]
+	copy(pvd[:7], "\x01CD001\x01")
+	testing.expect(t, os.write_entire_file(img_path, raw) == nil)
+	ccd := "[CloneCD]\nVersion=3\n[Disc]\nSessions=1\nDataTracksScrambled=0\n[TRACK 1]\nMODE=1\nINDEX 1=0\n"
+	testing.expect(t, os.write_entire_file(ccd_path, ccd) == nil)
+
+	image: Disc_Image
+	testing.expect(t, disc_image_mount(&image, ccd_path))
+	testing.expect_value(t, image.tracks[0].mode, Disc_Track_Mode.Mode1_2352)
+	disc_image_eject(&image)
+
+	testing.expect(t, os.write_entire_file(mds_path, "MEDIA DESCRIPTOR") == nil)
+	testing.expect(t, os.write_entire_file(mdf_path, disc_image_test_iso_bytes()) == nil)
+	testing.expect(t, disc_image_mount(&image, mds_path))
+	testing.expect_value(t, image.tracks[0].mode, Disc_Track_Mode.Mode1_2048)
+	disc_image_eject(&image)
+}
+
+@(test)
 disc_image_test_malformed_mount_is_atomic :: proc(t: ^testing.T) {
 	iso_path := disc_image_test_path("atomic.iso")
 	bin_path := disc_image_test_path("bad.bin")
@@ -259,11 +339,7 @@ disc_image_test_cue_index_zero_keeps_stored_pregap_out_of_tracks :: proc(t: ^tes
 	cue_path := disc_image_test_path("index-zero.cue")
 	defer os.remove(bin_path)
 	defer os.remove(cue_path)
-	bin := make(
-		[]u8,
-		2 * DISC_DATA_SECTOR_SIZE + 2 * DISC_RAW_SECTOR_SIZE,
-		context.temp_allocator,
-	)
+	bin := make([]u8, 2 * DISC_DATA_SECTOR_SIZE + 2 * DISC_RAW_SECTOR_SIZE, context.temp_allocator)
 	bin[2 * DISC_DATA_SECTOR_SIZE] = 0xE0
 	audio_offset := 2 * DISC_DATA_SECTOR_SIZE + DISC_RAW_SECTOR_SIZE
 	bin[audio_offset] = 0xA3
@@ -289,10 +365,11 @@ disc_image_test_cue_index_zero_keeps_stored_pregap_out_of_tracks :: proc(t: ^tes
 
 @(test)
 disc_image_test_cue_rejects_invalid_layouts :: proc(t: ^testing.T) {
-	_, ok := disc_image_parse_cue(
+	mode2, ok := disc_image_parse_cue(
 		"FILE \"x.bin\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00\n",
 	)
-	testing.expect(t, !ok)
+	testing.expect(t, ok)
+	testing.expect_value(t, mode2.tracks[0].mode, Disc_Track_Mode.Mode2_2352)
 	_, ok = disc_image_parse_cue(
 		"FILE \"x.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 01 00:01:00\nTRACK 02 AUDIO\nINDEX 01 00:00:00\n",
 	)
@@ -311,8 +388,6 @@ disc_image_test_cue_rejects_invalid_layouts :: proc(t: ^testing.T) {
 		"FILE \"x.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 00 00:00:02\nINDEX 01 00:00:01\n",
 	)
 	testing.expect(t, !ok)
-	_, ok = disc_image_parse_cue(
-		"FILE \"x.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 02 00:00:00\n",
-	)
+	_, ok = disc_image_parse_cue("FILE \"x.bin\" BINARY\nTRACK 01 AUDIO\nINDEX 02 00:00:00\n")
 	testing.expect(t, !ok)
 }

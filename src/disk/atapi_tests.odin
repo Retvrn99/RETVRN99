@@ -7,6 +7,19 @@ import "core:os"
 import "core:path/filepath"
 import "core:testing"
 
+@(test)
+atapi_test_physical_passthrough_is_read_only :: proc(t: ^testing.T) {
+	testing.expect(t, atapi_physical_packet_allowed(0x28))
+	testing.expect(t, atapi_physical_packet_allowed(0x43))
+	testing.expect(t, atapi_physical_packet_allowed(0xBE))
+	testing.expect(t, !atapi_physical_packet_allowed(0x2A)) // WRITE (10)
+	testing.expect(t, !atapi_physical_packet_allowed(0x04)) // FORMAT UNIT
+
+	packet: [ATAPI_PACKET_BYTES]u8
+	packet[0], packet[7], packet[8] = 0x43, 0x09, 0x90
+	testing.expect_value(t, atapi_physical_allocation_length(packet[:]), 2448)
+}
+
 Atapi_Test_Irq :: struct {
 	asserts:   int,
 	deasserts: int,

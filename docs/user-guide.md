@@ -76,9 +76,15 @@ the machine is stopped so it is present on the next Start. Outside an active
 Windows installation, floppy and optical media can also be hot-swapped while
 the machine runs.
 
-Optical images are mounted read-only. RETVRN99 supports ISO, raw Mode 1, and
-single-file CUE/BIN images with Mode 1 or audio tracks. A floppy image must be
-exactly 1.44 MB.
+Optical images are mounted read-only. RETVRN99 supports ISO, raw Mode 1,
+single- and multi-file CUE/BIN images with Mode 1, Mode 2 Form 1, or audio
+tracks, CloneCD CCD/IMG sets, and single-track Alcohol MDS/MDF data images.
+
+On Windows, choose **Media > DVD-ROM > Use Host Optical Drive** to attach a
+physical CD/DVD drive. The guest receives read-only SCSI packet access, so raw
+sectors and subchannels come from the host drive rather than being synthesized
+from an image. Host-drive access can require elevated privileges depending on
+the Windows device policy. A floppy image must be exactly 1.44 MB.
 
 ## Guided Windows 98 installation
 

@@ -168,8 +168,14 @@ a separate OEM package manifest and `CUSTOM.INF` registration. This is also the
 installation seam for the forthcoming GSW VGA and sound drivers.
 
 Optical images are read-only. The media backend supports ISO images, raw Mode
-1 images, and single-file CUE/BIN sets containing Mode 1 or audio tracks.
-Floppy images must be exactly 1.44 MB.
+1 images, single- and multi-file CUE/BIN sets containing Mode 1, Mode 2 Form 1,
+or audio tracks, CloneCD CCD/IMG sets, and single-track Alcohol MDS/MDF data
+images. On Windows, **Media > DVD-ROM > Use Host Optical Drive** can pass a
+physical CD/DVD drive through with read-only SCSI commands, including raw-sector
+and subchannel reads. Windows virtual optical drives, including images mounted
+by DAEMON Tools, use the same path and appear as host drives. Direct device
+access may require running RETVRN99 with elevated privileges, depending on the
+Windows device policy and drive software. Floppy images must be exactly 1.44 MB.
 
 ## FAQ
 

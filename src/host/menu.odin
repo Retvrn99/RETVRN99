@@ -57,6 +57,7 @@ Menu_Action :: enum {
 	Mount_Floppy,
 	Eject_Floppy,
 	Mount_Cdrom,
+	Mount_Host_Cdrom,
 	Eject_Cdrom,
 	Reveal_Cdrom,
 	Reveal_Floppy,
@@ -89,37 +90,39 @@ Menu_Center_Panel :: enum {
 }
 
 Menu_State :: struct {
-	machine_running:           bool,
-	machine_paused:            bool,
-	user_paused:               bool,
-	install_active:            bool,
-	install_recovery_required: bool,
-	storage_actions_blocked:   bool,
-	hard_drive_status:         Hard_Drive_Status,
-	hard_drive_path:           string,
-	hard_drive_diagnostic:     string,
-	floppy_mounted:            bool,
-	cdrom_mounted:             bool,
-	floppy_unavailable:        bool,
-	cdrom_unavailable:         bool,
-	floppy_path:               string,
-	cdrom_path:                string,
-	floppy_diagnostic:         string,
-	cdrom_diagnostic:          string,
-	floppy_active:             bool,
-	hard_drive_active:         bool,
-	dvd_rom_active:            bool,
-	cpu_mode:                  config.Cpu_Mode,
-	window_scale:              int,
-	fullscreen:                bool,
-	menu_reveal:               f32,
-	sidebar_collapsed:         bool,
-	visual_shader:             Visual_Shader,
-	shaders_available:         bool,
-	show_hotkeys:              bool,
-	hotkeys:                   Hotkey_Config,
-	hotkey_editor:             Hotkey_Editor_State,
-	show_about:                bool,
+	machine_running:            bool,
+	machine_paused:             bool,
+	user_paused:                bool,
+	install_active:             bool,
+	install_recovery_required:  bool,
+	storage_actions_blocked:    bool,
+	hard_drive_status:          Hard_Drive_Status,
+	hard_drive_path:            string,
+	hard_drive_diagnostic:      string,
+	floppy_mounted:             bool,
+	cdrom_mounted:              bool,
+	floppy_unavailable:         bool,
+	cdrom_unavailable:          bool,
+	floppy_path:                string,
+	cdrom_path:                 string,
+	floppy_diagnostic:          string,
+	cdrom_diagnostic:           string,
+	host_optical_drives:        [26]bool,
+	requested_host_optical:     u8,
+	floppy_active:              bool,
+	hard_drive_active:          bool,
+	dvd_rom_active:             bool,
+	cpu_mode:                   config.Cpu_Mode,
+	window_scale:               int,
+	fullscreen:                 bool,
+	menu_reveal:                f32,
+	sidebar_collapsed:          bool,
+	visual_shader:              Visual_Shader,
+	shaders_available:          bool,
+	show_hotkeys:               bool,
+	hotkeys:                    Hotkey_Config,
+	hotkey_editor:              Hotkey_Editor_State,
+	show_about:                 bool,
 	show_hard_drive_properties: bool,
 	show_cdrom_properties:      bool,
 	show_floppy_properties:     bool,
@@ -257,7 +260,7 @@ menu_action_enabled :: proc(st: ^Menu_State, action: Menu_Action) -> bool {
 		return !install_locked && !st.storage_actions_blocked
 	case .Eject_Floppy:
 		return !install_locked && !st.storage_actions_blocked && st.floppy_mounted
-	case .Mount_Cdrom:
+	case .Mount_Cdrom, .Mount_Host_Cdrom:
 		return !install_locked && !st.storage_actions_blocked
 	case .Eject_Cdrom:
 		return !install_locked && !st.storage_actions_blocked && st.cdrom_mounted
@@ -633,7 +636,11 @@ menu_draw :: proc(
 	if st.show_hotkeys {
 		imgui.SetNextWindowPos(center, .Appearing, {0.5, 0.5})
 		window_open := st.show_hotkeys
-		if win98_begin_window("Hotkeys", &window_open, {.AlwaysAutoResize, .NoCollapse, .NoSavedSettings}) {
+		if win98_begin_window(
+			"Hotkeys",
+			&window_open,
+			{.AlwaysAutoResize, .NoCollapse, .NoSavedSettings},
+		) {
 			apply_hotkeys, close_hotkeys := hotkey_editor_draw(st, storage_icons.settings_32)
 			if apply_hotkeys {action = .Set_Hotkeys}
 			if close_hotkeys {window_open = false}
@@ -691,11 +698,7 @@ menu_text :: proc(s: string) {
 	imgui.TextUnformatted(cstring(d), cstring(d[len(s):]))
 }
 
-menu_message_intro :: proc(
-	icon: Ui_Icon_Texture,
-	title, summary: string,
-	width: f32,
-) {
+menu_message_intro :: proc(icon: Ui_Icon_Texture, title, summary: string, width: f32) {
 	win98_section_title(title, width)
 	imgui.Spacing()
 	imgui.Image(win98_texture_ref(icon), {32, 32})

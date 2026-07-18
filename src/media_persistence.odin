@@ -7,6 +7,7 @@ import "core:strings"
 import "core:sync"
 import "disk"
 import "machine"
+import "opticaldrive"
 import "profile"
 
 Media_Kind :: enum u8 {
@@ -22,18 +23,22 @@ Media_Path_Status :: enum u8 {
 }
 
 Mounted_Media_State :: struct {
-	mounted:               bool,
-	actual_path:           string,
-	requested_path:        string,
-	diagnostic:            string,
-	unavailable:           bool,
-	last_operation_ok:     bool,
+	mounted:                bool,
+	actual_path:            string,
+	requested_path:         string,
+	diagnostic:             string,
+	unavailable:            bool,
+	last_operation_ok:      bool,
 	persist_last_operation: bool,
-	generation:            u64,
+	generation:             u64,
 }
 
 media_path_status :: proc(path: string) -> Media_Path_Status {
 	if path == "" {return .Empty}
+	if letter, physical := opticaldrive.path_letter(path); physical {
+		drives := opticaldrive.enumerate()
+		return drives[int(letter - 'A')] ? .Present : .Missing
+	}
 	info, stat_error := os.stat(path, context.temp_allocator)
 	if stat_error == nil {
 		os.file_info_delete(info, context.temp_allocator)
@@ -102,10 +107,7 @@ media_state_snapshot :: proc(
 	return result
 }
 
-media_state_destroy :: proc(
-	state: ^Mounted_Media_State,
-	allocator := context.allocator,
-) {
+media_state_destroy :: proc(state: ^Mounted_Media_State, allocator := context.allocator) {
 	if state == nil {return}
 	delete(state.actual_path, allocator)
 	delete(state.requested_path, allocator)
@@ -213,11 +215,20 @@ vm_restore_user_media :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: boo
 		c.user_floppy = nil
 		delete(c.user_floppy_path)
 		c.user_floppy_path = ""
-		publish_floppy_state(c.shared, false, "", "", "The saved floppy image no longer exists", true)
+		publish_floppy_state(
+			c.shared,
+			false,
+			"",
+			"",
+			"The saved floppy image no longer exists",
+			true,
+		)
 	} else if c.user_floppy_path != "" {
 		if len(c.user_floppy) == 0 {
-			if image, read_error := os.read_entire_file_from_path(c.user_floppy_path, context.allocator);
-			   read_error == nil && len(image) == 1_474_560 {
+			if image, read_error := os.read_entire_file_from_path(
+				c.user_floppy_path,
+				context.allocator,
+			); read_error == nil && len(image) == 1_474_560 {
 				c.user_floppy = image
 			} else {
 				delete(image)

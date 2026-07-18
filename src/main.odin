@@ -21,6 +21,7 @@ import "fat32session"
 import "host"
 import "hv"
 import "machine"
+import "opticaldrive"
 import "profile"
 import sdl3 "vendor:sdl3"
 import "vga"
@@ -344,7 +345,10 @@ gui_main :: proc(
 		if diagnostic := profile.settings_save(paths.settings, active_settings);
 		   diagnostic != .None {
 			settings_save_pending = true
-			fmt.eprintfln("settings: missing removable-media path could not be cleared (%v)", diagnostic)
+			fmt.eprintfln(
+				"settings: missing removable-media path could not be cleared (%v)",
+				diagnostic,
+			)
 		}
 	}
 	auto_close_after := auto_close
@@ -403,16 +407,7 @@ gui_main :: proc(
 	if profile.install_state_active(&ctx.install_state) {
 		shared.installing_windows_98 = true
 		ctx.cdrom_path = strings.clone(ctx.install_state.source_path)
-		media_state_publish_result(
-			shared,
-			.Cdrom,
-			true,
-			true,
-			ctx.cdrom_path,
-			"",
-			"",
-			false,
-		)
+		media_state_publish_result(shared, .Cdrom, true, true, ctx.cdrom_path, "", "", false)
 	}
 	if install_diagnostic != .None && install_diagnostic != .Missing {
 		vm_log(
@@ -499,13 +494,14 @@ gui_main :: proc(
 	if start_requested {push_cmd(shared, Command{kind = .Start})}
 
 	st := host.Menu_State {
-		cpu_mode          = ctx.cpu_mode,
-		window_scale      = h.window_scale,
-		fullscreen        = h.fullscreen,
-		menu_reveal       = 1,
-		visual_shader     = h.visual_shader,
-		shaders_available = h.shader_state != nil,
-		hard_drive_path   = active_settings.hard_drive_path,
+		cpu_mode            = ctx.cpu_mode,
+		window_scale        = h.window_scale,
+		fullscreen          = h.fullscreen,
+		menu_reveal         = 1,
+		visual_shader       = h.visual_shader,
+		shaders_available   = h.shader_state != nil,
+		hard_drive_path     = active_settings.hard_drive_path,
+		host_optical_drives = opticaldrive.enumerate(),
 	}
 	floppy_activity_light: host.Activity_Light_State
 	hard_drive_activity_light: host.Activity_Light_State
@@ -926,7 +922,8 @@ gui_main :: proc(
 		st.cdrom_mounted = cdrom_media.mounted
 		st.floppy_unavailable = floppy_media.unavailable
 		st.cdrom_unavailable = cdrom_media.unavailable
-		st.floppy_path = floppy_media.mounted ? floppy_media.actual_path : floppy_media.requested_path
+		st.floppy_path =
+			floppy_media.mounted ? floppy_media.actual_path : floppy_media.requested_path
 		st.cdrom_path = cdrom_media.mounted ? cdrom_media.actual_path : cdrom_media.requested_path
 		st.floppy_diagnostic = floppy_media.diagnostic
 		st.cdrom_diagnostic = cdrom_media.diagnostic
@@ -950,7 +947,10 @@ gui_main :: proc(
 		if media_settings_changed {
 			settings_save_pending = profile.settings_save(paths.settings, active_settings) != .None
 			if settings_save_pending {
-				vm_log(shared, "settings: mounted-media change could not be saved; it will be retried")
+				vm_log(
+					shared,
+					"settings: mounted-media change could not be saved; it will be retried",
+				)
 			}
 		}
 
@@ -1024,6 +1024,7 @@ gui_main :: proc(
 			frozen_msg = frozen,
 			regs_text  = regs,
 		}
+		st.host_optical_drives = opticaldrive.enumerate()
 		switch host.menu_draw(&st, info, h.storage_icons) {
 		case .Start:
 			if host.menu_action_enabled(&st, .Start) &&
@@ -1083,6 +1084,11 @@ gui_main :: proc(
 			push_cmd(shared, Command{kind = .Eject_Floppy})
 		case .Mount_Cdrom:
 			pending_mount_show(cdrom_pending, h.win)
+		case .Mount_Host_Cdrom:
+			path := opticaldrive.path(st.requested_host_optical)
+			if path != "" {
+				push_cmd(shared, Command{kind = .Mount_Cdrom, path = strings.clone(path)})
+			}
 		case .Eject_Cdrom:
 			push_cmd(shared, Command{kind = .Eject_Cdrom})
 		case .Install_Windows_98:
@@ -2625,11 +2631,7 @@ publish_floppy_state :: proc(
 	sync.unlock(&s.mu)
 }
 
-publish_media_failure :: proc(
-	s: ^Shared,
-	kind: Media_Kind,
-	requested_path, diagnostic: string,
-) {
+publish_media_failure :: proc(s: ^Shared, kind: Media_Kind, requested_path, diagnostic: string) {
 	media_state_publish_result(s, kind, false, false, "", requested_path, diagnostic, false)
 }
 
