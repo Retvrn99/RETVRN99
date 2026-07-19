@@ -152,15 +152,24 @@ Cold-DOS, Windows 98 real-DOS-mode, licensed-game, and independent chip-fidelity
 gates remain open; do not treat port presence or host-side tests as those
 guest-native claims.
 
-For the current manual Windows audio gate, first remove any stale Code-24
-Creative-named device whose Resources page shows IRQ10 and a `FE001000` memory
-range. Reboot the guest, open **Add New Hardware**, choose the sound-device
-class manually, then select Creative's **Sound Blaster 16 or AWE-32 or
-compatible** as a new legacy device. Its Resources page must show I/O
-`0220-022F` and `0388-038B`, IRQ5, DMA1, and DMA5, with no memory range. Prefer
-a configuration without MPU-401 `0330-0331`; RETVRN99 does not emulate that
-endpoint. This manual binding is a test gate, not a claim of automatic Plug
-and Play installation or working Windows playback.
+For the next manual Windows audio gate, restore a clean pre-driver Windows 98
+SE snapshot, or an equivalent image copy made while the VM was stopped and its
+storage session was closed. Do not use a guest that has already had the native
+GSW-Sound package or a Creative driver forced onto its PCI node as binding
+evidence. Confirm that no PCI multimedia device appears, then open **Add New
+Hardware**, choose the sound-device class manually, and select Creative's
+**Sound Blaster 16 or AWE-32 or compatible** as a new legacy device. Its
+Resources page must show I/O `0220-022F` and `0388-038B`, IRQ5, DMA1, and DMA5,
+with no memory range. Prefer a configuration without MPU-401 `0330-0331`;
+RETVRN99 does not emulate that endpoint.
+
+Invoking global hardware detection on the previously modified guest closed the
+Windows desktop and remained at a black text screen with a blinking cursor and
+no continuing disk activity. That is a failed gate: it did not reach resource
+selection and is not evidence that the inbox driver bound. Any repeat that
+loses the desktop this way also fails immediately. Successful binding is not
+claimed until a clean guest returns to Windows, Device Manager reports the
+legacy resources above without a warning, and the later playback gates pass.
 
 While installation is active, RETVRN99 locks drive switching, drive creation,
 browsing, and unrelated media changes. This prevents an install state from

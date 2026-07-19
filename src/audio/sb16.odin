@@ -460,6 +460,10 @@ sb16_read_port :: proc(sb: ^Sb16, port: u16) -> (u8, bool) {
 	case 0x22C:
 		return 0x00, true
 	case 0x22E:
+		if sb.pending_command == 0xFA && sb.pending_need == 2 && sb.pending_count == 0 {
+			sb.pending_need = 0
+			sb16_queue_read(sb, 0xFF)
+		}
 		sb16_ack_dma_irq(sb, false)
 		return sb.read_count > 0 ? 0x80 : 0x00, true
 	case 0x22F:

@@ -41,6 +41,11 @@ hardware_trace_test_noisy_kinds_are_sampled_independently :: proc(t: ^testing.T)
 		.Mmio_Access,
 		.Vga_Access,
 		.Ide_Access,
+		.Sb16_Poll,
+		.Pic_Command,
+		.Pic_Queue,
+		.Pic_Inject,
+		.Pic_Delivery_State,
 	}
 	for kind in noisy {
 		for index in 0 ..< HARDWARE_TRACE_NOISY_WINDOW {
@@ -77,6 +82,11 @@ hardware_trace_test_post_reset_churn_preserves_reset_and_device_evidence :: proc
 		hardware_trace_record(&trace, tick, .Mmio_Access, u64(index), 4, 0)
 		hardware_trace_record(&trace, tick, .Vga_Access, 0x3DA, 1, 0)
 		hardware_trace_record(&trace, tick, .Ide_Access, 0x1F7, 1, 0x40)
+		hardware_trace_record(&trace, tick, .Sb16_Poll, 0x22E, 1, 0x80)
+		hardware_trace_record(&trace, tick, .Pic_Command, 0x20, 1, 0x20)
+		hardware_trace_record(&trace, tick, .Pic_Queue, 0, 0x50, u64(index))
+		hardware_trace_record(&trace, tick, .Pic_Inject, 0, 0x50, u64(index))
+		hardware_trace_record(&trace, tick, .Pic_Delivery_State, 0x28, 0xC0047C16, 0x3097)
 	}
 
 	stats := hardware_trace_stats(&trace)
@@ -100,6 +110,53 @@ hardware_trace_test_post_reset_churn_preserves_reset_and_device_evidence :: proc
 	testing.expect(t, strings.contains(text, "pci-config"))
 	testing.expect(t, strings.contains(text, "ide"))
 	testing.expect(t, len(text) <= HARDWARE_TRACE_TEXT_MAX_BYTES)
+}
+
+@(test)
+hardware_trace_test_classifies_sb16_commands_and_samples_only_polls :: proc(t: ^testing.T) {
+	for port in u16(0x0220) ..= u16(0x022F) {
+		testing.expect_value(
+			t,
+			hardware_trace_io_kind(port, true),
+			Hardware_Event_Kind.Sb16_Command,
+		)
+	}
+	testing.expect_value(t, hardware_trace_io_kind(0x021F, true), Hardware_Event_Kind.None)
+	testing.expect_value(t, hardware_trace_io_kind(0x0230, true), Hardware_Event_Kind.None)
+	testing.expect_value(t, hardware_trace_io_kind(0x022A, false), Hardware_Event_Kind.Sb16_Response)
+	testing.expect_value(t, hardware_trace_io_kind(0x022C, false), Hardware_Event_Kind.Sb16_Poll)
+	testing.expect_value(t, hardware_trace_io_kind(0x022E, false), Hardware_Event_Kind.Sb16_Poll)
+	testing.expect_value(t, hardware_trace_io_kind(0x022F, false), Hardware_Event_Kind.Sb16_Poll)
+	testing.expect_value(t, hardware_trace_io_kind(0x0229, false), Hardware_Event_Kind.None)
+	testing.expect_value(t, hardware_trace_io_kind(0x022B, false), Hardware_Event_Kind.None)
+
+	testing.expect_value(t, hardware_event_kind_name(.Sb16_Command), "sb16-command")
+	testing.expect_value(t, hardware_event_kind_name(.Sb16_Response), "sb16-response")
+	testing.expect_value(t, hardware_event_kind_name(.Sb16_Poll), "sb16-poll")
+
+	trace: Hardware_Trace
+	testing.expect_value(t, len(trace.noisy_observed), HARDWARE_TRACE_NOISY_KINDS)
+	hardware_trace_enable(&trace, true)
+	for sequence in 0 ..< HARDWARE_TRACE_NOISY_INITIAL_RETAIN + 1 {
+		hardware_trace_record(&trace, u64(sequence), .Sb16_Poll, 0x22E, 1, 0x80)
+	}
+	hardware_trace_record(&trace, 100, .Sb16_Command, 0x22C, 1, 0xE1)
+	hardware_trace_record(&trace, 101, .Sb16_Response, 0x22A, 1, 0x04)
+	stats := hardware_trace_stats(&trace)
+	testing.expect_value(
+		t,
+		trace.noisy_observed[8],
+		u64(HARDWARE_TRACE_NOISY_INITIAL_RETAIN + 1),
+	)
+	testing.expect_value(t, stats.observed, u64(HARDWARE_TRACE_NOISY_INITIAL_RETAIN + 3))
+	testing.expect_value(t, stats.retained, u64(HARDWARE_TRACE_NOISY_INITIAL_RETAIN + 2))
+	testing.expect_value(t, stats.suppressed, u64(1))
+	command := trace.events[HARDWARE_TRACE_NOISY_INITIAL_RETAIN]
+	testing.expect_value(t, command.kind, Hardware_Event_Kind.Sb16_Command)
+	testing.expect_value(t, command.a, u64(0x22C))
+	response := trace.events[HARDWARE_TRACE_NOISY_INITIAL_RETAIN + 1]
+	testing.expect_value(t, response.kind, Hardware_Event_Kind.Sb16_Response)
+	testing.expect_value(t, response.c, u64(0x04))
 }
 
 @(test)

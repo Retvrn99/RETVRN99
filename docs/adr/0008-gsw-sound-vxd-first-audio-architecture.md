@@ -24,6 +24,10 @@ guest-source bootstrap defined the complete three-file package but did not yet
 have reviewed DDK Interface closure, linked binaries, reproducible build,
 payload inventory, or runtime proof. The source/build gates later closed, but
 guest binding did not; ADR 0009 records the resulting default-off pivot.
+The subsequent inbox-driver experiment also remains unproven: global hardware
+detection on the modified guest ended at a persistent black screen with a
+blinking cursor before manual legacy-resource selection. A clean pre-driver
+guest snapshot is required for the next attempt.
 Earlier fixtures named only an INF and VxD even though a Windows 9x wave driver
 needs a complete VxD-first package.
 
@@ -154,7 +158,8 @@ Restart in MS-DOS mode. Host shutdown or reboot is never part of acceptance.
   deterministic build gates, but not inventory, default hardware exposure,
   installation, or runtime proof.
 - The inbox Creative SB16 driver must bind to a separately added legacy device,
-  never to the reserved PCI identity; ADR 0009 defines that manual gate.
+  never to the reserved PCI identity; ADR 0009 defines the still-unpassed
+  clean-guest manual gate.
 - Recording, Windows MIDI/FM, MPU-401, CSP, DirectSound3D, EAX, and hardware
   secondary buffers remain outside the initial implementation.
 

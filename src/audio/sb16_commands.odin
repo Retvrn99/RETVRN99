@@ -98,7 +98,7 @@ sb16_dispatch :: proc(sb: ^Sb16, command: u8, args: []u8) {
 		sb16_queue_read(sb, SB16_DSP_VERSION_MAJOR)
 		sb16_queue_read(sb, SB16_DSP_VERSION_MINOR)
 	case 0xE3:
-		for value in "Copyright (C) Creative Technology Ltd. 1992-94" {
+		for value in "COPYRIGHT (C) CREATIVE TECHNOLOGY LTD, 1992." {
 			sb16_queue_read(sb, u8(value))
 		}
 		sb16_queue_read(sb, 0)
@@ -108,6 +108,8 @@ sb16_dispatch :: proc(sb: ^Sb16, command: u8, args: []u8) {
 		sb16_queue_read(sb, sb.test_register)
 	case 0xF2:
 		sb16_raise_dma_irq(sb, false)
+	case 0xF3:
+		sb16_raise_dma_irq(sb, true)
 	case 0xF9:
 		if len(args) > 0 {sb16_queue_read(sb, sb.controller_ram[args[0]])}
 	case 0xFA:

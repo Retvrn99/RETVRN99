@@ -11,7 +11,7 @@ HARDWARE_TRACE_TEXT_MAX_BYTES :: HARDWARE_TRACE_CAPACITY * HARDWARE_TRACE_LINE_M
 HARDWARE_TRACE_NOISY_WINDOW :: 65_536
 HARDWARE_TRACE_NOISY_RETAIN :: 1
 HARDWARE_TRACE_NOISY_INITIAL_RETAIN :: 8
-HARDWARE_TRACE_NOISY_KINDS :: 8
+HARDWARE_TRACE_NOISY_KINDS :: 13
 
 Hardware_Event_Kind :: enum u8 {
 	None,
@@ -36,6 +36,9 @@ Hardware_Event_Kind :: enum u8 {
 	Atapi_Packet,
 	Fdc_Access,
 	Isa_Pnp_Access,
+	Sb16_Command,
+	Sb16_Response,
+	Sb16_Poll,
 	Vga_Access,
 	Mmio_Access,
 	Freeze,
@@ -144,6 +147,16 @@ hardware_trace_noisy_index :: proc(kind: Hardware_Event_Kind) -> (int, bool) {
 		return 6, true
 	case .Ide_Access:
 		return 7, true
+	case .Sb16_Poll:
+		return 8, true
+	case .Pic_Command:
+		return 9, true
+	case .Pic_Queue:
+		return 10, true
+	case .Pic_Inject:
+		return 11, true
+	case .Pic_Delivery_State:
+		return 12, true
 	case:
 		return 0, false
 	}
@@ -215,6 +228,11 @@ hardware_trace_io_kind :: proc(
 	if !write && isa_pnp != nil {
 		read_data_port, programmed := isa_pnp_read_data_selection(isa_pnp)
 		if programmed && port == read_data_port {return .Isa_Pnp_Access}
+	}
+	if port >= 0x0220 && port <= 0x022F {
+		if write {return .Sb16_Command}
+		if port == 0x022A {return .Sb16_Response}
+		if port == 0x022C || port == 0x022E || port == 0x022F {return .Sb16_Poll}
 	}
 	if port == 0x0020 || port == 0x0021 || port == 0x00A0 || port == 0x00A1 {
 		return write ? .Pic_Command : .None
@@ -290,6 +308,12 @@ hardware_event_kind_name :: proc(kind: Hardware_Event_Kind) -> string {
 		return "fdc"
 	case .Isa_Pnp_Access:
 		return "isa-pnp"
+	case .Sb16_Command:
+		return "sb16-command"
+	case .Sb16_Response:
+		return "sb16-response"
+	case .Sb16_Poll:
+		return "sb16-poll"
 	case .Vga_Access:
 		return "vga"
 	case .Mmio_Access:

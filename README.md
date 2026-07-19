@@ -38,9 +38,11 @@ The virtual machine currently exposes:
   reproducible Windows 98 SE VxD package exist as developer work, but repeated
   guest binding tests did not produce a working device. The default machine
   therefore hides `FFFE:0003` and does not ship or inject that package. The
-  current Windows test path manually adds the inbox Creative SB16 driver as a
-  separate legacy device; it must show `220h`/`388h`, IRQ5, DMA1, and DMA5,
-  never a PCI MMIO range.
+  next Windows gate is a clean-guest attempt to add the inbox Creative SB16
+  driver as a separate legacy device; it must show `220h`/`388h`, IRQ5, DMA1,
+  and DMA5, never a PCI MMIO range. The first global-detection attempt ended at
+  a persistent black text screen with a blinking cursor, so no successful
+  Windows driver binding is claimed.
 
 ## Requirements
 

@@ -28,6 +28,24 @@ Adapter. Its DSP and mixer use `220h-22Fh`, OPL3 uses `388h-38Bh` and the Sound
 Blaster FM aliases, and the fixed interrupt and DMA resources are IRQ5, DMA1,
 and DMA5.
 
+A follow-up acceptance attempt on the previously modified guest did not reach
+manual resource selection. Invoking **Add New Hardware** closed the Windows
+desktop and remained at a black text screen with a blinking cursor while host
+status still said the machine was running and guest disk activity stopped.
+This is a failed global-detection gate, not evidence of an inbox-driver bind.
+
+Inspection of the installed Windows 98 SE `SYSDETMG.DLL` found a concrete DSP
+parser mismatch in that run: its clone probe sends `FAh` with no arguments,
+while `FAh` is also a real two-argument SB16 controller-RAM write. The next
+candidate preserves that write but recognizes Win98's exact no-argument
+transcript when it polls read status before sending either argument, returning
+one negative clone byte without leaving stale DSP data. The detector's `FDh`
+and `FEh` reads remain bounded unsupported-command timeouts, and its `F2h` IRQ
+probe now leaves the DSP FIFO empty. Complete SB16 command/response tracing is
+retained. These repairs do not establish that the parser mismatch alone caused
+the persistent black screen; every detector poll observed in the binary is
+bounded, so the clean-guest runtime gate remains.
+
 ## Decision
 
 The normal guest persona does not enumerate `PCI\VEN_FFFE&DEV_0003`.
@@ -45,13 +63,21 @@ The next Windows 98 SE acceptance path is the inbox Creative SB16 driver bound
 to a separately added legacy device. It must never be installed by updating a
 PCI device node. The manual gate is:
 
-1. Remove the stale Code-24 Creative-named PCI node and reboot the guest.
-2. Confirm that no PCI multimedia device reappears.
-3. Use **Add New Hardware**, manually select the sound-device class, Creative,
+1. Restore a clean pre-driver Windows 98 SE snapshot, or an equivalent image
+   copy made while the VM was stopped and its storage session was closed. A
+   guest previously modified by either experimental sound package is not
+   binding evidence.
+2. Confirm that the guest reaches the desktop and no PCI multimedia device is
+   present.
+3. Use **Add New Hardware** and require global detection to return safely to
+   the wizard. A persistent black screen with a blinking cursor and no
+   continuing disk activity, or loss of the desktop without recovery, fails
+   the gate.
+4. Manually select the sound-device class, Creative,
    and **Sound Blaster 16 or AWE-32 or compatible**.
-4. Select a resource configuration containing I/O `220h-22Fh` and
+5. Select a resource configuration containing I/O `220h-22Fh` and
    `388h-38Bh`, IRQ5, DMA1, and DMA5, with no memory range.
-5. Prefer the no-MPU configuration because GSW-Sound v1 does not implement
+6. Prefer the no-MPU configuration because GSW-Sound v1 does not implement
    MPU-401. A reserved `330h-331h` range is not evidence of a working MIDI
    endpoint.
 
@@ -73,8 +99,9 @@ the emulator-side ABI does not need to change.
   in the default machine.
 - DOS and Windows real-DOS-mode software retain the same fixed SB16/OPL3
   hardware path.
-- The manual Windows driver test now exercises the legacy implementation the
-  driver expects, but still depends on the user creating the legacy device.
+- The proposed manual Windows driver test targets the legacy implementation
+  the driver expects, but its global-detection and binding gates have not
+  passed.
 - The native PCI/VxD work stays covered without being confused with working
   guest delivery.
 - Automatic inbox-driver discovery and MPU-401 remain deferred.

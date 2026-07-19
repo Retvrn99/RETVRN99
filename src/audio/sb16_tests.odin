@@ -56,6 +56,70 @@ test_sb16_reset_version_and_asp_probe_responses :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_sb16_creative_copyright_response_is_exact :: proc(t: ^testing.T) {
+	sb: Sb16
+	sb16_init(&sb)
+	copyright := "COPYRIGHT (C) CREATIVE TECHNOLOGY LTD, 1992."
+	sb16_test_command(&sb, 0xE3)
+	testing.expect_value(t, sb.read_count, len(copyright) + 1)
+	for expected in copyright {
+		actual, _ := sb16_read_port(&sb, 0x22A)
+		testing.expect_value(t, actual, u8(expected))
+	}
+	terminator, _ := sb16_read_port(&sb, 0x22A)
+	testing.expect_value(t, terminator, u8(0))
+}
+
+@(test)
+test_sb16_software_irq_commands_latch_and_ack_separate_sources :: proc(t: ^testing.T) {
+	sb: Sb16
+	sb16_init(&sb)
+	sb16_test_command(&sb, 0xF2)
+	testing.expect_value(t, sb.read_count, 0)
+	testing.expect(t, sb.irq_pending_dma8)
+	testing.expect(t, !sb.irq_pending_dma16)
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x01))
+	_, _ = sb16_read_port(&sb, 0x22E)
+	testing.expect(t, !sb.irq_pending_dma8)
+
+	sb16_test_command(&sb, 0xF3)
+	testing.expect_value(t, sb.read_count, 0)
+	testing.expect(t, !sb.irq_pending_dma8)
+	testing.expect(t, sb.irq_pending_dma16)
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x02))
+	_, _ = sb16_read_port(&sb, 0x22F)
+	testing.expect(t, !sb.irq_pending_dma16)
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0))
+}
+
+@(test)
+test_sb16_win98_fa_clone_probe_and_controller_ram_write_coexist :: proc(t: ^testing.T) {
+	sb: Sb16
+	sb16_init(&sb)
+
+	sb16_test_command(&sb, 0xFA)
+	testing.expect_value(t, sb.pending_need, 2)
+	status, _ := sb16_read_port(&sb, 0x22E)
+	testing.expect_value(t, status, u8(0x80))
+	testing.expect_value(t, sb.pending_need, 0)
+	testing.expect_value(t, sb.read_count, 1)
+	response, _ := sb16_read_port(&sb, 0x22A)
+	testing.expect_value(t, response, u8(0xFF))
+
+	sb16_test_command(&sb, 0xE1)
+	testing.expect_value(t, sb.read_count, 2)
+	_, _ = sb16_read_port(&sb, 0x22A)
+	_, _ = sb16_read_port(&sb, 0x22A)
+
+	sb16_test_command(&sb, 0xFA, 0x42, 0xA5)
+	testing.expect_value(t, sb.pending_need, 0)
+	testing.expect_value(t, sb.controller_ram[0x42], u8(0xA5))
+	sb16_test_command(&sb, 0xF9, 0x42)
+	response, _ = sb16_read_port(&sb, 0x22A)
+	testing.expect_value(t, response, u8(0xA5))
+}
+
+@(test)
 test_sb16_single_and_auto_init_dma_frame_and_irq_semantics :: proc(t: ^testing.T) {
 	sb: Sb16
 	sb16_init(&sb)
