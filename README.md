@@ -28,12 +28,15 @@ The virtual machine currently exposes:
   with dynamic full-surface targets, ticketed physical completion, and two
   frames in flight, but the normal guest persona still advertises no 3D
   acceleration.
-- PC-speaker and CD-audio output, plus fixed-resource Sound Blaster 16 digital
-  audio at `220h`/IRQ5/DMA1+5 and an OPL3-compatible device at `388h`, including
-  the Sound Blaster FM aliases at `220h`-`223h`. The OPL
-  path includes 2-operator and 4-operator voices, envelopes, feedback, eight
-  waveforms, rhythm mode, stereo routing, and timers. The Windows GSW-SOUND
-  driver does not ship yet.
+- Experimental PC-speaker, CD-audio, and GSW-Sound paths. DOS guests see fixed
+  Sound Blaster 16-compatible resources at `220h`/IRQ5/DMA1+5 and OPL3-
+  compatible ports at `388h` plus the Sound Blaster FM aliases. Deterministic
+  host-side tests cover the audio timeline, PC-speaker response, DSP formats,
+  DMA/IRQ behavior, and preserved OPL3 synthesis captures. Cold-DOS, real-DOS-
+  mode, and audible game gates have not passed, so these remain compatibility
+  targets rather than game-ready claims. The native PCI PCM Interface exists,
+  but the Windows 98 SE VxD package is still source-only and does not ship.
+
 ## Requirements
 
 - x86-64 Windows with an AVX2-capable processor.

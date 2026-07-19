@@ -21,6 +21,12 @@ and INF adaptation sources. Compiled payloads remain external to Git. Source
 selection, deterministic compilation, staging, and actual guest acceptance are
 separate claims and must remain independently provable.
 
+GSW-Sound follows the same separation but is original RETVRN99 work rather
+than an upstream-derived driver. ADR 0008 fixes its VxD-first three-file package
+shape and native PCI Interface. An original source bootstrap now exists, but no
+reviewed DDK Interface-input lock, linked binary, reproducible build, exact
+payload hash, or install proof exists yet.
+
 ## Decision
 
 `drivers/win98/upstream.lock.tsv` is the authoritative source-provenance lock.
@@ -91,7 +97,7 @@ scratch, installs only the selected child environment, and launches pinned
 mixed-case environment variables and never mutates the caller's PATH. It
 validates every normalized output before atomic publication, performs no
 network operation, and cannot consume a `reference-only` source row. The exact
-declared payloads are:
+declared GSW-VGA payloads are:
 
 - `gswmini.drv`: 14,756 bytes, `fe9e8cecb90212deb41835de7167f629ee631233540fa482fad6a705d85f9146`.
 - `gswmini.vxd`: 38,669 bytes, `fff33344a8ee01b6ca48546e9433c7bb1aae2247fb8a0d25c99ce8d3017572fe`.
@@ -122,18 +128,22 @@ absent output directory. The tracked source and build metadata are not binaries
 and are not install-ready packages.
 
 Package provenance is a closed mapping to lock `source_directory` values. GSW
-VGA requires `vmdisp9x` and `vmhal9x`; GSW sound and the user-supplied DirectX
+VGA requires `vmdisp9x` and `vmhal9x`; GSW-Sound and the user-supplied DirectX
 9 runtime have no upstream checkout requirement; GSW DX9 compatibility
-requires `mesa9x` and `wine9x`. Staging resolves those directories to the
-authoritative lock names and asks the source verifier to validate only that
-deduplicated set. Every required mapping must resolve to exactly one `planned`
+requires `mesa9x` and `wine9x`. GSW-Sound's empty upstream requirement means
+that its guest driver will use original, repository-owned sources; it does not
+make an absent source tree or payload stageable. Staging resolves required
+upstream directories to the authoritative lock names and asks the source
+verifier to validate only that deduplicated set. Every required mapping must
+resolve to exactly one `planned`
 row; a `reference-only` row cannot authorize a package. Missing, ambiguous,
 dirty, or mismatched required provenance still blocks staging.
 
 The host-side delivery plan reserves these identities:
 
 - GSW VGA is a PnP package for `PCI\VEN_FFFE&DEV_0002`.
-- GSW sound is a PnP package for `PCI\VEN_FFFE&DEV_0003`.
+- GSW-Sound reserves a PnP package for `PCI\VEN_FFFE&DEV_0003`; its complete
+  VxD-first shape will be `GSWSOUND.INF`, `GSWSOUND.DRV`, and `GSWSOUND.VXD`.
 - The user-supplied DirectX 9 runtime is a future RunOnce component at order
   100.
 - The GSW DirectX compatibility component is a future RunOnce component at
@@ -164,6 +174,10 @@ not approve source copying or binary distribution.
   scoped build or staging operation.
 - The GSW-VGA payload is stageable only as the complete DRV, VxD, INF, HAL,
   and bridge set; removing or changing any member closes staging.
+- GSW-Sound remains unavailable until its original guest-source bootstrap is
+  reviewed and completed, every toolchain and DDK Interface input is locked,
+  deterministic twin builds pass, the exact three-file inventory and manifest
+  exist, and licensed guest acceptance is separately proven.
 - Draft descriptors and failed or unstaged builds do not create a package
   claim. A stageable package still does not prove Device Manager, DirectDraw,
   dxdiag, mode switching, or performance inside a licensed Windows 98 guest.
@@ -173,4 +187,5 @@ not approve source copying or binary distribution.
 ## References
 
 - [Windows 98 setup driver bundles](0003-windows-98-setup-driver-bundles.md)
+- [VxD-first GSW-Sound architecture](0008-gsw-sound-vxd-first-audio-architecture.md)
 - [Pinned upstream source lock](../../drivers/win98/upstream.lock.tsv)

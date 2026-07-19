@@ -417,7 +417,8 @@ console_result_accumulate_machine :: proc(result: ^acceptance.Result, m: ^machin
 	result.execution.scanout_copies += execution.scanout_copies
 	result.execution.full_frame_renders += execution.full_frame_renders
 	result.execution.software_rendered_pixels += execution.software_rendered_pixels
-	metrics := machine.machine_audio_metrics(m)
+	observability := machine.machine_audio_observability(m)
+	metrics := observability.output
 	result.audio.frames_produced += metrics.frames_produced
 	result.audio.frames_consumed += metrics.frames_consumed
 	if first_segment {
@@ -427,12 +428,42 @@ console_result_accumulate_machine :: proc(result: ^acceptance.Result, m: ^machin
 	}
 	result.audio.queue_max_depth = max(result.audio.queue_max_depth, metrics.queue_max_depth)
 	result.audio.underruns += metrics.underruns
+	result.audio.underrun_events += metrics.underrun_events
+	result.audio.underrun_recoveries += metrics.underrun_recoveries
+	result.audio.gap_frames += metrics.gap_frames
+	result.audio.ramp_down_frames += metrics.ramp_down_frames
 	result.audio.overruns += metrics.overruns
 	result.audio.late_callbacks += metrics.late_callbacks
+	result.audio.callback_lateness_us += metrics.callback_lateness_us
 	result.audio.max_callback_lateness_us = max(
 		result.audio.max_callback_lateness_us,
 		metrics.max_callback_lateness_us,
 	)
+	result.audio.clipping_frames += observability.clipping_frames
+	result.audio.speaker_edges += observability.speaker_edges
+	result.audio.speaker_late_edges += observability.speaker_late_edges
+	result.audio.speaker_overflow_edges += observability.speaker_overflow_edges
+	result.audio.scheduler_wakeups += observability.audio_scheduler_wakeups
+	if first_segment {
+		result.audio.pcm_fnv1a64 = observability.pcm_fnv1a64
+	} else {
+		result.audio.pcm_fnv1a64 =
+			(result.audio.pcm_fnv1a64 ~ observability.pcm_fnv1a64) * u64(1_099_511_628_211)
+	}
+	result.audio.pc_speaker.frames_produced += observability.pc_speaker.frames_produced
+	result.audio.pc_speaker.nonzero_frames += observability.pc_speaker.nonzero_frames
+	result.audio.sb16.frames_produced += observability.sb16.frames_produced
+	result.audio.sb16.nonzero_frames += observability.sb16.nonzero_frames
+	result.audio.sb16.starvation_frames += observability.sb16_starvation_frames
+	result.audio.sb16.irq_events += observability.sb16_irq_events
+	result.audio.opl3.frames_produced += observability.opl3.frames_produced
+	result.audio.opl3.nonzero_frames += observability.opl3.nonzero_frames
+	result.audio.native_pcm.frames_produced += observability.native_pcm.frames_produced
+	result.audio.native_pcm.nonzero_frames += observability.native_pcm.nonzero_frames
+	result.audio.native_pcm.starvation_frames += observability.native_starvation_frames
+	result.audio.native_pcm.irq_events += observability.native_irq_events
+	result.audio.cdda.frames_produced += observability.cdda.frames_produced
+	result.audio.cdda.nonzero_frames += observability.cdda.nonzero_frames
 }
 
 console_result_accumulate_machine_segment :: proc(
@@ -1562,15 +1593,47 @@ console_artifact_diagnostics :: proc(
 	)
 	fmt.sbprintfln(
 		&builder,
-		"audio produced=%d consumed=%d depth=%d..%d underruns=%d overruns=%d late=%d max_late_us=%d",
+		"audio produced=%d consumed=%d depth=%d..%d underrun_frames=%d events=%d recoveries=%d gap=%d ramp=%d overruns=%d late=%d max_late_us=%d",
 		result.audio.frames_produced,
 		result.audio.frames_consumed,
 		result.audio.queue_min_depth,
 		result.audio.queue_max_depth,
 		result.audio.underruns,
+		result.audio.underrun_events,
+		result.audio.underrun_recoveries,
+		result.audio.gap_frames,
+		result.audio.ramp_down_frames,
 		result.audio.overruns,
 		result.audio.late_callbacks,
 		result.audio.max_callback_lateness_us,
+	)
+	fmt.sbprintfln(
+		&builder,
+		"audio proof clip=%d speaker_edges=%d late_edges=%d overflow_edges=%d scheduler_wakeups=%d pcm_fnv1a64=%016x",
+		result.audio.clipping_frames,
+		result.audio.speaker_edges,
+		result.audio.speaker_late_edges,
+		result.audio.speaker_overflow_edges,
+		result.audio.scheduler_wakeups,
+		result.audio.pcm_fnv1a64,
+	)
+	fmt.sbprintfln(
+		&builder,
+		"audio sources speaker=%d/%d sb16=%d/%d starve=%d irq=%d opl3=%d/%d native=%d/%d starve=%d irq=%d cdda=%d/%d",
+		result.audio.pc_speaker.frames_produced,
+		result.audio.pc_speaker.nonzero_frames,
+		result.audio.sb16.frames_produced,
+		result.audio.sb16.nonzero_frames,
+		result.audio.sb16.starvation_frames,
+		result.audio.sb16.irq_events,
+		result.audio.opl3.frames_produced,
+		result.audio.opl3.nonzero_frames,
+		result.audio.native_pcm.frames_produced,
+		result.audio.native_pcm.nonzero_frames,
+		result.audio.native_pcm.starvation_frames,
+		result.audio.native_pcm.irq_events,
+		result.audio.cdda.frames_produced,
+		result.audio.cdda.nonzero_frames,
 	)
 	if m != nil {
 		fmt.sbprintfln(&builder, "freeze=%s", m.bus.freeze_msg)

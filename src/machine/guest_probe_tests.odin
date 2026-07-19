@@ -13,6 +13,8 @@ import "core:time"
 // d930de57acccbc6a70cda8cc5a603173bf23cd1c test fixtures.
 
 @(rodata)
+GUEST_PROBE_AUDIO_LEGACY := #load("../../assets/probes/audio_legacy.bin")
+@(rodata)
 GUEST_PROBE_HLT_PIT_IRQ := #load("../../assets/probes/hlt_pit_irq.bin")
 @(rodata)
 GUEST_PROBE_REP_IRQ_PROGRESS := #load("../../assets/probes/rep_irq_progress.bin")
@@ -29,6 +31,38 @@ Guest_Probe_Watchdog :: struct {
 	vm:   ^hv.Vm,
 	stop: bool,
 	mu:   sync.Mutex,
+}
+
+@(test)
+test_guest_probe_legacy_audio_crosses_real_mode_io_dma_and_irq :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available; skipping legacy-audio guest probe")
+		return
+	}
+	testing.set_fail_timeout(t, 20 * time.Second)
+	m := new(Machine)
+	defer free(m)
+	if !guest_probe_prepare(t, m, GUEST_PROBE_AUDIO_LEGACY) {return}
+	defer machine_destroy(m)
+
+	if !testing.expect(t, guest_probe_run(m, 12 * time.Second)) {return}
+	testing.expect_value(t, m.vm.ram[0x0500], u8(0xA5))
+	testing.expect_value(t, m.vm.ram[0x0501], u8(0xC0))
+	testing.expect_value(t, m.vm.ram[0x0502], u8(4))
+	testing.expect_value(t, m.vm.ram[0x0503], u8(5))
+	testing.expect(t, m.vm.ram[0x0504] > 0)
+	testing.expect(t, m.vm.ram[0x0505] > 0)
+	testing.expect_value(t, m.vm.ram[0x0506] & 0xE0, u8(0))
+	testing.expect_value(t, m.vm.ram[0x0507] & 0xE0, u8(0xC0))
+	testing.expect(t, dma_at_terminal_count(&m.dma, 1))
+	testing.expect(t, dma_at_terminal_count(&m.dma, 5))
+	observability := machine_audio_observability(m)
+	testing.expect(t, observability.pc_speaker.nonzero_frames > 0)
+	testing.expect(t, observability.opl3.nonzero_frames > 0)
+	testing.expect(t, observability.sb16.nonzero_frames > 0)
+	testing.expect(t, observability.sb16_irq_events >= 2)
+	testing.expect_value(t, observability.speaker_late_edges, u64(0))
+	testing.expect_value(t, observability.speaker_overflow_edges, u64(0))
 }
 
 @(private = "file")

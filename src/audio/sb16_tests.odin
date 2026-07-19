@@ -121,6 +121,68 @@ test_sb16_dma_status_read_acknowledges_pending_irq :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_sb16_dma_ack_ports_clear_only_their_irq_source :: proc(t: ^testing.T) {
+	sb: Sb16
+	sb16_init(&sb)
+	sb16_raise_dma_irq(&sb, false)
+	sb16_raise_dma_irq(&sb, true)
+	sb16_raise_midi_irq(&sb)
+	testing.expect_value(t, sb.irq_events_dma8, u64(1))
+	testing.expect_value(t, sb.irq_events_dma16, u64(1))
+	testing.expect_value(t, sb.irq_events_midi, u64(1))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x07))
+
+	_, _ = sb16_read_port(&sb, 0x22E)
+	testing.expect(t, !sb.irq_pending_dma8)
+	testing.expect(t, sb.irq_pending_dma16)
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x06))
+
+	_, _ = sb16_read_port(&sb, 0x22F)
+	testing.expect(t, !sb.irq_pending_dma16)
+	testing.expect(t, sb.irq_pending_midi)
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x04))
+	sb16_ack_midi_irq(&sb)
+	testing.expect(t, !sb.irq_pending_midi)
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0))
+}
+
+@(test)
+test_sb16_dma_starvation_outputs_silence_without_consuming_block :: proc(t: ^testing.T) {
+	sb: Sb16
+	sb16_init(&sb)
+	sb16_test_command(&sb, 0x10, 0xFF)
+	sb16_test_command(&sb, 0xC0, 0x00, 0x00, 0x00)
+	frame, produced := sb16_render_sample(&sb, nil, nil, nil)
+	testing.expect(t, produced)
+	testing.expect_value(t, frame, Audio_Frame{})
+	testing.expect_value(t, sb.raw_frame, Audio_Frame{})
+	testing.expect_value(t, sb.block_remaining, u32(1))
+	testing.expect_value(t, sb.starvation_frames, u64(1))
+	_, pending := sb16_take_irq(&sb)
+	testing.expect(t, !pending)
+}
+
+@(test)
+test_sb16_timed_silence_raises_dma8_irq_without_dma_reads :: proc(t: ^testing.T) {
+	sb: Sb16
+	sb16_init(&sb)
+	sb16_test_command(&sb, 0x80, 0x01, 0x00)
+	testing.expect(t, sb.silence_active)
+	_, produced := sb16_render_sample(&sb, nil, nil, nil)
+	testing.expect(t, produced)
+	_, pending := sb16_take_irq(&sb)
+	testing.expect(t, !pending)
+	_, produced = sb16_render_sample(&sb, nil, nil, nil)
+	testing.expect(t, produced)
+	dma16: bool
+	dma16, pending = sb16_take_irq(&sb)
+	testing.expect(t, pending)
+	testing.expect(t, !dma16)
+	testing.expect(t, !sb.playing)
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x01))
+}
+
+@(test)
 test_sb16_rate_commands_are_limited_to_host_output_rate :: proc(t: ^testing.T) {
 	sb: Sb16
 	sb16_init(&sb)

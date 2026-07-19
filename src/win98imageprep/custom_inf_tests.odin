@@ -26,6 +26,12 @@ test_custom_inf_merge_new_multiple_pnp_is_sorted_idempotent_and_skips_load_inf :
 	sound_ids := [?]string{"PCI\\VEN_FFFE&DEV_0003"}
 	sound_files := [?]Driver_Package_File {
 		{
+			source_name = "GSWSOUND.DRV",
+			destination_name = "GSWSOUND.DRV",
+			kind = .Binary,
+			max_output_bytes = 4 * 1024 * 1024,
+		},
+		{
 			source_name = "GSWSOUND.INF",
 			destination_name = "GSWSOUND.INF",
 			kind = .INF,
@@ -75,6 +81,7 @@ test_custom_inf_merge_new_multiple_pnp_is_sorted_idempotent_and_skips_load_inf :
 	testing.expect(t, strings.contains(merged, "RETVRN99.gsw-vga.Install\r\n"))
 	testing.expect(t, strings.contains(merged, "RETVRN99.gsw-sound.PreCopy=2\r\n"))
 	testing.expect(t, strings.contains(merged, "RETVRN99.gsw-sound.INF.Files=17\r\n"))
+	testing.expect(t, !strings.contains(merged, "GSWSOUND.DRV"))
 	testing.expect(t, !strings.contains(merged, "GSWSOUND.VXD"))
 	testing.expect(t, !strings.contains(merged, "GSWVGA.DRV"))
 	testing.expect(t, !driver_ascii_contains_fold(merged, "[load_inf]"))

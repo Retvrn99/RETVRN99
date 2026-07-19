@@ -83,6 +83,7 @@ Machine :: struct {
 	fwcfg:                               Fwcfg,
 	vga:                                 video.Vga,
 	gsw_vga:                             video.Gsw_Vga,
+	using gsw_sound:                     sound.Gsw_Sound,
 	ide:                                 disk.Ide,
 	atapi:                               disk.Atapi,
 	bmide:                               disk.Bmide,
@@ -90,8 +91,6 @@ Machine :: struct {
 	primary_ide_kernel_dma_transactions: u64,
 	primary_ide_kernel_dma_bytes:        u64,
 	audio:                               sound.Audio_Mixer,
-	sb16:                                sound.Sb16,
-	opl3:                                sound.Opl3,
 	sb16_dreq_channel:                   int,
 	sb16_dreq_active:                    bool,
 	cdda_pending:                        [MACHINE_CDDA_PENDING_FRAMES]sound.Audio_Frame,
@@ -225,13 +224,13 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	video.gsw_vga_init(&m.gsw_vga, vram)
 	video.gsw_vga_attach_scanout(&m.gsw_vga, &m.vga)
 	video.gsw_vga_set_irq(&m.gsw_vga, m, machine_gsw_vga_irq)
+	sound.gsw_sound_init(&m.gsw_sound)
+	sound.gsw_pcm_set_irq(&m.gsw_pcm, m, machine_gsw_sound_irq)
 	m.cpu_mode = .GSW_886
 	event_scheduler_init(&m.scheduler)
 	if !sound.audio_mixer_init(&m.audio) {
 		return false
 	}
-	sound.sb16_init(&m.sb16)
-	sound.opl3_init(&m.opl3)
 	hosttime.waiter_init(&m.idle_waiter)
 	m.vm.io_ctx = m
 	m.vm.io_read = machine_io_read
@@ -624,6 +623,51 @@ machine_audio_output :: proc(m: ^Machine) -> ^sound.Audio_Output {
 machine_audio_metrics :: proc(m: ^Machine) -> sound.Audio_Metrics_Snapshot {
 	if m == nil {return {}}
 	return sound.audio_output_metrics(sound.audio_mixer_output(&m.audio))
+}
+
+Machine_Audio_Observability :: struct {
+	output:                     sound.Audio_Metrics_Snapshot,
+	pc_speaker:                 sound.Audio_Mixer_Source_Telemetry,
+	sb16:                       sound.Audio_Mixer_Source_Telemetry,
+	opl3:                       sound.Audio_Mixer_Source_Telemetry,
+	native_pcm:                 sound.Audio_Mixer_Source_Telemetry,
+	cdda:                       sound.Audio_Mixer_Source_Telemetry,
+	clipping_frames:            u64,
+	pcm_fnv1a64:                u64,
+	speaker_edges:              u64,
+	speaker_late_edges:         u64,
+	speaker_overflow_edges:     u64,
+	sb16_starvation_frames:     u64,
+	sb16_irq_events:            u64,
+	native_starvation_frames:   u64,
+	native_irq_events:          u64,
+	audio_scheduler_wakeups:    u64,
+}
+
+machine_audio_observability :: proc(m: ^Machine) -> Machine_Audio_Observability {
+	if m == nil {return {}}
+	telemetry := sound.audio_mixer_telemetry(&m.audio)
+	return {
+		output = machine_audio_metrics(m),
+		pc_speaker = telemetry.sources[int(sound.Audio_Mixer_Source.PC_Speaker)],
+		sb16 = telemetry.sources[int(sound.Audio_Mixer_Source.SB16)],
+		opl3 = telemetry.sources[int(sound.Audio_Mixer_Source.OPL3)],
+		native_pcm = telemetry.sources[int(sound.Audio_Mixer_Source.Native_PCM)],
+		cdda = telemetry.sources[int(sound.Audio_Mixer_Source.CDDA)],
+		clipping_frames = telemetry.final_clipping_frames,
+		pcm_fnv1a64 = telemetry.pcm_fnv1a64,
+		speaker_edges = telemetry.speaker_transitions_applied,
+		speaker_late_edges = telemetry.speaker_transitions_late,
+		speaker_overflow_edges = telemetry.speaker_transitions_dropped,
+		sb16_starvation_frames = m.sb16.starvation_frames,
+		sb16_irq_events = m.sb16.irq_events_dma8 + m.sb16.irq_events_dma16 + m.sb16.irq_events_midi,
+		native_starvation_frames = m.gsw_pcm.starvation_frames,
+		native_irq_events =
+			m.gsw_pcm.period_irq_events +
+			m.gsw_pcm.underrun_irq_events +
+			m.gsw_pcm.invalid_irq_events,
+		audio_scheduler_wakeups = m.device_advances[int(Scheduled_Device.Audio)],
+	}
 }
 
 Machine_Execution_Counters :: struct {
@@ -1604,6 +1648,34 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 	machine_sync_time(m)
 	decoded_gpa := hv.cpu_physical_address(&m.vm, gpa)
 	machine_trace_record(m, .Mmio_Access, decoded_gpa, u64(len(data)), write ? 1 : 0)
+	if offset, decoded := sound.gsw_pcm_control_offset(&m.gsw_pcm, decoded_gpa, len(data));
+	   decoded {
+		// Anchor START/STOP and register observations to the synchronized VM tick,
+		// after every audio source has been merged through that same boundary.
+		machine_sync_device(m, .Audio)
+		was_running := sound.gsw_pcm_running(&m.gsw_pcm)
+		if write {
+			sound.gsw_sound_pci_mmio_write(&m.gsw_sound, offset, data, m.vm.ram)
+		} else {
+			sound.gsw_sound_pci_mmio_read(&m.gsw_sound, offset, data)
+		}
+		if write {
+			now := master_timeline_now(m.timeline)
+			if was_running && !sound.gsw_pcm_running(&m.gsw_pcm) {
+				_ = sound.audio_mixer_release_native_pcm(&m.audio, now)
+			} else if sound.gsw_pcm_running(&m.gsw_pcm) &&
+			          m.gsw_pcm.status & sound.GSW_PCM_STATUS_UNDERRUN == 0 {
+				_ = sound.audio_mixer_set_native_pcm_frame(
+					&m.audio,
+					now,
+					sound.gsw_pcm_current_frame(&m.gsw_pcm),
+				)
+			}
+			machine_audio_refresh_source_activity(m)
+			machine_rearm_wake(m)
+		}
+		return
+	}
 	if offset, decoded := video.gsw_vga_control_offset(&m.gsw_vga, decoded_gpa, len(data));
 	   decoded {
 		if write {
@@ -1681,13 +1753,30 @@ machine_mmio_zone :: proc(gpa: u64) -> (Mmio_Zone, bool) {
 @(private = "package")
 machine_gsw_vga_irq :: proc(ctx: rawptr, asserted: bool) {
 	m := (^Machine)(ctx)
-	previous := pci_pirq_is_asserted(&m.pci, PCI_GSW_VGA_PIRQ)
-	_ = pci_pirq_set_level(&m.pci, PCI_GSW_VGA_PIRQ, asserted)
+	previous := pci_pirq_source_is_asserted(&m.pci, PCI_GSW_VGA_PIRQ, .Gsw_Vga)
+	_ = pci_pirq_set_source_level(&m.pci, PCI_GSW_VGA_PIRQ, .Gsw_Vga, asserted)
 	if previous != asserted {
 		machine_trace_record(
 			m,
 			.Pirq,
 			u64(PCI_GSW_VGA_PIRQ),
+			asserted ? 1 : 0,
+			u64(pci_pirq_active_irq_mask(&m.pci)),
+		)
+	}
+	if asserted {m.yield_requested = true}
+}
+
+@(private = "package")
+machine_gsw_sound_irq :: proc(ctx: rawptr, asserted: bool) {
+	m := (^Machine)(ctx)
+	previous := pci_pirq_source_is_asserted(&m.pci, PCI_GSW_SOUND_PIRQ, .Gsw_Sound)
+	_ = pci_pirq_set_source_level(&m.pci, PCI_GSW_SOUND_PIRQ, .Gsw_Sound, asserted)
+	if previous != asserted {
+		machine_trace_record(
+			m,
+			.Pirq,
+			u64(PCI_GSW_SOUND_PIRQ),
 			asserted ? 1 : 0,
 			u64(pci_pirq_active_irq_mask(&m.pci)),
 		)
@@ -1848,8 +1937,8 @@ machine_sync_ide_irq_routes :: proc(m: ^Machine) {
 	pic_set_irq_level(&m.pic, 14, primary_level && !primary_native)
 	pic_set_irq_level(&m.pic, 15, secondary_level && !secondary_native)
 	native_level := primary_level && primary_native || secondary_level && secondary_native
-	previous := pci_pirq_is_asserted(&m.pci, PCI_AMD756_IDE_PIRQ)
-	_ = pci_pirq_set_level(&m.pci, PCI_AMD756_IDE_PIRQ, native_level)
+	previous := pci_pirq_source_is_asserted(&m.pci, PCI_AMD756_IDE_PIRQ, .Amd756_Ide)
+	_ = pci_pirq_set_source_level(&m.pci, PCI_AMD756_IDE_PIRQ, .Amd756_Ide, native_level)
 	if previous != native_level {
 		machine_trace_record(
 			m,
@@ -1995,7 +2084,7 @@ machine_pic_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 @(private = "file")
 machine_pit_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
-	machine_sync_device(m, .Pit)
+	machine_sync_device(m, .Audio)
 	v: u32 = 0
 	for i in 0 ..< int(size) {v |= u32(pit_in(&m.pit, port + u16(i))) << (8 * uint(i))}
 	return v
@@ -2004,7 +2093,7 @@ machine_pit_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 @(private = "file")
 machine_pit_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	machine_sync_device(m, .Pit)
+	machine_sync_device(m, .Audio)
 	for i in 0 ..< int(size) {pit_out(&m.pit, port + u16(i), u8(val >> (8 * uint(i))))}
 	machine_audio_apply_pit_transitions(m)
 	_ = sound.audio_mixer_set_speaker_state(
@@ -2018,14 +2107,14 @@ machine_pit_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 @(private = "file")
 machine_port61_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
-	machine_sync_device(m, .Pit)
+	machine_sync_device(m, .Audio)
 	return u32(pit_port61_read(&m.pit))
 }
 
 @(private = "file")
 machine_port61_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
-	machine_sync_device(m, .Pit)
+	machine_sync_device(m, .Audio)
 	pit_port61_write(&m.pit, u8(val))
 	machine_audio_apply_pit_transitions(m)
 	_ = sound.audio_mixer_set_speaker_state(
@@ -2216,6 +2305,12 @@ machine_sync_pci_devices :: proc(m: ^Machine) -> bool {
 	}
 	video.vga_set_pci_decode(&m.vga, vga_io, vga_memory, framebuffer_base)
 	video.gsw_vga_set_pci_decode(&m.gsw_vga, vga_memory, control_base)
+	sound.gsw_pcm_set_pci_decode(
+		&m.gsw_pcm,
+		pci_gsw_sound_memory_enabled(&m.pci),
+		pci_gsw_sound_bus_master_enabled(&m.pci),
+		pci_gsw_sound_control_base(&m.pci),
+	)
 	return true
 }
 
@@ -2223,11 +2318,16 @@ machine_sync_pci_devices :: proc(m: ^Machine) -> bool {
 machine_pci_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	machine_sync_time(m)
+	sound_was_running := sound.gsw_pcm_running(&m.gsw_pcm)
 	pci_out(&m.pci, port, size, val)
 	if !machine_sync_pci_devices(m) {
 		bus_freeze(&m.bus, "PCI device decode synchronization failed")
 		return
 	}
+	if sound_was_running && !sound.gsw_pcm_running(&m.gsw_pcm) {
+		_ = sound.audio_mixer_release_native_pcm(&m.audio, master_timeline_now(m.timeline))
+	}
+	machine_audio_refresh_source_activity(m)
 	machine_bmide_synchronize(m)
 	machine_rearm_wake(m)
 }

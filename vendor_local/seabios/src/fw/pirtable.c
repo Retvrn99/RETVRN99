@@ -16,7 +16,7 @@
 
 struct pir_table {
     struct pir_header pir;
-    struct pir_slot slots[2];
+    struct pir_slot slots[3];
 } PACKED;
 
 static struct pir_table PIR_TABLE = {
@@ -42,6 +42,20 @@ static struct pir_table PIR_TABLE = {
                         RETVRN99_GSW_VGA_DEVICE, 1),
                     .bitmap = RETVRN99_AMD750_PIRQ_BITMAP(
                         RETVRN99_GSW_VGA_DEVICE, 1),
+                },
+            },
+            .slot_nr = 0, // embedded
+        }, {
+            // Embedded GSW-Sound at 00:03.0.  The shared link rotation maps
+            // INTA to PIRQC and therefore IRQ10.
+            .bus = 0,
+            .dev = RETVRN99_GSW_SOUND_DEVICE << 3,
+            .links = {
+                {
+                    .link = RETVRN99_AMD750_PIRQ_LINK(
+                        RETVRN99_GSW_SOUND_DEVICE, 1),
+                    .bitmap = RETVRN99_AMD750_PIRQ_BITMAP(
+                        RETVRN99_GSW_SOUND_DEVICE, 1),
                 },
             },
             .slot_nr = 0, // embedded

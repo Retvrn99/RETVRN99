@@ -213,7 +213,8 @@ try {
         'build\vga\GSWHAL9X.DLL' = 'display-hal'
         'build\vga\GSWDD32.DLL' = 'display-bridge'
         'build\sound\GSWSOUND.INF' = 'sound-inf'
-        'build\sound\GSWSOUND.VXD' = 'sound-driver'
+        'build\sound\GSWSOUND.DRV' = 'sound-wave-driver'
+        'build\sound\GSWSOUND.VXD' = 'sound-virtual-device'
         'components\DX9REDIST.EXE' = 'directx-runtime'
         'components\GSWDX9.DLL' = 'dx9-compatibility'
     }
@@ -236,10 +237,15 @@ try {
     $vgaHal = New-InventoryRow 'gsw-vga' 'VGA\GSWHAL9X.DLL' 'Binary' 'PCI\VEN_FFFE&DEV_0002' 0
     $vgaBridge = New-InventoryRow 'gsw-vga' 'VGA\GSWDD32.DLL' 'Binary' 'PCI\VEN_FFFE&DEV_0002' 0
     $soundInf = New-InventoryRow 'gsw-sound' 'SOUND\GSWSOUND.INF' 'INF' 'PCI\VEN_FFFE&DEV_0003' 0
-    $soundDriver = New-InventoryRow 'gsw-sound' 'SOUND\GSWSOUND.VXD' 'Binary' 'PCI\VEN_FFFE&DEV_0003' 0
+    $soundDrv = New-InventoryRow 'gsw-sound' 'SOUND\GSWSOUND.DRV' 'Binary' 'PCI\VEN_FFFE&DEV_0003' 0
+    $soundVxd = New-InventoryRow 'gsw-sound' 'SOUND\GSWSOUND.VXD' 'Binary' 'PCI\VEN_FFFE&DEV_0003' 0
     $directX = New-InventoryRow 'directx9-runtime' 'RUNONCE\DX9REDIST.EXE' 'Component' '' 100
     $compat = New-InventoryRow 'gsw-dx9-compat' 'RUNONCE\GSWDX9.DLL' 'Component' '' 200
-    $allInventoryRows = @($vgaInf, $vgaDriver, $vgaVxd, $vgaHal, $vgaBridge, $soundInf, $soundDriver, $directX, $compat)
+    $allInventoryRows = @(
+        $vgaInf, $vgaDriver, $vgaVxd, $vgaHal, $vgaBridge,
+        $soundInf, $soundDrv, $soundVxd,
+        $directX, $compat
+    )
     $vgaManifestRows = @(
         New-ManifestRow $vgaInf 'build\vga\GSWVGA.INF' $script:PayloadRoot
         New-ManifestRow $vgaDriver 'build\vga\GSWVGA.DRV' $script:PayloadRoot
@@ -249,7 +255,8 @@ try {
     )
     $soundManifestRows = @(
         New-ManifestRow $soundInf 'build\sound\GSWSOUND.INF' $script:PayloadRoot
-        New-ManifestRow $soundDriver 'build\sound\GSWSOUND.VXD' $script:PayloadRoot
+        New-ManifestRow $soundDrv 'build\sound\GSWSOUND.DRV' $script:PayloadRoot
+        New-ManifestRow $soundVxd 'build\sound\GSWSOUND.VXD' $script:PayloadRoot
     )
     $directXManifestRows = @(
         New-ManifestRow $directX 'components\DX9REDIST.EXE' $script:PayloadRoot
@@ -262,13 +269,17 @@ try {
     )
     $fullInventory = Join-Path $script:TestRoot 'full-inventory.tsv'
     $vgaInventory = Join-Path $script:TestRoot 'vga-inventory.tsv'
+    $soundInventory = Join-Path $script:TestRoot 'sound-inventory.tsv'
     $vgaManifest = Join-Path $script:TestRoot 'vga-manifest.tsv'
+    $soundManifest = Join-Path $script:TestRoot 'sound-manifest.tsv'
     $directXManifest = Join-Path $script:TestRoot 'directx-manifest.tsv'
     $compatManifest = Join-Path $script:TestRoot 'compat-manifest.tsv'
     $fullManifest = Join-Path $script:TestRoot 'full-manifest.tsv'
     Write-Tsv $fullInventory $inventoryColumns $allInventoryRows
     Write-Tsv $vgaInventory $inventoryColumns @($vgaInf, $vgaDriver, $vgaVxd, $vgaHal, $vgaBridge)
+    Write-Tsv $soundInventory $inventoryColumns @($soundInf, $soundDrv, $soundVxd)
     Write-Tsv $vgaManifest $manifestColumns $vgaManifestRows
+    Write-Tsv $soundManifest $manifestColumns $soundManifestRows
     Write-Tsv $directXManifest $manifestColumns $directXManifestRows
     Write-Tsv $compatManifest $manifestColumns $compatManifestRows
     Write-Tsv $fullManifest $manifestColumns $allManifestRows
@@ -286,6 +297,15 @@ try {
     Invoke-SelfTest 'Omitted selection stages every inventory-declared package' {
         $output = Invoke-Staging -Name 'declared-vga' -Inventory $vgaInventory -Manifest $vgaManifest
         Assert-True (($output -join [Environment]::NewLine) -match 'Staged 5 hash-verified')
+    }
+
+    Invoke-SelfTest 'Explicit sound selection stages the complete INF DRV VXD fixture' {
+        $output = Invoke-Staging 'explicit-sound' $soundInventory $soundManifest @('gsw-sound')
+        Assert-True (($output -join [Environment]::NewLine) -match 'Staged 3 hash-verified')
+        $outputRoot = Join-Path $script:TestRoot 'explicit-sound\SOUND'
+        Assert-True (Test-Path (Join-Path $outputRoot 'GSWSOUND.INF'))
+        Assert-True (Test-Path (Join-Path $outputRoot 'GSWSOUND.DRV'))
+        Assert-True (Test-Path (Join-Path $outputRoot 'GSWSOUND.VXD'))
     }
 
     Invoke-SelfTest 'A source-free package stages without unrelated provenance' {
@@ -411,7 +431,7 @@ try {
 
         $fullOutput = Invoke-Staging -Name 'full-selection' -Inventory $fullInventory -Manifest $fullManifest
         Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Verified 4 immutable')
-        Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Staged 9 hash-verified')
+        Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Staged 10 hash-verified')
     }
 
     Invoke-SelfTest 'Staging rejects a reparse-point output ancestor' {

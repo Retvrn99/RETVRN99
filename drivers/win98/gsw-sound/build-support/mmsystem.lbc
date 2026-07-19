@@ -1,0 +1,5 @@
+++DriverCallback.MMSYSTEM
+++timeBeginPeriod.MMSYSTEM
+++timeEndPeriod.MMSYSTEM
+++timeKillEvent.MMSYSTEM
+++timeSetEvent.MMSYSTEM

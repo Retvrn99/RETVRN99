@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $sourceDir = Join-Path $root "assets\probes"
 $probes = @(
+    "audio_legacy",
     "hlt_pit_irq",
     "rep_irq_progress",
     "paging_ad",

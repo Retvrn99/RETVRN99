@@ -1,0 +1,78 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "status": "reviewed-compatible-interfaces",
+  "vmm_interface": {
+    "source_lock": "../upstream.lock.tsv",
+    "source_name": "vmdisp9x",
+    "repository": "https://github.com/JHRobotics/vmdisp9x.git",
+    "commit": "718b3d51a1532fe1ba2e133cf76186f1a609d35e",
+    "license": "MIT",
+    "files": [
+      {
+        "source_relative_path": "vmm.h",
+        "derived_relative_path": "build-support/vmm_interface.h",
+        "bytes": 47998,
+        "sha256": "237afe2ccd518a5162fdfd7f19d37bfb5a68c4e7a3d4495605b46db3a27fa01b"
+      },
+      {
+        "source_relative_path": "vpicd.h",
+        "derived_relative_path": "build-support/vpicd_interface.h",
+        "bytes": 3259,
+        "sha256": "74278bb07b8e294a52b2ad02c3d30421633e881927aea1ab3df2eb17433a329e"
+      },
+      {
+        "source_relative_path": "ddk/configmg.h",
+        "derived_relative_path": "build-support/configmg_interface.h",
+        "bytes": 1128,
+        "sha256": "cf62b7a877e658cca532ab5d09ca4de12ed0623c59332ff6c4763badefd09ca1"
+      },
+      {
+        "source_relative_path": "fixlink/fixlink.c",
+        "derived_relative_path": "build-support/fixlink.c",
+        "bytes": 22261,
+        "sha256": "9f25300e6dab40ee3eb08df0e50ecdce16b9297df3d2903c6ff2ec98661bb47e"
+      },
+      {
+        "source_relative_path": "fixlink/licence.txt",
+        "derived_relative_path": "build-support/fixlink-license.txt",
+        "bytes": 949,
+        "sha256": "d30e98604e4f4e6fdae77f155443832560df071141735fcf0897a3b073c9d29a"
+      }
+    ]
+  },
+  "mmdevldr_interface_reference": {
+    "repository": "https://github.com/steward-fu/wadk.git",
+    "commit": "20d05c35846a094db150926331d98e8389476b6c",
+    "license": "Microsoft-Windows-98-DDK-reference-only",
+    "disposition": "service-identifiers-and-calling-convention-reviewed-into-original-minimal-build-support",
+    "files": [
+      {
+        "source_relative_path": "98ddk/inc/win98/MMDEVLDR.INC",
+        "git_blob": "dc99436b9b5de7c020e9fb6c17a086e11c75436e",
+        "bytes": 1277,
+        "sha256": "147618ee256b0b4ca6cae0454a6bfe38f427fc504023168550ce3e9a7cf5d03d"
+      },
+      {
+        "source_relative_path": "95ddk/INC32/MMDEVLDR.H",
+        "git_blob": "69d4b0c44bd44488ce9e93139e4dd64c9261ba07",
+        "bytes": 3817,
+        "sha256": "f4e1e0469e233a59cec461a71a76ceb8f49cf05b5737344027535c0c9718ed8a"
+      },
+      {
+        "source_relative_path": "95ddk/MMEDIA/SAMPLES/MSSNDSYS/VXD/STARTUP.ASM",
+        "git_blob": "9ef18209d0a56c97a5f020c251c5fa1bc1e029f7",
+        "bytes": 77687,
+        "sha256": "78398b58bccb697bc863c4bfac89bdcc5c24c8106fb5c5ab0b861bcaa8e9b80b"
+      }
+    ]
+  },
+  "multimedia_interface_reference": {
+    "toolchain_lock": "../mingw32-toolchain.lock.json",
+    "license": "Public-Domain",
+    "source_relative_path": "include/mmddk.h",
+    "bytes": 13224,
+    "sha256": "2cc7b691a4e028be5455f518c70e322fa1f2bb0f1dc7f5e280e522e24443866b",
+    "disposition": "definitions-reviewed-into-original-minimal-build-support"
+  }
+}

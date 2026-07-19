@@ -1,21 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import sound "../audio"
 import persona "../persona"
 
 // Register behavior selectively adapted from IzarraVM d930de57acccbc6a70cda8cc5a603173bf23cd1c.
 
 GSW_PCI_VENDOR_ID :: u16(0xFFFE) // private development ID; not PCI-SIG assigned
 GSW_VGA_PCI_DEVICE_ID :: u16(0x0002)
+GSW_SOUND_PCI_DEVICE_ID :: u16(0x0003)
 GSW_VGA_CAPABILITY_OFFSET :: 0x40
 GSW_VGA_CAPABILITY_SIGNATURE :: u32(0x5657_5347) // "GSWV"
 GSW_VGA_CAPABILITY_VERSION :: u16(2)
 GSW_VGA_CAPABILITY_LENGTH :: u16(0x14)
 GSW_VGA_CONTROL_BAR :: u32(0xF100_0000)
 GSW_VGA_FRAMEBUFFER_BAR :: u32(0xE000_0000)
+GSW_SOUND_CONTROL_BAR :: u32(sound.GSW_PCM_DEFAULT_CONTROL_BASE)
 
 PCI_CONFIG_ADDRESS_MASK :: u32(0x80FF_FFFC)
-PCI_FUNCTION_COUNT :: 4
+PCI_FUNCTION_COUNT :: 5
 PCI_PIRQ_COUNT :: 4
 PCI_PIRQ_A :: u8(0)
 PCI_PIRQ_B :: u8(1)
@@ -23,6 +26,7 @@ PCI_PIRQ_C :: u8(2)
 PCI_PIRQ_D :: u8(3)
 PCI_GSW_VGA_PIRQ :: PCI_PIRQ_B
 PCI_AMD756_IDE_PIRQ :: PCI_PIRQ_C
+PCI_GSW_SOUND_PIRQ :: PCI_PIRQ_C
 @(rodata)
 PCI_PIRQ_IRQS := [PCI_PIRQ_COUNT]u8{10, 11, 10, 11}
 AMD756_ISA_REVISION_ID :: u8(0x01)
@@ -50,6 +54,15 @@ PCI_HOST_FUNCTION_INDEX :: 0
 PCI_ISA_FUNCTION_INDEX :: 1
 PCI_IDE_FUNCTION_INDEX :: 2
 PCI_GSW_VGA_FUNCTION_INDEX :: 3
+PCI_GSW_SOUND_FUNCTION_INDEX :: 4
+
+Pci_Pirq_Source :: enum u8 {
+	Legacy,
+	Gsw_Vga,
+	Amd756_Ide,
+	Gsw_Sound,
+	Count,
+}
 
 Pci_Irq_Line_Proc :: proc(ctx: rawptr, irq: u8, asserted: bool)
 
@@ -68,7 +81,7 @@ Pci_Function :: struct {
 Pci :: struct {
 	addr:             u32,
 	functions:        [PCI_FUNCTION_COUNT]Pci_Function,
-	pirq_asserted:    [PCI_PIRQ_COUNT]bool,
+	pirq_source_counts: [PCI_PIRQ_COUNT][int(Pci_Pirq_Source.Count)]u16,
 	pirq_routed_mask: u16,
 	irq_line_ctx:     rawptr,
 	irq_line:         Pci_Irq_Line_Proc,
@@ -239,6 +252,22 @@ pci_init :: proc(p: ^Pci) {
 	graphics.cfg[cap + 12] = persona.GUEST_PERSONA.graphics_agp_rate
 	graphics.cfg[cap + 13] = u8(GSW_VGA_CAPABILITY_VERSION)
 	graphics.cfg[cap + 14] = 0x03
+
+	audio := &p.functions[PCI_GSW_SOUND_FUNCTION_INDEX]
+	pci_seed_function(audio, 0, 3, 0, GSW_PCI_VENDOR_ID, GSW_SOUND_PCI_DEVICE_ID)
+	audio.cfg[0x08] = 0x01
+	audio.cfg[0x0A] = 0x01
+	audio.cfg[0x0B] = 0x04
+	pci_seed_command_status(audio, 0x0006, 0x0006, 0x0200, 0x7800)
+	pci_seed_u16(&audio.cfg, 0x2C, GSW_PCI_VENDOR_ID)
+	pci_seed_u16(&audio.cfg, 0x2E, GSW_SOUND_PCI_DEVICE_ID)
+	for i in 0 ..< 4 {audio.cfg[0x10 + i] = u8(GSW_SOUND_CONTROL_BAR >> (8 * uint(i)))}
+	audio.bar_size_mask[0] = 0xFFFF_F000
+	audio.write_mask[0x11] = 0xF0
+	audio.write_mask[0x12] = 0xFF
+	audio.write_mask[0x13] = 0xFF
+	audio.cfg[0x3C] = 10
+	audio.cfg[0x3D] = 1
 }
 
 @(private = "file")
@@ -414,7 +443,11 @@ pci_amd756_bios_write_enabled :: proc(p: ^Pci) -> bool {
 pci_pirq_compute_routed_mask :: proc(p: ^Pci) -> u16 {
 	mask: u16
 	for pirq in u8(0) ..< PCI_PIRQ_COUNT {
-		if !p.pirq_asserted[pirq] {continue}
+		active := false
+		for count in p.pirq_source_counts[pirq] {
+			if count > 0 {active = true; break}
+		}
+		if !active {continue}
 		if irq, routed := pci_pirq_route(p, pirq); routed {mask |= u16(1) << irq}
 	}
 	return mask
@@ -461,15 +494,56 @@ pci_connect_pic :: proc(p: ^Pci, pic: ^Pic_Pair) {
 }
 
 pci_pirq_set_level :: proc(p: ^Pci, pirq: u8, asserted: bool) -> bool {
-	if pirq >= PCI_PIRQ_COUNT {return false}
-	if p.pirq_asserted[pirq] == asserted {return true}
-	p.pirq_asserted[pirq] = asserted
+	return pci_pirq_set_source_level(p, pirq, .Legacy, asserted)
+}
+
+pci_pirq_set_source_level :: proc(
+	p: ^Pci,
+	pirq: u8,
+	source: Pci_Pirq_Source,
+	asserted: bool,
+) -> bool {
+	if p == nil || pirq >= PCI_PIRQ_COUNT || source >= .Count {return false}
+	count := &p.pirq_source_counts[pirq][int(source)]
+	next := asserted ? u16(1) : u16(0)
+	if count^ == next {return true}
+	count^ = next
 	pci_pirq_sync(p)
 	return true
 }
 
+pci_pirq_assert_source :: proc(p: ^Pci, pirq: u8, source: Pci_Pirq_Source) -> bool {
+	if p == nil || pirq >= PCI_PIRQ_COUNT || source >= .Count {return false}
+	count := &p.pirq_source_counts[pirq][int(source)]
+	if count^ == max(u16) {return false}
+	count^ += 1
+	if count^ == 1 {pci_pirq_sync(p)}
+	return true
+}
+
+pci_pirq_release_source :: proc(p: ^Pci, pirq: u8, source: Pci_Pirq_Source) -> bool {
+	if p == nil || pirq >= PCI_PIRQ_COUNT || source >= .Count {return false}
+	count := &p.pirq_source_counts[pirq][int(source)]
+	if count^ == 0 {return false}
+	count^ -= 1
+	if count^ == 0 {pci_pirq_sync(p)}
+	return true
+}
+
+pci_pirq_source_assertion_count :: proc(p: ^Pci, pirq: u8, source: Pci_Pirq_Source) -> u16 {
+	if p == nil || pirq >= PCI_PIRQ_COUNT || source >= .Count {return 0}
+	return p.pirq_source_counts[pirq][int(source)]
+}
+
 pci_pirq_is_asserted :: proc(p: ^Pci, pirq: u8) -> bool {
-	return pirq < PCI_PIRQ_COUNT && p.pirq_asserted[pirq]
+	if p == nil || pirq >= PCI_PIRQ_COUNT {return false}
+	for count in p.pirq_source_counts[pirq] {if count > 0 {return true}}
+	return false
+}
+
+pci_pirq_source_is_asserted :: proc(p: ^Pci, pirq: u8, source: Pci_Pirq_Source) -> bool {
+	if p == nil || pirq >= PCI_PIRQ_COUNT || source >= .Count {return false}
+	return p.pirq_source_counts[pirq][int(source)] > 0
 }
 
 pci_pirq_active_irq_mask :: proc(p: ^Pci) -> u16 {
@@ -535,6 +609,32 @@ pci_gsw_vga_control_base :: proc(p: ^Pci) -> u64 {
 
 pci_gsw_vga_framebuffer_base :: proc(p: ^Pci) -> u64 {
 	return pci_gsw_vga_memory_bar(p, 1)
+}
+
+@(private = "file")
+pci_gsw_sound_command :: proc(p: ^Pci) -> u16 {
+	if p == nil {return 0}
+	audio := &p.functions[PCI_GSW_SOUND_FUNCTION_INDEX]
+	return u16(audio.cfg[0x04]) | u16(audio.cfg[0x05]) << 8
+}
+
+pci_gsw_sound_memory_enabled :: proc(p: ^Pci) -> bool {
+	return pci_gsw_sound_command(p) & 0x0002 != 0
+}
+
+pci_gsw_sound_bus_master_enabled :: proc(p: ^Pci) -> bool {
+	return pci_gsw_sound_command(p) & 0x0004 != 0
+}
+
+pci_gsw_sound_control_base :: proc(p: ^Pci) -> u64 {
+	if p == nil {return 0}
+	audio := &p.functions[PCI_GSW_SOUND_FUNCTION_INDEX]
+	value :=
+		u32(audio.cfg[0x10]) |
+		u32(audio.cfg[0x11]) << 8 |
+		u32(audio.cfg[0x12]) << 16 |
+		u32(audio.cfg[0x13]) << 24
+	return u64(value & 0xFFFF_FFF0)
 }
 
 pci_ide_bus_master_io_base :: proc(p: ^Pci) -> (base: u16, valid: bool) {

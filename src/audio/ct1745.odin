@@ -45,6 +45,7 @@ CT1745_GAIN_5_Q16 := [32]u32 {
 }
 
 CT1745_OUT_GAIN_Q16 := [4]u32{65_536, 130_762, 260_906, 520_581}
+CT1745_SPEAKER_GAIN_Q16 := [4]u32{0, 8_250, 32_846, 65_536}
 
 Ct1745 :: struct {
 	index:        u8,
@@ -69,11 +70,15 @@ ct1745_reset :: proc(mixer: ^Ct1745) {
 	mixer.voice_left = 24
 	mixer.voice_right = 24
 	mixer.registers[0x26] = 0xCC
+	mixer.registers[0x28] = 0xCC
 	mixer.registers[0x34] = 24
 	mixer.registers[0x35] = 24
+	mixer.registers[0x36] = 24
+	mixer.registers[0x37] = 24
 	mixer.registers[0x3C] = 0x1F
 	mixer.registers[0x3D] = 0x15
 	mixer.registers[0x3E] = 0x0B
+	mixer.registers[0x3B] = 0x03
 	mixer.registers[0x44] = 8
 	mixer.registers[0x45] = 8
 	mixer.registers[0x46] = 8
@@ -103,7 +108,15 @@ ct1745_selected_dma16 :: proc(mixer: ^Ct1745) -> int {
 }
 
 ct1745_set_irq_status :: proc(mixer: ^Ct1745, dma16: bool) {
-	mixer.irq_status = dma16 ? 0x02 : 0x01
+	mixer.irq_status |= dma16 ? 0x02 : 0x01
+}
+
+ct1745_set_midi_irq_status :: proc(mixer: ^Ct1745) {
+	mixer.irq_status |= 0x04
+}
+
+ct1745_ack_irq_status :: proc(mixer: ^Ct1745, mask: u8) {
+	mixer.irq_status &= ~mask
 }
 
 ct1745_clear_irq_status :: proc(mixer: ^Ct1745) {
@@ -181,6 +194,8 @@ ct1745_write_register :: proc(mixer: ^Ct1745, index, value: u8) {
 		mixer.voice_right = value & 0x1F
 	case 0x34, 0x35:
 		mixer.registers[index] = value & 0x1F
+	case 0x3B:
+		mixer.registers[index] = value & 0x03
 	case 0x36:
 		ct1745_set_cd_levels(mixer, value, mixer.registers[0x37])
 	case 0x37:
@@ -224,11 +239,30 @@ ct1745_write_port :: proc(mixer: ^Ct1745, port: u16, value: u8) -> bool {
 ct1745_gain_pair :: proc(mixer: ^Ct1745, voice: bool) -> (u32, u32) {
 	left := CT1745_GAIN_5_Q16[voice ? mixer.voice_left : mixer.registers[0x34]]
 	right := CT1745_GAIN_5_Q16[voice ? mixer.voice_right : mixer.registers[0x35]]
-	left = u32(u64(left) * u64(CT1745_GAIN_5_Q16[mixer.master_left]) / u64(AUDIO_GAIN_UNITY))
-	right = u32(u64(right) * u64(CT1745_GAIN_5_Q16[mixer.master_right]) / u64(AUDIO_GAIN_UNITY))
-	left = u32(u64(left) * u64(CT1745_OUT_GAIN_Q16[mixer.out_left]) / u64(AUDIO_GAIN_UNITY))
-	right = u32(u64(right) * u64(CT1745_OUT_GAIN_Q16[mixer.out_right]) / u64(AUDIO_GAIN_UNITY))
-	return left, right
+	return ct1745_apply_master_output_gain(mixer, left, right)
+}
+
+ct1745_apply_master_output_gain :: proc(mixer: ^Ct1745, left, right: u32) -> (u32, u32) {
+	result_left :=
+		u32(u64(left) * u64(CT1745_GAIN_5_Q16[mixer.master_left]) / u64(AUDIO_GAIN_UNITY))
+	result_right :=
+		u32(u64(right) * u64(CT1745_GAIN_5_Q16[mixer.master_right]) / u64(AUDIO_GAIN_UNITY))
+	result_left =
+		u32(u64(result_left) * u64(CT1745_OUT_GAIN_Q16[mixer.out_left]) / u64(AUDIO_GAIN_UNITY))
+	result_right =
+		u32(u64(result_right) * u64(CT1745_OUT_GAIN_Q16[mixer.out_right]) / u64(AUDIO_GAIN_UNITY))
+	return result_left, result_right
+}
+
+ct1745_cd_gain_pair :: proc(mixer: ^Ct1745) -> (u32, u32) {
+	left := CT1745_GAIN_5_Q16[mixer.registers[0x36]]
+	right := CT1745_GAIN_5_Q16[mixer.registers[0x37]]
+	return ct1745_apply_master_output_gain(mixer, left, right)
+}
+
+ct1745_speaker_gain_pair :: proc(mixer: ^Ct1745) -> (u32, u32) {
+	gain := CT1745_SPEAKER_GAIN_Q16[mixer.registers[0x3B] & 0x03]
+	return ct1745_apply_master_output_gain(mixer, gain, gain)
 }
 
 ct1745_apply_gain :: proc(mixer: ^Ct1745, frame: Audio_Frame, voice := true) -> Audio_Frame {

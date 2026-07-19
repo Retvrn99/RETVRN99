@@ -135,14 +135,22 @@ English, Korean, and future media-specific text in the source's own code page.
 
 The repository can reproducibly build and stage the complete five-file GSW-VGA
 PnP package, but Guided Setup does not yet inject it into the Setup source.
-GSW sound, DirectX 9, and compatibility-layer RunOnce actions also remain
-disabled. A staged package is development output, not proof that it installed
-or ran successfully in a licensed Windows 98 guest.
+The native GSW-Sound driver, DirectX 9, and compatibility-layer RunOnce actions
+also remain disabled. The intended GSW-Sound package is an INF, Win16 DRV, and
+VxD. A source bootstrap exists, but no driver binaries are built or present in
+the reviewed payload inventory, and no Windows playback claim has passed.
+A staged package is development output, not proof that it installed or ran
+successfully in a licensed Windows 98 guest.
 
-DOS software can use the fixed Sound Blaster 16-compatible resources at
-`220h`, IRQ5, DMA1, and DMA5, with OPL-compatible ports at `388h`. Digital PCM,
-DSP probing, DMA playback, IRQ acknowledgement, and OPL timers are available;
-OPL synthesis fidelity and additional DSP formats are still being extended.
+The experimental legacy audio Interface exposes fixed Sound Blaster 16-
+compatible resources at `220h`, IRQ5, DMA1, and DMA5, with OPL3-compatible
+ports at `388h`. Deterministic host-side acceptance now covers the master
+timeline, PC-speaker response, DSP reset and playback formats, DMA and separate
+interrupt acknowledgements, OPL3 scheduling, and offline capture stability.
+The OPL3 synthesis Implementation is preserved behind the new scheduler.
+Cold-DOS, Windows 98 real-DOS-mode, licensed-game, and independent chip-fidelity
+gates remain open; do not treat port presence or host-side tests as those
+guest-native claims.
 
 While installation is active, RETVRN99 locks drive switching, drive creation,
 browsing, and unrelated media changes. This prevents an install state from

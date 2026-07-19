@@ -1,0 +1,50 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "status": "ready-for-manual-install",
+  "source_files": [
+    {"relative_path":"GSWSOUND.INF","bytes":1370,"sha256":"7f79a999e8200dde6d1d3aac0e31c4163c58f38b39b57249d4122529626fec53"},
+    {"relative_path":"gswsound.mak","bytes":3755,"sha256":"66062a384f4698b7330ac614ca09e6d92639d8cc14c5e9079285f4f10eaa6806"},
+    {"relative_path":"build-support/configmg.h","bytes":382,"sha256":"e55073f388d28ef3a7aca2f11e5172ee2345b3cd9c5911f01335e23b4b04873d"},
+    {"relative_path":"build-support/mmdevldr.h","bytes":394,"sha256":"632b6b085cd8a862269ce00bc1a8d6243d7b881e0b68f377eb1ff1a8d978ec90"},
+    {"relative_path":"build-support/mmsystem.lbc","bytes":127,"sha256":"4d21aae425c59b290271581ccd1056ed3cd2c07dc3f166599d92fbbdcc0ed0a1"},
+    {"relative_path":"build-support/vmm.h","bytes":256,"sha256":"1e94cd628c650d310677facbf3b19eb36421e8ea6ca7d9cee82897c50eb24d61"},
+    {"relative_path":"build-support/vpicd.h","bytes":243,"sha256":"5e6ee1f071eeb58de35bf91c57a923348fe919a0d4f70ee459419ecce1f4e261"},
+    {"relative_path":"build-support/vxdwraps.c","bytes":5874,"sha256":"3b4a396da50ffe90bd9393a53719dda3eea6aaa0b8bab453ce7c00ff62cb4761"},
+    {"relative_path":"build-support/vxdwraps.h","bytes":1861,"sha256":"7b01d53f0bd841103c74da76df42a0118792c143c851656671064db8fa102290"},
+    {"relative_path":"include/gswsound_types.h","bytes":682,"sha256":"fed6bfefb27a059367ee47f54ea4cd4556c2fd18b1670184743dd47201149027"},
+    {"relative_path":"include/gswsound_abi.h","bytes":3205,"sha256":"082b888928cb264764c14384bff986e0e6e9ca773d65ab959e5ef7ec86c0d2fb"},
+    {"relative_path":"include/gswsound_pm.h","bytes":1641,"sha256":"ef794bf6a7e886b1fd412945acc19c143e22e0f9051cc000f8682e86f9533d2d"},
+    {"relative_path":"include/gswsound_telemetry.h","bytes":1496,"sha256":"db16e8c11f5ac8840bf9339977a3aef68a33581d2c4676ea93a5791557adacdc"},
+    {"relative_path":"drv/gswsound_drv.c","bytes":29915,"sha256":"bfaf2f09ada97b4ede52ff5522773da258a5ebb32fee0be7f7605f35b9dc3198"},
+    {"relative_path":"drv/gswsound_mixer.c","bytes":16485,"sha256":"c1a7b1d880cda3bc98fc978eb25686cf0f8358e281254fc3b1e8da1699b3da84"},
+    {"relative_path":"drv/gswsound_mixer.h","bytes":510,"sha256":"ef1533ab283126a953a2a704329532db6ba4551398c78c35ee85035825f5f0e5"},
+    {"relative_path":"drv/gswsound_pm16.c","bytes":2297,"sha256":"b0bdcf5a5b9f1e8f8f9424459b4521d37bf40dc7c4f11979403883307b98e80e"},
+    {"relative_path":"drv/gswsound_pm16.h","bytes":329,"sha256":"4da99a1f007970657e78f7386cac34c8655acb9066660205613a5e620cb07896"},
+    {"relative_path":"drv/gswsound_win16_mmddk.h","bytes":8298,"sha256":"bf87e49107408125688a866b638a222a6d3cc2985ffc339c24fa752e2ee866d9"},
+    {"relative_path":"drv/gswsound.def","bytes":277,"sha256":"6d0ab301de2342c324527810e2f03c58f2c26f95afc6c1129670d215a625d46c"},
+    {"relative_path":"drv/gswsound.rc","bytes":928,"sha256":"70dcce19af46d4e1a4bee8cf80339db61c710ad91f2416084b38e7a18f033af1"},
+    {"relative_path":"vxd/gswsound_ddk.h","bytes":2623,"sha256":"78f3a5f61ce21a23ff202665565d784d5e9716faaaadbfc92b54fadfb99700d1"},
+    {"relative_path":"vxd/gswsound_transport.c","bytes":14894,"sha256":"87fa93133a9f8e23cf6c63fd51be078f82d2bf466e69dd1bbef798e5c3ea02f7"},
+    {"relative_path":"vxd/gswsound_transport.h","bytes":2846,"sha256":"a37828f9ee16d971da823dc8f061411ecaf84eff524535e1943ea9fb552459a6"},
+    {"relative_path":"vxd/gswsound_vxd.c","bytes":23264,"sha256":"6456cbd8184ed7ad0a9915b516a72c6179929e3bd97baa446c06de6fbdcc3929"},
+    {"relative_path":"vxd/gswsound.def","bytes":159,"sha256":"58dce58428a5c5fff5548ca9e0f541584fe5a68f4cbcfbc1f847effce49b8958"}
+  ],
+  "repository_files": [
+    {"relative_path":"drivers/win98/gsw-sound/interface-inputs.lock.json","bytes":3034,"sha256":"f9703f8dbc3c3bd1756f287d59e98fe9824ba9daa3ccda3e0a905ed2d5b1ee57"},
+    {"relative_path":"drivers/win98/toolchain.lock.json","bytes":883,"sha256":"e97012fb9d9b1257e59ac5ea46ac8aa1b54b62e2feb03fed70545c5769e07dff"},
+    {"relative_path":"drivers/win98/mingw32-toolchain.lock.json","bytes":792,"sha256":"db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12"},
+    {"relative_path":"drivers/win98/upstream.lock.tsv","bytes":1206,"sha256":"f9532d1d9997746f523aead2a0e985ca25a190cf142efd5306e9a43476ae3e48"},
+    {"relative_path":"scripts/verify-win98-gsw-sound-interfaces.ps1","bytes":7141,"sha256":"cf786a3fca1026435df0879039cc39912cff5730d6c0f61d12853f8d3d70fd4d"},
+    {"relative_path":"scripts/verify-win98-driver-toolchain.ps1","bytes":25178,"sha256":"d185d733f028c1b6157cd3947315fc7ab4d1a41f8e3e0d5c3d1610f0cb310e00"},
+    {"relative_path":"scripts/normalize-win16-version-date.ps1","bytes":21613,"sha256":"d2721dda535fffe2e58b264789015ec9829d3c4e32571b5e162b955d6846f32f"},
+    {"relative_path":"scripts/build-win98-gsw-sound.ps1","bytes":15256,"sha256":"c8f9259485aefd423453b5f1ea63f4920bc16fcd46b6296ce9dccd2aa0904607"},
+    {"relative_path":"scripts/normalize-win98-vxd-ddb-entry.ps1","bytes":8467,"sha256":"4fc76fecea5584b008177dd0c3bd9a1f99288b8516fd1578c58907dbba402a88"},
+    {"relative_path":"scripts/verify-win98-gsw-sound-binaries.ps1","bytes":4533,"sha256":"40c2b35f205e0f9b2cf7848705dd38f338ae4189048c5cbbe1d25bb26040fa89"}
+  ],
+  "outputs": [
+    {"name":"GSWSOUND.INF","bytes":1370,"sha256":"7f79a999e8200dde6d1d3aac0e31c4163c58f38b39b57249d4122529626fec53"},
+    {"name":"GSWSOUND.DRV","bytes":12104,"sha256":"b2fe52450982cf35129b474bfa84bacda2feecd4179e2d00f4fde8f07aa8bd7d"},
+    {"name":"GSWSOUND.VXD","bytes":9476,"sha256":"410bbaea37876d0c1edc9734f03c16c948ab51b8eeb866cd698ec682a644fb51"}
+  ]
+}

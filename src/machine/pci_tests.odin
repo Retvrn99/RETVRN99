@@ -422,10 +422,47 @@ pci_test_static_pirq_routing_and_slot_swizzle :: proc(t: ^testing.T) {
 	pirq, valid := pci_slot_pirq(2, 1)
 	testing.expect_value(t, pirq, PCI_GSW_VGA_PIRQ)
 	testing.expect_value(t, valid, true)
+	pirq, valid = pci_slot_pirq(3, 1)
+	testing.expect_value(t, pirq, PCI_GSW_SOUND_PIRQ)
+	testing.expect_value(t, valid, true)
 	_, valid = pci_slot_pirq(0, 1)
 	testing.expect_value(t, valid, false)
 	_, valid = pci_slot_pirq(2, 0)
 	testing.expect_value(t, valid, false)
+}
+
+@(test)
+pci_test_gsw_sound_identity_bar_and_decode :: proc(t: ^testing.T) {
+	p: Pci
+	pci_init(&p)
+	pci_out(&p, 0xCF8, 4, 0x8000_1800)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0x0003_FFFE))
+	pci_out(&p, 0xCF8, 4, 0x8000_1808)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0x0401_0001))
+	pci_out(&p, 0xCF8, 4, 0x8000_1804)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 2), u32(0x0006))
+	testing.expect(t, pci_gsw_sound_memory_enabled(&p))
+	testing.expect(t, pci_gsw_sound_bus_master_enabled(&p))
+	pci_out(&p, 0xCFC, 2, 0x0007)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 2), u32(0x0006))
+
+	pci_out(&p, 0xCF8, 4, 0x8000_1810)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), GSW_SOUND_CONTROL_BAR)
+	pci_out(&p, 0xCFC, 4, 0xFFFF_FFFF)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0xFFFF_F000))
+	pci_out(&p, 0xCFC, 4, 0xF345_6789)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0xF345_6000))
+	testing.expect_value(t, pci_gsw_sound_control_base(&p), u64(0xF345_6000))
+
+	pci_out(&p, 0xCF8, 4, 0x8000_182C)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0x0003_FFFE))
+	pci_out(&p, 0xCF8, 4, 0x8000_183C)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 2), u32(0x010A))
+
+	pci_out(&p, 0xCF8, 4, 0x8000_1804)
+	pci_out(&p, 0xCFC, 2, 0x0002)
+	testing.expect(t, pci_gsw_sound_memory_enabled(&p))
+	testing.expect(t, !pci_gsw_sound_bus_master_enabled(&p))
 }
 
 @(test)
@@ -594,11 +631,10 @@ pci_test_config_data_rejects_unaligned_word_access :: proc(t: ^testing.T) {
 }
 
 @(test)
-pci_test_absent_functions_and_synthetic_chipset :: proc(t: ^testing.T) {
+pci_test_absent_functions :: proc(t: ^testing.T) {
 	p: Pci
 	pci_init(&p)
 	addresses := [?]u32 {
-		0x8000_1800, // former synthetic GSW chipset at 00:03.0
 		0x8000_3A00, // omitted AMD-756 USB at 00:07.2
 		0x8000_3B00, // omitted AMD-756 PM at 00:07.3
 		0x8000_2000, // absent device 4

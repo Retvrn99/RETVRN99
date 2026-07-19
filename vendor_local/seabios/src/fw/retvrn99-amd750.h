@@ -9,6 +9,7 @@
 #define RETVRN99_AMD756_HIGH_BIOS_128K_DECODE 0x80
 
 #define RETVRN99_GSW_VGA_DEVICE 2
+#define RETVRN99_GSW_SOUND_DEVICE 3
 #define RETVRN99_AMD750_PIRQ_INDEX(device, pin) \
     (((pin) - 1 + (device) - 1) & 3)
 #define RETVRN99_AMD750_PIRQ_LINK(device, pin) \

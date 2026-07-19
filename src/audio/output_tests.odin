@@ -42,7 +42,43 @@ test_audio_output_prefill_and_ramps :: proc(t: ^testing.T) {
 		u64(AUDIO_TARGET_FRAMES + AUDIO_RAMP_FRAMES * 2),
 	)
 	testing.expect_value(t, metrics.underruns, u64(AUDIO_RAMP_FRAMES))
+	testing.expect_value(t, metrics.underrun_events, u64(1))
+	testing.expect_value(t, metrics.underrun_recoveries, u64(0))
+	testing.expect_value(t, metrics.gap_frames, u64(AUDIO_TARGET_FRAMES + AUDIO_RAMP_FRAMES))
+	testing.expect_value(t, metrics.ramp_down_frames, u64(AUDIO_RAMP_FRAMES))
 	testing.expect_value(t, metrics.queue_min_depth, u64(0))
+}
+
+@(test)
+test_audio_output_underrun_clears_stale_sample_and_records_recovery :: proc(t: ^testing.T) {
+	output: Audio_Output
+	audio_output_init(&output)
+	consumer: Audio_Consumer
+	audio_consumer_init(&consumer, &output)
+	audio_consumer_discard_queued(&consumer)
+	frames: [AUDIO_RAMP_FRAMES]Audio_Frame
+	for &frame in frames {frame = {
+			left  = 6_400,
+			right = -6_400,
+		}}
+	audio_output_queue(&output, frames[:])
+	audio_consumer_read(&consumer, frames[:])
+
+	gap: [AUDIO_RAMP_FRAMES + 1]Audio_Frame
+	audio_consumer_read(&consumer, gap[:])
+	testing.expect_value(t, gap[AUDIO_RAMP_FRAMES - 1], Audio_Frame{})
+	testing.expect_value(t, gap[AUDIO_RAMP_FRAMES], Audio_Frame{})
+	testing.expect_value(t, consumer.last, Audio_Frame{})
+
+	recovery := [1]Audio_Frame{{left = 6_400, right = -6_400}}
+	audio_output_queue(&output, recovery[:])
+	audio_consumer_read(&consumer, recovery[:])
+	testing.expect_value(t, recovery[0], Audio_Frame{left = 100, right = -100})
+	metrics := audio_output_metrics(&output)
+	testing.expect_value(t, metrics.underruns, u64(AUDIO_RAMP_FRAMES + 1))
+	testing.expect_value(t, metrics.underrun_events, u64(1))
+	testing.expect_value(t, metrics.underrun_recoveries, u64(1))
+	testing.expect_value(t, metrics.ramp_down_frames, u64(AUDIO_RAMP_FRAMES))
 }
 
 @(test)

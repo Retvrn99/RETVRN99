@@ -1,0 +1,12 @@
+; SPDX-License-Identifier: GPL-3.0-only
+LIBRARY GSWSOUND
+DESCRIPTION 'RETVRN99 GSW-Sound Windows 98 waveOut driver'
+EXETYPE WINDOWS
+CODE PRELOAD FIXED
+DATA PRELOAD FIXED SINGLE
+HEAPSIZE 1024
+EXPORTS
+    WEP @1 RESIDENTNAME
+    DriverProc @2
+    wodMessage @3
+    mxdMessage @4

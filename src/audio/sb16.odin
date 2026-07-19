@@ -43,6 +43,7 @@ Sb16 :: struct {
 	auto_init:          bool,
 	playing:            bool,
 	paused:             bool,
+	silence_active:     bool,
 	dma_16bit:          bool,
 	stereo:             bool,
 	signed_samples:     bool,
@@ -50,6 +51,14 @@ Sb16 :: struct {
 	pending_left:       i16,
 	irq_edge:           bool,
 	irq_is_16bit:       bool,
+	irq_pending_dma8:   bool,
+	irq_pending_dma16:  bool,
+	irq_pending_midi:   bool,
+	irq_events_dma8:    u64,
+	irq_events_dma16:   u64,
+	irq_events_midi:    u64,
+	starvation_frames:  u64,
+	adpcm:              Sb16_Adpcm,
 	sample_scheduled:   bool,
 	next_sample_tick:   u64,
 	sample_remainder:   u64,
@@ -153,8 +162,28 @@ sb16_arm :: proc(sb: ^Sb16, dma16, auto_init, stereo, signed_samples: bool, coun
 	sb.pending_left_valid = false
 	sb.playing = true
 	sb.paused = false
+	sb.silence_active = false
+	sb.adpcm = {}
 	sb.direct_dac_valid = false
 	sb.release_pending = false
+	sb16_schedule_first_sample(sb)
+}
+
+sb16_arm_silence :: proc(sb: ^Sb16, count: u32) {
+	sb.dma_16bit = false
+	sb.auto_init = false
+	sb.stereo = false
+	sb.signed_samples = false
+	sb.block_size = count
+	sb.block_remaining = count
+	sb.pending_left_valid = false
+	sb.playing = true
+	sb.paused = false
+	sb.silence_active = true
+	sb.adpcm = {}
+	sb.direct_dac_valid = false
+	sb.release_pending = false
+	sb.raw_frame = {}
 	sb16_schedule_first_sample(sb)
 }
 
@@ -174,133 +203,55 @@ sb16_continue :: proc(sb: ^Sb16) {
 	sb16_schedule_first_sample(sb)
 }
 
+sb16_raise_dma_irq :: proc(sb: ^Sb16, dma16: bool) {
+	if dma16 {
+		sb.irq_pending_dma16 = true
+		sb.irq_events_dma16 += 1
+	} else {
+		sb.irq_pending_dma8 = true
+		sb.irq_events_dma8 += 1
+	}
+	ct1745_set_irq_status(&sb.mixer, dma16)
+	sb.irq_edge = true
+	sb.irq_is_16bit = dma16
+}
+
+sb16_raise_midi_irq :: proc(sb: ^Sb16) {
+	if sb == nil {return}
+	sb.irq_pending_midi = true
+	sb.irq_events_midi += 1
+	ct1745_set_midi_irq_status(&sb.mixer)
+}
+
+sb16_ack_midi_irq :: proc(sb: ^Sb16) {
+	if sb == nil {return}
+	sb.irq_pending_midi = false
+	ct1745_ack_irq_status(&sb.mixer, 0x04)
+}
+
+sb16_ack_dma_irq :: proc(sb: ^Sb16, dma16: bool) {
+	if dma16 {
+		sb.irq_pending_dma16 = false
+		ct1745_ack_irq_status(&sb.mixer, 0x02)
+	} else {
+		sb.irq_pending_dma8 = false
+		ct1745_ack_irq_status(&sb.mixer, 0x01)
+	}
+	if sb.irq_edge && sb.irq_is_16bit == dma16 {sb.irq_edge = false}
+}
+
 sb16_advance_block :: proc(sb: ^Sb16) {
 	if !sb.playing || sb.block_remaining == 0 {return}
 	sb.block_remaining -= 1
 	if sb.block_remaining != 0 {return}
-	sb.irq_edge = true
-	sb.irq_is_16bit = sb.dma_16bit
+	sb16_raise_dma_irq(sb, sb.dma_16bit)
 	if sb.auto_init && sb.block_size > 0 {
 		sb.block_remaining = sb.block_size
 	} else {
 		sb.playing = false
 		sb.paused = false
+		sb.silence_active = false
 	}
-}
-
-sb16_dispatch :: proc(sb: ^Sb16, command: u8, args: []u8) {
-	if command >= 0xB0 && command <= 0xBF {
-		if command & 0x08 != 0 {return}
-		mode := len(args) > 0 ? args[0] : 0
-		count := len(args) >= 3 ? u32(args[1]) | u32(args[2]) << 8 : 0
-		sb16_arm(sb, true, command & 0x04 != 0, mode & 0x20 != 0, mode & 0x10 != 0, count + 1)
-		return
-	}
-	if command >= 0xC0 && command <= 0xCF {
-		if command & 0x08 != 0 {return}
-		mode := len(args) > 0 ? args[0] : 0
-		count := len(args) >= 3 ? u32(args[1]) | u32(args[2]) << 8 : 0
-		sb16_arm(sb, false, command & 0x04 != 0, mode & 0x20 != 0, mode & 0x10 != 0, count + 1)
-		return
-	}
-
-	switch command {
-	case 0x04:
-		if len(args) > 0 {sb.asp_mode = args[0]}
-	case 0x05:
-	case 0x08:
-		sb16_queue_read(sb, len(args) > 0 && args[0] == 0x03 ? 0x10 : 0xFF)
-	case 0x0E:
-		if len(args) >= 2 {sb.asp_registers[args[0]] = args[1]}
-	case 0x0F:
-		if len(args) > 0 {
-			index := args[0]
-			if index == 0x83 && sb.asp_mode & 0x88 != 0x88 {sb.asp_registers[index] = 0x10}
-			sb16_queue_read(sb, sb.asp_registers[index])
-		}
-	case 0x10:
-		if len(args) > 0 {
-			sb.direct_dac = args[0]
-			sb.direct_dac_valid = true
-			sample := audio_pcm_u8(args[0])
-			sb.raw_frame = {sample, sample}
-		}
-	case 0x14:
-		count := len(args) >= 2 ? u32(args[0]) | u32(args[1]) << 8 : 0
-		sb16_arm(sb, false, false, false, false, count + 1)
-	case 0x1C, 0x90:
-		sb16_arm(sb, false, true, false, false, sb.block_size)
-	case 0x40:
-		if len(args) > 0 {
-			divisor := u32(256) - u32(args[0])
-			if divisor > 0 {sb.rate_hz = 1_000_000 / divisor}
-			sb.rate_is_byte_rate = true
-		}
-	case 0x41:
-		if len(args) >= 2 {
-			sb.rate_hz = clamp(u32(args[0]) << 8 | u32(args[1]), u32(1), SB16_MAX_OUTPUT_RATE)
-			sb.rate_is_byte_rate = false
-		}
-	case 0x48:
-		if len(args) >= 2 {sb.block_size = (u32(args[0]) | u32(args[1]) << 8) + 1}
-	case 0x91:
-		sb16_arm(sb, false, false, false, false, sb.block_size)
-	case 0xD0, 0xD5:
-		sb16_halt(sb)
-	case 0xD1:
-		sb.speaker_enabled = true
-	case 0xD3:
-		sb.speaker_enabled = false
-	case 0xD4, 0xD6:
-		sb16_continue(sb)
-	case 0xD8:
-		sb16_queue_read(sb, sb.speaker_enabled ? 0xFF : 0x00)
-	case 0xD9, 0xDA:
-		sb.auto_init = false
-	case 0xE0:
-		if len(args) > 0 {sb16_queue_read(sb, ~args[0])}
-	case 0xE1:
-		sb16_queue_read(sb, SB16_DSP_VERSION_MAJOR)
-		sb16_queue_read(sb, SB16_DSP_VERSION_MINOR)
-	case 0xE3:
-		for value in "Copyright (C) Creative Technology Ltd. 1992-94" {sb16_queue_read(
-				sb,
-				u8(value),
-			)}
-		sb16_queue_read(sb, 0)
-	case 0xE4:
-		if len(args) > 0 {sb.test_register = args[0]}
-	case 0xE8:
-		sb16_queue_read(sb, sb.test_register)
-	case 0xF2:
-		sb.irq_edge = true
-		sb.irq_is_16bit = false
-	case 0xF9:
-		if len(args) > 0 {sb16_queue_read(sb, sb.controller_ram[args[0]])}
-	case 0xFA:
-		if len(args) >= 2 {sb.controller_ram[args[0]] = args[1]}
-	}
-}
-
-sb16_write_command_byte :: proc(sb: ^Sb16, value: u8) {
-	if sb.pending_need > 0 {
-		sb.pending_args[sb.pending_count] = value
-		sb.pending_count += 1
-		if sb.pending_count == sb.pending_need {
-			sb16_dispatch(sb, sb.pending_command, sb.pending_args[:sb.pending_count])
-			sb.pending_need = 0
-			sb.pending_count = 0
-		}
-		return
-	}
-	need := sb16_command_arity(value)
-	if need == 0 {
-		sb16_dispatch(sb, value, nil)
-		return
-	}
-	sb.pending_command = value
-	sb.pending_need = need
-	sb.pending_count = 0
 }
 
 sb16_reset_dsp :: proc(sb: ^Sb16) {
@@ -317,9 +268,14 @@ sb16_reset_dsp :: proc(sb: ^Sb16) {
 	sb.signed_samples = false
 	sb.pending_left_valid = false
 	sb.irq_edge = false
+	sb.irq_pending_dma8 = false
+	sb.irq_pending_dma16 = false
+	sb.irq_pending_midi = false
 	sb.sample_scheduled = false
 	sb.release_pending = false
 	sb.direct_dac_valid = false
+	sb.silence_active = false
+	sb.adpcm = {}
 	sb.raw_frame = {}
 	ct1745_clear_irq_status(&sb.mixer)
 }
@@ -369,6 +325,9 @@ sb16_render_sample :: proc(
 	bool,
 ) {
 	if !sb.sample_scheduled {return {}, false}
+	if sb16_adpcm_active(&sb.adpcm) {
+		return sb16_render_adpcm_sample(sb, dma_ctx, read_byte)
+	}
 	if sb.release_pending {
 		sb.release_pending = false
 		sb.sample_scheduled = false
@@ -379,42 +338,82 @@ sb16_render_sample :: proc(
 		sb.sample_scheduled = false
 		return {}, false
 	}
+	if sb.silence_active {
+		sb.raw_frame = {}
+		sb16_advance_block(sb)
+		if sb.playing {
+			sb16_schedule_next_sample(sb)
+		} else {
+			sb.release_pending = true
+			sb16_schedule_next_sample(sb)
+		}
+		return {}, true
+	}
 
 	stereo := sb.stereo || !sb.dma_16bit && ct1745_sbpro_stereo(&sb.mixer)
 	channel := sb.dma_16bit ? ct1745_selected_dma16(&sb.mixer) : ct1745_selected_dma8(&sb.mixer)
 	left: i16
+	left_completed_block := false
 	if sb.pending_left_valid {
 		left = sb.pending_left
 		sb.pending_left_valid = false
 	} else if sb.dma_16bit {
-		if read_word == nil {sb16_schedule_next_sample(sb); return {}, false}
+		if read_word == nil {
+			sb.starvation_frames += 1
+			sb.raw_frame = {}
+			sb16_schedule_next_sample(sb)
+			return {}, true
+		}
 		value, ok := read_word(dma_ctx, channel)
-		if !ok {sb16_schedule_next_sample(sb); return {}, false}
+		if !ok {
+			sb.starvation_frames += 1
+			sb.raw_frame = {}
+			sb16_schedule_next_sample(sb)
+			return {}, true
+		}
 		left = sb16_sample_word(sb, value)
+		left_completed_block = sb.block_remaining == 1
 		sb16_advance_block(sb)
 	} else {
-		if read_byte == nil {sb16_schedule_next_sample(sb); return {}, false}
+		if read_byte == nil {
+			sb.starvation_frames += 1
+			sb.raw_frame = {}
+			sb16_schedule_next_sample(sb)
+			return {}, true
+		}
 		value, ok := read_byte(dma_ctx, channel)
-		if !ok {sb16_schedule_next_sample(sb); return {}, false}
+		if !ok {
+			sb.starvation_frames += 1
+			sb.raw_frame = {}
+			sb16_schedule_next_sample(sb)
+			return {}, true
+		}
 		left = sb16_sample_byte(sb, value)
+		left_completed_block = sb.block_remaining == 1
 		sb16_advance_block(sb)
 	}
 
 	frame := Audio_Frame{left, left}
 	if stereo {
-		if !sb.playing {
-			sb.pending_left_valid = false
-			sb.release_pending = true
+		if left_completed_block {
+			// A stereo block may contain an odd number of DMA units. Do not
+			// borrow the right channel from the next auto-init block or read
+			// beyond a single-cycle block; publish a neutral right sample.
+			frame.right = 0
+			sb.raw_frame = frame
+			if !sb.playing {sb.release_pending = true}
 			sb16_schedule_next_sample(sb)
-			return {}, false
+			return frame, true
 		}
 		if sb.dma_16bit {
 			value, ok := read_word(dma_ctx, channel)
 			if !ok {
 				sb.pending_left = left
 				sb.pending_left_valid = true
+				sb.starvation_frames += 1
+				sb.raw_frame = {}
 				sb16_schedule_next_sample(sb)
-				return {}, false
+				return {}, true
 			}
 			frame.right = sb16_sample_word(sb, value)
 		} else {
@@ -422,8 +421,10 @@ sb16_render_sample :: proc(
 			if !ok {
 				sb.pending_left = left
 				sb.pending_left_valid = true
+				sb.starvation_frames += 1
+				sb.raw_frame = {}
 				sb16_schedule_next_sample(sb)
-				return {}, false
+				return {}, true
 			}
 			frame.right = sb16_sample_byte(sb, value)
 		}
@@ -458,9 +459,11 @@ sb16_read_port :: proc(sb: ^Sb16, port: u16) -> (u8, bool) {
 		return sb16_pop_read(sb), true
 	case 0x22C:
 		return 0x00, true
-	case 0x22E, 0x22F:
-		sb.irq_edge = false
-		ct1745_clear_irq_status(&sb.mixer)
+	case 0x22E:
+		sb16_ack_dma_irq(sb, false)
+		return sb.read_count > 0 ? 0x80 : 0x00, true
+	case 0x22F:
+		sb16_ack_dma_irq(sb, true)
 		return sb.read_count > 0 ? 0x80 : 0x00, true
 	}
 	return 0xFF, false

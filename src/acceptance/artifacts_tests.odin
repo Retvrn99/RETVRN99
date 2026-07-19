@@ -10,7 +10,7 @@ acceptance_artifacts_test_bundle_is_fixed_name_and_bounded :: proc(t: ^testing.T
 	context.allocator = context.temp_allocator
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_artifacts_*", context.temp_allocator)
-	defer os.remove_all(dir)
+	defer acceptance_test_remove_tree(dir)
 	long := make([]u8, ARTIFACT_TEXT_MAX_BYTES + 1024, context.temp_allocator)
 	for &byte in long {byte = 'x'}
 	pixels := []u32{0xFF112233, 0xFF445566}
@@ -42,7 +42,7 @@ acceptance_artifacts_test_trace_keeps_bounded_complete_tail :: proc(t: ^testing.
 	context.allocator = context.temp_allocator
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_trace_artifact_*", context.temp_allocator)
-	defer os.remove_all(dir)
+	defer acceptance_test_remove_tree(dir)
 	long := make([]u8, ARTIFACT_HARDWARE_TRACE_MAX_BYTES + 257, context.temp_allocator)
 	for _, index in long {
 		long[index] = 'x'
@@ -67,7 +67,7 @@ acceptance_artifacts_test_reports_stale_trace_removal_failure :: proc(t: ^testin
 	context.allocator = context.temp_allocator
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_trace_remove_*", context.temp_allocator)
-	defer os.remove_all(dir)
+	defer acceptance_test_remove_tree(dir)
 	trace_path, _ := filepath.join({dir, "hardware-trace.txt"})
 	testing.expect(t, os.make_directory(trace_path) == nil)
 	child, _ := filepath.join({trace_path, "retained"})
@@ -84,7 +84,7 @@ acceptance_artifacts_test_reports_stale_frame_removal_failure :: proc(t: ^testin
 	context.allocator = context.temp_allocator
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_frame_remove_*", context.temp_allocator)
-	defer os.remove_all(dir)
+	defer acceptance_test_remove_tree(dir)
 	frame_path, _ := filepath.join({dir, "final-frame.ppm"})
 	testing.expect(t, os.make_directory(frame_path) == nil)
 	child, _ := filepath.join({frame_path, "retained"})

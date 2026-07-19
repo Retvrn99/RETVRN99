@@ -7,7 +7,7 @@ import "core:os"
 import "core:path/filepath"
 import "core:unicode/utf8"
 
-RESULT_SCHEMA_VERSION :: 4
+RESULT_SCHEMA_VERSION :: 5
 RESULT_MAX_BYTES :: 64 * 1024
 RESULT_MAX_HASHES :: 32
 RESULT_MAX_RESETS :: 16
@@ -31,15 +31,38 @@ Workload_Hash :: struct {
 	sha256: string,
 }
 
+Audio_Source_Result :: struct {
+	frames_produced:   u64,
+	nonzero_frames:    u64,
+	starvation_frames: u64,
+	irq_events:        u64,
+}
+
 Audio_Result :: struct {
 	frames_produced:          u64,
 	frames_consumed:          u64,
 	queue_min_depth:          u64,
 	queue_max_depth:          u64,
 	underruns:                u64,
+	underrun_events:          u64,
+	underrun_recoveries:      u64,
+	gap_frames:               u64,
+	ramp_down_frames:         u64,
 	overruns:                 u64,
 	late_callbacks:           u64,
+	callback_lateness_us:     u64,
 	max_callback_lateness_us: u64,
+	clipping_frames:          u64,
+	speaker_edges:            u64,
+	speaker_late_edges:       u64,
+	speaker_overflow_edges:   u64,
+	scheduler_wakeups:        u64,
+	pcm_fnv1a64:              u64,
+	pc_speaker:               Audio_Source_Result,
+	sb16:                     Audio_Source_Result,
+	opl3:                     Audio_Source_Result,
+	native_pcm:               Audio_Source_Result,
+	cdda:                     Audio_Source_Result,
 }
 
 Execution_Result :: struct {

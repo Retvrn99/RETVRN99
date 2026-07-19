@@ -22,7 +22,7 @@ acceptance_result_test_round_trip_shape_is_bounded_and_path_free :: proc(t: ^tes
 		context.temp_allocator,
 	)
 	testing.expect(t, directory_error == nil)
-	defer os.remove_all(dir)
+	defer acceptance_test_remove_tree(dir)
 	path, _ := filepath.join({dir, "nested", "result.json"})
 	result := Result {
 		stop_reason = .Test_Exit,
@@ -41,6 +41,18 @@ acceptance_result_test_round_trip_shape_is_bounded_and_path_free :: proc(t: ^tes
 		unclassified_io = 0,
 		unclassified_mmio = 2,
 		frame_crc = 0x12345678,
+		audio = {
+			underrun_events = 2,
+			clipping_frames = 3,
+			speaker_edges = 4,
+			pcm_fnv1a64 = 0x0123456789ABCDEF,
+			sb16 = {
+				frames_produced = 5,
+				nonzero_frames = 4,
+				starvation_frames = 1,
+				irq_events = 2,
+			},
+		},
 		installation_milestone = "first_reboot",
 		desktop_marker_seen = true,
 		desktop_enum_valid = true,
@@ -93,6 +105,11 @@ acceptance_result_test_round_trip_shape_is_bounded_and_path_free :: proc(t: ^tes
 	testing.expect(t, strings.contains(text, `"desktop_primary_ide_dma_transactions": 2`))
 	testing.expect(t, strings.contains(text, `"desktop_primary_ide_dma_bytes": 1024`))
 	testing.expect(t, strings.contains(text, `"hardware_trace_path": "hardware-trace.txt"`))
+	testing.expect(t, strings.contains(text, `"underrun_events": 2`))
+	testing.expect(t, strings.contains(text, `"clipping_frames": 3`))
+	testing.expect(t, strings.contains(text, `"speaker_edges": 4`))
+	testing.expect(t, strings.contains(text, `"pcm_fnv1a64": 81985529216486895`))
+	testing.expect(t, strings.contains(text, `"starvation_frames": 1`))
 	testing.expect(t, strings.contains(text, `"retry_callbacks": 3`))
 	testing.expect(t, strings.contains(text, `"cancel_calls": 7`))
 	testing.expect(t, strings.contains(text, `"evidence_dropped": 2`))
@@ -107,7 +124,7 @@ acceptance_result_test_counts_and_labels_are_clamped :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_result_bound_*", context.temp_allocator)
-	defer os.remove_all(dir)
+	defer acceptance_test_remove_tree(dir)
 	path, _ := filepath.join({dir, "result.json"})
 	long := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxééé"
 	result := Result {

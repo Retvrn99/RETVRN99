@@ -1,0 +1,32 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+#include <windows.h>
+#include <ver.h>
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,1,0,3
+PRODUCTVERSION 0,1,0,3
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_DOS_WINDOWS16
+FILETYPE VFT_DRV
+FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName", "RETVRN99 Project\0"
+            VALUE "FileDescription", "RETVRN99 GSW-Sound Windows 98 waveOut driver\0"
+            VALUE "FileVersion", "0.1.0.3\0"
+            VALUE "InternalName", "GSWSOUND\0"
+            VALUE "LegalCopyright", "Copyright RETVRN99 contributors 2026\0"
+            VALUE "OriginalFilename", "GSWSOUND.DRV\0"
+            VALUE "ProductName", "RETVRN99 GSW-Sound\0"
+            VALUE "ProductVersion", "0.1.0.3\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04E4
+    END
+END

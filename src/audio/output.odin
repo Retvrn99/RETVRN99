@@ -22,6 +22,10 @@ Audio_Metrics :: struct {
 	queue_min_depth:          u64,
 	queue_max_depth:          u64,
 	underruns:                u64,
+	underrun_events:          u64,
+	underrun_recoveries:      u64,
+	gap_frames:               u64,
+	ramp_down_frames:         u64,
 	overruns:                 u64,
 	late_callbacks:           u64,
 	callback_lateness_us:     u64,
@@ -34,6 +38,10 @@ Audio_Metrics_Snapshot :: struct {
 	queue_min_depth:          u64,
 	queue_max_depth:          u64,
 	underruns:                u64,
+	underrun_events:          u64,
+	underrun_recoveries:      u64,
+	gap_frames:               u64,
+	ramp_down_frames:         u64,
 	overruns:                 u64,
 	late_callbacks:           u64,
 	callback_lateness_us:     u64,
@@ -54,6 +62,7 @@ Audio_Consumer :: struct {
 	last:              Audio_Frame,
 	gain:              u16,
 	prefill_remaining: int,
+	underrunning:      bool,
 }
 
 @(private = "file")
@@ -179,6 +188,7 @@ audio_consumer_discard_queued :: proc(consumer: ^Audio_Consumer) {
 	consumer.prefill_remaining = 0
 	consumer.gain = 0
 	consumer.last = {}
+	consumer.underrunning = false
 	audio_output_observe_depth(consumer.output, 0)
 }
 
@@ -224,13 +234,38 @@ audio_consumer_read :: proc(consumer: ^Audio_Consumer, destination: []Audio_Fram
 	for &out in destination {
 		queued, available := audio_consumer_pop(consumer)
 		if available && queued.kind == .Frame {
+			if consumer.underrunning {
+				_ = sync.atomic_add_explicit(
+					&consumer.output.metrics.underrun_recoveries,
+					u64(1),
+					.Relaxed,
+				)
+				consumer.underrunning = false
+			}
 			consumer.last = queued.frame
 			consumer.gain = min(consumer.gain + 1, u16(AUDIO_RAMP_FRAMES))
 		} else {
-			consumer.gain -= min(consumer.gain, u16(1))
+			_ = sync.atomic_add_explicit(&consumer.output.metrics.gap_frames, u64(1), .Relaxed)
+			if consumer.gain > 0 {
+				_ = sync.atomic_add_explicit(
+					&consumer.output.metrics.ramp_down_frames,
+					u64(1),
+					.Relaxed,
+				)
+				consumer.gain -= 1
+			}
 			if !available && consumer.prefill_remaining == 0 {
 				_ = sync.atomic_add_explicit(&consumer.output.metrics.underruns, u64(1), .Relaxed)
+				if !consumer.underrunning {
+					_ = sync.atomic_add_explicit(
+						&consumer.output.metrics.underrun_events,
+						u64(1),
+						.Relaxed,
+					)
+					consumer.underrunning = true
+				}
 			}
+			if consumer.gain == 0 {consumer.last = {}}
 		}
 		consumer.prefill_remaining -= min(consumer.prefill_remaining, 1)
 		out = audio_consumer_scale(consumer.last, consumer.gain)
@@ -257,6 +292,13 @@ audio_output_metrics :: proc(output: ^Audio_Output) -> Audio_Metrics_Snapshot {
 		queue_min_depth = sync.atomic_load_explicit(&output.metrics.queue_min_depth, .Relaxed),
 		queue_max_depth = sync.atomic_load_explicit(&output.metrics.queue_max_depth, .Relaxed),
 		underruns = sync.atomic_load_explicit(&output.metrics.underruns, .Relaxed),
+		underrun_events = sync.atomic_load_explicit(&output.metrics.underrun_events, .Relaxed),
+		underrun_recoveries = sync.atomic_load_explicit(
+			&output.metrics.underrun_recoveries,
+			.Relaxed,
+		),
+		gap_frames = sync.atomic_load_explicit(&output.metrics.gap_frames, .Relaxed),
+		ramp_down_frames = sync.atomic_load_explicit(&output.metrics.ramp_down_frames, .Relaxed),
 		overruns = sync.atomic_load_explicit(&output.metrics.overruns, .Relaxed),
 		late_callbacks = sync.atomic_load_explicit(&output.metrics.late_callbacks, .Relaxed),
 		callback_lateness_us = sync.atomic_load_explicit(

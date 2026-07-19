@@ -86,6 +86,51 @@ pci_test_shared_static_pirqs_hold_irq_until_all_deassert :: proc(t: ^testing.T) 
 }
 
 @(test)
+pci_test_same_pirq_tracks_ide_and_sound_sources_independently :: proc(t: ^testing.T) {
+	p: Pci
+	pic: Pic_Pair
+	pci_init(&p)
+	pic_setup(&pic)
+	pci_connect_pic(&p, &pic)
+	pic_out(&pic, 0x4D1, 1 << 2)
+
+	testing.expect(t, pci_pirq_set_source_level(&p, PCI_PIRQ_C, .Amd756_Ide, true))
+	testing.expect(t, pci_pirq_set_source_level(&p, PCI_PIRQ_C, .Gsw_Sound, true))
+	testing.expect(t, pci_pirq_source_is_asserted(&p, PCI_PIRQ_C, .Amd756_Ide))
+	testing.expect(t, pci_pirq_source_is_asserted(&p, PCI_PIRQ_C, .Gsw_Sound))
+	testing.expect_value(t, pci_pirq_active_irq_mask(&p), u16(1 << 10))
+
+	testing.expect(t, pci_pirq_set_source_level(&p, PCI_PIRQ_C, .Amd756_Ide, false))
+	testing.expect(t, !pci_pirq_source_is_asserted(&p, PCI_PIRQ_C, .Amd756_Ide))
+	testing.expect(t, pci_pirq_source_is_asserted(&p, PCI_PIRQ_C, .Gsw_Sound))
+	testing.expect(t, pci_pirq_is_asserted(&p, PCI_PIRQ_C))
+	testing.expect(t, pic.slave.asserted & (1 << 2) != 0)
+
+	testing.expect(t, pci_pirq_set_source_level(&p, PCI_PIRQ_C, .Gsw_Sound, false))
+	testing.expect(t, !pci_pirq_is_asserted(&p, PCI_PIRQ_C))
+	testing.expect_value(t, pci_pirq_active_irq_mask(&p), u16(0))
+	testing.expect(t, pic.slave.asserted & (1 << 2) == 0)
+}
+
+@(test)
+pci_test_same_source_assertion_count_requires_balanced_release :: proc(t: ^testing.T) {
+	p: Pci
+	pci_init(&p)
+	testing.expect(t, pci_pirq_assert_source(&p, PCI_PIRQ_C, .Gsw_Sound))
+	testing.expect(t, pci_pirq_assert_source(&p, PCI_PIRQ_C, .Gsw_Sound))
+	testing.expect_value(
+		t,
+		pci_pirq_source_assertion_count(&p, PCI_PIRQ_C, .Gsw_Sound),
+		u16(2),
+	)
+	testing.expect(t, pci_pirq_release_source(&p, PCI_PIRQ_C, .Gsw_Sound))
+	testing.expect(t, pci_pirq_source_is_asserted(&p, PCI_PIRQ_C, .Gsw_Sound))
+	testing.expect(t, pci_pirq_release_source(&p, PCI_PIRQ_C, .Gsw_Sound))
+	testing.expect(t, !pci_pirq_source_is_asserted(&p, PCI_PIRQ_C, .Gsw_Sound))
+	testing.expect(t, !pci_pirq_release_source(&p, PCI_PIRQ_C, .Gsw_Sound))
+}
+
+@(test)
 pci_test_held_pirq_drives_on_adapter_attach :: proc(t: ^testing.T) {
 	p: Pci
 	pic: Pic_Pair

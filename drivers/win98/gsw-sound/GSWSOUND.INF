@@ -1,0 +1,56 @@
+; SPDX-License-Identifier: GPL-3.0-only
+; RETVRN99 GSW-Sound Windows 98 SE playback-only Adapter.
+
+[Version]
+Signature="$CHICAGO$"
+Class=MEDIA
+ClassGUID={4D36E96C-E325-11CE-BFC1-08002BE10318}
+Provider=%ProviderName%
+DriverVer=07/19/2026,0.1.0.3
+
+[DestinationDirs]
+GSW.CopyDrivers=11
+
+[SourceDisksNames]
+1=%InstallDisk%,,
+
+[SourceDisksFiles]
+GSWSOUND.DRV=1
+GSWSOUND.VXD=1
+
+[Manufacturer]
+%ManufacturerName%=GSW
+
+[GSW]
+%DeviceDesc%=GSW.Install,PCI\VEN_FFFE&DEV_0003
+
+[GSW.Install]
+CopyFiles=GSW.CopyDrivers
+AddReg=GSW.AddReg,GSW.Telemetry.AddReg
+
+[GSW.CopyDrivers]
+GSWSOUND.DRV
+GSWSOUND.VXD
+
+[GSW.AddReg]
+HKR,,DevLoader,,mmdevldr.vxd
+HKR,,Driver,,GSWSOUND.VXD
+HKR,Drivers,MIGRATED,,0
+HKR,Drivers\wave,,,
+HKR,Drivers\mixer,,,
+HKR,Drivers,SubClasses,,"wave,mixer"
+HKR,Drivers\wave\GSWSOUND.DRV,Driver,,GSWSOUND.DRV
+HKR,Drivers\wave\GSWSOUND.DRV,Description,,%WaveDesc%
+HKR,Drivers\mixer\GSWSOUND.DRV,Driver,,GSWSOUND.DRV
+HKR,Drivers\mixer\GSWSOUND.DRV,Description,,%MixerDesc%
+
+[GSW.Telemetry.AddReg]
+HKLM,Software\RETVRN99\GSW-Sound,StartTelemetry,1,47,53,57,54,01,00,00,00,20,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00,00
+
+[Strings]
+ProviderName="RETVRN99 Project"
+ManufacturerName="RETVRN99"
+DeviceDesc="RETVRN99 GSW-Sound"
+WaveDesc="RETVRN99 GSW-Sound Wave Output"
+MixerDesc="RETVRN99 GSW-Sound Mixer"
+InstallDisk="RETVRN99 GSW-Sound Driver Disk"

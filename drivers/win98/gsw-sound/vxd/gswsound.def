@@ -1,0 +1,6 @@
+; SPDX-License-Identifier: GPL-3.0-only
+LIBRARY GSWSOUND
+DESCRIPTION 'RETVRN99 GSW-Sound Windows 98 virtual device'
+EXETYPE DEV386
+EXPORTS
+    GSWSOUND_DDB @1

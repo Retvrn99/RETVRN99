@@ -29,7 +29,12 @@ test_ct1745_irq_status_and_sbpro_stereo_round_trip :: proc(t: ^testing.T) {
 	ct1745_reset(&mixer)
 	ct1745_set_irq_status(&mixer, true)
 	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0x02))
-	ct1745_clear_irq_status(&mixer)
+	ct1745_set_irq_status(&mixer, false)
+	ct1745_set_midi_irq_status(&mixer)
+	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0x07))
+	ct1745_ack_irq_status(&mixer, 0x01)
+	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0x06))
+	ct1745_ack_irq_status(&mixer, 0x06)
 	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0))
 	ct1745_write_register(&mixer, 0x0E, 0x22)
 	testing.expect(t, ct1745_sbpro_stereo(&mixer))
@@ -44,4 +49,24 @@ test_ct1745_line_gain_registers_stay_in_table_range :: proc(t: ^testing.T) {
 	testing.expect_value(t, ct1745_read_register(&mixer, 0x34), u8(0x1F))
 	testing.expect_value(t, ct1745_read_register(&mixer, 0x35), u8(0x1F))
 	_ = ct1745_apply_gain(&mixer, Audio_Frame{1_000, -1_000}, false)
+}
+
+@(test)
+test_ct1745_cd_and_pc_speaker_gains_follow_source_and_master_levels :: proc(t: ^testing.T) {
+	mixer: Ct1745
+	ct1745_reset(&mixer)
+	cd_left, cd_right := ct1745_cd_gain_pair(&mixer)
+	testing.expect(t, cd_left > 0 && cd_right > 0)
+	speaker_left, speaker_right := ct1745_speaker_gain_pair(&mixer)
+	testing.expect(t, speaker_left > 0 && speaker_right > 0)
+
+	ct1745_write_register(&mixer, 0x36, 0)
+	ct1745_write_register(&mixer, 0x37, 0)
+	cd_left, cd_right = ct1745_cd_gain_pair(&mixer)
+	testing.expect_value(t, cd_left, u32(0))
+	testing.expect_value(t, cd_right, u32(0))
+	ct1745_write_register(&mixer, 0x3B, 0)
+	speaker_left, speaker_right = ct1745_speaker_gain_pair(&mixer)
+	testing.expect_value(t, speaker_left, u32(0))
+	testing.expect_value(t, speaker_right, u32(0))
 }

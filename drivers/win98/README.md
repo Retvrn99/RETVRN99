@@ -84,6 +84,24 @@ The synchronous GDI hot path uses a separately negotiated shared-memory
 completion cookie, reducing successful submissions to one MMIO doorbell while
 retaining the two-exit and generic fenced paths for older hosts.
 
+## GSW-Sound manual-test package
+
+GSW-Sound is a separate, unavailable PnP package reserved for
+`PCI\VEN_FFFE&DEV_0003`. Its VxD-first contract requires the complete
+`GSWSOUND.INF`, `GSWSOUND.DRV`, and `GSWSOUND.VXD` set. This repository does
+contains original source, reviewed hash-locked compatible Interface inputs, an
+executable deterministic twin-build plan, exact linked-output hashes, mixer and
+wave-loop support, and a ConfigMgr/VPICD interrupt path. The exact three-file
+package is ready for manual Windows 98 SE installation, but install/runtime
+proof and payload inventory/manifest rows do not yet exist. Native DirectSound
+discovery remains fail closed.
+
+The [package contract](gsw-sound/README.md) records the implemented surface.
+The [build and delivery plan](gsw-sound/draft-build-delivery-plan.md) records
+the closed deterministic-build proof and remaining guest gates.
+Neither document changes `payload_available`, the reviewed inventory, or
+Guided Setup.
+
 ## Stageable package
 
 `payload-inventory.schema.tsv` is the reviewed five-file destination set and

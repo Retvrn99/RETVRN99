@@ -40,13 +40,13 @@ pci_firmware_find_pir_table :: proc(ram: []u8) -> (offset, size: int, found: boo
 pci_firmware_validate_pir_contract :: proc(t: ^testing.T, ram: []u8) -> bool {
 	offset, size, found := pci_firmware_find_pir_table(ram)
 	if !testing.expect(t, found) {return false}
-	testing.expect_value(t, size, 64)
+	testing.expect_value(t, size, 80)
 	testing.expect_value(t, ram[offset + 8], u8(0))
 	testing.expect_value(t, ram[offset + 9], u8(7 << 3))
 	testing.expect_value(t, pci_firmware_read_u16(ram, offset + 10), u16(0x0C00))
 	testing.expect_value(t, pci_firmware_read_u32(ram, offset + 12), u32(0))
 
-	devices := [2]u8{2, 7}
+	devices := [3]u8{2, 3, 7}
 	for device in devices {
 		slot_offset := -1
 		for entry := offset + 32; entry < offset + size; entry += 16 {
@@ -77,5 +77,8 @@ pci_firmware_validate_pir_contract :: proc(t: ^testing.T, ram: []u8) -> bool {
 	ide_pirq, ide_pirq_valid := pci_slot_pirq(7, 1)
 	testing.expect(t, ide_pirq_valid)
 	testing.expect_value(t, ide_pirq, PCI_AMD756_IDE_PIRQ)
+	sound_pirq, sound_pirq_valid := pci_slot_pirq(3, 1)
+	testing.expect(t, sound_pirq_valid)
+	testing.expect_value(t, sound_pirq, PCI_GSW_SOUND_PIRQ)
 	return true
 }
