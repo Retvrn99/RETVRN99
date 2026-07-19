@@ -579,6 +579,11 @@ input_script_key :: proc(name: string) -> ([INPUT_SCRIPT_KEY_BYTES]u8, u8, bool)
 	code: u8
 	extended := false
 	switch name {
+	case "ctrl-escape", "ctrl-esc":
+		return [INPUT_SCRIPT_KEY_BYTES]u8{0x1d, 0x01, 0x81, 0x9d, 0, 0, 0, 0}, 4, true
+	case "underscore-es":
+		// Spanish Win9x layouts place '-'/'_' on the physical US '/' key.
+		return [INPUT_SCRIPT_KEY_BYTES]u8{0x2a, 0x35, 0xb5, 0xaa, 0, 0, 0, 0}, 4, true
 	case "ctrl-alt-delete", "ctrl-alt-del":
 		return [INPUT_SCRIPT_KEY_BYTES]u8{0x1d, 0x38, 0xe0, 0x53, 0xe0, 0xd3, 0xb8, 0x9d}, 8, true
 	case "escape":
@@ -591,6 +596,10 @@ input_script_key :: proc(name: string) -> ([INPUT_SCRIPT_KEY_BYTES]u8, u8, bool)
 		code = 0x1c
 	case "space":
 		code = 0x39
+	case "comma":
+		code = 0x33
+	case "period", "dot":
+		code = 0x34
 	case "up":
 		code, extended = 0x48, true
 	case "pageup":

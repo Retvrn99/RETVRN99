@@ -200,6 +200,38 @@ input_script_test_types_ascii_with_paced_key_actions :: proc(t: ^testing.T) {
 }
 
 @(test)
+input_script_test_parses_ctrl_escape :: proc(t: ^testing.T) {
+	script, diagnostic := input_script_parse("key ctrl-escape\n")
+	defer input_script_destroy(&script)
+	testing.expect_value(t, diagnostic, Input_Script_Diagnostic.None)
+	testing.expect_value(t, len(script.actions), 1)
+	if len(script.actions) > 0 {
+		testing.expect_value(
+			t,
+			script.actions[0].key,
+			[INPUT_SCRIPT_KEY_BYTES]u8{0x1d, 0x01, 0x81, 0x9d, 0, 0, 0, 0},
+		)
+	}
+}
+
+@(test)
+input_script_test_parses_command_line_punctuation :: proc(t: ^testing.T) {
+	script, diagnostic := input_script_parse("key period\nkey comma\nkey space\nkey underscore-es\n")
+	defer input_script_destroy(&script)
+	testing.expect_value(t, diagnostic, Input_Script_Diagnostic.None)
+	testing.expect_value(t, len(script.actions), 4)
+	if len(script.actions) != 4 {return}
+	testing.expect_value(t, script.actions[0].key[0], u8(0x34))
+	testing.expect_value(t, script.actions[1].key[0], u8(0x33))
+	testing.expect_value(t, script.actions[2].key[0], u8(0x39))
+	testing.expect_value(
+		t,
+		script.actions[3].key,
+		[INPUT_SCRIPT_KEY_BYTES]u8{0x2a, 0x35, 0xb5, 0xaa, 0, 0, 0, 0},
+	)
+}
+
+@(test)
 input_script_test_parses_hardware_reset :: proc(t: ^testing.T) {
 	script, diagnostic := input_script_parse("wait-memory 0x449 1 3\nreset\n")
 	defer input_script_destroy(&script)

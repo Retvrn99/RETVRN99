@@ -246,6 +246,8 @@ hardware_trace_test_classifies_transition_ports_without_data_flooding :: proc(t:
 	testing.expect_value(t, hardware_trace_io_kind(0x60, false), Hardware_Event_Kind.I8042_Access)
 	testing.expect_value(t, hardware_trace_io_kind(0x3C0, false), Hardware_Event_Kind.None)
 	testing.expect_value(t, hardware_trace_io_kind(0x3DA, false), Hardware_Event_Kind.Vga_Access)
+	testing.expect_value(t, hardware_trace_io_kind(0x1CE, true), Hardware_Event_Kind.Vbe_Access)
+	testing.expect_value(t, hardware_trace_io_kind(0x1CF, true), Hardware_Event_Kind.Vbe_Access)
 }
 
 @(test)

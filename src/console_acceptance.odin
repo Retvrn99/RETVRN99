@@ -1534,6 +1534,40 @@ console_artifact_append_legacy_histories :: proc(builder: ^strings.Builder, m: ^
 	}
 }
 
+console_artifact_append_uart :: proc(
+	builder: ^strings.Builder,
+	label: string,
+	uart: ^machine.Uart_16450,
+) {
+	output := machine.uart_output(uart)
+	fmt.sbprintfln(
+		builder,
+		"%s serial captured=%d dropped=%d:",
+		label,
+		len(output),
+		machine.uart_output_dropped(uart),
+	)
+	for byte in output {
+		switch byte {
+		case '\r':
+			fmt.sbprintf(builder, "\\r")
+		case '\n':
+			fmt.sbprintln(builder)
+		case '\t':
+			fmt.sbprintf(builder, "\\t")
+		case '\\':
+			fmt.sbprintf(builder, "\\\\")
+		case:
+			if byte >= 0x20 && byte < 0x7f {
+				fmt.sbprintf(builder, "%c", byte)
+			} else {
+				fmt.sbprintf(builder, "\\x%02x", byte)
+			}
+		}
+	}
+	fmt.sbprintln(builder)
+}
+
 console_artifact_diagnostics :: proc(
 	result: ^acceptance.Result,
 	m: ^machine.Machine,
@@ -1846,6 +1880,8 @@ console_artifact_diagnostics :: proc(
 				)
 			}
 		}
+		console_artifact_append_uart(&builder, "COM1", &m.serial1)
+		console_artifact_append_uart(&builder, "COM2", &m.serial2)
 		console_artifact_append_legacy_histories(&builder, m)
 		atapi_count := int(min(m.atapi.trace_count, u64(disk.ATAPI_TRACE_HISTORY)))
 		fmt.sbprintfln(&builder, "recent ATAPI packets (%d):", atapi_count)

@@ -6,6 +6,7 @@
 
 DWORD GSW_PM16_capabilities(void);
 BOOL GSW_PM16_submit(const GSWGdiBltCommand __far *request);
+BOOL GSW_PM16_reconnect(void);
 BOOL WINAPI __loadds GSW_BitBlt(
 	LPDIBENGINE destination,
 	WORD destination_x,

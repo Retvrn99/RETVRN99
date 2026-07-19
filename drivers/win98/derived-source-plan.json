@@ -17,13 +17,14 @@
         {"relative_path":"derived/vmdisp9x-gsw/patches/0005-gsw-vxd-lifecycle.patch","bytes":10270,"sha256":"9b111b2eedc193dd2055f961eb4c353789b00e16dc56efa8d2c75a296fdb1b0a","normalize_lf_paths":["3d_accel.h","vxd.h","vxd_fbhda.c","vxd_fbhda_dd.c","vxd_main.c","vxd_mouse.c","vxd_vdd.c","vxd_vdd.h","vxd_wram.c","wram.h"]},
         {"relative_path":"derived/vmdisp9x-gsw/patches/0006-gsw-directdraw-ioctl.patch","bytes":490,"sha256":"3766f10ad37b7521c9d5b4db829dceb73bc94de5552c031f98e0ab24b245ec59","normalize_lf_paths":["vxd_main.c"]},
         {"relative_path":"derived/vmdisp9x-gsw/patches/0007-gsw-directdraw-capabilities.patch","bytes":2558,"sha256":"352f745a62ef3e1b281432926d47e59b169ccb8f7b8e1195b4d5fee7f0d7429c","normalize_lf_paths":["dddrv.c"]},
-        {"relative_path":"derived/vmdisp9x-gsw/patches/0008-gsw-gdi-rop3.patch","bytes":1924,"sha256":"a5a51ea625582ac825356d1ed0c8a631c9f9248c491f384ff548305c1ea4c546","normalize_lf_paths":["modes.c","vxd_main.c"]}
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0008-gsw-gdi-rop3.patch","bytes":1924,"sha256":"a5a51ea625582ac825356d1ed0c8a631c9f9248c491f384ff548305c1ea4c546","normalize_lf_paths":["modes.c","vxd_main.c"]},
+        {"relative_path":"derived/vmdisp9x-gsw/patches/0009-gsw-pnp-display-lifecycle.patch","bytes":12864,"sha256":"280c57e23b53e8c6536b92444b85c1feaca053761e976478dadf6682e3b7159b","normalize_lf_paths":["modes.c","scrsw.c","vxd_lib.c","vxd_lib.h","vxd_main.c","vxd_svga.h","vxd_vdd.c"]}
       ],
       "overlays": [
-        {"relative_path":"derived/vmdisp9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":16,"directory_count":1,"total_entries":17,"aggregate_bytes":79598,"maximum_file_bytes":26777,"maximum_path_bytes":17,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"51fa03a2ebc2bbc7ad71e22f4b1a8fffa34c03aa3a737866887a25c29ec106c8"}},
+        {"relative_path":"derived/vmdisp9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":16,"directory_count":1,"total_entries":17,"aggregate_bytes":82669,"maximum_file_bytes":28767,"maximum_path_bytes":17,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"6a3a654a0a38079ee0ce2c07f7aa0d1c84ea6751567e0ce5aab99fe561f24239"}},
         {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":3,"directory_count":0,"total_entries":3,"aggregate_bytes":10495,"maximum_file_bytes":5053,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"12a77ff5ae763ff469e9d734cabaafd24867f557b3415947680e8863d7ccd72f"}}
       ],
-      "output_tree": {"file_count":158,"directory_count":7,"total_entries":165,"aggregate_bytes":1376239,"maximum_file_bytes":113466,"maximum_path_bytes":26,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"f10fc47ddca7235aae0800db9ed5a7a0eba1eaae2fa037b113e85e125ecc6de0"}
+      "output_tree": {"file_count":158,"directory_count":7,"total_entries":165,"aggregate_bytes":1382198,"maximum_file_bytes":113466,"maximum_path_bytes":26,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"0b41605192d875dc492ae62660523782ab7c75520ddb13057e92a4ea767deeb3"}
     },
     {
       "name": "vmhal9x-gsw",

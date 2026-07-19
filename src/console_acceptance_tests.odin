@@ -403,6 +403,23 @@ console_acceptance_test_artifact_setup_logs_are_bounded_and_path_free :: proc(t:
 }
 
 @(test)
+console_acceptance_test_uart_artifact_is_bounded_and_readable :: proc(t: ^testing.T) {
+	uart: machine.Uart_16450
+	machine.uart_init_com1(&uart)
+	fixture := [?]u8{'A', '\r', '\n', '\t', '\\', 0, 0xff}
+	for byte in fixture {
+		_ = machine.uart_out(&uart, machine.UART_COM1_BASE, byte)
+		machine.uart_advance(&uart, machine.uart_ticks_until_idle(&uart))
+	}
+	builder := strings.builder_make()
+	console_artifact_append_uart(&builder, "COM1", &uart)
+	diagnostics := strings.to_string(builder)
+	defer delete(diagnostics)
+	testing.expect(t, strings.contains(diagnostics, "COM1 serial captured=7 dropped=0:"))
+	testing.expect(t, strings.contains(diagnostics, "A\\r\n\\t\\\\\\x00\\xff"))
+}
+
+@(test)
 console_acceptance_test_configuration_failure_writes_requested_outputs :: proc(t: ^testing.T) {
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_console_config_*", context.temp_allocator)

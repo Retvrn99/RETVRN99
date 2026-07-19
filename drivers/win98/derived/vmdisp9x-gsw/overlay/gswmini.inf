@@ -4,7 +4,7 @@
 Signature="$CHICAGO$"
 Class=Display
 Provider=%Provider%
-DriverVer=07/18/2026,0.2.0.2
+DriverVer=07/19/2026,0.2.0.4
 
 [DestinationDirs]
 GSW.Copy=11

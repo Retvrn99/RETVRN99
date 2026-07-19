@@ -122,6 +122,7 @@ typedef struct GSWCopyCommand {
 #pragma pack(pop)
 
 BOOL GSW_transport_init(void);
+BOOL GSW_transport_rebind(void);
 void GSW_transport_shutdown(void);
 void GSW_transport_release(void);
 BOOL GSW_transport_ready(void);

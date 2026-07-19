@@ -20,6 +20,9 @@
 #include "gsw_transport.h"
 #include "wram.h"
 
+extern DWORD ThisVM;
+BOOL update_pm16(DWORD vm, DWORD oldmap, DWORD linear, DWORD size);
+
 static char gsw_vxd_name[] = "gswmini.vxd";
 
 static BOOL GSW_init_failure(void)
@@ -31,28 +34,42 @@ static BOOL GSW_init_failure(void)
 	return FALSE;
 }
 
-BOOL VBE_init_hw(void)
+static BOOL GSW_bind_framebuffer(void)
 {
 	DWORD framebuffer_bytes;
+	DWORD old_framebuffer_bytes;
 	void *framebuffer;
+	void *old_framebuffer;
 
+	framebuffer = GSW_transport_framebuffer();
+	framebuffer_bytes = GSW_transport_framebuffer_bytes();
+	if(hda == NULL || framebuffer == NULL || framebuffer_bytes == 0)
+		return FALSE;
+
+	old_framebuffer = hda->vram_pm32;
+	old_framebuffer_bytes = hda->vram_size_virt;
+	if((old_framebuffer != framebuffer || old_framebuffer_bytes != framebuffer_bytes) &&
+	   hda->vram_pm16 != 0 &&
+	   !update_pm16(ThisVM, hda->vram_pm16, (DWORD)framebuffer, framebuffer_bytes))
+		return FALSE;
+	hda->vram_pm32 = framebuffer;
+	hda->vram_phylin = framebuffer;
+	hda->vram_size = framebuffer_bytes;
+	hda->vram_size_bar = framebuffer_bytes;
+	hda->vram_size_virt = framebuffer_bytes;
+	return TRUE;
+}
+
+BOOL VBE_init_hw(void)
+{
 	if(wram == NULL && !wram_init(64UL * 1024UL))
 		return FALSE;
 	if(!GSW_transport_init())
 		return GSW_init_failure();
 	if(!GSW_base_VBE_init_hw())
 		return GSW_init_failure();
-
-	framebuffer = GSW_transport_framebuffer();
-	framebuffer_bytes = GSW_transport_framebuffer_bytes();
-	if(framebuffer == NULL || framebuffer_bytes == 0)
+	if(!GSW_bind_framebuffer())
 		return GSW_init_failure();
-
-	hda->vram_pm32 = framebuffer;
-	hda->vram_phylin = framebuffer;
-	hda->vram_size = framebuffer_bytes;
-	hda->vram_size_bar = framebuffer_bytes;
-	hda->vram_size_virt = framebuffer_bytes;
 	memset(hda->vxdname, 0, sizeof(hda->vxdname));
 	memcpy(hda->vxdname, gsw_vxd_name, sizeof(gsw_vxd_name));
 	vbe_chip_id = GSW_PCI_DEVICE_ID;
@@ -62,13 +79,15 @@ BOOL VBE_init_hw(void)
 
 BOOL VBE_valid(void)
 {
-	return GSW_base_VBE_valid() && GSW_transport_ready();
+	return GSW_transport_ready() && GSW_base_VBE_valid();
 }
 
 BOOL VBE_validmode(DWORD width, DWORD height, DWORD bpp)
 {
 	DWORD pitch;
 
+	if(!GSW_transport_ready() || hda == NULL)
+		return FALSE;
 	if(!GSW_base_VBE_validmode(width, height, bpp))
 		return FALSE;
 	pitch = VBE_pitch(width, bpp);
@@ -77,6 +96,9 @@ BOOL VBE_validmode(DWORD width, DWORD height, DWORD bpp)
 
 BOOL VBE_setmode(DWORD width, DWORD height, DWORD bpp)
 {
+	/* OP_VBE_SETMODE is serialized by vxd_main.c's critical section. */
+	if(!GSW_transport_rebind() || !GSW_bind_framebuffer())
+		return FALSE;
 	if(!VBE_validmode(width, height, bpp))
 		return FALSE;
 	if(!GSW_base_VBE_setmode(width, height, bpp))

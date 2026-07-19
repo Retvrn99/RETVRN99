@@ -2,7 +2,7 @@
 
 RETVRN99_GSW_RELEASE = 1
 !include makefile
-FLAGS += -DHWBLT
+FLAGS += -DHWBLT -DRETVRN99_GSW_DRIVER
 
 GSW_DRV_OBJS = &
   dibcall.obj dibthunk.obj dddrv_gsw.obj drvlib.obj enable.obj gsw_gdi.obj &

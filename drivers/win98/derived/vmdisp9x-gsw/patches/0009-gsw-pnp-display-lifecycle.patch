@@ -1,0 +1,481 @@
+diff --git a/modes.c b/modes.c
+index 69172b9..7f12f1c 100644
+--- a/modes.c
++++ b/modes.c
+@@ -201,9 +201,6 @@ static int SetDisplayMode( WORD wXRes, WORD wYRes, int bFullSet )
+ {
+     dbg_printf( "SetDisplayMode: wXRes=%u wYRes=%u\n", wXRes, wYRes );
+ 
+-    /* Inform the VDD that the mode is about to change. */
+-    CallVDD( VDD_PRE_MODE_CHANGE );
+-
+ #ifdef SVGA
+ 		if(!SVGA_setmode(wXRes, wYRes, wBpp))
+ 		{
+@@ -253,15 +250,29 @@ int PhysicalEnable( void )
+     DWORD   dwRegRet;
+     
+     dbg_printf("PhysicalEnable: continue with %ux%u\n", wScrX, wScrY);
++#ifdef RETVRN99_GSW_DRIVER
++    if( !GSW_PM16_reconnect() ) {
++        dbg_printf( "PhysicalEnable: mini-VDD reconnect failed!\n" );
++        return( 0 );
++    }
++    FBHDA_setup( &hda, &hda_linear );
++    if( hda == NULL ) {
++        dbg_printf( "PhysicalEnable: mini-VDD returned no framebuffer data!\n" );
++        return( 0 );
++    }
++#endif
+     if( !IsModeOK( wScrX, wScrY, wBpp ) ) {
+         /* Can't find mode, oopsie. */
+         dbg_printf( "PhysicalEnable: Mode not valid! wScrX=%u wScrY=%u wBpp=%u\n", wScrX, wScrY, wBpp );
+         return( 0 );
+     }
+ 
++    /* Every PRE notification must have one matching POST notification. */
++    CallVDD( VDD_PRE_MODE_CHANGE );
+     if( !SetDisplayMode( wScrX, wScrY, 1 ) ) {
+         /* This is not good. */
+         dbg_printf( "PhysicalEnable: SetDisplayMode failed! wScrX=%u wScrY=%u wBpp=%u\n", wScrX, wScrY, wBpp );
++        CallVDD( VDD_POST_MODE_CHANGE );
+         return( 0 );
+     }
+     
+@@ -282,8 +293,10 @@ int PhysicalEnable( void )
+ #endif
+ 
+ #ifdef VBE
++#ifndef RETVRN99_GSW_DRIVER
+     VBE_setmode(wScrX, wScrY, wBpp);
+ #endif
++#endif
+ 
+ #ifdef VESA
+     VESA_setmode(wScrX, wScrY, wBpp, 0, 0);
+@@ -365,8 +378,19 @@ void __far RestoreDesktopMode( void )
+ {
+     dbg_printf( "RestoreDesktopMode: %ux%u, wBpp=%u\n", wScreenX, wScreenY, wBpp );
+ 
+-    /* Set the current desktop mode again. */
+-    SetDisplayMode( wScreenX, wScreenY, 0 );
++    /* Keep VDD state transactional when ConfigMgr temporarily rebalances us. */
++    CallVDD( VDD_PRE_MODE_CHANGE );
++    if( !SetDisplayMode( wScreenX, wScreenY, 0 ) ) {
++        dbg_printf(
++            "RestoreDesktopMode: SetDisplayMode failed! %ux%u, wBpp=%u\n",
++            wScreenX, wScreenY, wBpp
++        );
++        CallVDD( VDD_POST_MODE_CHANGE );
++        /* Leave BUSY set so SwitchToFgnd cannot repaint stale video memory. */
++        lpDriverPDevice->deFlags |= BUSY;
++        wEnabled = 0;
++        return;
++    }
+ 
+     /* Reprogram the DAC if relevant. */
+     if( wBpp <= 8 ) {
+@@ -386,6 +410,9 @@ void __far RestoreDesktopMode( void )
+         SetRAMDAC_far( 0, wPalCnt, lpColorTable );
+     }
+ 
++    /* Publish success only after hardware and palette restoration completed. */
++    CallVDD( VDD_POST_MODE_CHANGE );
++
+     /* Clear the busy flag. Quite important. */
+     lpDriverPDevice->deFlags &= ~BUSY;
+ 
+diff --git a/scrsw.c b/scrsw.c
+index 5e3d576..adfb087 100644
+--- a/scrsw.c
++++ b/scrsw.c
+@@ -192,8 +192,14 @@ void SwitchToFgnd( void )
+ #endif
+ 
+     /* If the PDevice is busy, we need to reset the display mode. */
+-    if( lpDriverPDevice->deFlags & BUSY )
++    if( lpDriverPDevice->deFlags & BUSY ) {
+         RestoreDesktopMode(); /* Will clear the BUSY flag. */
++        if( lpDriverPDevice->deFlags & BUSY ) {
++            /* A failed restore must remain non-drawable. */
++            wEnabled = 0;
++            return;
++        }
++    }
+     RepaintScreen();
+     wEnabled = 1;
+ }
+diff --git a/vxd_lib.c b/vxd_lib.c
+index f737a12..5fa3394 100644
+--- a/vxd_lib.c
++++ b/vxd_lib.c
+@@ -641,13 +641,40 @@ BOOL VPICD_Virtualize_IRQ(struct _VPICD_IRQ_Descriptor *vid)
+ 	return r;
+ }
+ 
+-void Hook_V86_Int_Chain(DWORD int_num, DWORD HookProc)
++BOOL Hook_V86_Int_Chain(DWORD int_num, DWORD HookProc)
+ {
++	BOOL result = FALSE;
++
+ 	_asm push esi
+ 	_asm mov eax, [int_num]
+ 	_asm mov esi, [HookProc]
+ 	VMMCall(Hook_V86_Int_Chain)
+-	_asm pop esi
++	_asm {
++		setnc al
++		pop esi
++		movzx eax, al
++		mov [result], eax
++	}
++
++	return result;
++}
++
++BOOL Unhook_V86_Int_Chain(DWORD int_num, DWORD HookProc)
++{
++	BOOL result = FALSE;
++
++	_asm push esi
++	_asm mov eax, [int_num]
++	_asm mov esi, [HookProc]
++	VMMCall(Unhook_V86_Int_Chain)
++	_asm {
++		setnc al
++		pop esi
++		movzx eax, al
++		mov [result], eax
++	}
++
++	return result;
+ }
+ 
+ DWORD Set_Async_Time_Out(DWORD delayms, DWORD refdata, void *callback)
+diff --git a/vxd_lib.h b/vxd_lib.h
+index 6cf7d4b..d23dc15 100644
+--- a/vxd_lib.h
++++ b/vxd_lib.h
+@@ -86,7 +86,8 @@ void __cdecl _Allocate_LDT_Selector(ULONG vm, ULONG DescHigh, ULONG DescLow, ULO
+ void __cdecl _Allocate_GDT_Selector(ULONG DescHigh, ULONG DescLow, ULONG flags, DWORD *outFirstSelector, DWORD *outSelectorTable);
+ ULONG __cdecl _SetDescriptor(ULONG selector, ULONG vm, DWORD DescDWORD1, DWORD DescDWORD2, ULONG flags);
+ 
+-void Hook_V86_Int_Chain(DWORD int_num, DWORD HookProc);
++BOOL Hook_V86_Int_Chain(DWORD int_num, DWORD HookProc);
++BOOL Unhook_V86_Int_Chain(DWORD int_num, DWORD HookProc);
+ 
+ void Enable_Global_Trapping(DWORD port);
+ void Disable_Global_Trapping(DWORD port);
+diff --git a/vxd_main.c b/vxd_main.c
+index 515571c..399e395 100644
+--- a/vxd_main.c
++++ b/vxd_main.c
+@@ -68,7 +68,7 @@ BOOL VESA_check_int10h(DWORD vm, PCRS_32 regs);
+ void VXD_control();
+ void VXD_API_entry();
+ BOOL __stdcall Device_Init_proc(DWORD VM);
+-void __stdcall Device_Exit_proc(DWORD VM);
++BOOL __stdcall Device_Exit_proc(DWORD VM);
+ void __stdcall Device_Init_Complete(DWORD VM);
+ void __stdcall win32_destroy_process_proc(DWORD pid);
+ 
+@@ -114,8 +114,13 @@ void *DeviceCTX = NULL;
+ DWORD is_qemu = FALSE;
+ 
+ #ifdef GSW
++BOOL gsw_windows_hires_active = FALSE;
+ static DWORD gsw_saved_dispatch[0x31];
+ static BOOL gsw_dispatch_installed = FALSE;
++static BOOL gsw_device_initializing = FALSE;
++static BOOL gsw_device_initialized = FALSE;
++static BOOL gsw_int10_hooked = FALSE;
++extern BOOL mode_changing;
+ 
+ static void GSW_remove_io_handler(DWORD port)
+ {
+@@ -138,6 +143,28 @@ DWORD __stdcall virtual_int_proc(DWORD int_num, DWORD vm, PCRS_32 regs)
+ {
+ 	if(int_num == 0x10)
+ 	{
++#ifdef GSW
++		BYTE ah = (BYTE)((regs->Client_EAX >> 8) & 0xFF);
++		BYTE al = (BYTE)(regs->Client_EAX & 0xFF);
++
++		/*
++		 * ConfigMgr probes BIOS video modes from the Windows system VM.  The
++		 * ordinary VM-owner heuristic therefore cannot distinguish those probes
++		 * from the active display driver.  Keep them from dropping the physical
++		 * display to VGA while Windows still owns the high-resolution desktop.
++		 */
++		if(gsw_windows_hires_active && !mode_changing)
++		{
++			if(ah == 0)
++				return 1;
++			if(ah == 0x4F && al == 0x02)
++			{
++				regs->Client_EAX =
++					(regs->Client_EAX & 0xFFFF0000UL) | 0x034FUL;
++				return 1;
++			}
++		}
++#endif
+ #ifdef VESA
+ 		if(!VESA_check_int10h(vm, regs))
+ 		{
+@@ -172,6 +199,14 @@ void __declspec(naked) virtual_0x1ce()
+ 		call port_info
+ 		popad
+ 	}*/
++#ifdef GSW
++	_asm {
++		cmp gsw_windows_hires_active,0
++		je _Virtual1CECheckOwner
++		ret
++		_Virtual1CECheckOwner:
++	}
++#endif
+ 	VxDCall(VDD, Get_VM_Info); // esi = result
+ 	_asm{
+ 		cmp edi, ThisVM             ; Is the CRTC controlled by Windows?
+@@ -262,7 +297,7 @@ void __stdcall print_ctrl(DWORD type)
+ 
+ /*
+  * service module calls (init, exit, deviceIoControl, ...)
+- * clear carry if succes (this is always success)
++ * clear carry on successful initialization or dynamic unload
+  */
+ void __declspec(naked) VXD_control()
+ {
+@@ -318,31 +353,45 @@ void __declspec(naked) VXD_control()
+ 		jnz control_4
+ 			pushad
+ 			push ebx ; VM handle
+-		  call Device_Init_proc
++			call Device_Init_proc
+ 			test eax,eax
++			jz control_3_failed
++			push ebx ; dynamic init does not receive Init_Complete later
++			call Device_Init_Complete
+ 			popad
+-			jnz control_3_ok
+-			stc
+-			ret
+-		control_3_ok:
+ 			clc
+ 			ret
++		control_3_failed:
++			popad
++			stc
++			ret
+ 		control_4:
+ 		cmp eax,W32_DEVICEIOCONTROL
+ 		jnz control_5
+ 			jmp Device_IO_Control_entry
+ 		control_5:
+ 		cmp eax,System_Exit
+-		jz control_exit
++		jnz control_dynamic_exit
++			pushad
++			push ebx ; VM handle
++			call Device_Exit_proc
++			popad
++			clc
++			ret
++		control_dynamic_exit:
+ 		cmp eax,Sys_Dynamic_Device_Exit
+ 		jnz control_6
+-		control_exit:
+ 			pushad
+ 			push ebx ; VM handle
+-		  call Device_Exit_proc
++			call Device_Exit_proc
++			test eax,eax
+ 			popad
++			jz control_dynamic_exit_failed
+ 			clc
+ 			ret
++		control_dynamic_exit_failed:
++			stc
++			ret
+ /*
+ 	https://www.codeproject.com/Articles/3874/The-Ultimate-Process-Thread-spy-for-Windows-9x
+ 	
+@@ -781,6 +830,15 @@ BOOL Device_Init_proc(DWORD VM)
+ {
+ 	critical_section_enter();
+ 	dbg_printf(dbg_Device_Init_proc);
++#ifdef GSW
++	if(gsw_device_initialized)
++	{
++		critical_section_leave();
++		return TRUE;
++	}
++	gsw_windows_hires_active = FALSE;
++	gsw_device_initializing = TRUE;
++#endif
+ 
+ #ifndef GSW
+ 	VMMCall(_Allocate_Device_CB_Area);
+@@ -797,6 +855,7 @@ BOOL Device_Init_proc(DWORD VM)
+ # ifdef GSW
+ 	if(!VBE_init_hw())
+ 	{
++		gsw_device_initializing = FALSE;
+ 		critical_section_leave();
+ 		return FALSE;
+ 	}
+@@ -841,6 +900,15 @@ BOOL Device_Init_proc(DWORD VM)
+ 	}
+ 	#include "vxd_vdd_list.h"
+ 	gsw_dispatch_installed = TRUE;
++#if defined(QEMU)
++	if(!Hook_V86_Int_Chain(0x10, ((DWORD)virtual_int_10h)+8))
++	{
++		Device_Exit_proc(VM);
++		critical_section_leave();
++		return FALSE;
++	}
++	gsw_int10_hooked = TRUE;
++#endif
+ #else
+ 	if(DispatchTableLength >= 0x31)
+ 	{
+@@ -854,6 +922,10 @@ BOOL Device_Init_proc(DWORD VM)
+ #ifdef SVGA
+ 	vxd_hstats_update();
+ #endif
++#ifdef GSW
++	gsw_device_initializing = FALSE;
++	gsw_device_initialized = TRUE;
++#endif
+ 
+ 	critical_section_leave();
+ 	dbg_printf("Device_Init_proc DONE\n");
+@@ -1165,9 +1237,28 @@ void Device_Init_Complete(DWORD VM)
+ }
+ 
+ /* shutdown procedure */
+-void Device_Exit_proc(DWORD VM)
++BOOL Device_Exit_proc(DWORD VM)
+ {
+ #ifdef GSW
++	BOOL was_hires_active = gsw_windows_hires_active;
++
++	if(!gsw_device_initialized && !gsw_device_initializing)
++	{
++		gsw_windows_hires_active = FALSE;
++		return TRUE;
++	}
++	gsw_windows_hires_active = FALSE;
++	if(gsw_int10_hooked)
++	{
++		if(!Unhook_V86_Int_Chain(0x10, ((DWORD)virtual_int_10h)+8))
++		{
++			gsw_windows_hires_active = was_hires_active;
++			return FALSE;
++		}
++		gsw_int10_hooked = FALSE;
++	}
++	gsw_device_initialized = FALSE;
++	gsw_device_initializing = FALSE;
+ 	GSW_restore_vdd_dispatch();
+ 	if(is_qemu)
+ 	{
+@@ -1189,6 +1280,7 @@ void Device_Exit_proc(DWORD VM)
+ 	dbg_printf(dbg_destroy);
+ 	
+ 	// TODO: free memory
++	return TRUE;
+ }
+ 
+ static DWORD __stdcall service_get_ver()
+diff --git a/vxd_svga.h b/vxd_svga.h
+index f8a08d6..e3f4c20 100644
+--- a/vxd_svga.h
++++ b/vxd_svga.h
+@@ -40,7 +40,7 @@ void SVGA_fence_wait_dbg(DWORD fence_id, int line);
+ 
+ /* VDD */
+ DWORD map_pm16(DWORD vm, DWORD linear, DWORD size);
+-void update_pm16(DWORD vm, DWORD oldmap, DWORD linear, DWORD size);
++BOOL update_pm16(DWORD vm, DWORD oldmap, DWORD linear, DWORD size);
+ 
+ void SVGA_Sync();
+ void SVGA_Flush_CB();
+diff --git a/vxd_vdd.c b/vxd_vdd.c
+index f7defb4..15e4b72 100644
+--- a/vxd_vdd.c
++++ b/vxd_vdd.c
+@@ -54,6 +54,9 @@ extern FBHDA_t *hda;
+ extern DWORD ThisVM;
+ 
+ extern DWORD is_qemu;
++#ifdef GSW
++extern BOOL gsw_windows_hires_active;
++#endif
+ 
+ static DWORD hda_pm16 = 0;
+ static DWORD mouse_pm16 = 0;
+@@ -102,7 +105,7 @@ DWORD map_pm16(DWORD vm, DWORD linear, DWORD size)
+ 	return selector << 16;
+ }
+ 
+-void update_pm16(DWORD vm, DWORD oldmap, DWORD linear, DWORD size)
++BOOL update_pm16(DWORD vm, DWORD oldmap, DWORD linear, DWORD size)
+ {
+ 	WORD selector = oldmap >> 16;
+ 	DWORD hi  = 0;
+@@ -111,7 +114,7 @@ void update_pm16(DWORD vm, DWORD oldmap, DWORD linear, DWORD size)
+ 	dbg_printf("update_pm16: %ld\n", linear);
+ 	
+ 	_BuildDescriptorDWORDs(linear, RoundToPages(size), 0x92, 0x80, 0, &hi, &low);
+-	_SetDescriptor(selector, vm, hi, low, 0);
++	return _SetDescriptor(selector, vm, hi, low, 0) != 0;
+ }
+ 
+ /*
+@@ -199,6 +202,9 @@ VDDPROC(REGISTER_DISPLAY_DRIVER, register_display_driver)
+ 	state->Client_EDX = hda_pm16;
+ 	state->Client_ECX = mouse_pm16;
+ 	state->Client_ESI = (DWORD)hda;
++#ifdef GSW
++	gsw_windows_hires_active = TRUE;
++#endif
+ 	
+ 	VDD_CY;
+ }
+@@ -515,6 +521,9 @@ VDDPROCRET(VESA_SUPPORT, vesa_support)
+ 
+ VDDPROC(PRE_HIRES_TO_VGA, pre_hires_to_vga)
+ {
++#ifdef GSW
++	gsw_windows_hires_active = FALSE;
++#endif
+ 	dbg_printf("PRE_HIRES_TO_VGA\n");
+ 	mode_changing = TRUE;
+ 	if(is_qemu)
+@@ -548,6 +557,14 @@ VDDPROC(POST_VGA_TO_HIRES, post_vga_to_hires)
+ {
+ 	dbg_printf("POST_VGA_TO_HIRES\n");
+ 	mode_changing = FALSE;
++#ifdef GSW
++	gsw_windows_hires_active = TRUE;
++#endif
++	if(is_qemu)
++	{
++		Enable_Global_Trapping(0x1CE);
++		Enable_Global_Trapping(0x1CF);
++	}
+ 	VDD_NC;
+ }
+ 
+@@ -569,6 +586,9 @@ VDDPROC(DISABLE_TRAPS, disable_traps)
+ 
+ VDDPROC(DISPLAY_DRIVER_DISABLING, display_driver_disabling)
+ {
++#ifdef GSW
++	gsw_windows_hires_active = FALSE;
++#endif
+ 	if(is_qemu)
+ 	{
+ 		Disable_Global_Trapping(0x1CE);

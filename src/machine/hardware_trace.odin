@@ -39,6 +39,7 @@ Hardware_Event_Kind :: enum u8 {
 	Sb16_Command,
 	Sb16_Response,
 	Sb16_Poll,
+	Vbe_Access,
 	Vga_Access,
 	Mmio_Access,
 	Freeze,
@@ -252,6 +253,7 @@ hardware_trace_io_kind :: proc(
 		return .Dma_Access
 	}
 	if write && port >= 0x0CF8 && port <= 0x0CFF {return .Pci_Config}
+	if port == 0x01CE || port == 0x01CF {return .Vbe_Access}
 	if port == 0x01F7 || port == 0x0177 || port == 0x03F6 || port == 0x0376 {
 		return write ? .Ide_Access : .None
 	}
@@ -316,6 +318,8 @@ hardware_event_kind_name :: proc(kind: Hardware_Event_Kind) -> string {
 		return "sb16-poll"
 	case .Vga_Access:
 		return "vga"
+	case .Vbe_Access:
+		return "vbe"
 	case .Mmio_Access:
 		return "mmio"
 	case .Freeze:

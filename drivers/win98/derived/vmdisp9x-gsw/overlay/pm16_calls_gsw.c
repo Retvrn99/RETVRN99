@@ -6,6 +6,16 @@
 #undef mouse_buffer
 #include "gsw_gdi.h"
 
+BOOL GSW_PM16_reconnect(void)
+{
+	/* The dynamic mini-VDD may have been reloaded while the Win16 DRV stayed resident. */
+	VXD_VM = 0;
+	vxd_fbhda16 = 0;
+	vxd_fbhda32 = 0;
+	vxd_mouse16 = 0;
+	return VXD_VM_connect();
+}
+
 DWORD GSW_PM16_capabilities(void)
 {
 	static DWORD capabilities;

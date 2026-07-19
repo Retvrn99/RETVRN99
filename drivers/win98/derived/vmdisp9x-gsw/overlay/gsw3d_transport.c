@@ -55,7 +55,7 @@ static BOOL gsw3d_begin(void)
 {
 	if(gsw3d_semaphore == 0) return FALSE;
 	Wait_Semaphore(gsw3d_semaphore, 0);
-	if(!gsw3d_ready)
+	if(!gsw3d_ready || !GSW_transport_ready())
 	{
 		Signal_Semaphore(gsw3d_semaphore);
 		return FALSE;
