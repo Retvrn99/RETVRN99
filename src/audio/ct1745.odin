@@ -8,6 +8,10 @@ package audio
 
 CT1745_INDEX_PORT :: u16(0x224)
 CT1745_DATA_PORT :: u16(0x225)
+// The upper nibble identifies the SB16 mixer/DSP generation to Creative's
+// Windows 9x driver.  DSP 4.05 cards report 20h; bits 0-2 remain the live
+// DMA8, DMA16, and MPU interrupt-source latches.
+CT1745_IRQ_IDENTITY :: u8(0x20)
 
 CT1745_GAIN_5_Q16 := [32]u32 {
 	0,
@@ -168,7 +172,7 @@ ct1745_read_register :: proc(mixer: ^Ct1745, index: u8) -> u8 {
 	case 0x81:
 		return mixer.dma_setup
 	case 0x82:
-		return mixer.irq_status
+		return CT1745_IRQ_IDENTITY | mixer.irq_status
 	}
 	return mixer.registers[index]
 }

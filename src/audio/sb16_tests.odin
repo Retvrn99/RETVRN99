@@ -50,6 +50,26 @@ test_sb16_reset_version_and_asp_probe_responses :: proc(t: ^testing.T) {
 	minor, _ := sb16_read_port(&sb, 0x22A)
 	testing.expect_value(t, major, SB16_DSP_VERSION_MAJOR)
 	testing.expect_value(t, minor, SB16_DSP_VERSION_MINOR)
+
+	// SB16.VXD reads these exact ASP power-on values while starting the card.
+	sb16_test_command(&sb, 0x0F, 0x05)
+	asp_control, _ := sb16_read_port(&sb, 0x22A)
+	testing.expect_value(t, asp_control, u8(0x01))
+	sb16_test_command(&sb, 0x0F, 0x09)
+	asp_status, _ := sb16_read_port(&sb, 0x22A)
+	testing.expect_value(t, asp_status, u8(0xF8))
+
+	// The driver also writes register 05h, resets the DSP, and expects the ASP
+	// register file to survive that DSP-only reset.
+	sb16_test_command(&sb, 0x0E, 0x05, 0x03)
+	_ = sb16_write_port(&sb, 0x226, 1)
+	_ = sb16_write_port(&sb, 0x226, 0)
+	sb16_advance_control_to(&sb, sb.now_tick + SB16_RESET_TICKS)
+	_, _ = sb16_read_port(&sb, 0x22A)
+	sb16_test_command(&sb, 0x0F, 0x05)
+	asp_control, _ = sb16_read_port(&sb, 0x22A)
+	testing.expect_value(t, asp_control, u8(0x03))
+
 	sb16_test_command(&sb, 0x0F, 0x83)
 	asp_version, _ := sb16_read_port(&sb, 0x22A)
 	testing.expect_value(t, asp_version, u8(0x10))
@@ -78,7 +98,7 @@ test_sb16_software_irq_commands_latch_and_ack_separate_sources :: proc(t: ^testi
 	testing.expect_value(t, sb.read_count, 0)
 	testing.expect(t, sb.irq_pending_dma8)
 	testing.expect(t, !sb.irq_pending_dma16)
-	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x01))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x21))
 	_, _ = sb16_read_port(&sb, 0x22E)
 	testing.expect(t, !sb.irq_pending_dma8)
 
@@ -86,10 +106,10 @@ test_sb16_software_irq_commands_latch_and_ack_separate_sources :: proc(t: ^testi
 	testing.expect_value(t, sb.read_count, 0)
 	testing.expect(t, !sb.irq_pending_dma8)
 	testing.expect(t, sb.irq_pending_dma16)
-	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x02))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x22))
 	_, _ = sb16_read_port(&sb, 0x22F)
 	testing.expect(t, !sb.irq_pending_dma16)
-	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), CT1745_IRQ_IDENTITY)
 }
 
 @(test)
@@ -194,20 +214,20 @@ test_sb16_dma_ack_ports_clear_only_their_irq_source :: proc(t: ^testing.T) {
 	testing.expect_value(t, sb.irq_events_dma8, u64(1))
 	testing.expect_value(t, sb.irq_events_dma16, u64(1))
 	testing.expect_value(t, sb.irq_events_midi, u64(1))
-	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x07))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x27))
 
 	_, _ = sb16_read_port(&sb, 0x22E)
 	testing.expect(t, !sb.irq_pending_dma8)
 	testing.expect(t, sb.irq_pending_dma16)
-	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x06))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x26))
 
 	_, _ = sb16_read_port(&sb, 0x22F)
 	testing.expect(t, !sb.irq_pending_dma16)
 	testing.expect(t, sb.irq_pending_midi)
-	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x04))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x24))
 	sb16_ack_midi_irq(&sb)
 	testing.expect(t, !sb.irq_pending_midi)
-	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), CT1745_IRQ_IDENTITY)
 }
 
 @(test)
@@ -243,7 +263,7 @@ test_sb16_timed_silence_raises_dma8_irq_without_dma_reads :: proc(t: ^testing.T)
 	testing.expect(t, pending)
 	testing.expect(t, !dma16)
 	testing.expect(t, !sb.playing)
-	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x01))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x21))
 }
 
 @(test)

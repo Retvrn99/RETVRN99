@@ -28,14 +28,14 @@ test_ct1745_irq_status_and_sbpro_stereo_round_trip :: proc(t: ^testing.T) {
 	mixer: Ct1745
 	ct1745_reset(&mixer)
 	ct1745_set_irq_status(&mixer, true)
-	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0x02))
+	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0x22))
 	ct1745_set_irq_status(&mixer, false)
 	ct1745_set_midi_irq_status(&mixer)
-	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0x07))
+	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0x27))
 	ct1745_ack_irq_status(&mixer, 0x01)
-	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0x06))
+	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0x26))
 	ct1745_ack_irq_status(&mixer, 0x06)
-	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), u8(0))
+	testing.expect_value(t, ct1745_read_register(&mixer, 0x82), CT1745_IRQ_IDENTITY)
 	ct1745_write_register(&mixer, 0x0E, 0x22)
 	testing.expect(t, ct1745_sbpro_stereo(&mixer))
 }

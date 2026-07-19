@@ -322,7 +322,7 @@ test_sb16_direct_dac_timed_silence_and_separate_irq_acknowledgements :: proc(t: 
 	_, _ = sb16_read_port(&sb, 0x22F)
 	testing.expect(t, !sb.irq_pending_dma16)
 	testing.expect(t, sb.irq_pending_midi)
-	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x04))
+	testing.expect_value(t, ct1745_read_register(&sb.mixer, 0x82), u8(0x24))
 }
 
 @(test)

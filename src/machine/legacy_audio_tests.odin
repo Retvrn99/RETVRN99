@@ -92,9 +92,9 @@ test_machine_sb16_dma_irq5_and_opl_timer_share_guest_audio_clock :: proc(t: ^tes
 	testing.expect_value(t, m.dma.ch[1].transfer_cycles, u64(2))
 	testing.expect(t, m.pic.master.irr & 0x20 != 0)
 	testing.expect(t, legacy_audio_test_out(m, 0x224, 0x82))
-	testing.expect_value(t, legacy_audio_test_in(m, 0x225), u8(0x01))
+	testing.expect_value(t, legacy_audio_test_in(m, 0x225), u8(0x21))
 	_ = legacy_audio_test_in(m, 0x22E)
-	testing.expect_value(t, legacy_audio_test_in(m, 0x225), u8(0))
+	testing.expect_value(t, legacy_audio_test_in(m, 0x225), sound.CT1745_IRQ_IDENTITY)
 }
 
 @(test)
@@ -134,7 +134,7 @@ test_machine_sb16_16bit_dma5_word_channel_and_irq_ack :: proc(t: ^testing.T) {
 	testing.expect_value(t, m.dma.ch[5].transfer_cycles, u64(2))
 	testing.expect(t, m.pic.master.irr & 0x20 != 0)
 	testing.expect(t, legacy_audio_test_out(m, 0x224, 0x82))
-	testing.expect_value(t, legacy_audio_test_in(m, 0x225), u8(0x02))
+	testing.expect_value(t, legacy_audio_test_in(m, 0x225), u8(0x22))
 	_ = legacy_audio_test_in(m, 0x22F)
-	testing.expect_value(t, legacy_audio_test_in(m, 0x225), u8(0))
+	testing.expect_value(t, legacy_audio_test_in(m, 0x225), sound.CT1745_IRQ_IDENTITY)
 }

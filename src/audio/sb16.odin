@@ -76,6 +76,11 @@ sb16_init :: proc(sb: ^Sb16) {
 		rate_is_byte_rate = true,
 	}
 	ct1745_reset(&sb.mixer)
+	// These power-on values are probed by the inbox Windows 98 SB16.VXD.
+	// DSP reset does not clear the ASP register file, so initialize them here
+	// rather than in sb16_reset_dsp.
+	sb.asp_registers[0x05] = 0x01
+	sb.asp_registers[0x09] = 0xF8
 	sb.asp_registers[0x83] = 0x10
 	sb.controller_ram[0x0E] = 0xFF
 	sb.controller_ram[0x0F] = 0x07
