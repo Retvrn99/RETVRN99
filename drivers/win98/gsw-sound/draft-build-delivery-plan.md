@@ -5,14 +5,15 @@
 ## Status
 
 The original source, reviewed Interface closure, deterministic build, and
-three-file manual-install package are complete. Guest installation and runtime
-proof are not complete, so `gsw-sound` must still return
+three-file native package are complete. Guest installation and runtime proof
+did not complete, and the normal guest persona now hides the native PCI
+function under ADR 0009. Therefore `gsw-sound` must still return
 `Package_Content_Unavailable`; the real payload inventory and manifest remain
 unchanged.
 
-This distinction is deliberate: a reproducible driver binary is ready for a
-manual Windows 98 SE test, but it is not yet a proven or automatically
-delivered driver release.
+This distinction is deliberate: reproducible driver binaries are retained as
+developer evidence, but the native manual-install gate is paused and they are
+not a proven or automatically delivered driver release.
 
 ## Closed source and build gates
 
@@ -57,13 +58,13 @@ seeds persistent start telemetry and the VxD advances it through PnP,
 registration, resource, MMIO, allocation, bind, IRQ, and success checkpoints.
 Revision `0.1.0.3` additionally matches both the DDK sample and Creative's
 ES1371 VxD by recording but not rejecting the advisory `PNP_NEW_DEVNODE` EDX
-load type. The replacement package still requires a fresh manual
-binding/runtime gate.
+load type. The replacement package still requires a fresh binding/runtime gate
+if a later decision re-enables the native PCI function.
 
-## Manual Windows 98 SE gate
+## Deferred native Windows 98 SE gate
 
-The next gate is a licensed Windows 98 SE guest. Install from the generated
-directory with Device Manager's Have Disk flow and verify:
+If native PCI exposure is explicitly restored in a later slice, install from
+the generated directory in a licensed Windows 98 SE guest and verify:
 
 1. `PCI\VEN_FFFE&DEV_0003` binds without a warning.
 2. The telemetry-aware `GSWSMOKE.EXE` reports `checkpoint=success` before
@@ -76,6 +77,11 @@ directory with Device Manager's Have Disk flow and verify:
 
 Native DirectSound discovery intentionally remains fail closed in this slice;
 it must not be advertised as proven by a waveOut test.
+
+The active manual gate instead creates a separate legacy Creative SB16 device
+using the Windows inbox driver. Its Resources page must show I/O `220h` and
+`388h`, IRQ5, DMA1, and DMA5, with no memory range. That gate does not use this
+three-file package.
 
 ## Delivery promotion still blocked
 

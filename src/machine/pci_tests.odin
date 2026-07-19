@@ -432,9 +432,29 @@ pci_test_static_pirq_routing_and_slot_swizzle :: proc(t: ^testing.T) {
 }
 
 @(test)
-pci_test_gsw_sound_identity_bar_and_decode :: proc(t: ^testing.T) {
+pci_test_gsw_sound_hidden_by_default :: proc(t: ^testing.T) {
 	p: Pci
 	pci_init(&p)
+	testing.expect_value(t, GSW_SOUND_PCI_EXPOSED_BY_DEFAULT, false)
+	testing.expect(t, !pci_gsw_sound_present(&p))
+	pci_out(&p, 0xCF8, 4, 0x8000_1800)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0xFFFF_FFFF))
+	pci_out(&p, 0xCF8, 4, 0x8000_1804)
+	pci_out(&p, 0xCFC, 2, 0x0006)
+	pci_out(&p, 0xCF8, 4, 0x8000_1810)
+	pci_out(&p, 0xCFC, 4, GSW_SOUND_CONTROL_BAR)
+	pci_out(&p, 0xCF8, 4, 0x8000_1800)
+	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0xFFFF_FFFF))
+	testing.expect(t, !pci_gsw_sound_memory_enabled(&p))
+	testing.expect(t, !pci_gsw_sound_bus_master_enabled(&p))
+	testing.expect_value(t, pci_gsw_sound_control_base(&p), u64(0))
+}
+
+@(test)
+pci_test_gsw_sound_identity_bar_and_decode_when_exposed :: proc(t: ^testing.T) {
+	p: Pci
+	pci_init(&p, true)
+	testing.expect(t, pci_gsw_sound_present(&p))
 	pci_out(&p, 0xCF8, 4, 0x8000_1800)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0x0003_FFFE))
 	pci_out(&p, 0xCF8, 4, 0x8000_1808)

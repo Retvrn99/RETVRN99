@@ -16,6 +16,7 @@ GSW_VGA_CAPABILITY_LENGTH :: u16(0x14)
 GSW_VGA_CONTROL_BAR :: u32(0xF100_0000)
 GSW_VGA_FRAMEBUFFER_BAR :: u32(0xE000_0000)
 GSW_SOUND_CONTROL_BAR :: u32(sound.GSW_PCM_DEFAULT_CONTROL_BASE)
+GSW_SOUND_PCI_EXPOSED_BY_DEFAULT :: false
 
 PCI_CONFIG_ADDRESS_MASK :: u32(0x80FF_FFFC)
 PCI_FUNCTION_COUNT :: 5
@@ -67,6 +68,7 @@ Pci_Pirq_Source :: enum u8 {
 Pci_Irq_Line_Proc :: proc(ctx: rawptr, irq: u8, asserted: bool)
 
 Pci_Function :: struct {
+	present:       bool,
 	bus:           u8,
 	device:        u8,
 	function:      u8,
@@ -95,6 +97,7 @@ pci_seed_u16 :: proc(c: ^[256]u8, offset: int, value: u16) {
 
 @(private = "file")
 pci_seed_function :: proc(f: ^Pci_Function, bus, device, function: u8, vendor_id, device_id: u16) {
+	f.present = true
 	f.bus = bus
 	f.device = device
 	f.function = function
@@ -165,7 +168,7 @@ pci_seed_command_status :: proc(
 	f.w1c_mask[0x07] = u8(status_w1c_mask >> 8)
 }
 
-pci_init :: proc(p: ^Pci) {
+pci_init :: proc(p: ^Pci, expose_gsw_sound := GSW_SOUND_PCI_EXPOSED_BY_DEFAULT) {
 	p^ = {}
 
 	host := &p.functions[PCI_HOST_FUNCTION_INDEX]
@@ -253,21 +256,23 @@ pci_init :: proc(p: ^Pci) {
 	graphics.cfg[cap + 13] = u8(GSW_VGA_CAPABILITY_VERSION)
 	graphics.cfg[cap + 14] = 0x03
 
-	audio := &p.functions[PCI_GSW_SOUND_FUNCTION_INDEX]
-	pci_seed_function(audio, 0, 3, 0, GSW_PCI_VENDOR_ID, GSW_SOUND_PCI_DEVICE_ID)
-	audio.cfg[0x08] = 0x01
-	audio.cfg[0x0A] = 0x01
-	audio.cfg[0x0B] = 0x04
-	pci_seed_command_status(audio, 0x0006, 0x0006, 0x0200, 0x7800)
-	pci_seed_u16(&audio.cfg, 0x2C, GSW_PCI_VENDOR_ID)
-	pci_seed_u16(&audio.cfg, 0x2E, GSW_SOUND_PCI_DEVICE_ID)
-	for i in 0 ..< 4 {audio.cfg[0x10 + i] = u8(GSW_SOUND_CONTROL_BAR >> (8 * uint(i)))}
-	audio.bar_size_mask[0] = 0xFFFF_F000
-	audio.write_mask[0x11] = 0xF0
-	audio.write_mask[0x12] = 0xFF
-	audio.write_mask[0x13] = 0xFF
-	audio.cfg[0x3C] = 10
-	audio.cfg[0x3D] = 1
+	if expose_gsw_sound {
+		audio := &p.functions[PCI_GSW_SOUND_FUNCTION_INDEX]
+		pci_seed_function(audio, 0, 3, 0, GSW_PCI_VENDOR_ID, GSW_SOUND_PCI_DEVICE_ID)
+		audio.cfg[0x08] = 0x01
+		audio.cfg[0x0A] = 0x01
+		audio.cfg[0x0B] = 0x04
+		pci_seed_command_status(audio, 0x0006, 0x0006, 0x0200, 0x7800)
+		pci_seed_u16(&audio.cfg, 0x2C, GSW_PCI_VENDOR_ID)
+		pci_seed_u16(&audio.cfg, 0x2E, GSW_SOUND_PCI_DEVICE_ID)
+		for i in 0 ..< 4 {audio.cfg[0x10 + i] = u8(GSW_SOUND_CONTROL_BAR >> (8 * uint(i)))}
+		audio.bar_size_mask[0] = 0xFFFF_F000
+		audio.write_mask[0x11] = 0xF0
+		audio.write_mask[0x12] = 0xFF
+		audio.write_mask[0x13] = 0xFF
+		audio.cfg[0x3C] = 10
+		audio.cfg[0x3D] = 1
+	}
 }
 
 @(private = "file")
@@ -311,7 +316,8 @@ pci_function_find :: proc(p: ^Pci, bus, device, function: u8) -> ^Pci_Function {
 	if bus == 0 && device == 7 && function == 1 && !pci_amd756_ide_enabled(p) {return nil}
 	for i in 0 ..< len(p.functions) {
 		candidate := &p.functions[i]
-		if candidate.bus == bus && candidate.device == device && candidate.function == function {
+		if candidate.present &&
+		   candidate.bus == bus && candidate.device == device && candidate.function == function {
 			return candidate
 		}
 	}
@@ -613,7 +619,7 @@ pci_gsw_vga_framebuffer_base :: proc(p: ^Pci) -> u64 {
 
 @(private = "file")
 pci_gsw_sound_command :: proc(p: ^Pci) -> u16 {
-	if p == nil {return 0}
+	if !pci_gsw_sound_present(p) {return 0}
 	audio := &p.functions[PCI_GSW_SOUND_FUNCTION_INDEX]
 	return u16(audio.cfg[0x04]) | u16(audio.cfg[0x05]) << 8
 }
@@ -626,8 +632,12 @@ pci_gsw_sound_bus_master_enabled :: proc(p: ^Pci) -> bool {
 	return pci_gsw_sound_command(p) & 0x0004 != 0
 }
 
+pci_gsw_sound_present :: proc(p: ^Pci) -> bool {
+	return p != nil && p.functions[PCI_GSW_SOUND_FUNCTION_INDEX].present
+}
+
 pci_gsw_sound_control_base :: proc(p: ^Pci) -> u64 {
-	if p == nil {return 0}
+	if !pci_gsw_sound_present(p) {return 0}
 	audio := &p.functions[PCI_GSW_SOUND_FUNCTION_INDEX]
 	value :=
 		u32(audio.cfg[0x10]) |

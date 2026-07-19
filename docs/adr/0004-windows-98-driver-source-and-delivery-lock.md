@@ -23,9 +23,11 @@ separate claims and must remain independently provable.
 
 GSW-Sound follows the same separation but is original RETVRN99 work rather
 than an upstream-derived driver. ADR 0008 fixes its VxD-first three-file package
-shape and native PCI Interface. An original source bootstrap now exists, but no
-reviewed DDK Interface-input lock, linked binary, reproducible build, exact
-payload hash, or install proof exists yet.
+shape and native PCI Interface. Its original source, reviewed Interface lock,
+linked binaries, deterministic twin build, and exact build hashes now exist,
+but guest installation never passed and no payload inventory rows were
+promoted. ADR 0009 therefore hides the native PCI function in the default
+persona while a separately added inbox legacy SB16 driver is tested.
 
 ## Decision
 
@@ -142,8 +144,9 @@ dirty, or mismatched required provenance still blocks staging.
 The host-side delivery plan reserves these identities:
 
 - GSW VGA is a PnP package for `PCI\VEN_FFFE&DEV_0002`.
-- GSW-Sound reserves a PnP package for `PCI\VEN_FFFE&DEV_0003`; its complete
-  VxD-first shape will be `GSWSOUND.INF`, `GSWSOUND.DRV`, and `GSWSOUND.VXD`.
+- GSW-Sound reserves a dormant PnP package for `PCI\VEN_FFFE&DEV_0003`; its
+  complete VxD-first shape is `GSWSOUND.INF`, `GSWSOUND.DRV`, and
+  `GSWSOUND.VXD`, but the default machine does not enumerate the endpoint.
 - The user-supplied DirectX 9 runtime is a future RunOnce component at order
   100.
 - The GSW DirectX compatibility component is a future RunOnce component at
@@ -174,10 +177,10 @@ not approve source copying or binary distribution.
   scoped build or staging operation.
 - The GSW-VGA payload is stageable only as the complete DRV, VxD, INF, HAL,
   and bridge set; removing or changing any member closes staging.
-- GSW-Sound remains unavailable until its original guest-source bootstrap is
-  reviewed and completed, every toolchain and DDK Interface input is locked,
-  deterministic twin builds pass, the exact three-file inventory and manifest
-  exist, and licensed guest acceptance is separately proven.
+- GSW-Sound remains unavailable despite its closed source/build proof: the
+  default persona hides the failed native endpoint, the exact three-file
+  inventory and manifest do not exist, and licensed guest acceptance has not
+  passed. Build success cannot reopen delivery by itself.
 - Draft descriptors and failed or unstaged builds do not create a package
   claim. A stageable package still does not prove Device Manager, DirectDraw,
   dxdiag, mode switching, or performance inside a licensed Windows 98 guest.
@@ -188,4 +191,5 @@ not approve source copying or binary distribution.
 
 - [Windows 98 setup driver bundles](0003-windows-98-setup-driver-bundles.md)
 - [VxD-first GSW-Sound architecture](0008-gsw-sound-vxd-first-audio-architecture.md)
+- [Default Windows 98 sound path](0009-default-windows-98-sound-path.md)
 - [Pinned upstream source lock](../../drivers/win98/upstream.lock.tsv)

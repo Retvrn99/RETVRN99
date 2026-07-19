@@ -4,7 +4,10 @@
 
 ## Status
 
-Accepted
+Accepted for the shared audio Module, timing model, native PCM ABI, and
+VxD-first Adapter design. [ADR 0009](0009-default-windows-98-sound-path.md)
+supersedes default exposure of the native PCI function and makes a separately
+installed inbox legacy SB16 driver the next Windows 98 acceptance path.
 
 ## Context
 
@@ -16,11 +19,13 @@ its machine scheduling is replaced.
 
 Windows 98 SE also needs a native playback path that does not make modern
 games traverse the legacy DSP and ISA DMA Interface. The repository reserves
-`PCI\VEN_FFFE&DEV_0003` for `gsw-sound`. An original guest-source bootstrap now
-defines the complete three-file package, but it has no reviewed DDK Interface
-closure, linked binaries, reproducible build, payload inventory, or runtime
-proof. Earlier fixtures named only an INF and VxD even though a Windows 9x wave
-driver needs a complete VxD-first package.
+`PCI\VEN_FFFE&DEV_0003` for `gsw-sound`. At this decision point, an original
+guest-source bootstrap defined the complete three-file package but did not yet
+have reviewed DDK Interface closure, linked binaries, reproducible build,
+payload inventory, or runtime proof. The source/build gates later closed, but
+guest binding did not; ADR 0009 records the resulting default-off pivot.
+Earlier fixtures named only an INF and VxD even though a Windows 9x wave driver
+needs a complete VxD-first package.
 
 ## Decision
 
@@ -52,8 +57,10 @@ accumulation, explicit source gains, headroom, and one final saturation step.
 
 ### Native PCI Interface
 
-GSW-Sound is PCI function `00:03.0`, vendor/device `FFFE:0003`, revision 1,
-class/subclass `04/01`, with one 4 KiB MMIO BAR and level-triggered INTA.
+When explicitly exposed for developer coverage, GSW-Sound is PCI function
+`00:03.0`, vendor/device `FFFE:0003`, revision 1, class/subclass `04/01`, with
+one 4 KiB MMIO BAR and level-triggered INTA. The normal guest persona now hides
+this function under ADR 0009 while retaining the ABI and focused tests.
 Shared PCI interrupt routing must count assertions by source so IDE and sound
 cannot clear each other's routed interrupt.
 
@@ -138,13 +145,16 @@ Restart in MS-DOS mode. Host shutdown or reboot is never part of acceptance.
 
 - One time-ordered Interface concentrates audio correctness and scheduler work,
   improving Locality without changing the OPL3 synthesis character.
-- DOS software retains fixed legacy resources while native Windows playback
-  avoids legacy DSP and ISA DMA overhead.
+- DOS software retains fixed legacy resources. Native Windows playback may
+  later avoid legacy DSP and ISA DMA overhead, but its PCI Adapter is not
+  exposed in the normal guest persona while the inbox legacy path is tested.
 - The PCI Interface is independent of the VxD Adapter, leaving a real Seam for
   a later WDM Adapter without expanding ABI v1.
-- `gsw-sound` remains unavailable: the source bootstrap and fixtures are not
-  reviewed DDK closure, linked binaries, deterministic build, staging,
+- `gsw-sound` remains unavailable. Later work closed the reviewed source and
+  deterministic build gates, but not inventory, default hardware exposure,
   installation, or runtime proof.
+- The inbox Creative SB16 driver must bind to a separately added legacy device,
+  never to the reserved PCI identity; ADR 0009 defines that manual gate.
 - Recording, Windows MIDI/FM, MPU-401, CSP, DirectSound3D, EAX, and hardware
   secondary buffers remain outside the initial implementation.
 
@@ -155,4 +165,5 @@ Restart in MS-DOS mode. Host shutdown or reboot is never part of acceptance.
 - [Windows 98 driver source and delivery lock](0004-windows-98-driver-source-and-delivery-lock.md)
 - [GSW-Sound package contract](../../drivers/win98/gsw-sound/README.md)
 - [GSW-Sound draft build and delivery plan](../../drivers/win98/gsw-sound/draft-build-delivery-plan.md)
+- [Default Windows 98 sound path](0009-default-windows-98-sound-path.md)
 - [Microsoft DirectSound driver models](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/bb318679%28v%3Dvs.85%29)

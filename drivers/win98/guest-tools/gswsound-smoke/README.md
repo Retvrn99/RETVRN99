@@ -6,6 +6,10 @@
 GSW-Sound Windows 98 wave and mixer driver. It deliberately does not exercise
 DirectSound.
 
+The default machine currently hides the native GSW-Sound PCI function under
+ADR 0009, so this tool is retained for a future explicitly enabled native
+driver test. It does not test the inbox Creative SB16 legacy path.
+
 Run it from a Windows 98 command prompt after installing `GSWSOUND.INF` and
 restarting the guest:
 

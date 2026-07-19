@@ -34,8 +34,13 @@ The virtual machine currently exposes:
   host-side tests cover the audio timeline, PC-speaker response, DSP formats,
   DMA/IRQ behavior, and preserved OPL3 synthesis captures. Cold-DOS, real-DOS-
   mode, and audible game gates have not passed, so these remain compatibility
-  targets rather than game-ready claims. The native PCI PCM Interface exists,
-  but the Windows 98 SE VxD package is still source-only and does not ship.
+  targets rather than game-ready claims. The native PCI PCM Interface and a
+  reproducible Windows 98 SE VxD package exist as developer work, but repeated
+  guest binding tests did not produce a working device. The default machine
+  therefore hides `FFFE:0003` and does not ship or inject that package. The
+  current Windows test path manually adds the inbox Creative SB16 driver as a
+  separate legacy device; it must show `220h`/`388h`, IRQ5, DMA1, and DMA5,
+  never a PCI MMIO range.
 
 ## Requirements
 

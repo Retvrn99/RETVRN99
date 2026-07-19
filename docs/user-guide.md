@@ -136,11 +136,11 @@ English, Korean, and future media-specific text in the source's own code page.
 The repository can reproducibly build and stage the complete five-file GSW-VGA
 PnP package, but Guided Setup does not yet inject it into the Setup source.
 The native GSW-Sound driver, DirectX 9, and compatibility-layer RunOnce actions
-also remain disabled. The intended GSW-Sound package is an INF, Win16 DRV, and
-VxD. A source bootstrap exists, but no driver binaries are built or present in
-the reviewed payload inventory, and no Windows playback claim has passed.
-A staged package is development output, not proof that it installed or ran
-successfully in a licensed Windows 98 guest.
+also remain disabled. A reproducible GSW-Sound `INF + DRV + VXD` developer
+package exists, but repeated guest binding tests did not produce a working
+device. It has no reviewed payload inventory rows and is not injected. The
+default machine now hides its reserved `PCI\VEN_FFFE&DEV_0003` endpoint; do not
+force the Creative inbox SB16 driver onto a PCI device node.
 
 The experimental legacy audio Interface exposes fixed Sound Blaster 16-
 compatible resources at `220h`, IRQ5, DMA1, and DMA5, with OPL3-compatible
@@ -151,6 +151,16 @@ The OPL3 synthesis Implementation is preserved behind the new scheduler.
 Cold-DOS, Windows 98 real-DOS-mode, licensed-game, and independent chip-fidelity
 gates remain open; do not treat port presence or host-side tests as those
 guest-native claims.
+
+For the current manual Windows audio gate, first remove any stale Code-24
+Creative-named device whose Resources page shows IRQ10 and a `FE001000` memory
+range. Reboot the guest, open **Add New Hardware**, choose the sound-device
+class manually, then select Creative's **Sound Blaster 16 or AWE-32 or
+compatible** as a new legacy device. Its Resources page must show I/O
+`0220-022F` and `0388-038B`, IRQ5, DMA1, and DMA5, with no memory range. Prefer
+a configuration without MPU-401 `0330-0331`; RETVRN99 does not emulate that
+endpoint. This manual binding is a test gate, not a claim of automatic Plug
+and Play installation or working Windows playback.
 
 While installation is active, RETVRN99 locks drive switching, drive creation,
 browsing, and unrelated media changes. This prevents an install state from

@@ -7,13 +7,15 @@
 This directory contains the original GPL-3.0-only source for a buildable
 Windows 98 SE VxD-first playback Adapter. Its reviewed Interface inputs,
 deterministic Open Watcom 1.9 plan, twin-build proof, exact output hashes, and
-binary-format checks are closed. The generated `INF + DRV + VXD` package is
-ready for manual guest installation.
+binary-format checks are closed. The generated `INF + DRV + VXD` package is a
+reproducible developer artifact, but it is no longer the active manual guest
+test path.
 
-Installation and audible runtime behavior have not yet been proven in a
-Windows 98 SE guest. Consequently `gsw-sound` remains unavailable in the host
-delivery plan, has no real payload inventory/manifest rows, and is not injected
-by Guided Setup.
+Installation and audible runtime behavior were not proven in Windows 98 SE.
+Consequently `gsw-sound` remains unavailable in the host delivery plan, has no
+real payload inventory/manifest rows, and is not injected by Guided Setup.
+ADR 0009 now hides `PCI\VEN_FFFE&DEV_0003` in the default guest persona and
+uses a separately added inbox legacy SB16 driver for the next Windows test.
 
 Driver revision `0.1.0.2` addressed the second loader failure found by manual
 testing. The INF delegates multimedia loading to `MMDEVLDR.VXD`, so the VxD
@@ -29,16 +31,19 @@ reported MMDEVLDR Code 2 and exposed no wave or mixer endpoint.
 The INF and VxD also maintain a best-effort startup checkpoint under
 `HKLM\Software\RETVRN99\GSW-Sound`. The matching `GSWSMOKE.EXE` prints the
 checkpoint before WinMM enumeration, distinguishing loader, resource, MMIO,
-allocation, transport, and IRQ failures. A clean `0.1.0.3` guest retest is still
-required before any installation or playback claim is promoted.
+allocation, transport, and IRQ failures. Those revisions remain useful build
+and loader evidence, but another native guest retest is deferred until a later
+decision explicitly re-enables the PCI Adapter.
 
 ## Device and package
 
 The native Adapter binds the Media-class PCI device
 `PCI\VEN_FFFE&DEV_0003`. It serves the same logical GSW-Sound Module that
-exposes fixed SB16/OPL3 resources to DOS. PC Speaker remains a separate Module.
+exposes fixed SB16/OPL3 resources to DOS. The native function is enabled only
+by focused host tests; normal machines expose the legacy resources but do not
+enumerate this PCI identity. PC Speaker remains a separate Module.
 
-The manual package is valid only when all three files are present:
+The native developer package is valid only when all three files are present:
 
 | File | Responsibility | Implemented source state |
 |---|---|---|
@@ -81,19 +86,25 @@ The binary boundary also proves that the VxD contains the MMDEVLDR registration
 service call and no longer contains the obsolete direct ConfigMgr registration
 call.
 
-## Installation and DOS configuration
+## Deferred native installation and current legacy gate
 
-Manual installation into a licensed Windows 98 SE guest is the current gate.
-Point Device Manager's Have Disk flow at the generated directory, then exercise
-the Wave and Master controls and all supported waveOut formats. Use the matching
-telemetry-aware `GSWSMOKE.EXE` and preserve `GSWSOUND.LOG` on any failure. Guided Setup
-injection remains disabled until binding, playback, reset, reinstall, and
-guest-pause behavior pass.
+Do not point Device Manager at this package in the default machine: its PCI
+function is intentionally absent. Also do not force the inbox Creative SB16
+driver onto a PCI device. The current licensed-guest gate manually adds
+Creative's **Sound Blaster 16 or AWE-32 or compatible** as a separate legacy
+device and verifies I/O `220h-22Fh` plus `388h-38Bh`, IRQ5, DMA1, and DMA5,
+with no MMIO resource. A later decision may expose the native function again
+and resume `GSWSMOKE.EXE` testing.
+
+Guided Setup injection remains disabled until the selected driver path passes
+binding, playback, reset, reinstall, and guest-pause behavior.
 
 Only after those gates may installation idempotently establish
 `BLASTER=A220 I5 D1 H5 T6` for standalone DOS and Restart in MS-DOS mode.
 
 See [ADR 0008](../../../docs/adr/0008-gsw-sound-vxd-first-audio-architecture.md)
-for the PCI/timing Interfaces and the
+for the PCI/timing Interfaces,
+[ADR 0009](../../../docs/adr/0009-default-windows-98-sound-path.md) for the
+default-off pivot, and the
 [build and delivery plan](draft-build-delivery-plan.md) for the remaining
 promotion gates.

@@ -24,7 +24,10 @@ gsw_pcm_machine_test_relocated_mmio_pull_and_shared_pirq :: proc(t: ^testing.T) 
 	bus_init(&m.bus)
 	defer bus_destroy(&m.bus)
 	pic_setup(&m.pic)
-	pci_init(&m.pci)
+	// The normal guest persona deliberately hides the unproven native PCI
+	// Adapter.  This integration test opts in so the reserved ABI remains
+	// covered while the legacy SB16/OPL3 Adapter is tested in guests.
+	pci_init(&m.pci, true)
 	pci_connect_pic(&m.pci, &m.pic)
 	sound.gsw_pcm_init(&m.gsw_pcm)
 	sound.gsw_pcm_set_irq(&m.gsw_pcm, m, machine_gsw_sound_irq)
