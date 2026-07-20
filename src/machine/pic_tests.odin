@@ -40,18 +40,27 @@ test_pic_mask_and_cascade :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_pic_irq2_external_source_survives_cascade_refresh :: proc(t: ^testing.T) {
+test_pic_at_irq2_redirect_source_uses_irq9_without_blocking_irq12 :: proc(t: ^testing.T) {
 	p: Pic_Pair
 	pic_setup(&p)
-	pic_set_irq_source_level(&p, 2, .Vga_Retrace, true)
-	pic_out(&p, 0xA1, 0xFF)
+	pic_set_irq_source_level(&p, 9, .Vga_Retrace, true)
 	testing.expect(t, pic_has_pending(&p))
 	v, ok := pic_ack(&p)
 	testing.expect(t, ok)
-	testing.expect_value(t, v, u8(0x0A))
+	testing.expect_value(t, v, u8(0x71))
+	pic_out(&p, 0xA0, 0x61)
 	pic_out(&p, 0x20, 0x62)
-	pic_set_irq_source_level(&p, 2, .Vga_Retrace, false)
-	testing.expect(t, !pic_has_pending(&p))
+
+	pic_raise(&p, 1)
+	pic_raise(&p, 12)
+	v, ok = pic_ack(&p)
+	testing.expect(t, ok)
+	testing.expect_value(t, v, u8(0x09))
+	pic_out(&p, 0x20, 0x61)
+	v, ok = pic_ack(&p)
+	testing.expect(t, ok)
+	testing.expect_value(t, v, u8(0x74))
+	pic_set_irq_source_level(&p, 9, .Vga_Retrace, false)
 }
 
 @(test)

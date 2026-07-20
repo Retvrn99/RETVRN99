@@ -55,7 +55,7 @@ vga_test_status0_switch_sense_and_retrace :: proc(t: ^testing.T) {
 		retrace_start   = 6,
 		retrace_end     = 8,
 	}
-	v.crtc[0x11] = 0
+	v.crtc[0x11] = 0x10
 	testing.expect_value(t, vga_in(&v, 0x3C2) & 0x80, u8(0))
 	vga_sync_to(&v, 550)
 	testing.expect_value(t, vga_in(&v, 0x3C2) & 0x80, u8(0x80))

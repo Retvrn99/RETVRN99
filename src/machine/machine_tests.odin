@@ -924,7 +924,7 @@ test_machine_vga_legacy_aperture_batches_mmio_transaction :: proc(t: ^testing.T)
 }
 
 @(test)
-test_machine_vga_vertical_interrupt_routes_irq2_source :: proc(t: ^testing.T) {
+test_machine_vga_vertical_interrupt_uses_at_irq9_redirect :: proc(t: ^testing.T) {
 	backing := make([]u8, video.VRAM_SIZE)
 	defer delete(backing)
 	m := new(Machine)
@@ -945,20 +945,20 @@ test_machine_vga_vertical_interrupt_routes_irq2_source :: proc(t: ^testing.T) {
 		retrace_start   = 6,
 		retrace_end     = 8,
 	}
-	m.vga.crtc[0x11] = 0
+	m.vga.crtc[0x11] = 0x10
 
 	video.vga_sync_to(&m.vga, 550)
 	source_bit := u8(1) << u8(Pic_Irq_Source.Vga_Retrace)
-	testing.expect(t, m.pic.source_asserted[2] & source_bit != 0)
+	testing.expect(t, m.pic.source_asserted[9] & source_bit != 0)
 	testing.expect(t, m.yield_requested)
 	testing.expect(t, pic_has_pending(&m.pic))
 	vector, ok := pic_ack(&m.pic)
 	testing.expect(t, ok)
-	testing.expect_value(t, vector, u8(0x0A))
+	testing.expect_value(t, vector, u8(0x71))
 
 	video.vga_out(&m.vga, 0x3D4, 0x11)
 	video.vga_out(&m.vga, 0x3D5, 0)
-	testing.expect(t, m.pic.source_asserted[2] & source_bit == 0)
+	testing.expect(t, m.pic.source_asserted[9] & source_bit == 0)
 }
 
 @(test)

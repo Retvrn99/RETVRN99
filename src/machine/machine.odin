@@ -1756,7 +1756,7 @@ machine_mmio_zone :: proc(gpa: u64) -> (Mmio_Zone, bool) {
 machine_vga_legacy_irq :: proc(ctx: rawptr, asserted: bool) {
 	m := (^Machine)(ctx)
 	if m == nil {return}
-	pic_set_irq_source_level(&m.pic, 2, .Vga_Retrace, asserted)
+	pic_set_irq_source_level(&m.pic, 9, .Vga_Retrace, asserted)
 	if asserted {m.yield_requested = true}
 }
 

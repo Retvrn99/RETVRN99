@@ -223,16 +223,7 @@ pic_master_cascade_exempt :: proc(pp: ^Pic_Pair) -> int {
 pic_sync_cascade :: proc(pp: ^Pic_Pair) {
 	pin := pp.slave.icw3 & 7
 	_, pending := pic_chip_pending(&pp.slave)
-	bit := u16(1) << pin
-	external := pp.direct_asserted & bit != 0 || pp.source_asserted[pin] != 0
-	pic_chip_set_input(&pp.master, pin, pending || external)
-}
-
-@(private = "file")
-pic_external_irq_asserted :: proc(pp: ^Pic_Pair, irq: u8) -> bool {
-	if irq >= 16 {return false}
-	bit := u16(1) << irq
-	return pp.direct_asserted & bit != 0 || pp.source_asserted[irq] != 0
+	pic_chip_set_input(&pp.master, pin, pending)
 }
 
 @(private = "file")
@@ -403,8 +394,6 @@ pic_offer :: proc(pp: ^Pic_Pair) -> (Pic_Interrupt_Offer, bool) {
 		offer.kind = .Slave
 		offer.slave_irq = slave_irq
 		offer.vector = pp.slave.base | slave_irq
-	} else if pic_external_irq_asserted(pp, master_irq) {
-		offer.kind = .Master
 	} else {
 		offer.kind = .Spurious_Slave
 		offer.slave_irq = 7

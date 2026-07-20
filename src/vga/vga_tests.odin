@@ -184,7 +184,7 @@ vga_test_vertical_interrupt_latch_and_callback :: proc(t: ^testing.T) {
 		retrace_start   = 6,
 		retrace_end     = 8,
 	}
-	v.crtc[0x11] = 0
+	v.crtc[0x11] = 0x10
 	probe: Vga_Irq_Test_Probe
 	vga_set_legacy_irq(&v, &probe, vga_irq_test_callback)
 
@@ -201,11 +201,40 @@ vga_test_vertical_interrupt_latch_and_callback :: proc(t: ^testing.T) {
 	testing.expect(t, !vga_legacy_irq_line(&v))
 	testing.expect_value(t, probe.lowers, 1)
 	testing.expect_value(t, vga_in(&v, 0x3C2) & 0x80, u8(0))
+	vga_sync_to(&v, 1550)
+	testing.expect(t, !v.vertical_interrupt_pending)
+	testing.expect_value(t, probe.asserts, 1)
 
 	vga_out(&v, 0x3D4, 0x11)
-	vga_out(&v, 0x3D5, 0x20)
-	vga_sync_to(&v, 1550)
+	vga_out(&v, 0x3D5, 0x30)
+	vga_sync_to(&v, 2550)
 	testing.expect(t, !v.vertical_interrupt_pending)
 	testing.expect(t, !vga_legacy_irq_line(&v))
 	testing.expect_value(t, probe.asserts, 1)
+}
+
+@(test)
+vga_test_default_crtc11_holds_vertical_interrupt_clear :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	v.timing = Video_Timing {
+		frame_period_ns = 1000,
+		line_period_ns  = 100,
+		total_lines     = 10,
+		visible_lines   = 5,
+		visible_dots    = 8,
+		total_dots      = 10,
+		vblank_start    = 5,
+		vblank_end      = 10,
+		retrace_start   = 6,
+		retrace_end     = 8,
+	}
+	testing.expect_value(t, v.crtc[0x11], u8(0x8E))
+	vga_sync_to(&v, 550)
+	testing.expect(t, !v.vertical_interrupt_pending)
+	testing.expect(t, !vga_legacy_irq_line(&v))
+	_, pending := vga_next_vertical_interrupt_ns(&v)
+	testing.expect(t, !pending)
 }

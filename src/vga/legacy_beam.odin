@@ -47,6 +47,11 @@ vga_vertical_interrupt_enabled :: proc(v: ^Vga) -> bool {
 }
 
 @(private = "package")
+vga_vertical_interrupt_armed :: proc(v: ^Vga) -> bool {
+	return v != nil && v.crtc[0x11] & VGA_CRTC11_CLEAR_VERTICAL_INTERRUPT != 0
+}
+
+@(private = "package")
 vga_refresh_legacy_irq :: proc(v: ^Vga) {
 	if v == nil {return}
 	asserted := v.vertical_interrupt_pending && vga_vertical_interrupt_enabled(v)
@@ -83,7 +88,7 @@ vga_line_crossed :: proc(v: ^Vga, old_ns, now_ns: u64, line: int) -> bool {
 
 @(private = "package")
 vga_update_vertical_interrupt :: proc(v: ^Vga, old_ns, now_ns: u64) {
-	if v == nil || !vga_vertical_interrupt_enabled(v) {return}
+	if v == nil || !vga_vertical_interrupt_enabled(v) || !vga_vertical_interrupt_armed(v) {return}
 	line := v.timing.vblank_start
 	if line <= 0 || line >= v.timing.total_lines {line = v.timing.retrace_start}
 	if vga_line_crossed(v, old_ns, now_ns, line) {vga_set_vertical_interrupt(v)}
@@ -109,6 +114,7 @@ vga_next_vertical_interrupt_ns :: proc(v: ^Vga) -> (deadline_ns: u64, pending: b
 	if v == nil ||
 	   v.vertical_interrupt_pending ||
 	   !vga_vertical_interrupt_enabled(v) ||
+	   !vga_vertical_interrupt_armed(v) ||
 	   v.timing.frame_period_ns == 0 ||
 	   v.timing.line_period_ns == 0 ||
 	   v.timing.total_lines <= 0 {
