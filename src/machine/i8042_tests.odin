@@ -153,6 +153,141 @@ test_i8042_keyboard_priority_over_auxiliary :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_i8042_host_make_recovers_stale_latched_auxiliary_byte :: proc(t: ^testing.T) {
+	lines: I8042_Test_Lines
+	k: I8042
+	i8042_test_init(&k, &lines)
+	i8042_test_command_byte(&k, 0x43)
+	i8042_test_write(&k, 0x64, 0xD4)
+	i8042_test_write(&k, 0x60, 0xF2)
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0x21))
+	testing.expect_value(t, lines.irq12_high, 1)
+
+	i8042_advance(&k, I8042_AUX_HOST_KEY_COMPAT_RECOVERY_NS)
+	i8042_key(&k, 0x1C)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0))
+	testing.expect_value(t, lines.irq12_low, 1)
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0))
+
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0x01))
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0x1C))
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0x21))
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0xFA))
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0x21))
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0x00))
+	testing.expect_value(t, lines.irq1_high, 1)
+	testing.expect_value(t, lines.irq1_low, 1)
+	testing.expect_value(t, lines.irq12_high, 3)
+	testing.expect_value(t, lines.irq12_low, 3)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0))
+}
+
+@(test)
+test_i8042_host_make_does_not_preempt_fresh_latched_auxiliary_byte :: proc(t: ^testing.T) {
+	k: I8042
+	i8042_test_init(&k)
+	i8042_test_command_byte(&k, 0x43)
+	i8042_test_write(&k, 0x64, 0xD4)
+	i8042_test_write(&k, 0x60, 0xF2)
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+
+	i8042_advance(&k, I8042_AUX_HOST_KEY_COMPAT_RECOVERY_NS - 1)
+	i8042_key(&k, 0x1C)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0x21))
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0xFA))
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0x01))
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0x1C))
+}
+
+@(test)
+test_i8042_stale_auxiliary_recovery_uses_dedicated_slot_when_queue_is_full :: proc(t: ^testing.T) {
+	k: I8042
+	i8042_test_init(&k)
+	i8042_test_command_byte(&k, 0x43)
+	i8042_test_write(&k, 0x64, 0xD4)
+	i8042_test_write(&k, 0x60, 0xF2)
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	for k.aux_queue.count < I8042_QUEUE_CAPACITY {
+		index := (k.aux_queue.head + k.aux_queue.count) % len(k.aux_queue.bytes)
+		k.aux_queue.bytes[index] = 0xA5
+		k.aux_queue.count += 1
+	}
+
+	i8042_advance(&k, I8042_AUX_HOST_KEY_COMPAT_RECOVERY_NS)
+	i8042_key(&k, 0x1C)
+	testing.expect(t, k.recovery_aux_valid)
+	testing.expect_value(t, k.aux_queue.count, I8042_QUEUE_CAPACITY)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0))
+
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0x1C))
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0xFA))
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0x00))
+}
+
+@(test)
+test_i8042_stale_auxiliary_recovery_respects_disabled_keyboard_interface :: proc(t: ^testing.T) {
+	lines: I8042_Test_Lines
+	k: I8042
+	i8042_test_init(&k, &lines)
+	i8042_test_command_byte(&k, 0x53)
+	i8042_test_write(&k, 0x64, 0xD4)
+	i8042_test_write(&k, 0x60, 0xF2)
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	i8042_advance(&k, I8042_AUX_HOST_KEY_COMPAT_RECOVERY_NS)
+
+	i8042_key(&k, 0x1C)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0x21))
+	testing.expect(t, !k.recovery_aux_valid)
+	testing.expect_value(t, lines.irq12_high, 1)
+	testing.expect_value(t, lines.irq12_low, 0)
+}
+
+@(test)
+test_i8042_repeated_make_can_trigger_stale_auxiliary_recovery :: proc(t: ^testing.T) {
+	k: I8042
+	i8042_test_init(&k)
+	i8042_test_command_byte(&k, 0x43)
+	i8042_test_write(&k, 0x64, 0xD4)
+	i8042_test_write(&k, 0x60, 0xF2)
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	i8042_key(&k, 0x1C)
+	i8042_advance(&k, I8042_AUX_HOST_KEY_COMPAT_RECOVERY_NS)
+
+	i8042_key(&k, 0x1C)
+	testing.expect(t, k.recovery_aux_valid)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0))
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0x1C))
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0xFA))
+}
+
+@(test)
+test_i8042_stale_auxiliary_recovery_schedules_without_a_mapped_key :: proc(t: ^testing.T) {
+	k: I8042
+	i8042_test_init(&k)
+	i8042_test_command_byte(&k, 0x03)
+	i8042_test_write(&k, 0x64, 0xD4)
+	i8042_test_write(&k, 0x60, 0xF2)
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	i8042_advance(&k, I8042_AUX_HOST_KEY_COMPAT_RECOVERY_NS)
+
+	i8042_key(&k, 0x54)
+	testing.expect(t, k.recovery_aux_valid)
+	i8042_advance(&k, I8042_DEVICE_BYTE_NS)
+	testing.expect_value(t, i8042_in(&k, 0x64) & 0x21, u8(0x21))
+	testing.expect_value(t, i8042_in(&k, 0x60), u8(0xFA))
+}
+
+@(test)
 test_i8042_controller_disable_holds_scancodes :: proc(t: ^testing.T) {
 	k: I8042
 	i8042_test_init(&k)

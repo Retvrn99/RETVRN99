@@ -7,6 +7,8 @@ I8042_CONTROLLER_INPUT_NS :: u64(20_000)
 I8042_DEVICE_BYTE_NS      :: u64(1_000_000)
 I8042_AUX_BYTE_NS         :: I8042_DEVICE_BYTE_NS
 I8042_HOST_KEY_BYTE_NS    :: u64(10_000_000)
+// Compatibility policy, not i8042 hardware behavior.
+I8042_AUX_HOST_KEY_COMPAT_RECOVERY_NS :: u64(50_000_000)
 I8042_QUEUE_CAPACITY      :: 128
 I8042_COMMAND_TRANSLATE   :: u8(0x40)
 
@@ -61,6 +63,8 @@ I8042 :: struct {
 	output_valid:         bool,
 	output_full:          bool,
 	output_aux:           bool,
+	recovery_aux:         u8,
+	recovery_aux_valid:   bool,
 	cmd_byte:             u8,
 	expect:               I8042_Expect,
 	pending_input:        I8042_Pending_Input,
@@ -71,6 +75,7 @@ I8042 :: struct {
 	serial_ready:         bool,
 	serial_wait_ns:       u64,
 	now_ns:               u64,
+	output_since_ns:      u64,
 	a20:                  bool,
 	a20_kbc:              bool,
 	a20_fast:             bool,
@@ -194,9 +199,11 @@ i8042_irq12_level :: proc(k: ^I8042) -> bool {return k.irq12_asserted}
 i8042_diagnostics :: proc(k: ^I8042) -> I8042_Diagnostics {
 	next, has_next := i8042_next_deadline_ns(k)
 	return {
-		queued = k.kbd_queue.count + k.aux_queue.count + (k.output_full ? 1 : 0),
+		queued =
+			k.kbd_queue.count + k.aux_queue.count + (k.recovery_aux_valid ? 1 : 0) +
+			(k.output_full ? 1 : 0),
 		keyboard_queued = k.kbd_queue.count,
-		auxiliary_queued = k.aux_queue.count,
+		auxiliary_queued = k.aux_queue.count + (k.recovery_aux_valid ? 1 : 0),
 		scheduled_key_bytes = k.host_key_queue.count,
 		output_full = k.output_full,
 		output_aux = k.output_full && k.output_aux,
@@ -247,7 +254,7 @@ i8042_set_fast_a20 :: proc(k: ^I8042, enabled: bool) -> bool {
 @(private = "file")
 i8042_eligible_device_byte :: proc(k: ^I8042) -> bool {
 	return k.cmd_byte & 0x10 == 0 && k.kbd_queue.count > 0 ||
-	       k.cmd_byte & 0x20 == 0 && k.aux_queue.count > 0
+	       k.cmd_byte & 0x20 == 0 && (k.recovery_aux_valid || k.aux_queue.count > 0)
 }
 
 @(private = "file")
@@ -263,6 +270,7 @@ i8042_set_output :: proc(k: ^I8042, value: u8, aux: bool) {
 	k.output_valid = true
 	k.output_full = true
 	k.output_aux = aux
+	k.output_since_ns = k.now_ns
 	i8042_update_irq_lines(k)
 }
 
@@ -283,6 +291,10 @@ i8042_latch_serial :: proc(k: ^I8042) {
 	ok, aux := false, false
 	if k.cmd_byte & 0x10 == 0 && k.kbd_queue.count > 0 {
 		value, ok = i8042_queue_pop(&k.kbd_queue)
+	} else if k.cmd_byte & 0x20 == 0 && k.recovery_aux_valid {
+		value, ok = k.recovery_aux, true
+		k.recovery_aux_valid = false
+		aux = true
 	} else if k.cmd_byte & 0x20 == 0 && k.aux_queue.count > 0 {
 		value, ok = i8042_queue_pop(&k.aux_queue)
 		aux = ok
@@ -706,8 +718,28 @@ i8042_advance_to :: proc(k: ^I8042, now_ns: u64) {
 }
 
 @(private = "file")
+i8042_apply_stale_aux_host_key_compat :: proc(k: ^I8042) {
+	if !k.kbd_scanning ||
+	   k.cmd_byte & 0x10 != 0 ||
+	   !k.output_full ||
+	   !k.output_aux ||
+	   k.now_ns - k.output_since_ns < I8042_AUX_HOST_KEY_COMPAT_RECOVERY_NS ||
+	   k.recovery_aux_valid {
+		return
+	}
+	k.recovery_aux = k.output
+	k.recovery_aux_valid = true
+	k.output_full = false
+	k.output_valid = false
+	k.output_aux = false
+	i8042_update_irq_lines(k)
+	i8042_schedule_serial(k)
+}
+
+@(private = "file")
 i8042_process_host_key :: proc(k: ^I8042, code: u8, extended, is_break: bool) {
 	was_held := i8042_held_set(k, code, extended, !is_break)
+	if !is_break {i8042_apply_stale_aux_host_key_compat(k)}
 	if is_break {
 		if k.repeat_active && k.repeat_code == code && k.repeat_extended == extended {k.repeat_active = false}
 	} else if was_held {
@@ -725,6 +757,7 @@ i8042_process_host_key :: proc(k: ^I8042, code: u8, extended, is_break: bool) {
 i8042_process_host_print_screen :: proc(k: ^I8042, is_break: bool) {
 	code := u8(0x37)
 	was_held := i8042_held_set(k, code, true, !is_break)
+	if !is_break {i8042_apply_stale_aux_host_key_compat(k)}
 	if !is_break && was_held {return}
 	if is_break && k.repeat_active && k.repeat_code == code && k.repeat_extended {
 		k.repeat_active = false
