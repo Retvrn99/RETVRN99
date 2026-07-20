@@ -1,0 +1,121 @@
+diff --git a/vxd_main.c b/vxd_main.c
+index e08faa8..7b0bce7 100644
+--- a/vxd_main.c
++++ b/vxd_main.c
+@@ -46,6 +46,7 @@ THE SOFTWARE.
+ #include "3d_accel.h"
+ #ifdef GSW
+ # include "gsw_transport.h"
++# include "gsw_shutdown_trace.h"
+ # include "wram.h"
+ #endif
+ 
+@@ -159,6 +160,7 @@ DWORD __stdcall virtual_int_proc(DWORD int_num, DWORD vm, PCRS_32 regs)
+ 			{
+ 				if(al == 0x13)
+ 				{
++					GSW_shutdown_marker(GSW_MARK_INT10_MODE13);
+ 					gsw_windows_hires_active = FALSE;
+ 					return 0;
+ 				}
+@@ -379,6 +381,11 @@ void __declspec(naked) VXD_control()
+ 		control_5:
+ 		cmp eax,System_Exit
+ 		jnz control_dynamic_exit
++#ifdef GSW
++			mov al,GSW_MARK_SYSTEM_EXIT
++			mov dx,80h
++			out dx,al
++#endif
+ 			pushad
+ 			push ebx ; VM handle
+ 			call Device_Exit_proc
+@@ -1248,6 +1255,7 @@ BOOL Device_Exit_proc(DWORD VM)
+ {
+ #ifdef GSW
+ 	BOOL was_hires_active = gsw_windows_hires_active;
++	GSW_shutdown_marker(GSW_MARK_DEVICE_EXIT_ENTER);
+ 
+ 	if(!gsw_device_initialized && !gsw_device_initializing)
+ 	{
+@@ -1278,6 +1286,7 @@ BOOL Device_Exit_proc(DWORD VM)
+ 	GSW_transport_release();
+ 	FBHDA_release_hw();
+ 	wram_release();
++	GSW_shutdown_marker(GSW_MARK_DEVICE_EXIT_DONE);
+ #endif
+ 
+ #ifdef SVGA
+@@ -1333,7 +1342,14 @@ DWORD service_table[SERVICE_TABLE_CNT] = {
+ void __stdcall win32_destroy_process_proc(DWORD pid)
+ {
+ 	dbg_printf("DESTROY_PROCESS: %lX\n", pid);
+ 	
++#ifdef GSW
++	GSW_shutdown_marker(GSW_MARK_DESTROY_PROCESS);
++	GSW_transport_process_cleanup(pid);
++	GSW3D_transport_process_cleanup(pid);
++	GSW_shutdown_marker(GSW_MARK_PROCESS_CLEANUP_DONE);
++#endif
++
+ #ifdef SVGA
+ 	SVGA_ProcessCleanup(pid);
+ #endif
+diff --git a/vxd_vdd.c b/vxd_vdd.c
+index 15e4b72..dc3e59a 100644
+--- a/vxd_vdd.c
++++ b/vxd_vdd.c
+@@ -56,6 +56,7 @@ extern DWORD ThisVM;
+ extern DWORD is_qemu;
+ #ifdef GSW
+ extern BOOL gsw_windows_hires_active;
++#include "gsw_shutdown_trace.h"
+ #endif
+ 
+ static DWORD hda_pm16 = 0;
+@@ -522,6 +523,7 @@ VDDPROCRET(VESA_SUPPORT, vesa_support)
+ VDDPROC(PRE_HIRES_TO_VGA, pre_hires_to_vga)
+ {
+ #ifdef GSW
++	GSW_shutdown_marker(GSW_MARK_PRE_HIRES_TO_VGA);
+ 	gsw_windows_hires_active = FALSE;
+ #endif
+ 	dbg_printf("PRE_HIRES_TO_VGA\n");
+@@ -536,6 +538,9 @@ VDDPROC(PRE_HIRES_TO_VGA, pre_hires_to_vga)
+ 
+ VDDPROC(POST_HIRES_TO_VGA, post_hires_to_vga)
+ {
++#ifdef GSW
++	GSW_shutdown_marker(GSW_MARK_POST_HIRES_TO_VGA);
++#endif
+ 	dbg_printf("POST_HIRES_TO_VGA\n");
+ 	mode_changing = FALSE;
+ 	if(is_qemu)
+@@ -548,6 +553,9 @@ VDDPROC(POST_HIRES_TO_VGA, post_hires_to_vga)
+ 
+ VDDPROC(PRE_VGA_TO_HIRES, pre_vga_to_hires)
+ {
++#ifdef GSW
++	GSW_shutdown_marker(GSW_MARK_PRE_VGA_TO_HIRES);
++#endif
+ 	dbg_printf("PRE_VGA_TO_HIRES\n");
+ 	mode_changing = TRUE;
+ 	VDD_NC;
+@@ -555,6 +563,9 @@ VDDPROC(PRE_VGA_TO_HIRES, pre_vga_to_hires)
+ 
+ VDDPROC(POST_VGA_TO_HIRES, post_vga_to_hires)
+ {
++#ifdef GSW
++	GSW_shutdown_marker(GSW_MARK_POST_VGA_TO_HIRES);
++#endif
+ 	dbg_printf("POST_VGA_TO_HIRES\n");
+ 	mode_changing = FALSE;
+ #ifdef GSW
+@@ -587,6 +598,7 @@ VDDPROC(DISABLE_TRAPS, disable_traps)
+ VDDPROC(DISPLAY_DRIVER_DISABLING, display_driver_disabling)
+ {
+ #ifdef GSW
++	GSW_shutdown_marker(GSW_MARK_DRIVER_DISABLING);
+ 	gsw_windows_hires_active = FALSE;
+ #endif
+ 	if(is_qemu)

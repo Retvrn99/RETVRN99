@@ -63,7 +63,7 @@ The final package payloads are:
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
 | `gswmini.drv` | 16,922 | `9748b9feeebfaa4b4597f63a17fd8699ddfa01bce1aba6fc8ecc8ec7542fb13d` |
-| `gswmini.vxd` | 39,277 | `1bc520b7552c926ac62186efd70193352e54a74d47a8d02937fd8eac31986f3b` |
+| `gswmini.vxd` | 39,341 | `61edea1973a7ce17fde3725d930c75495dd1ce2eeeb87fa799b8289cf534d876` |
 | `gswmini.inf` | 3,188 | `952c2a18697a363944879b64031872266505d34ac50fca7080663bfa54783dea` |
 | `gswhal9x.dll` | 46,592 | `8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38` |
 | `gswdd32.dll` | 32,256 | `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4` |
@@ -92,7 +92,8 @@ Windows owns high-resolution mode, the mini-VDD rejects BIOS standard and VBE
 mode-set probes and swallows direct Bochs VBE register access. Mode 13h remains
 available for fullscreen Win32 software renderers, and explicit VDD transitions
 release the guard. The required V86 hook has checked installation and removal,
-and a failed unhook rejects dynamic unload.
+and a failed unhook rejects dynamic unload. Per-process teardown releases all
+owned 2D surfaces and guarded 3D contexts before Windows completes driver exit.
 
 ## GSW-Sound deferred native package
 

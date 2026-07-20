@@ -5,6 +5,7 @@
 #include "vxd_lib.h"
 #include "pci.h"
 #include "gsw_transport.h"
+#include "gsw_shutdown_trace.h"
 #include "code32.h"
 
 typedef char GSWHeaderSizeCheck[(sizeof(GSWCommandHeader) == 16) ? 1 : -1];
@@ -42,6 +43,7 @@ static volatile DWORD gsw_barrier_word = 0;
 
 typedef struct GSWSurfaceRecord {
 	DWORD id;
+	DWORD owner_pid;
 	DWORD offset;
 	DWORD byte_size;
 	DWORD width;
@@ -588,7 +590,9 @@ BOOL GSW_transport_rebind(void)
 
 void GSW_transport_shutdown(void)
 {
+	GSW_shutdown_marker(GSW_MARK_TRANSPORT_WAIT);
 	if(gsw_semaphore != 0) Wait_Semaphore(gsw_semaphore, 0);
+	GSW_shutdown_marker(GSW_MARK_TRANSPORT_ACQUIRED);
 	gsw_transport_shutdown_locked();
 	if(gsw_semaphore != 0) Signal_Semaphore(gsw_semaphore);
 }
@@ -749,7 +753,7 @@ static BOOL gsw_surface_rect_valid(
 	return TRUE;
 }
 
-BOOL GSW_transport_surface_register(GSWDDRegister *request)
+BOOL GSW_transport_surface_register(GSWDDRegister *request, DWORD owner_pid)
 {
 	GSWRegisterSurfaceCommand command;
 	GSWSurfaceRecord *surface;
@@ -757,7 +761,8 @@ BOOL GSW_transport_surface_register(GSWDDRegister *request)
 	DWORD id;
 	BOOL success = FALSE;
 
-	if(request == NULL || request->cb != sizeof(*request) || !gsw_begin())
+	if(request == NULL || request->cb != sizeof(*request) || owner_pid == 0 ||
+	   !gsw_begin())
 		return FALSE;
 	if(
 	   (gsw_capabilities & GSW_VGA_CAP_SURFACE_IDS) == 0 ||
@@ -794,6 +799,7 @@ BOOL GSW_transport_surface_register(GSWDDRegister *request)
 
 	surface = &gsw_surfaces[id & 255];
 	surface->id = id;
+	surface->owner_pid = owner_pid;
 	surface->offset = request->offset;
 	surface->byte_size = request->byte_size;
 	surface->width = request->width;
@@ -806,6 +812,26 @@ BOOL GSW_transport_surface_register(GSWDDRegister *request)
 done:
 	gsw_end();
 	return success;
+}
+
+void GSW_transport_process_cleanup(DWORD owner_pid)
+{
+	GSWUnregisterSurfaceCommand command;
+	GSWSurfaceRecord *surface;
+	DWORD index;
+	if(owner_pid == 0 || !gsw_begin()) return;
+	for(index = 0; index < 256; index++)
+	{
+		surface = &gsw_surfaces[index];
+		if(surface->id == 0 || surface->owner_pid != owner_pid)
+			continue;
+		memset(&command, 0, sizeof(command));
+		command.header.opcode = GSW_VGA_OPCODE_UNREGISTER_SURFACE;
+		command.surface_id = surface->id;
+		(void)gsw_submit_locked(&command, sizeof(command));
+		memset(surface, 0, sizeof(*surface));
+	}
+	gsw_end();
 }
 
 BOOL GSW_transport_surface_unregister(DWORD surface_id)

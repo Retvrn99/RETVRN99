@@ -4,6 +4,7 @@
 #include "vmm.h"
 #include "vxd_lib.h"
 #include "gsw_transport.h"
+#include "gsw_shutdown_trace.h"
 #include "code32.h"
 
 #define GSW3D_RING_BYTES                  0x1000UL
@@ -27,8 +28,14 @@ static DWORD gsw3d_fence_high = 0;
 static DWORD gsw3d_capabilities = 0;
 static DWORD gsw3d_present_intervals = 0;
 static DWORD gsw3d_semaphore = 0;
-static DWORD gsw3d_contexts[GSW3D_CONTEXT_CAPACITY];
 static BOOL gsw3d_ready = FALSE;
+
+typedef struct GSW3DContextRecord {
+	DWORD id;
+	DWORD owner_pid;
+} GSW3DContextRecord;
+
+static GSW3DContextRecord gsw3d_contexts[GSW3D_CONTEXT_CAPACITY];
 
 static void gsw3d_result_snapshot(GSW3DResult *result, BOOL success, DWORD fence_low, DWORD fence_high)
 {
@@ -137,7 +144,7 @@ static BOOL gsw3d_context_find(DWORD context_id, DWORD *slot)
 	DWORD i;
 	for(i = 0; i < GSW3D_CONTEXT_CAPACITY; i++)
 	{
-		if(gsw3d_contexts[i] == context_id)
+		if(gsw3d_contexts[i].id == context_id)
 		{
 			if(slot != NULL) *slot = i;
 			return TRUE;
@@ -151,7 +158,7 @@ static BOOL gsw3d_context_free(DWORD *slot)
 	DWORD i;
 	for(i = 0; i < GSW3D_CONTEXT_CAPACITY; i++)
 	{
-		if(gsw3d_contexts[i] == 0)
+		if(gsw3d_contexts[i].id == 0)
 		{
 			if(slot != NULL) *slot = i;
 			return TRUE;
@@ -245,7 +252,9 @@ void GSW3D_transport_shutdown(void)
 	GSW3DIdCommand unregister_region;
 	DWORD ignored_low;
 	DWORD ignored_high;
+	GSW_shutdown_marker(GSW_MARK_3D_WAIT);
 	if(gsw3d_semaphore != 0) Wait_Semaphore(gsw3d_semaphore, 0);
+	GSW_shutdown_marker(GSW_MARK_3D_ACQUIRED);
 	if(gsw3d_ready)
 	{
 		memset(&unregister_region, 0, sizeof(unregister_region));
@@ -294,14 +303,19 @@ BOOL GSW3D_transport_query(GSW3DQuery *query)
 	return TRUE;
 }
 
-BOOL GSW3D_transport_context(BOOL create, DWORD context_id, GSW3DResult *result)
+BOOL GSW3D_transport_context(
+	BOOL create,
+	DWORD context_id,
+	DWORD owner_pid,
+	GSW3DResult *result
+)
 {
 	GSW3DIdCommand command;
 	DWORD slot;
 	DWORD fence_low = 0;
 	DWORD fence_high = 0;
 	BOOL success = FALSE;
-	if(result == NULL || context_id == 0 || !gsw3d_begin())
+	if(result == NULL || context_id == 0 || owner_pid == 0 || !gsw3d_begin())
 	{
 		gsw3d_result_unavailable(result);
 		return FALSE;
@@ -311,16 +325,46 @@ BOOL GSW3D_transport_context(BOOL create, DWORD context_id, GSW3DResult *result)
 		if(gsw3d_context_find(context_id, NULL) || !gsw3d_context_free(&slot)) goto done;
 	}
 	else if(!gsw3d_context_find(context_id, &slot)) goto done;
+	else if(gsw3d_contexts[slot].owner_pid != owner_pid) goto done;
 	memset(&command, 0, sizeof(command));
 	command.header.opcode = create ? GSW3D_OPCODE_CREATE_CONTEXT : GSW3D_OPCODE_DESTROY_CONTEXT;
 	command.id = context_id;
 	if(!gsw3d_submit_locked(&command, sizeof(command), &fence_low, &fence_high)) goto done;
-	gsw3d_contexts[slot] = create ? context_id : 0;
+	if(create)
+	{
+		gsw3d_contexts[slot].id = context_id;
+		gsw3d_contexts[slot].owner_pid = owner_pid;
+	}
+	else
+	{
+		memset(&gsw3d_contexts[slot], 0, sizeof(gsw3d_contexts[slot]));
+	}
 	success = TRUE;
 done:
 	gsw3d_result_snapshot(result, success, fence_low, fence_high);
 	gsw3d_end();
 	return success;
+}
+
+void GSW3D_transport_process_cleanup(DWORD owner_pid)
+{
+	GSW3DIdCommand command;
+	DWORD ignored_low;
+	DWORD ignored_high;
+	DWORD index;
+	if(owner_pid == 0 || !gsw3d_begin()) return;
+	for(index = 0; index < GSW3D_CONTEXT_CAPACITY; index++)
+	{
+		if(gsw3d_contexts[index].id == 0 ||
+		   gsw3d_contexts[index].owner_pid != owner_pid)
+			continue;
+		memset(&command, 0, sizeof(command));
+		command.header.opcode = GSW3D_OPCODE_DESTROY_CONTEXT;
+		command.id = gsw3d_contexts[index].id;
+		(void)gsw3d_submit_locked(&command, sizeof(command), &ignored_low, &ignored_high);
+		memset(&gsw3d_contexts[index], 0, sizeof(gsw3d_contexts[index]));
+	}
+	gsw3d_end();
 }
 
 BOOL GSW3D_transport_submit(

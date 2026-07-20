@@ -156,8 +156,9 @@ BOOL GSW_transport_copy(
 	DWORD height,
 	DWORD bpp
 );
-BOOL GSW_transport_surface_register(GSWDDRegister *request);
+BOOL GSW_transport_surface_register(GSWDDRegister *request, DWORD owner_pid);
 BOOL GSW_transport_surface_unregister(DWORD surface_id);
+void GSW_transport_process_cleanup(DWORD owner_pid);
 BOOL GSW_transport_surface_fill(const GSWDDFill *request);
 BOOL GSW_transport_surface_blt(const GSWDDBlt *request);
 BOOL GSW_transport_surface_present(DWORD surface_id);
@@ -169,7 +170,13 @@ BOOL GSW_DD_ioctl(struct DIOCParams *params, DWORD *result);
 BOOL GSW3D_transport_init(void);
 void GSW3D_transport_shutdown(void);
 BOOL GSW3D_transport_query(GSW3DQuery *query);
-BOOL GSW3D_transport_context(BOOL create, DWORD context_id, GSW3DResult *result);
+BOOL GSW3D_transport_context(
+	BOOL create,
+	DWORD context_id,
+	DWORD owner_pid,
+	GSW3DResult *result
+);
+void GSW3D_transport_process_cleanup(DWORD owner_pid);
 BOOL GSW3D_transport_submit(
 	DWORD context_id,
 	const BYTE *batch,

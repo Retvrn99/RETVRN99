@@ -29,6 +29,14 @@ function Get-SimpleFunctionBody {
 $root = Join-Path $PSScriptRoot '..\drivers\win98\derived\vmdisp9x-gsw'
 $transport = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_transport.c')
 $transport3d = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw3d_transport.c')
+$ddraw = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_ddraw.c')
+$ioctl3d = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw3d_ioctl.c')
+$header = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_transport.h')
+$shutdownTrace = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_shutdown_trace.h')
+$shutdownPatch = Get-Content -Raw -LiteralPath (
+    Join-Path $root 'patches\0010-gsw-process-shutdown.patch'
+)
+$vxdMain = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\vxd_main_gsw.c')
 $vbe = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\vxd_vbe_gsw.c')
 $pm16 = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\pm16_calls_gsw.c')
 $lifecycle = Get-Content -Raw -LiteralPath (
@@ -67,6 +75,60 @@ Assert-Match $transport 'static BOOL gsw_begin\(void\)[\s\S]+if\(!gsw_is_ready\)
 )
 Assert-Match $transport3d 'if\(!gsw3d_ready \|\| !GSW_transport_ready\(\)\)' (
     'Every 3D operation must fail closed after PCI resource drift.'
+)
+Assert-Match $vxdMain '#include "gsw_transport\.h"\r?\n#include "vxd_main\.c"' (
+    'The GSW VxD wrapper must include the transport contract before vxd_main can call cleanup helpers.'
+)
+Assert-Match $header 'void GSW_transport_process_cleanup\(DWORD owner_pid\);' (
+    'The 2D transport must expose per-process cleanup to the VxD lifecycle hook.'
+)
+Assert-Match $header 'void GSW3D_transport_process_cleanup\(DWORD owner_pid\);' (
+    'The 3D transport must expose per-process cleanup to the VxD lifecycle hook.'
+)
+Assert-Match $ddraw 'GSW_transport_surface_register\(&output\.registration,\s*params->tagProcess\);' (
+    'DirectDraw surface registration must tag resources with DIOCParams.tagProcess.'
+)
+Assert-Match $transport 'typedef struct GSWSurfaceRecord \{[\s\S]+DWORD owner_pid;' (
+    '2D surface records must carry process ownership.'
+)
+Assert-Match $transport 'BOOL GSW_transport_surface_register\(GSWDDRegister \*request, DWORD owner_pid\)' (
+    '2D surface registration must receive the caller process tag.'
+)
+Assert-Match $transport 'surface->owner_pid = owner_pid;' (
+    '2D surface registration must persist the caller process tag.'
+)
+Assert-Match $transport 'void GSW_transport_process_cleanup\(DWORD owner_pid\)[\s\S]+surface->owner_pid != owner_pid[\s\S]+GSW_VGA_OPCODE_UNREGISTER_SURFACE[\s\S]+memset\(surface, 0, sizeof\(\*surface\)\);' (
+    '2D process cleanup must unregister and reclaim only surfaces owned by the exiting process.'
+)
+Assert-Match $ioctl3d 'GSW3D_transport_context\([\s\S]+input\.context\.context_id,\s*params->tagProcess,' (
+    '3D context creation must tag resources with DIOCParams.tagProcess.'
+)
+Assert-Match $transport3d 'typedef struct GSW3DContextRecord \{[\s\S]+DWORD id;[\s\S]+DWORD owner_pid;' (
+    '3D context records must carry process ownership.'
+)
+Assert-Match $transport3d 'BOOL GSW3D_transport_context\([\s\S]+DWORD owner_pid' (
+    '3D context creation and destruction must receive the caller process tag.'
+)
+Assert-Match $transport3d 'gsw3d_contexts\[slot\]\.owner_pid = owner_pid;' (
+    '3D context creation must persist the caller process tag.'
+)
+Assert-Match $transport3d 'gsw3d_contexts\[slot\]\.owner_pid != owner_pid' (
+    'Explicit 3D context destroy must not tear down another process owner.'
+)
+Assert-Match $transport3d 'void GSW3D_transport_process_cleanup\(DWORD owner_pid\)[\s\S]+gsw3d_contexts\[index\]\.owner_pid != owner_pid[\s\S]+GSW3D_OPCODE_DESTROY_CONTEXT[\s\S]+memset\(&gsw3d_contexts\[index\], 0' (
+    '3D process cleanup must destroy and reclaim only contexts owned by the exiting process.'
+)
+Assert-Match $shutdownPatch 'win32_destroy_process_proc\(DWORD pid\)[\s\S]+GSW_transport_process_cleanup\(pid\);[\s\S]+GSW3D_transport_process_cleanup\(pid\);' (
+    'The process-destroy lifecycle hook must reclaim both 2D and 3D GSW resources.'
+)
+Assert-Match $shutdownTrace 'GSW_MARK_DRIVER_DISABLING\s+0xD5[\s\S]+GSW_MARK_SYSTEM_EXIT\s+0xD6[\s\S]+GSW_MARK_DEVICE_EXIT_DONE\s+0xDC' (
+    'The shutdown marker contract must distinguish display disable, System_Exit, and completed teardown.'
+)
+Assert-Match $transport 'GSW_MARK_TRANSPORT_WAIT[\s\S]+Wait_Semaphore\(gsw_semaphore, 0\);[\s\S]+GSW_MARK_TRANSPORT_ACQUIRED' (
+    'The 2D shutdown semaphore must have before and after markers.'
+)
+Assert-Match $transport3d 'GSW_MARK_3D_WAIT[\s\S]+Wait_Semaphore\(gsw3d_semaphore, 0\);[\s\S]+GSW_MARK_3D_ACQUIRED' (
+    'The 3D shutdown semaphore must have before and after markers.'
 )
 Assert-Match $vbe 'old_framebuffer != framebuffer \|\| old_framebuffer_bytes != framebuffer_bytes[\s\S]+!update_pm16\(ThisVM, hda->vram_pm16[\s\S]+return FALSE;[\s\S]+hda->vram_pm32 = framebuffer;' (
     'A changed Win16 framebuffer selector must update successfully before HDA publication.'
@@ -182,3 +244,4 @@ Write-Host 'PASS GSW-VGA Win16 enable refreshes a dynamically reloaded mini-VDD 
 Write-Host 'PASS GSW-VGA physical enable avoids a redundant destructive transport rebind.'
 Write-Host 'PASS GSW-VGA blocks PnP BIOS mode sets while preserving explicit VGA transitions.'
 Write-Host 'PASS GSW-VGA installs and removes its V86 INT 10h hook with fail-closed unload semantics.'
+Write-Host 'PASS GSW-VGA DirectDraw and 3D resources carry process ownership for lifecycle cleanup.'

@@ -151,7 +151,7 @@ BOOL GSW_DD_ioctl(struct DIOCParams *params, DWORD *result)
 			output.registration = input.registration;
 			output.registration.surface_id = 0;
 			if(output.registration.cb == sizeof(output.registration))
-				GSW_transport_surface_register(&output.registration);
+				GSW_transport_surface_register(&output.registration, params->tagProcess);
 			break;
 		case GSW_DD_IOCTL_UNREGISTER:
 			if(input.unregister_request.cb == sizeof(input.unregister_request))

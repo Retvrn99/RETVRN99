@@ -3,6 +3,6 @@
 package_id	source_relative_path	destination_relative_path	kind	sha256	bytes	hardware_id	run_once_order
 gsw-vga	vmdisp9x-gsw\gswmini.inf	GSW-VGA\gswmini.inf	INF	952c2a18697a363944879b64031872266505d34ac50fca7080663bfa54783dea	3188	PCI\VEN_FFFE&DEV_0002	0
 gsw-vga	vmdisp9x-gsw\gswmini.drv	GSW-VGA\gswmini.drv	Binary	9748b9feeebfaa4b4597f63a17fd8699ddfa01bce1aba6fc8ecc8ec7542fb13d	16922	PCI\VEN_FFFE&DEV_0002	0
-gsw-vga	vmdisp9x-gsw\gswmini.vxd	GSW-VGA\gswmini.vxd	Binary	1bc520b7552c926ac62186efd70193352e54a74d47a8d02937fd8eac31986f3b	39277	PCI\VEN_FFFE&DEV_0002	0
+gsw-vga	vmdisp9x-gsw\gswmini.vxd	GSW-VGA\gswmini.vxd	Binary	61edea1973a7ce17fde3725d930c75495dd1ce2eeeb87fa799b8289cf534d876	39341	PCI\VEN_FFFE&DEV_0002	0
 gsw-vga	vmhal9x-gsw\gswhal9x.dll	GSW-VGA\gswhal9x.dll	Binary	8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38	46592	PCI\VEN_FFFE&DEV_0002	0
 gsw-vga	vmhal9x-gsw\gswdd32.dll	GSW-VGA\gswdd32.dll	Binary	bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4	32256	PCI\VEN_FFFE&DEV_0002	0

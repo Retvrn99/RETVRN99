@@ -159,6 +159,7 @@ BOOL GSW3D_ioctl(struct DIOCParams *params, DWORD *result)
 				(void)GSW3D_transport_context(
 					params->dwIoControlCode == GSW3D_IOCTL_CONTEXT_CREATE,
 					input.context.context_id,
+					params->tagProcess,
 					&output
 				);
 			memcpy((void *)params->lpOutBuffer, &output, sizeof(output));
