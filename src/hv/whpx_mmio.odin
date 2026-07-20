@@ -44,7 +44,7 @@ whpx_mmio_rep_movs_registers :: proc(
 		true
 }
 
-// WHPX rejects REP MOVS when a Win9x segment base wraps the destination to VGA memory.
+// WHPX rejects REP MOVS when a Win9x segment base wraps an operand to VGA memory.
 whpx_try_mmio_rep_movs :: proc(
 	vm: ^Vm,
 	vp: ^WHV_VP_EXIT_CONTEXT,
@@ -56,7 +56,6 @@ whpx_try_mmio_rep_movs :: proc(
 	if vm == nil ||
 	   vp == nil ||
 	   mmio == nil ||
-	   mmio.AccessInfo & 1 == 0 ||
 	   mmio.InstructionByteCount < 2 ||
 	   mmio.InstructionBytes[0] != 0xF3 ||
 	   (mmio.InstructionBytes[1] != 0xA4 && mmio.InstructionBytes[1] != 0xA5) ||
@@ -82,6 +81,7 @@ whpx_try_mmio_rep_movs :: proc(
 	initial_remaining := remaining
 	limit := whpx_io_iteration_budget(vm, initial_remaining)
 	user := vp.Cs.Selector & 3 == 3
+	intercept_write := mmio.AccessInfo & 1 != 0
 	source_cache, destination_cache: Whpx_IO_Translation_Cache
 	completed: u64
 	vm.mmio_string_fallbacks += 1
@@ -183,13 +183,23 @@ whpx_try_mmio_rep_movs :: proc(
 		byte_count := page_elements * u64(size)
 		source_gpa := source_gpas[0]
 		destination_gpa := destination_gpas[0]
-		if completed == 0 && destination_gpa != mmio.Gpa {return false, false, ""}
-		if !whpx_io_ram_span_available(vm, source_gpa, byte_count) ||
-		   !whpx_mmio_reserved_span_available(vm, destination_gpa, byte_count) {
-			return false, false, ""
+		if intercept_write {
+			if !whpx_io_ram_span_available(vm, source_gpa, byte_count) ||
+			   !whpx_mmio_reserved_span_available(vm, destination_gpa, byte_count) ||
+			   completed == 0 && destination_gpa != mmio.Gpa {
+				return false, false, ""
+			}
+			data := vm.ram[int(source_gpa):int(source_gpa + byte_count)]
+			if vm.mmio != nil {vm.mmio(vm.io_ctx, destination_gpa, true, data)}
+		} else {
+			if !whpx_mmio_reserved_span_available(vm, source_gpa, byte_count) ||
+			   !whpx_io_ram_span_available(vm, destination_gpa, byte_count) ||
+			   completed == 0 && source_gpa != mmio.Gpa {
+				return false, false, ""
+			}
+			data := vm.ram[int(destination_gpa):int(destination_gpa + byte_count)]
+			if vm.mmio != nil {vm.mmio(vm.io_ctx, source_gpa, false, data)}
 		}
-		data := vm.ram[int(source_gpa):int(source_gpa + byte_count)]
-		if vm.mmio != nil {vm.mmio(vm.io_ctx, destination_gpa, true, data)}
 		vm.mmio_string_chunks += 1
 		vm.mmio_string_elements += page_elements
 

@@ -9,6 +9,7 @@ org 0x7C00
 %define PAGE_DIRECTORY 0x00090000
 %define PAGE_TABLE     0x00091000
 %define SOURCE_BUFFER  0x00020000
+%define READBACK_BUFFER 0x00030000
 
 ; Match WinQuake's WinDirect selector wrap and 320x200 scanline copy.
 
@@ -90,10 +91,35 @@ protected_entry:
     jne fail_copy
     cmp edi, 0x7D109000 + 64000
     jne fail_copy
+
+    mov ax, 0x18
+    mov ds, ax
+    mov esi, 0x7D109128
+    mov ax, 0x10
+    mov es, ax
+    mov edi, READBACK_BUFFER
+    mov ecx, 80
+    xor eax, eax
+    call copy_from_vga
+    mov ax, 0x10
+    mov ds, ax
+    mov esi, READBACK_BUFFER
+    mov ecx, 320
+.verify_readback:
+    cmp byte [esi], 0xA5
+    jne fail_copy
+    inc esi
+    loop .verify_readback
     TEST_EXIT 0
 
 fail_copy:
     TEST_EXIT 1
+
+copy_from_vga:
+    rep movsd
+    mov cl, al
+    rep movsb
+    ret
 
 align 8
 gdt:

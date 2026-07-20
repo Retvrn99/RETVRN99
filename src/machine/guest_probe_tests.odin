@@ -276,10 +276,13 @@ test_guest_probe_paged_rep_movsd_copies_to_vga_aperture :: proc(t: ^testing.T) {
 	m.vm.io_string_budget = guest_probe_full_rep_string_budget
 
 	if !testing.expect(t, guest_probe_run(m, 12 * time.Second)) {return}
-	testing.expect_value(t, m.vm.mmio_string_fallbacks, u64(200))
-	testing.expect_value(t, m.vm.mmio_string_chunks, u64(212))
-	testing.expect_value(t, m.vm.mmio_string_elements, u64(16000))
+	testing.expect_value(t, m.vm.mmio_string_fallbacks, u64(201))
+	testing.expect_value(t, m.vm.mmio_string_chunks, u64(213))
+	testing.expect_value(t, m.vm.mmio_string_elements, u64(16080))
 	for value in video.vga_vram(&m.vga)[:64000] {
+		testing.expect_value(t, value, u8(0xA5))
+	}
+	for value in m.vm.ram[0x30000:0x30140] {
 		testing.expect_value(t, value, u8(0xA5))
 	}
 }
