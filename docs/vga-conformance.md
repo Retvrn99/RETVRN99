@@ -99,7 +99,7 @@ not implicit capability claims.
 | Chain-4 and odd/even addressing combinations | IBM 2-24 to 2-34 and 2-54 | Partial | Main combinations exist; exhaustive boundary/wrap matrix is incomplete | Expanded transaction tests required |
 | Multi-byte aperture transactions preserve byte-cycle VGA semantics | IBM memory data flow | Missing | Machine currently invokes VGA once per byte | Slice Interface tests required |
 | CGA 16 KiB page/address wrapping | IBM CGA compatibility modes | Partial | Dedicated CGA persona exists; full wrap matrix is unproven | Public-port CGA tests required |
-| Text modes 40/80 columns and 25/43/50 rows | IBM BIOS modes and font services | Partial | Pixel renderer derives geometry; `Text_Snapshot` is fixed at 80x25 | Snapshot and host-render tests required |
+| Text modes 40/80 columns and 25/43/50 rows | IBM BIOS modes and font services | Conformant | `src/vga/scanout.odin`, `src/host/render.odin` | `vga_test_text_snapshot_variable_geometry`, `host_test_render_snapshot_uses_snapshot_geometry` |
 | Text underline, monochrome attributes, blink, line graphics, and cursor shape | IBM 2-15 to 2-17 and CRTC/Attribute sections | Partial | Blink and line graphics partly exist; underline/mono/cursor edge behavior is incomplete | Text conformance matrix required |
 | Planar 16-color scanout | IBM modes 0Dh-12h | Conformant | `src/vga/scanout.odin` | Mode and planar scanout tests |
 | Chain-4 256-color mode 13h scanout | IBM mode 13h | Conformant | `src/vga/scanout.odin` | Full-size mode 13h test |
@@ -107,7 +107,7 @@ not implicit capability claims.
 | Start address, byte pan, PEL pan, and line-compare split | IBM 2-95 and 2-102 to 2-103 | Partial | Core paths exist; mode-specific and deferred proofs are incomplete | Combined public-port tests required |
 | Horizontal/vertical overscan and blank output | IBM 2-13 and 2-57 to 2-73 | Missing | Active image only | Border/blank frame tests required |
 | Scanline-ordered register, palette, and aperture changes | IBM programming considerations | Missing | Deferred production path discards raster changes | Descriptor journal tests required |
-| Descriptor contains only explicit raw scanout state | ADR 0001 and `CONTEXT.md` | Missing | Descriptor shallow-copies the complete `Vga` Implementation | Ownership and mailbox tests required |
+| Descriptor contains only explicit raw scanout state | ADR 0001 and `CONTEXT.md` | Conformant | `src/vga/scanout_descriptor.odin` | `scanout_descriptor_test_uses_explicit_state_without_source_vga_lifetime` |
 
 ## BIOS mode contracts
 

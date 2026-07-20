@@ -2386,7 +2386,7 @@ console_main :: proc(
 					fmt.println("Windows 98: desktop marker has continuous graphical output")
 				}
 			}
-			if !shown || snap.cells != prev.cells {
+			if !shown || !vga.text_snapshot_equal(&snap, &prev) {
 				prev = snap
 				shown = true
 				fmt.printfln("[%.0fs]", time.duration_seconds(time.tick_diff(start, now)))
@@ -2648,19 +2648,27 @@ publish_install_recovery_state :: proc(s: ^Shared, recovery_required: bool) {
 }
 
 print_grid :: proc(snap: vga.Text_Snapshot) {
-	border := "vga: +--------------------------------------------------------------------------------+"
-	fmt.println(border)
-	for row in 0 ..< 25 {
-		buf: [80]u8
-		for col in 0 ..< 80 {
-			ch := u8(snap.cells[row * 80 + col])
+	snapshot := snap
+	columns := vga.text_snapshot_columns(&snapshot)
+	rows := vga.text_snapshot_rows(&snapshot)
+	fmt.print("vga: +")
+	for _ in 0 ..< columns {fmt.print("-")}
+	fmt.println("+")
+	for row in 0 ..< rows {
+		buf: [vga.TEXT_SNAPSHOT_MAX_COLUMNS]u8
+		for col in 0 ..< columns {
+			ch := u8(snapshot.cells[vga.text_snapshot_cell_index(&snapshot, row, col)])
 			buf[col] = ch >= 0x20 && ch < 0x7F ? ch : ' '
 		}
-		fmt.printfln("vga: |%s|", string(buf[:]))
+		fmt.printfln("vga: |%s|", string(buf[:columns]))
 	}
-	fmt.println(border)
+	fmt.print("vga: +")
+	for _ in 0 ..< columns {fmt.print("-")}
+	fmt.println("+")
 	fmt.printfln(
-		"vga: cursor row=%d col=%d on=%v",
+		"vga: %dx%d cursor row=%d col=%d on=%v",
+		columns,
+		rows,
 		snap.cursor_row,
 		snap.cursor_col,
 		snap.cursor_on,

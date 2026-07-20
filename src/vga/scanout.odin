@@ -8,14 +8,24 @@ package vga
 vga_text_snapshot :: proc(v: ^Vga) -> Text_Snapshot {
 	snapshot: Text_Snapshot
 	if v.vram == nil {return snapshot}
+	kind, width, height := display_geometry(v)
+	if kind != .Text || width <= 0 || height <= 0 {return snapshot}
+	character_width := v.cga.active ? 8 : (v.seq[1] & 1 != 0 ? 8 : 9)
+	character_height := max(int(v.crtc[9] & 0x1F) + 1, 1)
+	columns := clamp(width / max(character_width, 1), 1, TEXT_SNAPSHOT_MAX_COLUMNS)
+	rows := clamp(height / character_height, 1, TEXT_SNAPSHOT_MAX_ROWS)
+	snapshot.columns = columns
+	snapshot.rows = rows
+	snapshot.cell_count = columns * rows
 	start := int(display_start(v))
-	pitch := int(v.crtc[0x13]) * 2
-	for row in 0 ..< 25 {
-		for column in 0 ..< 80 {
+	pitch := v.cga.active ? columns : int(v.crtc[0x13]) * 2
+	if pitch <= 0 {pitch = columns}
+	for row in 0 ..< rows {
+		for column in 0 ..< columns {
 			cell := (start + row * pitch + column) & 0x3fff
 			character := plane_byte(v, 0, cell)
 			attribute := plane_byte(v, 1, cell)
-			snapshot.cells[row * 80 + column] = u16(character) | u16(attribute) << 8
+			snapshot.cells[row * columns + column] = u16(character) | u16(attribute) << 8
 		}
 	}
 	cursor := int(v.crtc[0x0E]) << 8 | int(v.crtc[0x0F])
@@ -28,9 +38,9 @@ vga_text_snapshot :: proc(v: ^Vga) -> Text_Snapshot {
 		pitch > 0 &&
 		v.crtc[0x0A] & 0x20 == 0 &&
 		snapshot.cursor_row >= 0 &&
-		snapshot.cursor_row < 25 &&
+		snapshot.cursor_row < rows &&
 		snapshot.cursor_col >= 0 &&
-		snapshot.cursor_col < 80
+		snapshot.cursor_col < columns
 	return snapshot
 }
 

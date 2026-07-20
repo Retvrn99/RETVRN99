@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
+import "../vga"
 import "core:image/png"
 import "core:testing"
-import "../vga"
 import sdl3 "vendor:sdl3"
 
 @(test)
@@ -58,8 +58,11 @@ host_test_cursor_rect :: proc(t: ^testing.T) {
 @(test)
 host_test_render_snapshot :: proc(t: ^testing.T) {
 	snap: vga.Text_Snapshot
-	snap.cells[0] = u16('A') | 0x1E << 8      // yellow on blue
-	snap.cells[1] = u16(' ') | 0x07 << 8      // gray on black
+	snap.columns = TEXT_COLS
+	snap.rows = TEXT_ROWS
+	snap.cell_count = TEXT_COLS * TEXT_ROWS
+	snap.cells[0] = u16('A') | 0x1E << 8 // yellow on blue
+	snap.cells[1] = u16(' ') | 0x07 << 8 // gray on black
 	snap.cursor_row = 0
 	snap.cursor_col = 1
 	snap.cursor_on = true
@@ -85,6 +88,25 @@ host_test_render_snapshot :: proc(t: ^testing.T) {
 }
 
 @(test)
+host_test_render_snapshot_uses_snapshot_geometry :: proc(t: ^testing.T) {
+	snap: vga.Text_Snapshot
+	snap.columns = 2
+	snap.rows = 1
+	snap.cell_count = 2
+	snap.cells[0] = u16('A') | 0x1E << 8
+	snap.cells[1] = u16(' ') | 0x07 << 8
+	width, height := snapshot_pixel_size(&snap)
+	testing.expect_value(t, width, 2 * CELL_W)
+	testing.expect_value(t, height, CELL_H)
+
+	buf := make([]u32, width * height)
+	defer delete(buf)
+	render_snapshot(buf[:], width, &snap)
+	testing.expect_value(t, buf[7 * width], u32(0xFFFFFF55))
+	testing.expect_value(t, buf[0 * width + CELL_W], u32(0xFF000000))
+}
+
+@(test)
 host_test_stopped_screen_uses_the_client_area :: proc(t: ^testing.T) {
 	screen := stopped_screen_rect(
 		WIN_W,
@@ -103,7 +125,10 @@ host_test_stopped_screen_uses_the_client_area :: proc(t: ^testing.T) {
 
 @(test)
 host_test_stopped_screen_follows_the_collapsed_sidebar :: proc(t: ^testing.T) {
-	h := Host{menu_reveal = 1, sidebar_collapsed = true}
+	h := Host {
+		menu_reveal       = 1,
+		sidebar_collapsed = true,
+	}
 	screen := stopped_screen_rect(WIN_W, WIN_H, host_client_insets(&h))
 	testing.expect_value(
 		t,

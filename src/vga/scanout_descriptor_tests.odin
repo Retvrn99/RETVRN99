@@ -26,7 +26,30 @@ scanout_descriptor_test_captures_active_vram_and_renders_later :: proc(t: ^testi
 }
 
 @(test)
-scanout_descriptor_test_deferred_source_tracks_raster_mode_without_rendering :: proc(t: ^testing.T) {
+scanout_descriptor_test_uses_explicit_state_without_source_vga_lifetime :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	testing.expect(t, test_set_vbe_mode(&v, 1, 1, 8))
+	v.vram[0] = 3
+	v.dac[9], v.dac[10], v.dac[11] = 0x3F, 0, 0
+	vga_note_content_change(&v)
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	testing.expect(t, scanout_descriptor_capture(&descriptor, &v))
+	vga_destroy(&v)
+
+	frame := scanout_descriptor_render(&descriptor)
+	testing.expect(t, frame != nil)
+	testing.expect_value(t, frame.kind, Display_Kind.Indexed_8)
+	testing.expect_value(t, frame.pixels[0], u32(0xFFFF0000))
+}
+
+@(test)
+scanout_descriptor_test_deferred_source_tracks_raster_mode_without_rendering :: proc(
+	t: ^testing.T,
+) {
 	v: Vga
 	backing := test_vga_init(t, &v)
 	defer delete(backing)

@@ -256,6 +256,8 @@ vga_test_text_snapshot_uses_crtc_offset :: proc(t: ^testing.T) {
 	v.crtc[0x0e] = 0
 	v.crtc[0x0f] = 90
 	snapshot := vga_text_snapshot(&v)
+	testing.expect_value(t, snapshot.columns, 80)
+	testing.expect_value(t, snapshot.rows, 25)
 	testing.expect_value(t, snapshot.cells[80], u16(0x1e58))
 	testing.expect_value(t, snapshot.cursor_row, 1)
 	testing.expect_value(t, snapshot.cursor_col, 0)

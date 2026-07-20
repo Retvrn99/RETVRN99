@@ -25,11 +25,58 @@ Display_Kind :: enum {
 	Xrgb_8888,
 }
 
+TEXT_SNAPSHOT_DEFAULT_COLUMNS :: 80
+TEXT_SNAPSHOT_DEFAULT_ROWS :: 25
+TEXT_SNAPSHOT_MAX_COLUMNS :: 80
+TEXT_SNAPSHOT_MAX_ROWS :: 50
+
 Text_Snapshot :: struct {
-	cells:      [80 * 25]u16,
+	columns:    int,
+	rows:       int,
+	cell_count: int,
+	cells:      [TEXT_SNAPSHOT_MAX_COLUMNS * TEXT_SNAPSHOT_MAX_ROWS]u16,
 	cursor_row: int,
 	cursor_col: int,
 	cursor_on:  bool,
+}
+
+text_snapshot_columns :: proc(snapshot: ^Text_Snapshot) -> int {
+	if snapshot == nil || snapshot.columns <= 0 {return TEXT_SNAPSHOT_DEFAULT_COLUMNS}
+	return clamp(snapshot.columns, 1, TEXT_SNAPSHOT_MAX_COLUMNS)
+}
+
+text_snapshot_rows :: proc(snapshot: ^Text_Snapshot) -> int {
+	if snapshot == nil || snapshot.rows <= 0 {return TEXT_SNAPSHOT_DEFAULT_ROWS}
+	return clamp(snapshot.rows, 1, TEXT_SNAPSHOT_MAX_ROWS)
+}
+
+text_snapshot_cell_count :: proc(snapshot: ^Text_Snapshot) -> int {
+	if snapshot == nil {return TEXT_SNAPSHOT_DEFAULT_COLUMNS * TEXT_SNAPSHOT_DEFAULT_ROWS}
+	if snapshot.cell_count > 0 {
+		return clamp(snapshot.cell_count, 0, TEXT_SNAPSHOT_MAX_COLUMNS * TEXT_SNAPSHOT_MAX_ROWS)
+	}
+	return text_snapshot_columns(snapshot) * text_snapshot_rows(snapshot)
+}
+
+text_snapshot_cell_index :: proc(snapshot: ^Text_Snapshot, row, column: int) -> int {
+	return row * text_snapshot_columns(snapshot) + column
+}
+
+text_snapshot_equal :: proc(a, b: ^Text_Snapshot) -> bool {
+	if a == nil || b == nil {return a == b}
+	if a.columns != b.columns ||
+	   a.rows != b.rows ||
+	   a.cell_count != b.cell_count ||
+	   a.cursor_row != b.cursor_row ||
+	   a.cursor_col != b.cursor_col ||
+	   a.cursor_on != b.cursor_on {
+		return false
+	}
+	count := max(text_snapshot_cell_count(a), text_snapshot_cell_count(b))
+	for i in 0 ..< count {
+		if a.cells[i] != b.cells[i] {return false}
+	}
+	return true
 }
 
 Display_Frame :: struct {

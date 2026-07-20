@@ -14,6 +14,9 @@ vga_test_text_snapshot_and_guest_font :: proc(t: ^testing.T) {
 	v.crtc[0x0E] = 0
 	v.crtc[0x0F] = 0
 	snapshot := vga_text_snapshot(&v)
+	testing.expect_value(t, snapshot.columns, 80)
+	testing.expect_value(t, snapshot.rows, 25)
+	testing.expect_value(t, snapshot.cell_count, 80 * 25)
 	testing.expect_value(t, snapshot.cells[0], u16(0x0741))
 	testing.expect(t, snapshot.cursor_on)
 	frame := vga_display_frame(&v)
@@ -23,6 +26,52 @@ vga_test_text_snapshot_and_guest_font :: proc(t: ^testing.T) {
 	testing.expect_value(t, frame.aspect_width, 4)
 	testing.expect_value(t, frame.aspect_height, 3)
 	testing.expect(t, frame.pixels[0] != frame.pixels[1])
+}
+
+@(test)
+vga_test_text_snapshot_variable_geometry :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	v.gfx[6] = 0x0E
+	v.attr[0x10] = 0
+	v.seq[1] = 1
+	v.crtc[0x01] = 39
+	v.crtc[0x09] = 0x0F
+	v.crtc[0x13] = 20
+	v.timing.visible_dots = 320
+	v.timing.visible_lines = 400
+	set_plane_byte(&v, 0, 40, 'R')
+	set_plane_byte(&v, 1, 40, 0x1E)
+	v.crtc[0x0E] = 0
+	v.crtc[0x0F] = 40
+	snapshot := vga_text_snapshot(&v)
+	testing.expect_value(t, snapshot.columns, 40)
+	testing.expect_value(t, snapshot.rows, 25)
+	testing.expect_value(t, snapshot.cell_count, 40 * 25)
+	testing.expect_value(t, snapshot.cells[40], u16(0x1E52))
+	testing.expect_value(t, snapshot.cursor_row, 1)
+	testing.expect_value(t, snapshot.cursor_col, 0)
+
+	v.crtc[0x01] = 79
+	v.crtc[0x09] = 0x07
+	v.crtc[0x13] = 40
+	v.timing.visible_dots = 640
+	v.timing.visible_lines = 400
+	set_plane_byte(&v, 0, 80 * 49, 'Z')
+	set_plane_byte(&v, 1, 80 * 49, 0x2F)
+	snapshot = vga_text_snapshot(&v)
+	testing.expect_value(t, snapshot.columns, 80)
+	testing.expect_value(t, snapshot.rows, 50)
+	testing.expect_value(t, snapshot.cell_count, 80 * 50)
+	testing.expect_value(t, snapshot.cells[80 * 49], u16(0x2F5A))
+
+	v.timing.visible_lines = 350
+	snapshot = vga_text_snapshot(&v)
+	testing.expect_value(t, snapshot.columns, 80)
+	testing.expect_value(t, snapshot.rows, 43)
+	testing.expect_value(t, snapshot.cell_count, 80 * 43)
 }
 
 test_graphics_geometry :: proc(v: ^Vga, dots, lines: int) {
@@ -65,11 +114,11 @@ vga_test_mode_x_scanout :: proc(t: ^testing.T) {
 	defer vga_destroy(&v)
 	test_graphics_geometry(&v, 8, 1)
 	v.gfx[5] = 0x40
-	for p in 0 ..< 4 { set_plane_byte(&v, p, 0, u8(p + 1)) }
+	for p in 0 ..< 4 {set_plane_byte(&v, p, 0, u8(p + 1))}
 	frame := vga_display_frame(&v)
 	testing.expect_value(t, frame.kind, Display_Kind.Indexed_8)
 	testing.expect_value(t, frame.width, 4)
-	for x in 1 ..< 4 { testing.expect(t, frame.pixels[x] != frame.pixels[x - 1]) }
+	for x in 1 ..< 4 {testing.expect(t, frame.pixels[x] != frame.pixels[x - 1])}
 }
 
 @(test)
@@ -147,17 +196,17 @@ vga_test_mid_frame_palette_change_preserves_completed_line :: proc(t: ^testing.T
 	defer delete(backing)
 	defer vga_destroy(&v)
 	testing.expect(t, test_set_vbe_mode(&v, 2, 2, 8))
-	for i in 0 ..< 4 { v.vram[i] = 1 }
+	for i in 0 ..< 4 {v.vram[i] = 1}
 	old_color := u32(0xFF0000AA)
 	v.timing = Video_Timing {
 		frame_period_ns = 4_000_000,
-		line_period_ns = 1_000_000,
-		total_lines = 4,
-		visible_lines = 2,
-		visible_dots = 2,
-		total_dots = 4,
-		retrace_start = 2,
-		retrace_end = 3,
+		line_period_ns  = 1_000_000,
+		total_lines     = 4,
+		visible_lines   = 2,
+		visible_dots    = 2,
+		total_dots      = 4,
+		retrace_start   = 2,
+		retrace_end     = 3,
 	}
 	vga_sync_to(&v, 500_000)
 	vga_begin_raster_change(&v, 500_000)

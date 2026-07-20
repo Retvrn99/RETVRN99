@@ -44,11 +44,17 @@ cursor_px_rect :: proc(row, col: int) -> (x, y, w, h: int) {
 	return col * CELL_W, row * CELL_H + CURSOR_TOP, CELL_W, CURSOR_LINES
 }
 
-// Pure rasterizer: 80x25 cells into a TEXT_W x TEXT_H ARGB buffer.
+snapshot_pixel_size :: proc(snap: ^vga.Text_Snapshot) -> (width, height: int) {
+	return vga.text_snapshot_columns(snap) * CELL_W, vga.text_snapshot_rows(snap) * CELL_H
+}
+
+// Pure rasterizer: text snapshot cells into an ARGB buffer sized by snapshot_pixel_size.
 render_snapshot :: proc(pixels: []u32, pitch_px: int, snap: ^vga.Text_Snapshot) {
-	for r in 0 ..< TEXT_ROWS {
-		for cc in 0 ..< TEXT_COLS {
-			cell := snap.cells[r * TEXT_COLS + cc]
+	columns := vga.text_snapshot_columns(snap)
+	rows := vga.text_snapshot_rows(snap)
+	for r in 0 ..< rows {
+		for cc in 0 ..< columns {
+			cell := snap.cells[vga.text_snapshot_cell_index(snap, r, cc)]
 			ch := u8(cell)
 			fg, bg := attr_colors(u8(cell >> 8))
 			for y in 0 ..< CELL_H {
@@ -62,10 +68,10 @@ render_snapshot :: proc(pixels: []u32, pitch_px: int, snap: ^vga.Text_Snapshot) 
 	// steady underline cursor
 	if snap.cursor_on &&
 	   snap.cursor_row >= 0 &&
-	   snap.cursor_row < TEXT_ROWS &&
+	   snap.cursor_row < rows &&
 	   snap.cursor_col >= 0 &&
-	   snap.cursor_col < TEXT_COLS {
-		cell := snap.cells[snap.cursor_row * TEXT_COLS + snap.cursor_col]
+	   snap.cursor_col < columns {
+		cell := snap.cells[vga.text_snapshot_cell_index(snap, snap.cursor_row, snap.cursor_col)]
 		fg, _ := attr_colors(u8(cell >> 8))
 		x, y, w, h := cursor_px_rect(snap.cursor_row, snap.cursor_col)
 		for yy in y ..< y + h {
@@ -210,13 +216,15 @@ host_clear_frame :: proc(h: ^Host) {
 // Upload the rasterized grid at 2x below the menu bar without presenting:
 // the GUI draws ImGui on top first.
 render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
+	width, height := snapshot_pixel_size(snap)
+	if !host_ensure_texture(h, width, height) {return}
 	raw: rawptr
 	pitch: c.int
 	if !sdl3.LockTexture(h.tex, nil, &raw, &pitch) {
 		return
 	}
 	pitch_px := int(pitch) / size_of(u32)
-	pixels := ([^]u32)(raw)[:pitch_px * TEXT_H]
+	pixels := ([^]u32)(raw)[:pitch_px * height]
 	render_snapshot(pixels, pitch_px, snap)
 	sdl3.UnlockTexture(h.tex)
 	h.gpu_present = {}

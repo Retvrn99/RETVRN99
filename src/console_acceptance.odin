@@ -1903,13 +1903,15 @@ console_artifact_diagnostics :: proc(
 		}
 		text := machine.machine_text_snapshot(m)
 		fmt.sbprintln(&builder, "decoded text:")
-		for row in 0 ..< 25 {
-			line: [80]u8
-			for col in 0 ..< 80 {
-				cell := u8(text.cells[row * 80 + col])
+		columns := vga.text_snapshot_columns(&text)
+		rows := vga.text_snapshot_rows(&text)
+		for row in 0 ..< rows {
+			line: [vga.TEXT_SNAPSHOT_MAX_COLUMNS]u8
+			for col in 0 ..< columns {
+				cell := u8(text.cells[vga.text_snapshot_cell_index(&text, row, col)])
 				line[col] = cell >= 0x20 && cell < 0x7F ? cell : ' '
 			}
-			fmt.sbprintfln(&builder, "%s", string(line[:]))
+			fmt.sbprintfln(&builder, "%s", string(line[:columns]))
 		}
 	}
 	if session != nil {console_artifact_append_setup_logs(&builder, session)}

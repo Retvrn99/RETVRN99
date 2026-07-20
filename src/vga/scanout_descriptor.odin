@@ -1,9 +1,35 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package vga
 
+import "base:runtime"
+
+Scanout_State :: struct {
+	crtc:                      [32]u8,
+	seq:                       [8]u8,
+	gfx:                       [16]u8,
+	attr:                      [32]u8,
+	video_on:                  bool,
+	misc:                      u8,
+	pel_mask:                  u8,
+	dac:                       [256 * 3]u8,
+	video_subsystem_enable:    u8,
+	cga:                       Cga_State,
+	dispi:                     [12]u16,
+	timing:                    Video_Timing,
+	latched_start:             u16,
+	pending_start:             u16,
+	start_pending:             bool,
+	present_generation:        u64,
+	content_generation:        u64,
+	guest_activity_generation: u64,
+}
+
 Scanout_Descriptor :: struct {
-	state:        Vga,
+	allocator:    runtime.Allocator,
+	state:        Scanout_State,
 	vram:         []u8,
+	frame_pixels: []u32,
+	frame:        Display_Frame,
 	generation:   u64,
 	bytes_copied: int,
 }
@@ -24,30 +50,77 @@ scanout_required_vram :: proc(v: ^Vga) -> int {
 	return min(max(needed, legacy_bytes), VRAM_SIZE)
 }
 
+@(private = "file")
+scanout_state_capture :: proc(state: ^Scanout_State, source: ^Vga) {
+	state^ = {
+		crtc                      = source.crtc,
+		seq                       = source.seq,
+		gfx                       = source.gfx,
+		attr                      = source.attr,
+		video_on                  = source.video_on,
+		misc                      = source.misc,
+		pel_mask                  = source.pel_mask,
+		dac                       = source.dac,
+		video_subsystem_enable    = source.video_subsystem_enable,
+		cga                       = source.cga,
+		dispi                     = source.dispi,
+		timing                    = source.timing,
+		latched_start             = source.latched_start,
+		pending_start             = source.pending_start,
+		start_pending             = source.start_pending,
+		present_generation        = source.present_generation,
+		content_generation        = source.content_generation,
+		guest_activity_generation = source.guest_activity_generation,
+	}
+}
+
+@(private = "file")
+scanout_state_to_vga :: proc(
+	state: ^Scanout_State,
+	vram: []u8,
+	frame_pixels: []u32,
+	allocator: runtime.Allocator,
+) -> Vga {
+	return {
+		allocator = allocator,
+		vram = vram,
+		frame_pixels = frame_pixels,
+		pci_io_enabled = true,
+		pci_memory_enabled = true,
+		framebuffer_base = VBE_LFB_BASE,
+		crtc = state.crtc,
+		seq = state.seq,
+		gfx = state.gfx,
+		attr = state.attr,
+		video_on = state.video_on,
+		misc = state.misc,
+		pel_mask = state.pel_mask,
+		dac = state.dac,
+		video_subsystem_enable = state.video_subsystem_enable,
+		cga = state.cga,
+		dispi = state.dispi,
+		timing = state.timing,
+		latched_start = state.latched_start,
+		pending_start = state.pending_start,
+		start_pending = state.start_pending,
+		present_generation = state.present_generation,
+		content_generation = state.content_generation,
+		guest_activity_generation = state.guest_activity_generation,
+		initialized = true,
+	}
+}
+
 scanout_descriptor_capture :: proc(descriptor: ^Scanout_Descriptor, source: ^Vga) -> bool {
 	if descriptor == nil || source == nil || source.vram == nil {return false}
+	if descriptor.allocator.procedure == nil {descriptor.allocator = context.allocator}
 	if len(descriptor.vram) != VRAM_SIZE {
-		if descriptor.vram != nil {delete(descriptor.vram)}
-		descriptor.vram = make([]u8, VRAM_SIZE)
+		if descriptor.vram != nil {delete(descriptor.vram, descriptor.allocator)}
+		descriptor.vram = make([]u8, VRAM_SIZE, descriptor.allocator)
 	}
 	bytes := scanout_required_vram(source)
 	copy(descriptor.vram[:bytes], source.vram[:bytes])
-
-	frame_pixels := descriptor.state.frame_pixels
-	if descriptor.state.raster_pixels != nil {
-		delete(descriptor.state.raster_pixels, descriptor.state.allocator)
-	}
-	descriptor.state = source^
-	descriptor.state.vram = descriptor.vram
-	descriptor.state.frame_pixels = frame_pixels
-	descriptor.state.frame = {}
-	descriptor.state.raster_pixels = nil
-	descriptor.state.raster_valid = false
-	descriptor.state.raster_fallback = false
-	descriptor.state.defer_scanout_conversion = false
-	descriptor.state.frame_valid = false
-	descriptor.state.full_frame_renders = 0
-	descriptor.state.raster_pixels_rendered = 0
+	scanout_state_capture(&descriptor.state, source)
+	descriptor.frame = {}
 	descriptor.generation = source.content_generation
 	descriptor.bytes_copied = bytes
 	return true
@@ -55,13 +128,26 @@ scanout_descriptor_capture :: proc(descriptor: ^Scanout_Descriptor, source: ^Vga
 
 scanout_descriptor_render :: proc(descriptor: ^Scanout_Descriptor) -> ^Display_Frame {
 	if descriptor == nil || descriptor.vram == nil {return nil}
-	return vga_display_frame(&descriptor.state)
+	if descriptor.allocator.procedure == nil {descriptor.allocator = context.allocator}
+	state := scanout_state_to_vga(
+		&descriptor.state,
+		descriptor.vram,
+		descriptor.frame_pixels,
+		descriptor.allocator,
+	)
+	frame := vga_display_frame(&state)
+	descriptor.frame_pixels = state.frame_pixels
+	descriptor.frame = frame^
+	descriptor.frame.pixels = descriptor.frame_pixels
+	descriptor.state.present_generation = state.present_generation
+	return &descriptor.frame
 }
 
 scanout_descriptor_destroy :: proc(descriptor: ^Scanout_Descriptor) {
 	if descriptor == nil {return}
-	vram := descriptor.vram
-	vga_destroy(&descriptor.state)
-	if vram != nil {delete(vram)}
+	allocator := descriptor.allocator
+	if allocator.procedure == nil {allocator = context.allocator}
+	if descriptor.frame_pixels != nil {delete(descriptor.frame_pixels, allocator)}
+	if descriptor.vram != nil {delete(descriptor.vram, allocator)}
 	descriptor^ = {}
 }

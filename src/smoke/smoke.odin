@@ -74,18 +74,16 @@ run_smoke :: proc() -> (result: int) {
 	machine.machine_set_cpu_mode(m, settings.cpu_mode)
 	if !machine.load_roms(&m.vm) {return smoke_fail("load_roms")}
 	open_error: fat32session.Session_Error
-	session, open_error = fat32session.open_machine(
-		settings.hard_drive_path,
-		"smoke",
-		.In_Process,
-	)
+	session, open_error = fat32session.open_machine(settings.hard_drive_path, "smoke", .In_Process)
 	if open_error.code != .None {return smoke_fail(fat32session.error_text(&open_error))}
 	boot_files, observe_error := fat32session.observe(
 		session,
 		[]fat32session.Probe{{kind = .Stat, path = "IO.SYS"}},
 		context.temp_allocator,
 	)
-	if observe_error.code != .None || len(boot_files.items) != 1 || boot_files.items[0].type != .Regular {
+	if observe_error.code != .None ||
+	   len(boot_files.items) != 1 ||
+	   boot_files.items[0].type != .Regular {
 		fat32session.observation_batch_destroy(&boot_files, context.temp_allocator)
 		fmt.println("SKIP: IO.SYS is absent from the selected image")
 		return 0
@@ -138,12 +136,13 @@ smoke_fail :: proc(msg: string) -> int {
 }
 
 grid_text :: proc(snap: ^vga.Text_Snapshot) -> string {
-	buf: [80 * 25]u8
-	for i in 0 ..< 80 * 25 {
+	buf: [vga.TEXT_SNAPSHOT_MAX_COLUMNS * vga.TEXT_SNAPSHOT_MAX_ROWS]u8
+	count := vga.text_snapshot_cell_count(snap)
+	for i in 0 ..< count {
 		ch := u8(snap.cells[i])
 		buf[i] = ch >= 0x20 && ch < 0x7F ? ch : ' '
 	}
-	return strings.clone_from_bytes(buf[:], context.temp_allocator)
+	return strings.clone_from_bytes(buf[:count], context.temp_allocator)
 }
 
 run_until :: proc(m: ^machine.Machine, deadline: time.Duration, needle: string) -> bool {
