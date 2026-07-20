@@ -3,6 +3,22 @@ package vga
 
 import "core:testing"
 
+Vga_Irq_Test_Probe :: struct {
+	asserts: int,
+	lowers:  int,
+	last:    bool,
+}
+
+vga_irq_test_callback :: proc(ctx: rawptr, asserted: bool) {
+	probe := (^Vga_Irq_Test_Probe)(ctx)
+	if asserted {
+		probe.asserts += 1
+	} else {
+		probe.lowers += 1
+	}
+	probe.last = asserted
+}
+
 test_vga_init :: proc(t: ^testing.T, v: ^Vga) -> []u8 {
 	backing := make([]u8, VRAM_SIZE)
 	testing.expect(t, vga_init(v, backing))
@@ -68,9 +84,16 @@ vga_test_attribute_flip_flop_and_dac :: proc(t: ^testing.T) {
 	backing := test_vga_init(t, &v)
 	defer delete(backing)
 	defer vga_destroy(&v)
-	vga_out(&v, 0x3C0, 0x20 | 3)
+	vga_out(&v, 0x3C0, 3)
 	vga_out(&v, 0x3C0, 0x7F)
 	testing.expect_value(t, v.attr[3], u8(0x3F))
+	vga_out(&v, 0x3C0, 0x20 | 3)
+	vga_out(&v, 0x3C0, 0x12)
+	testing.expect_value(t, v.attr[3], u8(0x3F))
+	testing.expect_value(t, vga_in(&v, 0x3C1), u8(0xFF))
+	vga_out(&v, 0x3C0, 3)
+	testing.expect_value(t, vga_in(&v, 0x3C1), u8(0x3F))
+	_ = vga_in(&v, 0x3DA)
 	vga_out(&v, 0x3C0, 4)
 	testing.expect(t, v.attr_flip)
 	_ = vga_in(&v, 0x3DA)
@@ -115,22 +138,74 @@ vga_test_absolute_timing_and_status :: proc(t: ^testing.T) {
 	defer vga_destroy(&v)
 	v.timing = Video_Timing {
 		frame_period_ns = 1000,
-		line_period_ns = 100,
-		total_lines = 10,
-		visible_lines = 5,
-		visible_dots = 8,
-		total_dots = 10,
-		retrace_start = 6,
-		retrace_end = 8,
+		line_period_ns  = 100,
+		total_lines     = 10,
+		visible_lines   = 5,
+		visible_dots    = 8,
+		total_dots      = 10,
+		hblank_start    = 8,
+		hblank_end      = 10,
+		vblank_start    = 5,
+		vblank_end      = 10,
+		retrace_start   = 6,
+		retrace_end     = 8,
 	}
 	vga_sync_to(&v, 50)
 	testing.expect_value(t, vga_in(&v, 0x3DA) & 0x09, u8(0))
+	vga_sync_to(&v, 85)
+	testing.expect_value(t, vga_in(&v, 0x3DA) & 0x09, u8(0x01))
 	vga_sync_to(&v, 650)
 	testing.expect_value(t, vga_in(&v, 0x3DA) & 0x09, u8(0x09))
+	v.crtc[0x17] &~= 0x80
+	testing.expect_value(t, vga_in(&v, 0x3DA) & 0x08, u8(0))
 	vga_sync_to(&v, 2050)
 	testing.expect_value(t, v.timing.generation, u64(2))
 	vga_sync_to(&v, 2050)
 	vga_sync_to(&v, 100)
 	testing.expect_value(t, v.timing.generation, u64(2))
 	testing.expect_value(t, v.timing.elapsed_ns, u64(2050))
+}
+
+@(test)
+vga_test_vertical_interrupt_latch_and_callback :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	v.timing = Video_Timing {
+		frame_period_ns = 1000,
+		line_period_ns  = 100,
+		total_lines     = 10,
+		visible_lines   = 5,
+		visible_dots    = 8,
+		total_dots      = 10,
+		vblank_start    = 5,
+		vblank_end      = 10,
+		retrace_start   = 6,
+		retrace_end     = 8,
+	}
+	v.crtc[0x11] = 0
+	probe: Vga_Irq_Test_Probe
+	vga_set_legacy_irq(&v, &probe, vga_irq_test_callback)
+
+	vga_sync_to(&v, 550)
+	testing.expect(t, v.vertical_interrupt_pending)
+	testing.expect(t, vga_legacy_irq_line(&v))
+	testing.expect_value(t, probe.asserts, 1)
+	testing.expect_value(t, probe.last, true)
+	testing.expect_value(t, vga_in(&v, 0x3C2) & 0x80, u8(0x80))
+
+	vga_out(&v, 0x3D4, 0x11)
+	vga_out(&v, 0x3D5, 0)
+	testing.expect(t, !v.vertical_interrupt_pending)
+	testing.expect(t, !vga_legacy_irq_line(&v))
+	testing.expect_value(t, probe.lowers, 1)
+	testing.expect_value(t, vga_in(&v, 0x3C2) & 0x80, u8(0))
+
+	vga_out(&v, 0x3D4, 0x11)
+	vga_out(&v, 0x3D5, 0x20)
+	vga_sync_to(&v, 1550)
+	testing.expect(t, !v.vertical_interrupt_pending)
+	testing.expect(t, !vga_legacy_irq_line(&v))
+	testing.expect_value(t, probe.asserts, 1)
 }

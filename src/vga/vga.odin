@@ -92,6 +92,8 @@ Display_Frame :: struct {
 	text:                      Text_Snapshot,
 }
 
+Legacy_Irq_Proc :: proc(ctx: rawptr, asserted: bool)
+
 Video_Timing :: struct {
 	elapsed_ns:      u64,
 	frame_period_ns: u64,
@@ -100,65 +102,75 @@ Video_Timing :: struct {
 	visible_lines:   int,
 	visible_dots:    int,
 	total_dots:      int,
+	hblank_start:    int,
+	hblank_end:      int,
+	hretrace_start:  int,
+	hretrace_end:    int,
+	vblank_start:    int,
+	vblank_end:      int,
 	retrace_start:   int,
 	retrace_end:     int,
 	generation:      u64,
 }
 
 Vga :: struct {
-	allocator:                 runtime.Allocator,
-	vram:                      []u8,
-	pci_io_enabled:            bool,
-	pci_memory_enabled:        bool,
-	framebuffer_base:          u64,
-	frame_pixels:              []u32,
-	frame:                     Display_Frame,
-	raster_pixels:             []u32,
-	raster_kind:               Display_Kind,
-	raster_width:              int,
-	raster_height:             int,
-	raster_next_line:          int,
-	raster_frame:              u64,
-	raster_valid:              bool,
-	raster_fallback:           bool,
-	raster_change_frame:       u64,
-	defer_scanout_conversion:  bool,
-	frame_valid:               bool,
-	present_generation:        u64,
-	content_generation:        u64,
-	guest_activity_generation: u64,
-	full_frame_renders:        u64,
-	raster_pixels_rendered:    u64,
-	crtc:                      [32]u8,
-	crtc_ix:                   u8,
-	seq:                       [8]u8,
-	seq_ix:                    u8,
-	gfx:                       [16]u8,
-	gfx_ix:                    u8,
-	attr:                      [32]u8,
-	attr_ix:                   u8,
-	attr_flip:                 bool,
-	video_on:                  bool,
-	misc:                      u8,
-	feature:                   u8,
-	pel_mask:                  u8,
-	dac_read:                  u8,
-	dac_write:                 u8,
-	dac_sub:                   u8,
-	dac_state:                 u8,
-	dac:                       [256 * 3]u8,
-	latch:                     [4]u8,
-	video_subsystem_enable:    u8,
-	cga:                       Cga_State,
-	dispi_index:               u16,
-	dispi:                     [12]u16,
-	bank_read:                 u16,
-	bank_write:                u16,
-	timing:                    Video_Timing,
-	latched_start:             u16,
-	pending_start:             u16,
-	start_pending:             bool,
-	initialized:               bool,
+	allocator:                  runtime.Allocator,
+	vram:                       []u8,
+	pci_io_enabled:             bool,
+	pci_memory_enabled:         bool,
+	framebuffer_base:           u64,
+	frame_pixels:               []u32,
+	frame:                      Display_Frame,
+	raster_pixels:              []u32,
+	raster_kind:                Display_Kind,
+	raster_width:               int,
+	raster_height:              int,
+	raster_next_line:           int,
+	raster_frame:               u64,
+	raster_valid:               bool,
+	raster_fallback:            bool,
+	raster_change_frame:        u64,
+	defer_scanout_conversion:   bool,
+	frame_valid:                bool,
+	present_generation:         u64,
+	content_generation:         u64,
+	guest_activity_generation:  u64,
+	full_frame_renders:         u64,
+	raster_pixels_rendered:     u64,
+	crtc:                       [32]u8,
+	crtc_ix:                    u8,
+	seq:                        [8]u8,
+	seq_ix:                     u8,
+	gfx:                        [16]u8,
+	gfx_ix:                     u8,
+	attr:                       [32]u8,
+	attr_ix:                    u8,
+	attr_flip:                  bool,
+	video_on:                   bool,
+	misc:                       u8,
+	feature:                    u8,
+	pel_mask:                   u8,
+	dac_read:                   u8,
+	dac_write:                  u8,
+	dac_sub:                    u8,
+	dac_state:                  u8,
+	dac:                        [256 * 3]u8,
+	latch:                      [4]u8,
+	video_subsystem_enable:     u8,
+	cga:                        Cga_State,
+	dispi_index:                u16,
+	dispi:                      [12]u16,
+	bank_read:                  u16,
+	bank_write:                 u16,
+	timing:                     Video_Timing,
+	latched_start:              u16,
+	pending_start:              u16,
+	start_pending:              bool,
+	legacy_irq_ctx:             rawptr,
+	legacy_irq:                 Legacy_Irq_Proc,
+	legacy_irq_asserted:        bool,
+	vertical_interrupt_pending: bool,
+	initialized:                bool,
 }
 
 vga_init :: proc(v: ^Vga, backing: []u8) -> bool {
@@ -261,10 +273,12 @@ vga_reset :: proc(v: ^Vga) {
 	v.dispi[DISPI_INDEX_VIDEO_MEMORY_64K] = u16(VRAM_SIZE / 65536)
 	v.latched_start = 0
 	v.pending_start = 0
+	v.vertical_interrupt_pending = false
 	v.timing = {}
 	v.content_generation = 1
 	v.guest_activity_generation = 1
 	vga_recalculate_timing(v)
+	vga_refresh_legacy_irq(v)
 }
 
 vga_note_content_change :: proc(v: ^Vga) {
@@ -274,6 +288,21 @@ vga_note_content_change :: proc(v: ^Vga) {
 	v.guest_activity_generation += 1
 	if v.guest_activity_generation == 0 {v.guest_activity_generation = 1}
 	if !v.raster_fallback {v.frame_valid = false}
+}
+
+vga_set_legacy_irq :: proc(v: ^Vga, ctx: rawptr, irq: Legacy_Irq_Proc) {
+	if v == nil {return}
+	if v.legacy_irq != nil && v.legacy_irq_asserted {
+		v.legacy_irq(v.legacy_irq_ctx, false)
+	}
+	v.legacy_irq_ctx = ctx
+	v.legacy_irq = irq
+	v.legacy_irq_asserted = false
+	vga_refresh_legacy_irq(v)
+}
+
+vga_legacy_irq_line :: proc(v: ^Vga) -> bool {
+	return v != nil && v.legacy_irq_asserted
 }
 
 vga_note_animation_change :: proc(v: ^Vga) {

@@ -3,7 +3,7 @@ package machine
 
 import "core:testing"
 
-pic_setup :: proc(p: ^Pic_Pair) { // standard BIOS ICW: base 08h/70h
+pic_setup :: proc(p: ^Pic_Pair) { 	// standard BIOS ICW: base 08h/70h
 	pic_out(p, 0x20, 0x11); pic_out(p, 0x21, 0x08); pic_out(p, 0x21, 0x04); pic_out(p, 0x21, 0x01)
 	pic_out(p, 0xA0, 0x11); pic_out(p, 0xA1, 0x70); pic_out(p, 0xA1, 0x02); pic_out(p, 0xA1, 0x01)
 	pic_out(p, 0x21, 0x00); pic_out(p, 0xA1, 0x00) // unmask everything
@@ -37,6 +37,21 @@ test_pic_mask_and_cascade :: proc(t: ^testing.T) {
 	v, ok2 := pic_ack(&p)
 	testing.expect(t, ok2)
 	testing.expect_value(t, v, u8(0x70))
+}
+
+@(test)
+test_pic_irq2_external_source_survives_cascade_refresh :: proc(t: ^testing.T) {
+	p: Pic_Pair
+	pic_setup(&p)
+	pic_set_irq_source_level(&p, 2, .Vga_Retrace, true)
+	pic_out(&p, 0xA1, 0xFF)
+	testing.expect(t, pic_has_pending(&p))
+	v, ok := pic_ack(&p)
+	testing.expect(t, ok)
+	testing.expect_value(t, v, u8(0x0A))
+	pic_out(&p, 0x20, 0x62)
+	pic_set_irq_source_level(&p, 2, .Vga_Retrace, false)
+	testing.expect(t, !pic_has_pending(&p))
 }
 
 @(test)
@@ -311,7 +326,11 @@ test_pic_non_specific_eoi_uses_rotated_priority :: proc(t: ^testing.T) {
 @(test)
 test_pic_auto_eoi_and_rotation :: proc(t: ^testing.T) {
 	p: Pic_Pair
-	pic_out(&p, 0x20, 0x11); pic_out(&p, 0x21, 0x08); pic_out(&p, 0x21, 0x04); pic_out(&p, 0x21, 0x03)
+	pic_out(
+		&p,
+		0x20,
+		0x11,
+	); pic_out(&p, 0x21, 0x08); pic_out(&p, 0x21, 0x04); pic_out(&p, 0x21, 0x03)
 	pic_out(&p, 0x20, 0x80)
 	pic_raise(&p, 3)
 	_, ok := pic_ack(&p)
@@ -410,8 +429,16 @@ test_pic_spurious_slave_irq15 :: proc(t: ^testing.T) {
 @(test)
 test_pic_custom_cascade_route :: proc(t: ^testing.T) {
 	p: Pic_Pair
-	pic_out(&p, 0x20, 0x11); pic_out(&p, 0x21, 0x08); pic_out(&p, 0x21, 0x20); pic_out(&p, 0x21, 0x01)
-	pic_out(&p, 0xA0, 0x11); pic_out(&p, 0xA1, 0x70); pic_out(&p, 0xA1, 0x05); pic_out(&p, 0xA1, 0x01)
+	pic_out(
+		&p,
+		0x20,
+		0x11,
+	); pic_out(&p, 0x21, 0x08); pic_out(&p, 0x21, 0x20); pic_out(&p, 0x21, 0x01)
+	pic_out(
+		&p,
+		0xA0,
+		0x11,
+	); pic_out(&p, 0xA1, 0x70); pic_out(&p, 0xA1, 0x05); pic_out(&p, 0xA1, 0x01)
 	pic_raise(&p, 9)
 	v, ok := pic_ack(&p)
 	testing.expect(t, ok)
@@ -508,7 +535,11 @@ test_pic_held_slave_level_reasserts_cascade :: proc(t: ^testing.T) {
 @(test)
 test_pic_auto_eoi_reasserts_held_level :: proc(t: ^testing.T) {
 	p: Pic_Pair
-	pic_out(&p, 0x20, 0x19); pic_out(&p, 0x21, 0x08); pic_out(&p, 0x21, 0x04); pic_out(&p, 0x21, 0x03)
+	pic_out(
+		&p,
+		0x20,
+		0x19,
+	); pic_out(&p, 0x21, 0x08); pic_out(&p, 0x21, 0x04); pic_out(&p, 0x21, 0x03)
 	pic_set_irq_level(&p, 5, true)
 	_, ok := pic_ack(&p)
 	testing.expect(t, ok)
@@ -537,17 +568,37 @@ test_pic_icw_modes_are_recorded :: proc(t: ^testing.T) {
 test_pic_icw1_restores_initial_defaults :: proc(t: ^testing.T) {
 	p: Pic_Pair
 	p.master = Pic {
-		irr = 0xFF, isr = 0xFF, imr = 0xFF, icw3 = 0xA5,
-		read_isr = true, poll_pending = true, poll_result = 0x84,
-		special_mask = true, lowest = 3, auto_rotate = true,
-		auto_eoi = true, buffered = true, is_master = true,
-		mode_8086 = true, sfnm = true,
+		irr          = 0xFF,
+		isr          = 0xFF,
+		imr          = 0xFF,
+		icw3         = 0xA5,
+		read_isr     = true,
+		poll_pending = true,
+		poll_result  = 0x84,
+		special_mask = true,
+		lowest       = 3,
+		auto_rotate  = true,
+		auto_eoi     = true,
+		buffered     = true,
+		is_master    = true,
+		mode_8086    = true,
+		sfnm         = true,
 	}
 	p.slave = Pic {
-		irr = 0xFF, isr = 0xFF, imr = 0xFF, icw3 = 2,
-		read_isr = true, poll_pending = true, poll_result = 0x82,
-		special_mask = true, lowest = 1, auto_rotate = true,
-		auto_eoi = true, buffered = true, mode_8086 = true, sfnm = true,
+		irr          = 0xFF,
+		isr          = 0xFF,
+		imr          = 0xFF,
+		icw3         = 2,
+		read_isr     = true,
+		poll_pending = true,
+		poll_result  = 0x82,
+		special_mask = true,
+		lowest       = 1,
+		auto_rotate  = true,
+		auto_eoi     = true,
+		buffered     = true,
+		mode_8086    = true,
+		sfnm         = true,
 	}
 	p.master_int_latch = true
 

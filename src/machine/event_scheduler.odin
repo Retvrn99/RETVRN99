@@ -15,6 +15,7 @@ Scheduled_Device :: enum u8 {
 	I8042,
 	Cmos,
 	Audio,
+	Vga,
 	Governor,
 	Count,
 }
@@ -27,12 +28,12 @@ Scheduled_Event :: struct {
 }
 
 Event_Scheduler :: struct {
-	heap:        [SCHEDULED_DEVICE_COUNT]Scheduled_Event,
-	positions:   [SCHEDULED_DEVICE_COUNT]int,
-	count:       int,
-	initialized: bool,
-	updates:     u64,
-	dispatches:  u64,
+	heap:              [SCHEDULED_DEVICE_COUNT]Scheduled_Event,
+	positions:         [SCHEDULED_DEVICE_COUNT]int,
+	count:             int,
+	initialized:       bool,
+	updates:           u64,
+	dispatches:        u64,
 	device_dispatches: [SCHEDULED_DEVICE_COUNT]u64,
 }
 
@@ -90,7 +91,10 @@ event_scheduler_set :: proc(s: ^Event_Scheduler, device: Scheduled_Device, deadl
 		s.updates += 1
 		index = s.count
 		s.count += 1
-		s.heap[index] = {device = device, deadline = deadline}
+		s.heap[index] = {
+			device   = device,
+			deadline = deadline,
+		}
 		s.positions[int(device)] = index
 		event_scheduler_sift_up(s, index)
 		return
@@ -99,7 +103,8 @@ event_scheduler_set :: proc(s: ^Event_Scheduler, device: Scheduled_Device, deadl
 	if old == deadline {return}
 	s.updates += 1
 	s.heap[index].deadline = deadline
-	if deadline < old {event_scheduler_sift_up(s, index)} else if deadline > old {event_scheduler_sift_down(s, index)}
+	if deadline <
+	   old {event_scheduler_sift_up(s, index)} else if deadline > old {event_scheduler_sift_down(s, index)}
 }
 
 event_scheduler_clear :: proc(s: ^Event_Scheduler, device: Scheduled_Device) {

@@ -6,6 +6,11 @@ package vga
 // DOSBox Team, GPL-2.0-or-later. See DOSBOX_X_NOTICE.md in this directory.
 
 vga_mmio_contains :: proc(v: ^Vga, gpa: u64, size: u8) -> bool {
+	return vga_mmio_range_contains(v, gpa, int(max(size, 1)))
+}
+
+@(private = "file")
+vga_mmio_range_contains :: proc(v: ^Vga, gpa: u64, size: int) -> bool {
 	if v == nil || !v.pci_memory_enabled {return false}
 	n := u64(max(size, 1))
 	if gpa > max(u64) - n {return false}
@@ -18,6 +23,34 @@ vga_mmio_contains :: proc(v: ^Vga, gpa: u64, size: u8) -> bool {
 				v.framebuffer_base <= max(u64) - u64(VRAM_SIZE) &&
 				end <= v.framebuffer_base + u64(VRAM_SIZE)) \
 	)
+}
+
+vga_aperture_access :: proc(
+	v: ^Vga,
+	gpa: u64,
+	write: bool,
+	data: []u8,
+	timestamp_ns: u64,
+) -> bool {
+	if !vga_mmio_range_contains(v, gpa, len(data)) || v.vram == nil {return false}
+	wrote := false
+	raster_started := false
+	for i in 0 ..< len(data) {
+		address := gpa + u64(i)
+		if write {
+			if !raster_started {
+				vga_begin_raster_change(v, timestamp_ns)
+				raster_started = true
+			}
+			if vga_memory_write_byte(v, address, data[i]) {wrote = true}
+		} else if value, ok := vga_memory_read_byte(v, address); ok {
+			data[i] = value
+		} else {
+			data[i] = 0xFF
+		}
+	}
+	if wrote {vga_note_content_change(v)}
+	return true
 }
 
 vga_mmio_read :: proc(v: ^Vga, gpa: u64, size: u8) -> (u32, bool) {

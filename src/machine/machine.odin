@@ -218,6 +218,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 		return false
 	}
 	video.vga_set_deferred_scanout(&m.vga, true)
+	video.vga_set_legacy_irq(&m.vga, m, machine_vga_legacy_irq)
 	if !hv.governor_init(&m.governor, &m.vm, .GSW_886) {
 		return false
 	}
@@ -626,22 +627,22 @@ machine_audio_metrics :: proc(m: ^Machine) -> sound.Audio_Metrics_Snapshot {
 }
 
 Machine_Audio_Observability :: struct {
-	output:                     sound.Audio_Metrics_Snapshot,
-	pc_speaker:                 sound.Audio_Mixer_Source_Telemetry,
-	sb16:                       sound.Audio_Mixer_Source_Telemetry,
-	opl3:                       sound.Audio_Mixer_Source_Telemetry,
-	native_pcm:                 sound.Audio_Mixer_Source_Telemetry,
-	cdda:                       sound.Audio_Mixer_Source_Telemetry,
-	clipping_frames:            u64,
-	pcm_fnv1a64:                u64,
-	speaker_edges:              u64,
-	speaker_late_edges:         u64,
-	speaker_overflow_edges:     u64,
-	sb16_starvation_frames:     u64,
-	sb16_irq_events:            u64,
-	native_starvation_frames:   u64,
-	native_irq_events:          u64,
-	audio_scheduler_wakeups:    u64,
+	output:                   sound.Audio_Metrics_Snapshot,
+	pc_speaker:               sound.Audio_Mixer_Source_Telemetry,
+	sb16:                     sound.Audio_Mixer_Source_Telemetry,
+	opl3:                     sound.Audio_Mixer_Source_Telemetry,
+	native_pcm:               sound.Audio_Mixer_Source_Telemetry,
+	cdda:                     sound.Audio_Mixer_Source_Telemetry,
+	clipping_frames:          u64,
+	pcm_fnv1a64:              u64,
+	speaker_edges:            u64,
+	speaker_late_edges:       u64,
+	speaker_overflow_edges:   u64,
+	sb16_starvation_frames:   u64,
+	sb16_irq_events:          u64,
+	native_starvation_frames: u64,
+	native_irq_events:        u64,
+	audio_scheduler_wakeups:  u64,
 }
 
 machine_audio_observability :: proc(m: ^Machine) -> Machine_Audio_Observability {
@@ -660,12 +661,13 @@ machine_audio_observability :: proc(m: ^Machine) -> Machine_Audio_Observability 
 		speaker_late_edges = telemetry.speaker_transitions_late,
 		speaker_overflow_edges = telemetry.speaker_transitions_dropped,
 		sb16_starvation_frames = m.sb16.starvation_frames,
-		sb16_irq_events = m.sb16.irq_events_dma8 + m.sb16.irq_events_dma16 + m.sb16.irq_events_midi,
+		sb16_irq_events = m.sb16.irq_events_dma8 +
+		m.sb16.irq_events_dma16 +
+		m.sb16.irq_events_midi,
 		native_starvation_frames = m.gsw_pcm.starvation_frames,
-		native_irq_events =
-			m.gsw_pcm.period_irq_events +
-			m.gsw_pcm.underrun_irq_events +
-			m.gsw_pcm.invalid_irq_events,
+		native_irq_events = m.gsw_pcm.period_irq_events +
+		m.gsw_pcm.underrun_irq_events +
+		m.gsw_pcm.invalid_irq_events,
 		audio_scheduler_wakeups = m.device_advances[int(Scheduled_Device.Audio)],
 	}
 }
@@ -951,6 +953,12 @@ machine_scheduler_refresh :: proc(m: ^Machine) {
 	)
 	deadline, pending = machine_audio_next_deadline(m)
 	machine_scheduler_set(m, .Audio, deadline, pending)
+	if deadline_ns, ok := video.vga_next_deadline_ns(&m.vga); ok {
+		delta_ns := deadline_ns > m.active_ns ? deadline_ns - m.active_ns : 0
+		machine_scheduler_set(m, .Vga, machine_relative_ns_deadline(m, delta_ns), true)
+	} else {
+		machine_scheduler_set(m, .Vga, 0, false)
+	}
 	if m.cpu_mode == .GSW_886 {
 		now := master_timeline_now(m.timeline)
 		quantum := MASTER_CLOCK_HZ * MACHINE_GOVERNOR_QUANTUM_NS / NANOSECOND_HZ
@@ -1182,6 +1190,8 @@ machine_advance_device :: proc(m: ^Machine, device: Scheduled_Device) {
 		m.cmos_active_ns = m.active_ns
 	case .Audio:
 		machine_audio_advance_to(m, now)
+	case .Vga:
+		video.vga_sync_to(&m.vga, m.active_ns)
 	case .Governor:
 		quantum := MASTER_CLOCK_HZ * MACHINE_GOVERNOR_QUANTUM_NS / NANOSECOND_HZ
 		m.governor_deadline = now + min(quantum, ~u64(0) - now)
@@ -1664,7 +1674,7 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 			if was_running && !sound.gsw_pcm_running(&m.gsw_pcm) {
 				_ = sound.audio_mixer_release_native_pcm(&m.audio, now)
 			} else if sound.gsw_pcm_running(&m.gsw_pcm) &&
-			          m.gsw_pcm.status & sound.GSW_PCM_STATUS_UNDERRUN == 0 {
+			   m.gsw_pcm.status & sound.GSW_PCM_STATUS_UNDERRUN == 0 {
 				_ = sound.audio_mixer_set_native_pcm_frame(
 					&m.audio,
 					now,
@@ -1687,15 +1697,7 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 	}
 	if decoded_gpa >= video.LEGACY_APERTURE_BASE &&
 	   decoded_gpa + u64(len(data)) <= video.LEGACY_APERTURE_END {
-		for byte, i in data {
-			if write {
-				_ = video.vga_mmio_write(&m.vga, decoded_gpa + u64(i), 1, u32(byte))
-			} else if value, ok := video.vga_mmio_read(&m.vga, decoded_gpa + u64(i), 1); ok {
-				data[i] = u8(value)
-			} else {
-				data[i] = 0xFF
-			}
-		}
+		_ = video.vga_aperture_access(&m.vga, decoded_gpa, write, data, m.active_ns)
 		machine_rearm_wake(m)
 		return
 	}
@@ -1749,6 +1751,14 @@ machine_mmio_zone :: proc(gpa: u64) -> (Mmio_Zone, bool) {
 }
 
 // --- IRQ lines ---
+
+@(private = "package")
+machine_vga_legacy_irq :: proc(ctx: rawptr, asserted: bool) {
+	m := (^Machine)(ctx)
+	if m == nil {return}
+	pic_set_irq_source_level(&m.pic, 2, .Vga_Retrace, asserted)
+	if asserted {m.yield_requested = true}
+}
 
 @(private = "package")
 machine_gsw_vga_irq :: proc(ctx: rawptr, asserted: bool) {
@@ -2369,12 +2379,15 @@ machine_vga_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	machine_sync_time(m)
 	video.vga_begin_raster_change(&m.vga, m.active_ns)
 	video.vga_io_write(&m.vga, port, size, val)
+	machine_scheduler_refresh(m)
+	machine_rearm_wake(m)
 }
 
 @(private = "file")
 machine_vga_sync :: proc(m: ^Machine) {
 	machine_sync_time(m)
 	video.vga_sync_to(&m.vga, m.active_ns)
+	machine_scheduler_refresh(m)
 }
 
 @(private = "file")

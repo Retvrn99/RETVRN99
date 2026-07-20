@@ -43,17 +43,25 @@ vga_test_status0_switch_sense_and_retrace :: proc(t: ^testing.T) {
 		testing.expect_value(t, vga_in(&v, 0x3C2) & 0x10, expected[selected])
 	}
 	v.timing = Video_Timing {
-		elapsed_ns      = 650,
+		elapsed_ns      = 450,
 		frame_period_ns = 1000,
 		line_period_ns  = 100,
 		total_lines     = 10,
 		visible_lines   = 5,
 		visible_dots    = 8,
 		total_dots      = 10,
+		vblank_start    = 5,
+		vblank_end      = 10,
 		retrace_start   = 6,
 		retrace_end     = 8,
 	}
+	v.crtc[0x11] = 0
+	testing.expect_value(t, vga_in(&v, 0x3C2) & 0x80, u8(0))
+	vga_sync_to(&v, 550)
 	testing.expect_value(t, vga_in(&v, 0x3C2) & 0x80, u8(0x80))
+	vga_out(&v, 0x3D4, 0x11)
+	vga_out(&v, 0x3D5, 0)
+	testing.expect_value(t, vga_in(&v, 0x3C2) & 0x80, u8(0))
 }
 
 @(test)

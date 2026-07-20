@@ -117,6 +117,10 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 			v.attr_flip = true
 			return old_video_on != v.video_on
 		} else if int(v.attr_ix) < len(v.attr) {
+			if v.attr_ix < 0x10 && v.video_on {
+				v.attr_flip = false
+				return false
+			}
 			masked := value & ATTR_MASKS[v.attr_ix]
 			changed := v.attr[v.attr_ix] != masked
 			v.attr[v.attr_ix] = masked
@@ -223,7 +227,10 @@ standard_port_read :: proc(v: ^Vga, port: u16) -> u8 {
 	case 0x3C0:
 		return v.attr_ix | (v.video_on ? 0x20 : 0)
 	case 0x3C1:
-		if int(v.attr_ix) < len(v.attr) {return v.attr[v.attr_ix]}
+		if int(v.attr_ix) < len(v.attr) {
+			if v.attr_ix < 0x10 && v.video_on {return 0xFF}
+			return v.attr[v.attr_ix]
+		}
 	case 0x3C2:
 		return vga_status_0(v)
 	case 0x3C3:
@@ -283,5 +290,9 @@ crtc_write :: proc(v: ^Vga, index, value: u8) -> bool {
 		v.start_pending = true
 	}
 	vga_recalculate_timing(v)
+	if index == 0x11 {
+		if value & 0x10 == 0 {vga_clear_vertical_interrupt(v)}
+		vga_refresh_legacy_irq(v)
+	}
 	return changed
 }

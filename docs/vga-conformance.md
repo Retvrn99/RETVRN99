@@ -28,8 +28,8 @@ not implicit capability claims.
 | Contract | Reference | Status | Implementation | Executable proof |
 | --- | --- | --- | --- | --- |
 | Miscellaneous Output 3C2h/3CCh: I/O select, RAM enable, clock select, sync polarity, reserved bits | IBM 2-42 to 2-43 | Partial | `src/vga/ports.odin`, `src/vga/timing.odin` | `test_vga_io_decode_follows_misc_output` plus reserved-bit and clock tests required |
-| Input Status 0 3C2h: switch sense and pending CRT interrupt | IBM 2-44 | Missing | `src/vga/timing.odin` currently substitutes live retrace for pending interrupt | IRQ latch tests required |
-| Input Status 1 3BAh/3DAh: display enable, vertical retrace, Attribute flip-flop reset | IBM 2-45 | Partial | `src/vga/timing.odin`, `src/vga/ports.odin` | Blank/retrace window and flip-flop tests required |
+| Input Status 0 3C2h: switch sense and pending CRT interrupt | IBM 2-44 | Conformant | `src/vga/legacy_beam.odin`, `src/vga/timing.odin` | `vga_test_status0_switch_sense_and_retrace`, `vga_test_vertical_interrupt_latch_and_callback` |
+| Input Status 1 3BAh/3DAh: display enable, vertical retrace, Attribute flip-flop reset | IBM 2-45 | Partial | `src/vga/legacy_beam.odin`, `src/vga/timing.odin`, `src/vga/ports.odin` | `vga_test_absolute_timing_and_status` covers blank/retrace; full CGA/MDA matrix remains |
 | Feature Control 3BAh/3DAh and 3CAh reserved behavior | IBM 2-46 | Partial | `src/vga/ports.odin` retains two undocumented bits | Reserved read/write test required |
 | Video Subsystem Enable 3C3h decode behavior | IBM 2-46 and INT 10h AH=12h BL=32h | Partial | `src/vga/legacy_control.odin` | BIOS disable/enable integration test required |
 | Sequencer 00h synchronous/asynchronous reset | IBM 2-48 | Missing | Stored but does not gate sequencer/display state | Port-programmed reset test required |
@@ -44,10 +44,10 @@ not implicit capability claims.
 | --- | --- | --- | --- | --- |
 | 00h Horizontal Total | IBM 2-56 | Conformant | `src/vga/timing.odin` | Timing total tests |
 | 01h Horizontal Display Enable End | IBM 2-57 | Conformant | `src/vga/timing.odin`, `src/vga/scanout.odin` | Mode geometry tests |
-| 02h Start Horizontal Blanking | IBM 2-57 | Missing | Stored only | Beam blank-window tests required |
-| 03h End Horizontal Blanking and display-enable skew | IBM 2-58 | Missing | Stored only | Wrapped blank-end and skew tests required |
-| 04h Start Horizontal Retrace | IBM 2-59 | Missing | Stored only | Beam retrace tests required |
-| 05h End Horizontal Retrace, delay, and blank bit 5 | IBM 2-60 | Missing | Stored only | Wrapped retrace and blank-bit tests required |
+| 02h Start Horizontal Blanking | IBM 2-57 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Status 1 blank-window tests exist; per-mode public-port matrix remains |
+| 03h End Horizontal Blanking and display-enable skew | IBM 2-58 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped blank-end exists; display-enable skew remains out of proof |
+| 04h Start Horizontal Retrace | IBM 2-59 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Status 1 vertical-retrace proof exists; horizontal-retrace proof remains |
+| 05h End Horizontal Retrace, delay, and blank bit 5 | IBM 2-60 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped retrace exists; blank-bit proof remains |
 | 06h Vertical Total | IBM 2-61 | Conformant | `src/vga/timing.odin` | Timing total tests |
 | 07h Overflow fields and protected line-compare exception | IBM 2-62 | Partial | Geometry fields and protection exception exist; blanking fields await beam model | Port and beam tests required |
 | 08h Preset Row Scan and byte panning | IBM 2-63 | Conformant | `src/vga/legacy_addressing.odin` | `src/vga/legacy_addressing_tests.odin` |
@@ -56,13 +56,13 @@ not implicit capability claims.
 | 0Bh Cursor End and cursor skew | IBM 2-66 | Partial | End-before-start incorrectly wraps instead of hiding | Text cursor matrix required |
 | 0Ch/0Dh Start Address and vertical-retrace latch | IBM 2-67 and 2-99 | Partial | Pending/retrace latch exists; scheduler and mid-frame proof are incomplete | Start-latch and deferred scanout tests required |
 | 0Eh/0Fh Cursor Location | IBM 2-68 | Conformant | `src/vga/scanout.odin` | Cursor location tests |
-| 10h Vertical Retrace Start | IBM 2-69 | Partial | Timing derives start; interrupt scheduling is absent | Beam and halted-guest IRQ tests required |
-| 11h Vertical Retrace End, protection, IRQ enable and clear | IBM 2-69 to 2-70 | Partial | Retrace end and register protection exist; IRQ latch is absent | IRQ2 and wrapped-end tests required |
+| 10h Vertical Retrace Start | IBM 2-69 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin`, `src/machine/machine.odin` | `vga_test_vertical_interrupt_latch_and_callback` and IRQ2 source tests exist; halted-guest proof remains |
+| 11h Vertical Retrace End, protection, IRQ enable and clear | IBM 2-69 to 2-70 | Partial | `src/vga/ports.odin`, `src/vga/legacy_beam.odin`, `src/machine/pic.odin` | `vga_test_vertical_interrupt_latch_and_callback`, `test_machine_vga_vertical_interrupt_routes_irq2_source`; wrapped-end matrix remains |
 | 12h Vertical Display Enable End | IBM 2-71 | Conformant | `src/vga/timing.odin` | Mode geometry tests |
 | 13h Offset | IBM 2-71 | Conformant | `src/vga/legacy_addressing.odin` | Pitch/address tests |
 | 14h Underline Location, count-by-4, doubleword mode | IBM 2-72 | Partial | Address bits exist; text underline is absent | Underline and addressing tests required |
-| 15h Start Vertical Blanking | IBM 2-73 | Missing | Stored only | Beam blank-window tests required |
-| 16h End Vertical Blanking | IBM 2-73 | Missing | Stored only | Wrapped blank-end tests required |
+| 15h Start Vertical Blanking | IBM 2-73 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Status/IRQ timing uses programmed vblank start; public-port matrix remains |
+| 16h End Vertical Blanking | IBM 2-73 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped blank-end exists; per-mode proof remains |
 | 17h reset, word/byte mode, address wrap, count-by-2, row-scan select | IBM 2-74 to 2-76 | Partial | Address mapping exists; reset and horizontal-row clock behavior are absent | Address and reset tests required |
 | 18h Line Compare and split screen | IBM 2-77 and 2-102 | Conformant | `src/vga/legacy_addressing.odin` | Split and panning tests |
 
@@ -79,7 +79,7 @@ not implicit capability claims.
 | Graphics 06h graphics/text select, chain odd/even, aperture map | IBM 2-86 | Conformant | `src/vga/memory.odin` | Aperture-map tests |
 | Graphics 07h Color Don't Care | IBM 2-87 | Conformant | `src/vga/memory.odin` | Read-mode-1 tests |
 | Graphics 08h Bit Mask | IBM 2-88 | Conformant | `src/vga/memory.odin` | Write-mode tests |
-| Attribute address/data flip-flop and IPAS palette gating | IBM 2-89 to 2-90 | Partial | Flip-flop exists; palette writes are not gated by IPAS | Public-port IPAS test required |
+| Attribute address/data flip-flop and IPAS palette gating | IBM 2-89 to 2-90 | Conformant | `src/vga/ports.odin` | `vga_test_attribute_flip_flop_and_dac` |
 | Attribute 00h-0Fh internal palette | IBM 2-90 to 2-91 | Partial | Palette and color-select path exist; access gating and some 256-color semantics are incomplete | Palette path tests required |
 | Attribute 10h mode control: graphics, mono, line graphics, blink, PEL width, pan compatibility | IBM 2-92 to 2-93 | Partial | Several fields are consumed; monochrome and 256-color distinctions are incomplete | Text, indexed, and split tests required |
 | Attribute 11h overscan color | IBM 2-94 | Missing | Stored but never scanned out | Border test required |
@@ -97,7 +97,7 @@ not implicit capability claims.
 | Plane latches and read modes 0/1 | IBM 2-35 to 2-40 | Conformant | `src/vga/memory.odin` | Latch/read-mode tests |
 | Write modes 0-3 | IBM 2-35 to 2-40 and 2-85 | Conformant | `src/vga/memory.odin` | Write-mode matrix |
 | Chain-4 and odd/even addressing combinations | IBM 2-24 to 2-34 and 2-54 | Partial | Main combinations exist; exhaustive boundary/wrap matrix is incomplete | Expanded transaction tests required |
-| Multi-byte aperture transactions preserve byte-cycle VGA semantics | IBM memory data flow | Missing | Machine currently invokes VGA once per byte | Slice Interface tests required |
+| Multi-byte aperture transactions preserve byte-cycle VGA semantics | IBM memory data flow | Conformant | `src/vga/memory.odin`, `src/machine/machine.odin` | `vga_test_aperture_slice_access_is_one_visible_transaction`, `test_machine_vga_legacy_aperture_batches_mmio_transaction` |
 | CGA 16 KiB page/address wrapping | IBM CGA compatibility modes | Partial | Dedicated CGA persona exists; full wrap matrix is unproven | Public-port CGA tests required |
 | Text modes 40/80 columns and 25/43/50 rows | IBM BIOS modes and font services | Conformant | `src/vga/scanout.odin`, `src/host/render.odin` | `vga_test_text_snapshot_variable_geometry`, `host_test_render_snapshot_uses_snapshot_geometry` |
 | Text underline, monochrome attributes, blink, line graphics, and cursor shape | IBM 2-15 to 2-17 and CRTC/Attribute sections | Partial | Blink and line graphics partly exist; underline/mono/cursor edge behavior is incomplete | Text conformance matrix required |
