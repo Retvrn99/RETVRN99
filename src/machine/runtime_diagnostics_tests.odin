@@ -2,6 +2,7 @@
 package machine
 
 import hv "../hv"
+import video "../vga"
 import "core:strings"
 import "core:testing"
 
@@ -84,6 +85,44 @@ test_machine_runtime_diagnostic_reports_gsw_shutdown_marker_stall :: proc(t: ^te
 	testing.expect(t, available)
 	testing.expect(t, strings.contains(message, "GSW shutdown stalled for 5s"))
 	testing.expect(t, strings.contains(message, "markers=d0d5d7"))
+}
+
+@(test)
+test_machine_runtime_diagnostic_reports_mmio_exit_storm_state :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	m.active_ns = 1
+	machine_runtime_diagnostic_check_mmio(m)
+	m.active_ns += MACHINE_MMIO_STORM_WINDOW_NS
+	m.vm.mmio_fallbacks = MACHINE_MMIO_STORM_THRESHOLD + 5
+	m.vm.mmio_scalar_fallbacks = MACHINE_MMIO_STORM_THRESHOLD
+	m.vm.mmio_string_fallbacks = 5
+	m.vm.device_alias_maps = 7
+	m.vm.device_alias_unmaps = 6
+	m.vga.dispi[video.DISPI_INDEX_ENABLE] = 0xE1
+	m.vga.dispi[video.DISPI_INDEX_BPP] = 32
+	m.vga.bank_read = 2
+	m.vga.bank_write = 3
+	append(
+		&m.vm.device_aliases,
+		hv.Device_Alias {
+			mapped = false,
+			request_pending = true,
+			backing_offset = 0x10000,
+			requested_offset = 0x18000,
+		},
+	)
+	defer delete(m.vm.device_aliases)
+	machine_runtime_diagnostic_check_mmio(m)
+
+	message, available := machine_take_runtime_diagnostic(m)
+	defer delete(message)
+	testing.expect(t, available)
+	testing.expect(t, strings.contains(message, "MMIO exit storm"))
+	testing.expect(t, strings.contains(message, "fallbacks=20005 scalar=20000 string=5"))
+	testing.expect(t, strings.contains(message, "vbe=e1 bpp=32 bank=2/3"))
+	testing.expect(t, strings.contains(message, "alias=0 pending=1"))
+	testing.expect(t, strings.contains(message, "maps=7 unmaps=6"))
 }
 
 @(test)

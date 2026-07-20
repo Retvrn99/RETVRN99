@@ -276,6 +276,35 @@ whpx_device_alias_rejects_invalid_or_ambiguous_ranges :: proc(t: ^testing.T) {
 }
 
 @(test)
+whpx_device_alias_sustains_production_sized_bank_churn :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	aperture: u64 = 0xA0000
+	bank_size: u64 = 64 * 1024
+	if !testing.expect(t, reserve_mmio(&vm, aperture, 2 * bank_size)) {return}
+	backing, mapped := map_device_memory_tracked(&vm, 0xE000_0000, 32 * 1024 * 1024)
+	if !testing.expect(t, mapped) {return}
+	for iteration in 0 ..< 256 {
+		offset := u64(iteration % 128) * bank_size
+		if !testing.expect(
+			t,
+			set_device_memory_alias(&vm, backing, aperture, offset, bank_size, true),
+		) {
+			return
+		}
+		if !whpx_device_mapping_test_write(t, &vm, aperture, u8(iteration)) {return}
+		dirty, ok := query_device_memory_alias_dirty(&vm, aperture, bank_size)
+		if !testing.expect(t, ok && dirty) {return}
+	}
+}
+
+@(test)
 whpx_device_mapping_relocates_disables_and_preserves_backing :: proc(t: ^testing.T) {
 	if !available() {
 		log.warn("WHPX not available")

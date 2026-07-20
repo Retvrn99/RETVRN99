@@ -2,6 +2,7 @@
 package machine
 
 import hv "../hv"
+import video "../vga"
 import "core:fmt"
 import "core:strings"
 
@@ -11,6 +12,8 @@ MACHINE_VGA_IRQ_STORM_NS :: u64(1_000_000_000)
 MACHINE_VGA_IRQ_STORM_COUNT :: u64(256)
 MACHINE_SHUTDOWN_MARKER_CAPACITY :: 32
 MACHINE_GSW_SHUTDOWN_STALL_NS :: u64(5_000_000_000)
+MACHINE_MMIO_STORM_WINDOW_NS :: u64(1_000_000_000)
+MACHINE_MMIO_STORM_THRESHOLD :: u64(20_000)
 
 Runtime_Diagnostic_Kind :: enum u8 {
 	None,
@@ -18,6 +21,7 @@ Runtime_Diagnostic_Kind :: enum u8 {
 	Vga_Status_Poll,
 	Vga_Irq_Storm,
 	Gsw_Shutdown,
+	Mmio_Storm,
 }
 
 Runtime_Diagnostic_State :: struct {
@@ -47,6 +51,14 @@ Runtime_Diagnostic_State :: struct {
 	shutdown_marker_active:   bool,
 	shutdown_marker_started:  u64,
 	shutdown_marker_reported: bool,
+	mmio_window_ns:           u64,
+	mmio_window_fallbacks:    u64,
+	mmio_window_scalar:       u64,
+	mmio_window_string:       u64,
+	mmio_report_fallbacks:    u64,
+	mmio_report_scalar:       u64,
+	mmio_report_string:       u64,
+	mmio_reported:            bool,
 }
 
 @(private = "file")
@@ -185,6 +197,37 @@ machine_runtime_diagnostic_check_shutdown :: proc(m: ^Machine) {
 	machine_runtime_diagnostic_queue(m, .Gsw_Shutdown)
 }
 
+@(private = "package")
+machine_runtime_diagnostic_check_mmio :: proc(m: ^Machine) {
+	if m == nil {return}
+	d := &m.runtime_diagnostic
+	if d.mmio_window_ns == 0 || m.active_ns < d.mmio_window_ns {
+		d.mmio_window_ns = m.active_ns
+		d.mmio_window_fallbacks = m.vm.mmio_fallbacks
+		d.mmio_window_scalar = m.vm.mmio_scalar_fallbacks
+		d.mmio_window_string = m.vm.mmio_string_fallbacks
+		return
+	}
+	if m.active_ns - d.mmio_window_ns < MACHINE_MMIO_STORM_WINDOW_NS {return}
+	fallbacks := m.vm.mmio_fallbacks - min(m.vm.mmio_fallbacks, d.mmio_window_fallbacks)
+	scalar := m.vm.mmio_scalar_fallbacks - min(m.vm.mmio_scalar_fallbacks, d.mmio_window_scalar)
+	string := m.vm.mmio_string_fallbacks - min(m.vm.mmio_string_fallbacks, d.mmio_window_string)
+	d.mmio_window_ns = m.active_ns
+	d.mmio_window_fallbacks = m.vm.mmio_fallbacks
+	d.mmio_window_scalar = m.vm.mmio_scalar_fallbacks
+	d.mmio_window_string = m.vm.mmio_string_fallbacks
+	if fallbacks < MACHINE_MMIO_STORM_THRESHOLD {
+		d.mmio_reported = false
+		return
+	}
+	if d.mmio_reported {return}
+	d.mmio_report_fallbacks = fallbacks
+	d.mmio_report_scalar = scalar
+	d.mmio_report_string = string
+	d.mmio_reported = true
+	machine_runtime_diagnostic_queue(m, .Mmio_Storm)
+}
+
 machine_take_runtime_diagnostic :: proc(m: ^Machine) -> (string, bool) {
 	if m == nil || m.runtime_diagnostic.pending == .None {return "", false}
 	d := &m.runtime_diagnostic
@@ -236,6 +279,29 @@ machine_take_runtime_diagnostic :: proc(m: ^Machine) -> (string, bool) {
 				d.shutdown_markers[index % MACHINE_SHUTDOWN_MARKER_CAPACITY],
 			)
 		}
+	case .Mmio_Storm:
+		alias := hv.Device_Alias{}
+		if len(m.vm.device_aliases) > 0 {alias = m.vm.device_aliases[0]}
+		fmt.sbprintf(
+			&builder,
+			"diagnostic: MMIO exit storm fallbacks=%d scalar=%d string=%d vbe=%02x bpp=%d bank=%d/%d alias=%d pending=%d offset=%x requested=%x maps=%d unmaps=%d map_fail=%d dirty_q=%d dirty_fail=%d",
+			d.mmio_report_fallbacks,
+			d.mmio_report_scalar,
+			d.mmio_report_string,
+			m.vga.dispi[video.DISPI_INDEX_ENABLE],
+			m.vga.dispi[video.DISPI_INDEX_BPP],
+			m.vga.bank_read,
+			m.vga.bank_write,
+			alias.mapped ? 1 : 0,
+			alias.request_pending ? 1 : 0,
+			alias.backing_offset,
+			alias.requested_offset,
+			m.vm.device_alias_maps,
+			m.vm.device_alias_unmaps,
+			m.vm.device_alias_map_failures,
+			m.vm.device_alias_dirty_queries,
+			m.vm.device_alias_query_failures,
+		)
 	case .None:
 		strings.builder_destroy(&builder)
 		return "", false

@@ -1253,6 +1253,7 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 	}
 	if m.power_off_requested {return false}
 	machine_sync_time(m)
+	machine_runtime_diagnostic_check_mmio(m)
 	machine_runtime_diagnostic_check_shutdown(m)
 	video.gsw_vga_poll(&m.gsw_vga)
 	if m.reset_requested || m.power_off_requested {return false}

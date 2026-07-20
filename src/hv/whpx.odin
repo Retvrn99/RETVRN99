@@ -431,6 +431,7 @@ whpx_capture_device_alias_dirty :: proc(vm: ^Vm, alias: ^Device_Alias) -> bool {
 	mapping := &vm.device_mappings[alias.mapping_index]
 	if !mapping.track_dirty {return true}
 	if len(alias.dirty_bitmap) == 0 {return false}
+	vm.device_alias_dirty_queries += 1
 	for &word in alias.dirty_bitmap {word = 0}
 	bitmap_size := u32(len(alias.dirty_bitmap) * size_of(u64))
 	if WHvQueryGpaRangeDirtyBitmap(
@@ -441,6 +442,7 @@ whpx_capture_device_alias_dirty :: proc(vm: ^Vm, alias: ^Device_Alias) -> bool {
 		   bitmap_size,
 	   ) <
 	   0 {
+		vm.device_alias_query_failures += 1
 		return false
 	}
 	for word in alias.dirty_bitmap {
@@ -713,8 +715,10 @@ whpx_apply_device_alias_request :: proc(
 			alias.dirty_pending = true
 		}
 		if WHvUnmapGpaRange(vm.part, alias.gpa, alias.size) < 0 {return false, true}
+		vm.device_alias_unmaps += 1
 	}
 	if new_mapped && !whpx_map_device_alias_at(vm, alias, new_offset) {
+		vm.device_alias_map_failures += 1
 		alias.backing_offset = new_offset
 		alias.mapped = false
 		alias.request_pending = false
@@ -723,6 +727,7 @@ whpx_apply_device_alias_request :: proc(
 
 	alias.backing_offset = new_offset
 	alias.mapped = new_mapped
+	if new_mapped {vm.device_alias_maps += 1}
 	alias.request_pending = false
 	return true, true
 }

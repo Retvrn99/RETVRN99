@@ -628,6 +628,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 		if machine_live && !frozen && !host.pause_active(&pause_state) {
 			alive := machine.step(m)
 			if diagnostic, available := machine.machine_take_runtime_diagnostic(m); available {
+				fmt.printfln("%s", diagnostic)
 				vm_log(s, diagnostic)
 				delete(diagnostic)
 			}
