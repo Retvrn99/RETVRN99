@@ -126,6 +126,7 @@ Machine :: struct {
 	device_sync_tick:                    [SCHEDULED_DEVICE_COUNT]u64,
 	device_sync_valid:                   [SCHEDULED_DEVICE_COUNT]bool,
 	diagnostic_tracing:                  bool,
+	runtime_diagnostic:                 Runtime_Diagnostic_State,
 	hardware_trace:                      ^Hardware_Trace,
 	scanout_copies:                      u64,
 	cpu_halted:                          bool,
@@ -1280,11 +1281,13 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 	if m.cpu_halted {
 		if queued || deferred_pending_event {
 			m.cpu_halted = false
+			machine_runtime_diagnostic_note_resume(m)
 		} else {
 			machine_rearm_wake(m)
 			delay_ns := machine_next_wake_ns(m)
 			hosttime.waiter_sleep(&m.idle_waiter, time.Duration(max(delay_ns, u64(1))))
 			machine_sync_time(m)
+			machine_runtime_diagnostic_check_halt(m)
 			return !m.bus.frozen
 		}
 	}
@@ -1317,6 +1320,7 @@ machine_irq_delivered :: proc(ctx: rawptr, vector: u8) -> bool {
 	if m == nil || !m.pic_offer_queued || m.pic_queued_offer.vector != vector {return false}
 	offer := m.pic_queued_offer
 	pic_interrupt_complete_queued(&m.pic, offer)
+	machine_runtime_diagnostic_note_irq(m, offer)
 	m.pic_offer_queued = false
 	m.pic_queued_offer = {}
 	m.pic_delivery_count += 1
@@ -1344,6 +1348,7 @@ machine_handle_exit :: proc(m: ^Machine, ex: hv.Exit) -> bool {
 	#partial switch ex.kind {
 	case .Halt:
 		m.cpu_halted = true
+		machine_runtime_diagnostic_note_halt(m, ex)
 	case .Reset:
 		source :=
 			m.cmos.ram[0x0F] == 0x0A ? Reset_Provenance.Dos_Extender_Warm_Resume : Reset_Provenance.Triple_Fault
@@ -1525,6 +1530,7 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 		val   = v,
 	}
 	if m.diagnostic_tracing {m.io_hist[m.io_count % IO_HISTORY] = t}
+	machine_runtime_diagnostic_note_io(m, port, false, size, v)
 	m.io_count += 1
 	if ide_decode == .Decoded {
 		if m.bus.diagnostic_tracing {m.ide_hist[m.ide_count % IDE_HISTORY] = t}
@@ -1585,6 +1591,7 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 	} else if ide_decode != .Suppressed {
 		bus_io_write(&m.bus, bus_port, size, val)
 	}
+	machine_runtime_diagnostic_note_io(m, port, true, size, val)
 	machine_rearm_wake(m)
 	return !m.bus.frozen && !m.reset_requested && !m.power_off_requested
 }

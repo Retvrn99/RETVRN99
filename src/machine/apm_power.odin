@@ -21,9 +21,11 @@ machine_apm_power_read :: proc(_: rawptr, _: u16, size: u8) -> u32 {
 }
 
 machine_apm_power_write :: proc(ctx: rawptr, port: u16, size: u8, value: u32) {
-	if ctx == nil || port != APM_POWER_OFF_PORT || size < 2 {return}
-	if u16(value) != APM_POWER_OFF_VALUE {return}
+	if ctx == nil || port != APM_POWER_OFF_PORT {return}
 	m := (^Machine)(ctx)
+	machine_runtime_diagnostic_note_apm_write(m, size, value)
+	if size < 2 {return}
+	if u16(value) != APM_POWER_OFF_VALUE {return}
 	machine_trace_record(m, .Progress, u64(port), u64(value), 1)
 	machine_request_power_off(m, "guest requested APM power off")
 }

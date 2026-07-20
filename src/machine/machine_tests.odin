@@ -962,6 +962,50 @@ test_machine_vga_vertical_interrupt_uses_at_irq9_redirect :: proc(t: ^testing.T)
 }
 
 @(test)
+test_machine_vga_irq9_level_mode_clears_after_spurious_cascade :: proc(t: ^testing.T) {
+	backing := make([]u8, video.VRAM_SIZE)
+	defer delete(backing)
+	m := new(Machine)
+	defer free(m)
+	pic_setup(&m.pic)
+	pic_out(&m.pic, 0x4D1, 0x02)
+	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
+	defer video.vga_destroy(&m.vga)
+	video.vga_set_legacy_irq(&m.vga, m, machine_vga_legacy_irq)
+	m.vga.timing = video.Video_Timing {
+		frame_period_ns = 1000,
+		line_period_ns  = 100,
+		total_lines     = 10,
+		visible_lines   = 5,
+		visible_dots    = 8,
+		total_dots      = 10,
+		vblank_start    = 5,
+		vblank_end      = 10,
+		retrace_start   = 6,
+		retrace_end     = 8,
+	}
+	m.vga.crtc[0x11] = 0x10
+
+	video.vga_sync_to(&m.vga, 550)
+	vector, ok := pic_ack(&m.pic)
+	testing.expect(t, ok)
+	testing.expect_value(t, vector, u8(0x71))
+	pic_out(&m.pic, 0xA0, 0x61)
+	pic_out(&m.pic, 0x20, 0x62)
+	testing.expect(t, pic_has_pending(&m.pic))
+
+	video.vga_out(&m.vga, 0x3D4, 0x11)
+	video.vga_out(&m.vga, 0x3D5, 0)
+	testing.expect_value(t, m.pic.slave.irr & 0x02, u8(0))
+	testing.expect_value(t, m.pic.source_asserted[9], u8(0))
+	vector, ok = pic_ack(&m.pic)
+	testing.expect(t, ok)
+	testing.expect_value(t, vector, u8(0x77))
+	pic_out(&m.pic, 0x20, 0x62)
+	testing.expect(t, !pic_has_pending(&m.pic))
+}
+
+@(test)
 test_machine_one_shot_rearms_same_deadline_and_run_guard_disarms_after_run :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)

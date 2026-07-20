@@ -791,7 +791,12 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 		case .X64Halt:
 			// advance RIP past the HLT
 			whpx_advance_rip(vm, &exit_ctx.VpContext)
-			return Exit{kind = .Halt}
+			return Exit {
+				kind   = .Halt,
+				cs     = exit_ctx.VpContext.Cs.Selector,
+				rip    = exit_ctx.VpContext.Rip,
+				rflags = exit_ctx.VpContext.Rflags,
+			}
 		case .X64InterruptWindow:
 			return Exit{kind = .Interrupt_Window}
 		case .X64Cpuid:

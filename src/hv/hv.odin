@@ -16,6 +16,9 @@ Exit_Kind :: enum {
 Exit :: struct {
 	kind:   Exit_Kind,
 	detail: string, // failure or reset provenance
+	cs:     u16,
+	rip:    u64,
+	rflags: u64,
 }
 
 Interrupt_Injection_Result :: enum {

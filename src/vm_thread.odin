@@ -627,6 +627,10 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 
 		if machine_live && !frozen && !host.pause_active(&pause_state) {
 			alive := machine.step(m)
+			if diagnostic, available := machine.machine_take_runtime_diagnostic(m); available {
+				vm_log(s, diagnostic)
+				delete(diagnostic)
+			}
 			if storage_error, terminal := vm_volume_terminal_error(c); terminal {
 				frozen = true
 				diagnostic := fat32session.error_text(&storage_error)

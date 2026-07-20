@@ -29,7 +29,7 @@ not implicit capability claims.
 | --- | --- | --- | --- | --- |
 | Miscellaneous Output 3C2h/3CCh: I/O select, RAM enable, clock select, sync polarity, reserved bits | IBM 2-42 to 2-43 | Partial | `src/vga/ports.odin`, `src/vga/timing.odin` | `test_vga_io_decode_follows_misc_output` plus reserved-bit and clock tests required |
 | Input Status 0 3C2h: switch sense and pending CRT interrupt | IBM 2-44 | Conformant | `src/vga/legacy_beam.odin`, `src/vga/timing.odin` | `vga_test_status0_switch_sense_and_retrace`, `vga_test_vertical_interrupt_latch_and_callback` |
-| Input Status 1 3BAh/3DAh: display enable, vertical retrace, Attribute flip-flop reset | IBM 2-45 | Partial | `src/vga/legacy_beam.odin`, `src/vga/timing.odin`, `src/vga/ports.odin` | `vga_test_absolute_timing_and_status` covers blank/retrace; full CGA/MDA matrix remains |
+| Input Status 1 3BAh/3DAh: display enable, vertical retrace, Attribute flip-flop reset | IBM 2-45 | Partial | `src/vga/legacy_beam.odin`, `src/vga/timing.odin`, `src/vga/ports.odin` | Absolute timing and public CRTC reset tests cover blank/retrace; full CGA/MDA matrix remains |
 | Feature Control 3BAh/3DAh and 3CAh reserved behavior | IBM 2-46 | Partial | `src/vga/ports.odin` retains two undocumented bits | Reserved read/write test required |
 | Video Subsystem Enable 3C3h decode behavior | IBM 2-46 and INT 10h AH=12h BL=32h | Partial | `src/vga/legacy_control.odin` | BIOS disable/enable integration test required |
 | Sequencer 00h synchronous/asynchronous reset | IBM 2-48 | Missing | Stored but does not gate sequencer/display state | Port-programmed reset test required |
@@ -57,7 +57,7 @@ not implicit capability claims.
 | 0Ch/0Dh Start Address and vertical-retrace latch | IBM 2-67 and 2-99 | Partial | Pending/retrace latch exists; scheduler and mid-frame proof are incomplete | Start-latch and deferred scanout tests required |
 | 0Eh/0Fh Cursor Location | IBM 2-68 | Conformant | `src/vga/scanout.odin` | Cursor location tests |
 | 10h Vertical Retrace Start | IBM 2-69 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin`, `src/machine/machine.odin` | `vga_test_vertical_interrupt_latch_and_callback` and IRQ2 source tests exist; halted-guest proof remains |
-| 11h Vertical Retrace End, protection, IRQ enable and clear | IBM 2-69 to 2-70 | Partial | `src/vga/ports.odin`, `src/vga/legacy_beam.odin`, `src/machine/pic.odin` | `vga_test_vertical_interrupt_latch_and_callback`, default-clear proof, and AT IRQ2-to-IRQ9 redirect proof; wrapped-end matrix remains |
+| 11h Vertical Retrace End, protection, IRQ enable and clear | IBM 2-69 to 2-70 | Partial | `src/vga/ports.odin`, `src/vga/legacy_beam.odin`, `src/machine/pic.odin` | Latch, default-clear, AT IRQ2-to-IRQ9 redirect, and level-triggered clear proofs exist; wrapped-end matrix remains |
 | 12h Vertical Display Enable End | IBM 2-71 | Conformant | `src/vga/timing.odin` | Mode geometry tests |
 | 13h Offset | IBM 2-71 | Conformant | `src/vga/legacy_addressing.odin` | Pitch/address tests |
 | 14h Underline Location, count-by-4, doubleword mode | IBM 2-72 | Partial | Address bits exist; text underline is absent | Underline and addressing tests required |

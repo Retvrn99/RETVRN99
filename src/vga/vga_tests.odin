@@ -167,6 +167,32 @@ vga_test_absolute_timing_and_status :: proc(t: ^testing.T) {
 }
 
 @(test)
+vga_test_public_crtc_reset_disables_status_retrace_signal :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	v.timing = Video_Timing {
+		frame_period_ns = 1000,
+		line_period_ns  = 100,
+		total_lines     = 10,
+		visible_lines   = 5,
+		visible_dots    = 8,
+		total_dots      = 10,
+		vblank_start    = 5,
+		vblank_end      = 10,
+		retrace_start   = 6,
+		retrace_end     = 8,
+	}
+	vga_sync_to(&v, 650)
+	testing.expect_value(t, vga_in(&v, 0x3DA) & VGA_STATUS1_VERTICAL_RETRACE, u8(0x08))
+
+	vga_out(&v, 0x3D4, 0x17)
+	vga_out(&v, 0x3D5, v.crtc[0x17] &~ 0x80)
+	testing.expect_value(t, vga_in(&v, 0x3DA) & VGA_STATUS1_VERTICAL_RETRACE, u8(0))
+}
+
+@(test)
 vga_test_vertical_interrupt_latch_and_callback :: proc(t: ^testing.T) {
 	v: Vga
 	backing := test_vga_init(t, &v)
