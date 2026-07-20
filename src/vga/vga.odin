@@ -162,6 +162,17 @@ Vga :: struct {
 	dispi:                      [12]u16,
 	bank_read:                  u16,
 	bank_write:                 u16,
+	ddc_host_scl_release:       bool,
+	ddc_host_sda_release:       bool,
+	ddc_drive_sda_low:          bool,
+	ddc_phase:                  Ddc_Phase,
+	ddc_after_ack_phase:        Ddc_Phase,
+	ddc_bit_count:              int,
+	ddc_shift:                  u8,
+	ddc_offset:                 u8,
+	ddc_read_byte:              u8,
+	ddc_read_bit:               int,
+	ddc_master_ack:             bool,
 	timing:                     Video_Timing,
 	latched_start:              u16,
 	pending_start:              u16,
@@ -271,6 +282,7 @@ vga_reset :: proc(v: ^Vga) {
 	v.dispi[DISPI_INDEX_VIRT_WIDTH] = 640
 	v.dispi[DISPI_INDEX_VIRT_HEIGHT] = u16(VRAM_SIZE / 640)
 	v.dispi[DISPI_INDEX_VIDEO_MEMORY_64K] = u16(VRAM_SIZE / 65536)
+	ddc_reset(v)
 	v.latched_start = 0
 	v.pending_start = 0
 	v.vertical_interrupt_pending = false

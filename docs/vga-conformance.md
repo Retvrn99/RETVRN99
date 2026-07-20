@@ -49,9 +49,9 @@ not implicit capability claims.
 | 04h Start Horizontal Retrace | IBM 2-59 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Status 1 vertical-retrace proof exists; horizontal-retrace proof remains |
 | 05h End Horizontal Retrace, delay, and blank bit 5 | IBM 2-60 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped retrace exists; blank-bit proof remains |
 | 06h Vertical Total | IBM 2-61 | Conformant | `src/vga/timing.odin` | Timing total tests |
-| 07h Overflow fields and protected line-compare exception | IBM 2-62 | Partial | Geometry fields and protection exception exist; blanking fields await beam model | Port and beam tests required |
+| 07h Overflow fields and protected line-compare exception | IBM 2-62 | Partial | Geometry, blanking, and protection fields exist | Public-port overflow/protection matrix remains |
 | 08h Preset Row Scan and byte panning | IBM 2-63 | Conformant | `src/vga/legacy_addressing.odin` | `src/vga/legacy_addressing_tests.odin` |
-| 09h Maximum Scan Line, double scan, line compare, vertical blank bit 9 | IBM 2-64 | Partial | Maximum scan and double scan are not multiplied; blanking is absent | Combined scan-factor test required |
+| 09h Maximum Scan Line, double scan, line compare, vertical blank bit 9 | IBM 2-64 | Partial | Blanking bit participates; maximum scan and double scan are not multiplied | Combined scan-factor test required |
 | 0Ah Cursor Start and cursor off | IBM 2-65 | Partial | Cursor off exists; shape edge cases need correction | Text cursor matrix required |
 | 0Bh Cursor End and cursor skew | IBM 2-66 | Partial | End-before-start incorrectly wraps instead of hiding | Text cursor matrix required |
 | 0Ch/0Dh Start Address and vertical-retrace latch | IBM 2-67 and 2-99 | Partial | Pending/retrace latch exists; scheduler and mid-frame proof are incomplete | Start-latch and deferred scanout tests required |
@@ -134,24 +134,24 @@ not implicit capability claims.
 | --- | --- | --- | --- | --- |
 | 4F00h controller information and mode-list termination | VBE 2.0 4.3 | Partial | Pinned VGABIOS | Existing signature check; full field/mode-list test required |
 | 4F01h mode information | VBE 2.0 4.4 | Partial | Pinned VGABIOS and DISPI capability reads | Per-mode field tests required |
-| 4F02h set mode, banked/LFB and clear/preserve | VBE 2.0 4.5 | Partial | `src/vga/vbe.odin` | Existing 101h banked proof; 151h and LFB matrix required |
+| 4F02h set mode, banked/LFB and clear/preserve | VBE 2.0 4.5 | Partial | `src/vga/vbe.odin` and pinned VGABIOS | Existing 101h and 151h banked proof; LFB firmware matrix required |
 | 4F03h return exact current mode and flags | VBE 2.0 4.6 | Partial | Pinned VGABIOS | Set/get round-trip required |
 | 4F04h save/restore state | VBE 2.0 4.7 | Partial | Pinned VGABIOS | Query/save/mutate/restore test required |
 | 4F05h display window control and direct entry | VBE 2.0 4.8 | Partial | DISPI bank register | Read/write bank and direct-call tests required |
-| 4F06h logical scanline length and achievable-width adjustment | VBE 2.0 4.9 | Partial | DISPI virtual width currently rejects instead of adjusting some values | Adjustment and maximum tests required |
+| 4F06h logical scanline length and achievable-width adjustment | VBE 2.0 4.9 | Partial | `src/vga/vbe.odin` adjusts virtual width and clamps offsets | Device-level adjustment proof exists; firmware function matrix remains |
 | 4F07h display start, including retrace request | VBE 2.0 4.10 | Partial | DISPI offsets | Set/get, bounds, no-mutation, and retrace-latch tests required |
 | 4F08h DAC palette format | VBE 2.0 4.11 | Partial | DISPI 8-bit DAC flag | 6/8-bit round-trip test required |
 | 4F09h palette data | VBE 2.0 4.12 | Partial | VGA DAC ports through firmware | Set/get and retrace-request tests required |
 | 4F0Ah protected-mode interface | VBE 2.0 4.13 | Partial | Pinned VGABIOS | Table and callable window/display/palette entry tests required |
-| 4F15h DDC capabilities and EDID block 0 | VBE supplemental DDC and pinned VGABIOS | Missing | DISPI index 0Bh is inert | DDC2 handshake and checksum-valid EDID test required |
-| DISPI ID0 feature set | Bochs B0C0 | Partial | IDs are accepted without complete feature gating | Version matrix required |
-| DISPI ID1 virtual geometry and offsets | Bochs B0C1 | Partial | Registers exist; version gating/adjustment incomplete | Version and geometry tests required |
-| DISPI ID2 BPP values, BPP zero compatibility, LFB and no-clear | Bochs B0C2 | Partial | BPP zero is rejected | BPP and enable-flag tests required |
-| DISPI ID3 GETCAPS and 8-bit DAC | Bochs B0C3 | Partial | Flags exist; version gating incomplete | Version/capability tests required |
+| 4F15h DDC capabilities and EDID block 0 | VBE supplemental DDC and pinned VGABIOS | Conformant | `src/vga/ddc.odin`, pinned VGABIOS | `vga_test_ddc2_reads_checksum_valid_edid`, `test_machine_boots_bochs_vgabios_and_sets_vbe_mode` |
+| DISPI ID0 feature set | Bochs B0C0 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_id_gates_features_and_bpp_zero` |
+| DISPI ID1 virtual geometry and offsets | Bochs B0C1 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_id_gates_features_and_bpp_zero`, `vga_test_dispi_virtual_pitch_and_offsets` |
+| DISPI ID2 BPP values, BPP zero compatibility, LFB and no-clear | Bochs B0C2 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_id_gates_features_and_bpp_zero` |
+| DISPI ID3 GETCAPS and 8-bit DAC | Bochs B0C3 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_width_and_capabilities`, `vga_test_dispi_id_gates_features_and_bpp_zero` |
 | DISPI ID4 8 MiB memory contract | Bochs B0C4 | Partial | Device exposes the shared 32 MiB VRAM regardless selected ID | Version/memory test and documented compatibility policy required |
 | DISPI ID5 16 MiB plus memory-size register | Bochs B0C5 | Partial | Device reports 32 MiB through index 0Ah | Pinned-firmware compatibility test required |
 | Mode 150h 320x200x8 banked and LFB | Pinned Bochs mode table | Partial | Mode exists | Real firmware read/write/render test required |
-| Mode 151h 320x240x8 banked and LFB | Pinned Bochs mode table | Partial | Mode exists | Real firmware read/write/render test required |
+| Mode 151h 320x240x8 banked and LFB | Pinned Bochs mode table | Partial | Pinned VGABIOS and `src/vga/vbe.odin` | Real firmware banked read/write/render proof exists; LFB firmware proof remains |
 
 ## Explicit exclusions
 

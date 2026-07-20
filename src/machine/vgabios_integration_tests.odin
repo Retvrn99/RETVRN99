@@ -107,6 +107,55 @@ vgabios_test_boot_floppy :: proc() -> []u8 {
 		0x08, // mov cx, 0800h
 		0xF3,
 		0xAB, // rep stosw
+		0x31,
+		0xC0, // xor ax, ax
+		0x8E,
+		0xC0, // mov es, ax
+		0xB8,
+		0x15,
+		0x4F, // mov ax, 4f15h
+		0x31,
+		0xDB, // xor bx, bx
+		0x31,
+		0xC9, // xor cx, cx
+		0xCD,
+		0x10, // int 10h
+		0xA3,
+		0x08,
+		0x05, // mov [0508h], ax
+		0x89,
+		0x1E,
+		0x0A,
+		0x05, // mov [050Ah], bx
+		0xB8,
+		0x15,
+		0x4F, // mov ax, 4f15h
+		0xBB,
+		0x01,
+		0x00, // mov bx, 0001h
+		0x31,
+		0xC9, // xor cx, cx
+		0x31,
+		0xD2, // xor dx, dx
+		0xBF,
+		0x00,
+		0x07, // mov di, 0700h
+		0xCD,
+		0x10, // int 10h
+		0xA3,
+		0x0C,
+		0x05, // mov [050Ch], ax
+		0xB8,
+		0x02,
+		0x4F, // mov ax, 4f02h
+		0xBB,
+		0x51,
+		0x81, // mov bx, 8151h (320x240x8, banked, preserve memory)
+		0xCD,
+		0x10, // int 10h
+		0xA3,
+		0x0E,
+		0x05, // mov [050Eh], ax
 		0xC6,
 		0x06,
 		0x06,
@@ -221,9 +270,32 @@ test_machine_boots_bochs_vgabios_and_sets_vbe_mode :: proc(t: ^testing.T) {
 	testing.expect_value(t, m.vm.ram[0x0500] & 0x7F, u8(0x12))
 	testing.expect_value(t, u16(m.vm.ram[0x0502]) | u16(m.vm.ram[0x0503]) << 8, u16(0x004F))
 	testing.expect_value(t, u16(m.vm.ram[0x0504]) | u16(m.vm.ram[0x0505]) << 8, u16(0x004F))
+	ddc_caps_ax := u16(m.vm.ram[0x0508]) | u16(m.vm.ram[0x0509]) << 8
+	ddc_caps_bx := u16(m.vm.ram[0x050A]) | u16(m.vm.ram[0x050B]) << 8
+	ddc_read_ax := u16(m.vm.ram[0x050C]) | u16(m.vm.ram[0x050D]) << 8
+	if ddc_read_ax != 0x004F {
+		for i in 0 ..< min(IO_HISTORY, int(m.io_count)) {
+			entry := m.io_hist[(m.io_count - u64(i + 1)) % IO_HISTORY]
+			log.errorf(
+				"VGA BIOS DDC recent I/O -%d: %c[%04x]/%d=%x",
+				i + 1,
+				entry.write ? 'w' : 'r',
+				entry.port,
+				entry.size,
+				entry.val,
+			)
+		}
+	}
+	testing.expect_value(t, ddc_caps_ax, u16(0x004F))
+	testing.expect_value(t, ddc_caps_bx, u16(0x0202))
+	testing.expect_value(t, ddc_read_ax, u16(0x004F))
+	testing.expect_value(t, u16(m.vm.ram[0x050E]) | u16(m.vm.ram[0x050F]) << 8, u16(0x004F))
+	for value, i in video.VGA_EDID_BLOCK0 {
+		testing.expect_value(t, m.vm.ram[0x0700 + i], value)
+	}
 	testing.expect_value(t, string(m.vm.ram[0x0600:0x0604]), "VESA")
-	testing.expect_value(t, video.dispi_read_register(&m.vga, video.DISPI_INDEX_XRES), u16(640))
-	testing.expect_value(t, video.dispi_read_register(&m.vga, video.DISPI_INDEX_YRES), u16(480))
+	testing.expect_value(t, video.dispi_read_register(&m.vga, video.DISPI_INDEX_XRES), u16(320))
+	testing.expect_value(t, video.dispi_read_register(&m.vga, video.DISPI_INDEX_YRES), u16(240))
 	testing.expect_value(t, video.dispi_read_register(&m.vga, video.DISPI_INDEX_BPP), u16(8))
 	testing.expect(t, video.vga_vbe_enabled(&m.vga))
 
@@ -236,8 +308,8 @@ test_machine_boots_bochs_vgabios_and_sets_vbe_mode :: proc(t: ^testing.T) {
 	video.vga_sync_to(&m.vga, m.vga.timing.elapsed_ns + 2 * video.VBE_FRAME_PERIOD_NS)
 	frame := video.vga_display_frame(&m.vga)
 	testing.expect_value(t, frame.kind, video.Display_Kind.Indexed_8)
-	testing.expect_value(t, frame.width, 640)
-	testing.expect_value(t, frame.height, 480)
+	testing.expect_value(t, frame.width, 320)
+	testing.expect_value(t, frame.height, 240)
 	nonblack := 0
 	for pixel in frame.pixels {
 		if pixel != 0xFF000000 {nonblack += 1}
