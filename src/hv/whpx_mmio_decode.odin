@@ -9,6 +9,23 @@ Whpx_Mmio_Kind :: enum {
 	Movs,
 	Stos,
 	Lods,
+	Winquake_Store_Loop,
+}
+
+@(private = "file")
+whpx_mmio_exact_winquake_loop :: proc(bytes: []u8, default_32: bool) -> bool {
+	return(
+		default_32 &&
+		len(bytes) >= 8 &&
+		bytes[0] == 0x89 &&
+		bytes[1] == 0x0C &&
+		bytes[2] == 0x86 &&
+		bytes[3] == 0x40 &&
+		bytes[4] == 0x39 &&
+		bytes[5] == 0xD8 &&
+		bytes[6] == 0x7C &&
+		bytes[7] == 0xF8 \
+	)
 }
 
 Whpx_Mmio_Extension :: enum {
@@ -198,6 +215,24 @@ whpx_decode_mmio_instruction :: proc(
 ) {
 	decoded: Whpx_Mmio_Instruction
 	if len(bytes) == 0 {return decoded, false, "instruction bytes unavailable"}
+	if whpx_mmio_exact_winquake_loop(bytes, default_32) {
+		return Whpx_Mmio_Instruction {
+			kind = .Winquake_Store_Loop,
+			address = {
+				address_bits    = 32,
+				base_present   = true,
+				base_register  = 6,
+				index_present  = true,
+				index_register = 0,
+				scale          = 4,
+				segment        = .Ds,
+			},
+			memory_width   = 4,
+			register_width = 4,
+			register       = 1,
+			length         = 8,
+		}, true, ""
+	}
 	operand_bits := default_32 ? 32 : 16
 	address_bits := default_32 ? 32 : 16
 	cursor := 0

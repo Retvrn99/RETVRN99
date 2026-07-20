@@ -10,6 +10,7 @@ Whpx_Mmio_State :: struct {
 	ss:  WHV_X64_SEGMENT_REGISTER,
 	fs:  WHV_X64_SEGMENT_REGISTER,
 	gs:  WHV_X64_SEGMENT_REGISTER,
+	rflags: u64,
 }
 
 @(private = "package")
@@ -17,7 +18,7 @@ whpx_mmio_read_state :: proc(vm: ^Vm) -> (Whpx_Mmio_State, bool) {
 	state: Whpx_Mmio_State
 	names := [?]WHV_REGISTER_NAME {
 		.Rax, .Rcx, .Rdx, .Rbx, .Rsp, .Rbp, .Rsi, .Rdi,
-		.Ds, .Es, .Ss, .Fs, .Gs,
+		.Ds, .Es, .Ss, .Fs, .Gs, .Rflags,
 	}
 	values: [len(names)]WHV_REGISTER_VALUE
 	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) < 0 {
@@ -29,17 +30,19 @@ whpx_mmio_read_state :: proc(vm: ^Vm) -> (Whpx_Mmio_State, bool) {
 	state.ss = values[10].Segment
 	state.fs = values[11].Segment
 	state.gs = values[12].Segment
+	state.rflags = values[13].Reg64
 	return state, true
 }
 
 @(private = "file")
 whpx_mmio_commit_state :: proc(vm: ^Vm, state: ^Whpx_Mmio_State, rip: u64) -> bool {
 	names := [?]WHV_REGISTER_NAME {
-		.Rax, .Rcx, .Rdx, .Rbx, .Rsp, .Rbp, .Rsi, .Rdi, .Rip,
+		.Rax, .Rcx, .Rdx, .Rbx, .Rsp, .Rbp, .Rsi, .Rdi, .Rflags, .Rip,
 	}
 	values: [len(names)]WHV_REGISTER_VALUE
 	for i in 0 ..< 8 {values[i].Reg64 = state.gpr[i]}
-	values[8].Reg64 = rip
+	values[8].Reg64 = state.rflags
+	values[9].Reg64 = rip
 	return WHvSetVirtualProcessorRegisters(
 		vm.part,
 		0,
@@ -47,6 +50,41 @@ whpx_mmio_commit_state :: proc(vm: ^Vm, state: ^Whpx_Mmio_State, rip: u64) -> bo
 		u32(len(names)),
 		&values[0],
 	) >= 0
+}
+
+WHPX_RFLAGS_ARITHMETIC_MASK :: u64(0x8D5)
+WHPX_RFLAGS_CF              :: u64(1 << 0)
+WHPX_RFLAGS_PF              :: u64(1 << 2)
+WHPX_RFLAGS_AF              :: u64(1 << 4)
+WHPX_RFLAGS_ZF              :: u64(1 << 6)
+WHPX_RFLAGS_SF              :: u64(1 << 7)
+WHPX_RFLAGS_OF              :: u64(1 << 11)
+
+@(private = "file")
+whpx_mmio_even_parity :: proc(value: u8) -> bool {
+	bits := value
+	bits ~= bits >> 4
+	bits ~= bits >> 2
+	bits ~= bits >> 1
+	return bits & 1 == 0
+}
+
+@(private = "package")
+whpx_mmio_cmp32_flags :: proc(rflags: u64, left, right: u32) -> u64 {
+	result := left - right
+	flags := rflags &~ WHPX_RFLAGS_ARITHMETIC_MASK
+	if left < right {flags |= WHPX_RFLAGS_CF}
+	if whpx_mmio_even_parity(u8(result)) {flags |= WHPX_RFLAGS_PF}
+	if (left ~ right ~ result) & 0x10 != 0 {flags |= WHPX_RFLAGS_AF}
+	if result == 0 {flags |= WHPX_RFLAGS_ZF}
+	if result & 0x8000_0000 != 0 {flags |= WHPX_RFLAGS_SF}
+	if (left ~ right) & (left ~ result) & 0x8000_0000 != 0 {flags |= WHPX_RFLAGS_OF}
+	return flags
+}
+
+@(private = "package")
+whpx_mmio_signed_less :: proc(rflags: u64) -> bool {
+	return (rflags & WHPX_RFLAGS_SF != 0) != (rflags & WHPX_RFLAGS_OF != 0)
 }
 
 @(private = "file")
@@ -546,6 +584,77 @@ whpx_execute_string_mmio :: proc(
 	return true, ""
 }
 
+@(private = "file")
+whpx_execute_winquake_mmio_loop :: proc(
+	vm: ^Vm,
+	vp: ^WHV_VP_EXIT_CONTEXT,
+	mmio: ^WHV_MEMORY_ACCESS_CONTEXT,
+	decoded: Whpx_Mmio_Instruction,
+) -> (
+	bool,
+	string,
+) {
+	if vp.Rflags & 0x100 != 0 {
+		scalar := decoded
+		scalar.kind = .Scalar_Store_Register
+		scalar.length = 3
+		return whpx_execute_scalar_mmio(vm, vp, mmio, scalar)
+	}
+	state, state_ok := whpx_mmio_read_state(vm)
+	if !state_ok {return false, "failed to read WinQuake MMIO loop state"}
+	if vm.io_string_begin != nil {vm.io_string_begin(vm.io_ctx)}
+	defer if vm.io_string_end != nil {vm.io_string_end(vm.io_ctx)}
+
+	limit := whpx_io_iteration_budget(vm, WHPX_IO_STRING_BUDGET)
+	cache: Whpx_IO_Translation_Cache
+	completed: u64
+	loop_continues := true
+	for completed < limit && loop_continues {
+		offset := whpx_mmio_effective_offset(&state, decoded.address)
+		gpas: [4]u64
+		fault := whpx_mmio_translate(
+			vm,
+			&state,
+			vp,
+			decoded.address.segment,
+			offset,
+			decoded.memory_width,
+			true,
+			&cache,
+			&gpas,
+		)
+		if fault.kind != .None {
+			if completed > 0 && !whpx_mmio_commit_state(vm, &state, vp.Rip) {
+				return false, "failed to commit WinQuake MMIO loop progress"
+			}
+			return whpx_mmio_fault_detail(vm, fault, "WinQuake MMIO loop operand")
+		}
+		if completed == 0 && !whpx_mmio_validate_intercept(mmio, &gpas, true) {
+			return false, "decoded WinQuake MMIO loop operand mismatch"
+		}
+		value := whpx_mmio_register_read(&state, decoded.register, decoded.memory_width)
+		if !whpx_io_memory_access(vm, &gpas, decoded.memory_width, true, &value) {
+			if completed > 0 && !whpx_mmio_commit_state(vm, &state, vp.Rip) {
+				return false, "failed to commit WinQuake MMIO loop progress"
+			}
+			return false, "WinQuake MMIO loop write failed"
+		}
+
+		eax := u32(state.gpr[0]) + 1
+		state.gpr[0] = u64(eax)
+		state.rflags = whpx_mmio_cmp32_flags(state.rflags, eax, u32(state.gpr[3]))
+		loop_continues = whpx_mmio_signed_less(state.rflags)
+		completed += 1
+		limit = min(limit, whpx_io_iteration_budget(vm, WHPX_IO_STRING_BUDGET))
+	}
+
+	rip := loop_continues ? vp.Rip : whpx_mmio_advance_rip(vp, decoded.length)
+	if !whpx_mmio_commit_state(vm, &state, rip) {
+		return false, "failed to commit WinQuake MMIO loop state"
+	}
+	return true, ""
+}
+
 whpx_execute_mmio_fallback :: proc(
 	vm: ^Vm,
 	vp: ^WHV_VP_EXIT_CONTEXT,
@@ -560,6 +669,8 @@ whpx_execute_mmio_fallback :: proc(
 		return whpx_execute_scalar_mmio(vm, vp, mmio, decoded)
 	case .Movs, .Stos, .Lods:
 		return whpx_execute_string_mmio(vm, vp, mmio, decoded)
+	case .Winquake_Store_Loop:
+		return whpx_execute_winquake_mmio_loop(vm, vp, mmio, decoded)
 	case:
 		return false, "invalid MMIO fallback operation"
 	}

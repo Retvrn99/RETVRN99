@@ -188,6 +188,117 @@ gsw_gdi_cookie_doorbell_handles_a_wrapped_command :: proc(t: ^testing.T) {
 	testing.expect_value(t, gsw_rd32(ram[:], 128 + 384), GSW_GDI_COMPLETION_COOKIE)
 }
 
+gsw_gdi_test_ring_write :: proc(ram: []u8, ring_gpa: u64, ring_size, offset: u32, data: []u8) {
+	first := min(len(data), int(ring_size - offset))
+	start := int(ring_gpa + u64(offset))
+	copy(ram[start:start + first], data[:first])
+	if first < len(data) {
+		base := int(ring_gpa)
+		copy(ram[base:base + len(data) - first], data[first:])
+	}
+}
+
+@(test)
+gsw_gdi_cookie_doorbell_progresses_across_recreated_blt_sequences :: proc(t: ^testing.T) {
+	framebuffer: [4096]u8
+	ram: [1024]u8
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer[:])
+	g.ring_gpa = 256
+	g.ring_size = 512
+	for &pixel, index in framebuffer[:256] {pixel = u8(index)}
+
+	for submission in 0 ..< 40 {
+		command: [GSW_GDI_BLT_COMMAND_BYTES]u8
+		fence := u64(submission + 1)
+		gsw_test_header(command[:], .Gdi_Blt, fence)
+		gsw_test_wr16(command[:], 2, GSW_VGA_COMMAND_VERSION_4)
+		pattern: [64]u32
+		flags, rop3 := u32(GSW_GDI_SOURCE_VALID), u32(0xCC)
+		if submission & 1 == 0 {
+			flags, rop3 = GSW_GDI_PATTERN_VALID, 0xF0
+			for &pixel, index in pattern {pixel = u32(index + submission) & 0xFF}
+		}
+		gsw_gdi_test_command(
+			command[:],
+			0,
+			512,
+			16,
+			16,
+			0,
+			0,
+			0,
+			0,
+			8,
+			8,
+			.Indexed_8,
+			flags,
+			rop3,
+			pattern,
+		)
+		command_offset := g.ring_tail
+		gsw_gdi_test_ring_write(ram[:], g.ring_gpa, g.ring_size, command_offset, command[:])
+		new_tail := (command_offset + GSW_GDI_BLT_COMMAND_BYTES) & (g.ring_size - 1)
+		doorbell: [4]u8
+		gsw_test_wr32(
+			doorbell[:],
+			0,
+			GSW_GDI_DOORBELL_TAIL_FLAG | GSW_GDI_DOORBELL_COOKIE_FLAG | new_tail,
+		)
+		gsw_vga_mmio_write(&g, GSW_VGA_REG_DOORBELL, doorbell[:], ram[:])
+
+		if !testing.expect_value(t, g.ring_head, new_tail) {return}
+		if !testing.expect_value(t, g.ring_tail, new_tail) {return}
+		if !testing.expect_value(t, g.completed_fence, fence) {return}
+		if !testing.expect_value(
+			t,
+			gsw_rd32(ram[:], int(g.ring_gpa + u64(command_offset))),
+			GSW_GDI_COMPLETION_COOKIE,
+		) {return}
+	}
+	testing.expect_value(t, g.status, GSW_VGA_STATUS_READY)
+}
+
+@(test)
+gsw_gdi_failed_cookie_submission_can_rearm_the_same_ring_slot :: proc(t: ^testing.T) {
+	framebuffer: [4096]u8
+	ram: [1024]u8
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer[:])
+	g.ring_gpa = 128
+	g.ring_size = 512
+	command := ram[128:128 + GSW_GDI_BLT_COMMAND_BYTES]
+	pattern: [64]u32
+	gsw_test_header(command, .Gdi_Blt, 1)
+	gsw_test_wr16(command, 2, GSW_VGA_COMMAND_VERSION_4)
+	gsw_gdi_test_command(command, 0, 0, 0, 8, 0, 0, 0, 0, 0, 4, .Indexed_8, 0, 0xFF, pattern)
+	doorbell: [4]u8
+	gsw_test_wr32(
+		doorbell[:],
+		0,
+		GSW_GDI_DOORBELL_TAIL_FLAG | GSW_GDI_DOORBELL_COOKIE_FLAG | u32(GSW_GDI_BLT_COMMAND_BYTES),
+	)
+	gsw_vga_mmio_write(&g, GSW_VGA_REG_DOORBELL, doorbell[:], ram[:])
+	testing.expect(t, g.status & GSW_VGA_STATUS_ERROR != 0)
+	testing.expect_value(t, g.ring_head, u32(0))
+
+	register: [4]u8
+	gsw_test_wr32(register[:], 0, g.ring_head)
+	gsw_vga_mmio_write(&g, GSW_VGA_REG_RING_TAIL, register[:], ram[:])
+	gsw_test_wr32(register[:], 0, GSW_VGA_STATUS_ERROR)
+	gsw_vga_mmio_write(&g, GSW_VGA_REG_STATUS, register[:], ram[:])
+	gsw_test_header(command, .Gdi_Blt, 2)
+	gsw_test_wr16(command, 2, GSW_VGA_COMMAND_VERSION_4)
+	gsw_gdi_test_command(command, 0, 0, 0, 8, 0, 0, 0, 0, 4, 4, .Indexed_8, 0, 0xFF, pattern)
+	gsw_vga_mmio_write(&g, GSW_VGA_REG_DOORBELL, doorbell[:], ram[:])
+
+	testing.expect_value(t, g.status, GSW_VGA_STATUS_READY)
+	testing.expect_value(t, g.ring_head, u32(GSW_GDI_BLT_COMMAND_BYTES))
+	testing.expect_value(t, g.ring_tail, u32(GSW_GDI_BLT_COMMAND_BYTES))
+	testing.expect_value(t, g.completed_fence, u64(2))
+	testing.expect_value(t, gsw_rd32(ram[:], 128), GSW_GDI_COMPLETION_COOKIE)
+}
+
 gsw_gdi_test_command :: proc(
 	command: []u8,
 	source_base, destination_base, source_pitch, destination_pitch: u32,

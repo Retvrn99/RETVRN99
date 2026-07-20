@@ -73,3 +73,46 @@ test_opl3_new_mode_routes_a_tone_to_selected_stereo_side :: proc(t: ^testing.T) 
 	}
 	testing.expect(t, nonzero)
 }
+
+@(test)
+test_opl3_sample_deadline_makes_strict_progress :: proc(t: ^testing.T) {
+	opl: Opl3
+	opl3_init(&opl)
+	opl3_write_register(&opl, 0, 0xB0, 0x20)
+	previous := opl.now_tick
+	for _ in 0 ..< int(OPL3_NATIVE_HZ * 2) {
+		deadline, pending := opl3_sample_deadline(&opl)
+		if !testing.expect(t, pending) || !testing.expect(t, deadline > previous) {return}
+		_, produced := opl3_render_sample(&opl)
+		if !testing.expect(t, produced) {return}
+		previous = deadline
+	}
+	testing.expect_value(t, opl.global_sample_index, OPL3_NATIVE_HZ * 2)
+	testing.expect_value(t, opl.now_tick, u64(0))
+}
+
+@(test)
+test_gsw_sound_large_opl_advance_finishes_past_target :: proc(t: ^testing.T) {
+	g: Gsw_Sound
+	gsw_sound_init(&g)
+	opl3_write_register(&g.opl3, 0, 0xB0, 0x20)
+	target := AUDIO_MASTER_CLOCK_HZ * 2
+	gsw_sound_advance_to(&g, target, {})
+	testing.expect_value(t, g.opl3.now_tick, target)
+	testing.expect_value(t, g.opl3.global_sample_index, OPL3_NATIVE_HZ * 2)
+	deadline, pending := opl3_sample_deadline(&g.opl3)
+	testing.expect(t, pending)
+	testing.expect(t, deadline > target)
+}
+
+@(test)
+test_opl3_noise_maximum_jump_matches_lfsr_period :: proc(t: ^testing.T) {
+	period := u64((u32(1) << 23) - 1)
+	reduced := ~u64(0) % period
+	reference := u32(1)
+	for _ in 0 ..< int(reduced) {
+		if reference & 1 != 0 {reference ~= 0x80_0302}
+		reference >>= 1
+	}
+	testing.expect_value(t, opl3_advance_noise_steps(1, ~u64(0)), reference)
+}

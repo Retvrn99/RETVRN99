@@ -110,7 +110,8 @@ whpx_emulate_mmio :: proc(
 			vm.mmio_fallbacks += 1
 			if decoded.kind == .Scalar_Load ||
 			   decoded.kind == .Scalar_Store_Register ||
-			   decoded.kind == .Scalar_Store_Immediate {
+			   decoded.kind == .Scalar_Store_Immediate ||
+			   decoded.kind == .Winquake_Store_Loop {
 				vm.mmio_scalar_fallbacks += 1
 			}
 			return true, ""
