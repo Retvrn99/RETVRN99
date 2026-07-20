@@ -24,6 +24,42 @@ test_ct1745_reset_routing_and_compatibility_aliases :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_ct1745_extended_gain_register_encoding :: proc(t: ^testing.T) {
+	mixer: Ct1745
+	ct1745_reset(&mixer)
+	for index in 0x30 ..= 0x37 {
+		testing.expect_value(t, ct1745_read_register(&mixer, u8(index)), u8(0xC0))
+		ct1745_write_register(&mixer, u8(index), 0xC0)
+		testing.expect_value(t, ct1745_read_register(&mixer, u8(index)), u8(0xC0))
+	}
+	testing.expect_value(t, mixer.master_left, u8(24))
+	testing.expect_value(t, mixer.master_right, u8(24))
+	testing.expect_value(t, mixer.voice_left, u8(24))
+	testing.expect_value(t, mixer.voice_right, u8(24))
+	for index in 0x34 ..= 0x37 {
+		testing.expect_value(t, mixer.registers[index], u8(24))
+	}
+	voice_left, voice_right := ct1745_gain_pair(&mixer, true)
+	fm_left, fm_right := ct1745_gain_pair(&mixer, false)
+	cd_left, cd_right := ct1745_cd_gain_pair(&mixer)
+	testing.expect(t, voice_left > 0 && voice_right > 0)
+	testing.expect(t, fm_left > 0 && fm_right > 0)
+	testing.expect(t, cd_left > 0 && cd_right > 0)
+
+	for index in 0x30 ..= 0x37 {
+		ct1745_write_register(&mixer, u8(index), 0xF8)
+		testing.expect_value(t, ct1745_read_register(&mixer, u8(index)), u8(0xF8))
+	}
+	testing.expect_value(t, mixer.master_left, u8(31))
+	testing.expect_value(t, mixer.master_right, u8(31))
+	testing.expect_value(t, mixer.voice_left, u8(31))
+	testing.expect_value(t, mixer.voice_right, u8(31))
+	for index in 0x34 ..= 0x37 {
+		testing.expect_value(t, mixer.registers[index], u8(31))
+	}
+}
+
+@(test)
 test_ct1745_irq_status_and_sbpro_stereo_round_trip :: proc(t: ^testing.T) {
 	mixer: Ct1745
 	ct1745_reset(&mixer)
@@ -46,8 +82,8 @@ test_ct1745_line_gain_registers_stay_in_table_range :: proc(t: ^testing.T) {
 	ct1745_reset(&mixer)
 	ct1745_write_register(&mixer, 0x34, 0xFF)
 	ct1745_write_register(&mixer, 0x35, 0xFF)
-	testing.expect_value(t, ct1745_read_register(&mixer, 0x34), u8(0x1F))
-	testing.expect_value(t, ct1745_read_register(&mixer, 0x35), u8(0x1F))
+	testing.expect_value(t, ct1745_read_register(&mixer, 0x34), u8(0xF8))
+	testing.expect_value(t, ct1745_read_register(&mixer, 0x35), u8(0xF8))
 	_ = ct1745_apply_gain(&mixer, Audio_Frame{1_000, -1_000}, false)
 }
 

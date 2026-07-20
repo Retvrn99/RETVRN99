@@ -120,17 +120,32 @@ test_dma_secondary_word_addressing :: proc(t: ^testing.T) {
 	address, ok := dma_transfer_to_memory_word(&d, 5, ram, 0xBEEF)
 	dma_set_hardware_request(&d, 5, false)
 	testing.expect(t, ok)
-	testing.expect_value(t, address, u32(0x42468))
-	testing.expect_value(t, ram[0x42468], u8(0xEF))
-	testing.expect_value(t, ram[0x42469], u8(0xBE))
+	testing.expect_value(t, address, u32(0x22468))
+	testing.expect_value(t, ram[0x22468], u8(0xEF))
+	testing.expect_value(t, ram[0x22469], u8(0xBE))
 	testing.expect(t, d.ch[5].tc)
 	testing.expect(t, dma_in(&d, 0xD0) & 0x02 != 0)
 }
 
 @(test)
+test_dma_secondary_page_low_bit_is_ignored :: proc(t: ^testing.T) {
+	d: Dma
+	dma_test_program_secondary(&d, 5, 0x4000, 0, 0xFC, 0x44)
+	address, ok := dma_channel_address(&d, 5)
+	testing.expect(t, ok)
+	testing.expect_value(t, address, u32(0xFC8000))
+
+	dma_out(&d, 0x8B, 0xFD)
+	address, ok = dma_channel_address(&d, 5)
+	testing.expect(t, ok)
+	testing.expect_value(t, dma_in(&d, 0x8B), u8(0xFD))
+	testing.expect_value(t, address, u32(0xFC8000))
+}
+
+@(test)
 test_dma_secondary_word_read :: proc(t: ^testing.T) {
 	d: Dma
-	dma_test_program_secondary(&d, 6, 0x20, 0, 1, 0x48)
+	dma_test_program_secondary(&d, 6, 0x20, 0, 2, 0x48)
 	ram := make([]u8, 1 << 20)
 	defer delete(ram)
 	address, _ := dma_channel_address(&d, 6)

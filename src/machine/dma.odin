@@ -329,7 +329,7 @@ dma_channel_address :: proc(d: ^Dma, channel: int) -> (u32, bool) {
 	}
 	if channel >= 5 && channel < 8 {
 		c := &d.ch[channel]
-		return u32(c.page) << 17 | u32(c.addr) << 1, true
+		return u32(c.page & 0xFE) << 16 | u32(c.addr) << 1, true
 	}
 	return 0, false
 }

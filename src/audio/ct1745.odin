@@ -139,6 +139,14 @@ ct1745_unpack_compat :: proc(value: u8) -> (u8, u8) {
 	return min(((value >> 4) & 0x0F) << 1, u8(31)), min((value & 0x0F) << 1, u8(31))
 }
 
+ct1745_pack_extended :: proc(level: u8) -> u8 {
+	return (level & 0x1F) << 3
+}
+
+ct1745_unpack_extended :: proc(value: u8) -> u8 {
+	return (value >> 3) & 0x1F
+}
+
 ct1745_set_cd_levels :: proc(mixer: ^Ct1745, left, right: u8) {
 	mixer.registers[0x36] = min(left, u8(31))
 	mixer.registers[0x37] = min(right, u8(31))
@@ -156,13 +164,15 @@ ct1745_read_register :: proc(mixer: ^Ct1745, index: u8) -> u8 {
 	case 0x28:
 		return ct1745_pack_compat(mixer.registers[0x36], mixer.registers[0x37])
 	case 0x30:
-		return mixer.master_left
+		return ct1745_pack_extended(mixer.master_left)
 	case 0x31:
-		return mixer.master_right
+		return ct1745_pack_extended(mixer.master_right)
 	case 0x32:
-		return mixer.voice_left
+		return ct1745_pack_extended(mixer.voice_left)
 	case 0x33:
-		return mixer.voice_right
+		return ct1745_pack_extended(mixer.voice_right)
+	case 0x34, 0x35, 0x36, 0x37:
+		return ct1745_pack_extended(mixer.registers[index])
 	case 0x41:
 		return mixer.out_left
 	case 0x42:
@@ -189,21 +199,21 @@ ct1745_write_register :: proc(mixer: ^Ct1745, index, value: u8) {
 		left, right := ct1745_unpack_compat(value)
 		ct1745_set_cd_levels(mixer, left, right)
 	case 0x30:
-		mixer.master_left = value & 0x1F
+		mixer.master_left = ct1745_unpack_extended(value)
 	case 0x31:
-		mixer.master_right = value & 0x1F
+		mixer.master_right = ct1745_unpack_extended(value)
 	case 0x32:
-		mixer.voice_left = value & 0x1F
+		mixer.voice_left = ct1745_unpack_extended(value)
 	case 0x33:
-		mixer.voice_right = value & 0x1F
+		mixer.voice_right = ct1745_unpack_extended(value)
 	case 0x34, 0x35:
-		mixer.registers[index] = value & 0x1F
+		mixer.registers[index] = ct1745_unpack_extended(value)
 	case 0x3B:
 		mixer.registers[index] = value & 0x03
 	case 0x36:
-		ct1745_set_cd_levels(mixer, value, mixer.registers[0x37])
+		ct1745_set_cd_levels(mixer, ct1745_unpack_extended(value), mixer.registers[0x37])
 	case 0x37:
-		ct1745_set_cd_levels(mixer, mixer.registers[0x36], value)
+		ct1745_set_cd_levels(mixer, mixer.registers[0x36], ct1745_unpack_extended(value))
 	case 0x41:
 		mixer.out_left = value & 0x03
 	case 0x42:
