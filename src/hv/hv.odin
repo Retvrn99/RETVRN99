@@ -130,6 +130,8 @@ Vm :: struct {
 	irq_ctx:                     rawptr,
 	irq_delivered:               proc(ctx: rawptr, vector: u8) -> bool,
 	io_string_translations:      u64,
+	mmio_fallbacks:              u64,
+	mmio_scalar_fallbacks:       u64,
 	mmio_string_fallbacks:       u64,
 	mmio_string_chunks:          u64,
 	mmio_string_elements:        u64,

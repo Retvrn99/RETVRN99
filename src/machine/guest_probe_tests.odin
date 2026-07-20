@@ -24,6 +24,8 @@ GUEST_PROBE_PAGING_AD := #load("../../assets/probes/paging_ad.bin")
 GUEST_PROBE_VGA_CLEAR_PIT := #load("../../assets/probes/vga_clear_pit.bin")
 @(rodata)
 GUEST_PROBE_VGA_COPY_PAGING := #load("../../assets/probes/vga_copy_paging.bin")
+@(rodata)
+GUEST_PROBE_VGA_SCALAR_MMIO := #load("../../assets/probes/vga_scalar_mmio.bin")
 
 GUEST_PROBE_LOAD_ADDRESS :: 0x7C00
 GUEST_PROBE_STEP_NS :: u64(2_000_000)
@@ -283,6 +285,26 @@ test_guest_probe_paged_rep_movsd_copies_to_vga_aperture :: proc(t: ^testing.T) {
 		testing.expect_value(t, value, u8(0xA5))
 	}
 	for value in m.vm.ram[0x30000:0x30140] {
+		testing.expect_value(t, value, u8(0xA5))
+	}
+}
+
+@(test)
+test_guest_probe_scalar_winquake_mmio_forms :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available; skipping scalar VGA MMIO guest probe")
+		return
+	}
+	testing.set_fail_timeout(t, 20 * time.Second)
+	m := new(Machine)
+	defer free(m)
+	if !guest_probe_prepare(t, m, GUEST_PROBE_VGA_SCALAR_MMIO) {return}
+	defer machine_destroy(m)
+
+	if !testing.expect(t, guest_probe_run(m, 12 * time.Second)) {return}
+	testing.expect_value(t, guest_probe_u32(m.vm.ram, 0x0500), u32(1))
+	testing.expect(t, m.vm.mmio_scalar_fallbacks > 0)
+	for value in video.vga_vram(&m.vga)[0x8000:0x8004] {
 		testing.expect_value(t, value, u8(0xA5))
 	}
 }

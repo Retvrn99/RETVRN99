@@ -38,7 +38,7 @@ Whpx_IO_Translation_Cache :: struct {
 	flags:       u32,
 }
 
-@(private = "file")
+@(private = "package")
 whpx_io_mask :: proc(size: u8) -> u32 {
 	switch size {
 	case 1:
@@ -250,7 +250,7 @@ whpx_io_translate :: proc(
 	return {}
 }
 
-@(private = "file")
+@(private = "package")
 whpx_io_inject_fault :: proc(vm: ^Vm, fault: Whpx_IO_Fault) -> bool {
 	vector: u16
 	switch fault.kind {
@@ -280,7 +280,7 @@ whpx_io_inject_fault :: proc(vm: ^Vm, fault: Whpx_IO_Fault) -> bool {
 	return WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &pending) >= 0
 }
 
-@(private = "file")
+@(private = "package")
 whpx_io_memory_access :: proc(vm: ^Vm, gpas: ^[4]u64, size: u8, write: bool, value: ^u32) -> bool {
 	start := 0
 	for start < int(size) {
