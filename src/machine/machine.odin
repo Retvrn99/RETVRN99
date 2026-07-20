@@ -126,7 +126,7 @@ Machine :: struct {
 	device_sync_tick:                    [SCHEDULED_DEVICE_COUNT]u64,
 	device_sync_valid:                   [SCHEDULED_DEVICE_COUNT]bool,
 	diagnostic_tracing:                  bool,
-	runtime_diagnostic:                 Runtime_Diagnostic_State,
+	runtime_diagnostic:                  Runtime_Diagnostic_State,
 	hardware_trace:                      ^Hardware_Trace,
 	scanout_copies:                      u64,
 	cpu_halted:                          bool,
@@ -414,9 +414,15 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	}
 	bus_register(&m.bus, 0x402, 0x402, dbg_h)
 	bus_register(&m.bus, 0x500, 0x500, dbg_h)
+	shutdown_trace_h := Io_Handler {
+		ctx   = m,
+		read  = machine_shutdown_trace_read,
+		write = machine_shutdown_trace_write,
+	}
+	bus_register(&m.bus, 0x80, 0x80, shutdown_trace_h)
 
 	// deliberate whitelist: probed but not modeled yet
-	bus_whitelist(&m.bus, 0x80, 0xED) // POST + delay
+	bus_whitelist(&m.bus, 0x81, 0xED) // delay ports
 	machine_whitelist_range(&m.bus, 0x1F0, 0x1F7) // IDE until machine_attach_disk
 	bus_whitelist(&m.bus, 0x3F6)
 	machine_init_fdc(m)
@@ -1247,6 +1253,7 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 	}
 	if m.power_off_requested {return false}
 	machine_sync_time(m)
+	machine_runtime_diagnostic_check_shutdown(m)
 	video.gsw_vga_poll(&m.gsw_vga)
 	if m.reset_requested || m.power_off_requested {return false}
 	queued := false
@@ -1288,6 +1295,7 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 			hosttime.waiter_sleep(&m.idle_waiter, time.Duration(max(delay_ns, u64(1))))
 			machine_sync_time(m)
 			machine_runtime_diagnostic_check_halt(m)
+			machine_runtime_diagnostic_check_shutdown(m)
 			return !m.bus.frozen
 		}
 	}
@@ -2605,4 +2613,15 @@ machine_dbg_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 machine_dbg_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	m := (^Machine)(ctx)
 	append(&m.dbg_out, u8(val))
+}
+
+@(private = "package")
+machine_shutdown_trace_read :: proc(_: rawptr, _: u16, _: u8) -> u32 {
+	return 0xFF
+}
+
+@(private = "package")
+machine_shutdown_trace_write :: proc(ctx: rawptr, _: u16, size: u8, val: u32) {
+	if ctx == nil || size == 0 {return}
+	machine_runtime_diagnostic_note_shutdown_marker((^Machine)(ctx), u8(val))
 }

@@ -9,36 +9,44 @@ MACHINE_STALLED_HALT_NS :: u64(5_000_000_000)
 MACHINE_VGA_POLL_STALL_NS :: u64(2_000_000_000)
 MACHINE_VGA_IRQ_STORM_NS :: u64(1_000_000_000)
 MACHINE_VGA_IRQ_STORM_COUNT :: u64(256)
+MACHINE_SHUTDOWN_MARKER_CAPACITY :: 32
+MACHINE_GSW_SHUTDOWN_STALL_NS :: u64(5_000_000_000)
 
 Runtime_Diagnostic_Kind :: enum u8 {
 	None,
 	Halted,
 	Vga_Status_Poll,
 	Vga_Irq_Storm,
+	Gsw_Shutdown,
 }
 
 Runtime_Diagnostic_State :: struct {
-	pending:                 Runtime_Diagnostic_Kind,
-	halt_active:             bool,
-	halt_started_ns:         u64,
-	halt_cs:                 u16,
-	halt_rip:                u64,
-	halt_rflags:             u64,
-	halt_reported:           bool,
-	vga_poll_active:         bool,
-	vga_poll_started_ns:     u64,
-	vga_poll_origin:         u64,
-	vga_poll_count:          u64,
-	vga_poll_value:          u8,
-	vga_poll_reported:       bool,
-	vga_irq_window_active:   bool,
-	vga_irq_window_ns:       u64,
-	vga_irq_window_count:    u64,
-	vga_irq_reported:        bool,
-	last_io:                 Io_Trace,
-	apm_write_count:         u64,
-	apm_last_size:           u8,
-	apm_last_value:          u32,
+	pending:                  Runtime_Diagnostic_Kind,
+	halt_active:              bool,
+	halt_started_ns:          u64,
+	halt_cs:                  u16,
+	halt_rip:                 u64,
+	halt_rflags:              u64,
+	halt_reported:            bool,
+	vga_poll_active:          bool,
+	vga_poll_started_ns:      u64,
+	vga_poll_origin:          u64,
+	vga_poll_count:           u64,
+	vga_poll_value:           u8,
+	vga_poll_reported:        bool,
+	vga_irq_window_active:    bool,
+	vga_irq_window_ns:        u64,
+	vga_irq_window_count:     u64,
+	vga_irq_reported:         bool,
+	last_io:                  Io_Trace,
+	apm_write_count:          u64,
+	apm_last_size:            u8,
+	apm_last_value:           u32,
+	shutdown_markers:         [MACHINE_SHUTDOWN_MARKER_CAPACITY]u8,
+	shutdown_marker_count:    u64,
+	shutdown_marker_active:   bool,
+	shutdown_marker_started:  u64,
+	shutdown_marker_reported: bool,
 }
 
 @(private = "file")
@@ -87,7 +95,12 @@ machine_runtime_diagnostic_note_io :: proc(
 ) {
 	if m == nil {return}
 	d := &m.runtime_diagnostic
-	d.last_io = {port = port, write = write, size = size, val = value}
+	d.last_io = {
+		port  = port,
+		write = write,
+		size  = size,
+		val   = value,
+	}
 	status_read := !write && size == 1 && (port == 0x03BA || port == 0x03DA)
 	if !status_read {
 		d.vga_poll_active = false
@@ -140,6 +153,36 @@ machine_runtime_diagnostic_note_apm_write :: proc(m: ^Machine, size: u8, value: 
 	m.runtime_diagnostic.apm_write_count += 1
 	m.runtime_diagnostic.apm_last_size = size
 	m.runtime_diagnostic.apm_last_value = value
+	m.runtime_diagnostic.shutdown_marker_active = false
+}
+
+@(private = "package")
+machine_runtime_diagnostic_note_shutdown_marker :: proc(m: ^Machine, value: u8) {
+	if m == nil || value < 0xD0 || value > 0xDE {return}
+	d := &m.runtime_diagnostic
+	d.shutdown_markers[d.shutdown_marker_count % MACHINE_SHUTDOWN_MARKER_CAPACITY] = value
+	d.shutdown_marker_count += 1
+	if (value == 0xD5 || value == 0xD6) && !d.shutdown_marker_active {
+		d.shutdown_marker_active = true
+		d.shutdown_marker_started = m.active_ns
+		d.shutdown_marker_reported = false
+	} else if value == 0xDC {
+		d.shutdown_marker_active = false
+	}
+}
+
+@(private = "package")
+machine_runtime_diagnostic_check_shutdown :: proc(m: ^Machine) {
+	if m == nil {return}
+	d := &m.runtime_diagnostic
+	if !d.shutdown_marker_active ||
+	   d.shutdown_marker_reported ||
+	   m.active_ns < d.shutdown_marker_started ||
+	   m.active_ns - d.shutdown_marker_started < MACHINE_GSW_SHUTDOWN_STALL_NS {
+		return
+	}
+	d.shutdown_marker_reported = true
+	machine_runtime_diagnostic_queue(m, .Gsw_Shutdown)
 }
 
 machine_take_runtime_diagnostic :: proc(m: ^Machine) -> (string, bool) {
@@ -182,6 +225,17 @@ machine_take_runtime_diagnostic :: proc(m: ^Machine) -> (string, bool) {
 			m.vga.crtc[0x11],
 			m.vga.crtc[0x17],
 		)
+	case .Gsw_Shutdown:
+		fmt.sbprintf(&builder, "diagnostic: GSW shutdown stalled for 5s markers=")
+		count := min(d.shutdown_marker_count, u64(MACHINE_SHUTDOWN_MARKER_CAPACITY))
+		start := d.shutdown_marker_count - count
+		for index in start ..< d.shutdown_marker_count {
+			fmt.sbprintf(
+				&builder,
+				"%02x",
+				d.shutdown_markers[index % MACHINE_SHUTDOWN_MARKER_CAPACITY],
+			)
+		}
 	case .None:
 		strings.builder_destroy(&builder)
 		return "", false
