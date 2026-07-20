@@ -193,7 +193,7 @@ index 515571c..399e395 100644
  
  static void GSW_remove_io_handler(DWORD port)
  {
-@@ -138,6 +143,28 @@ DWORD __stdcall virtual_int_proc(DWORD int_num, DWORD vm, PCRS_32 regs)
+@@ -138,6 +143,35 @@ DWORD __stdcall virtual_int_proc(DWORD int_num, DWORD vm, PCRS_32 regs)
  {
  	if(int_num == 0x10)
  	{
@@ -210,7 +210,14 @@ index 515571c..399e395 100644
 +		if(gsw_windows_hires_active && !mode_changing)
 +		{
 +			if(ah == 0)
++			{
++				if(al == 0x13)
++				{
++					gsw_windows_hires_active = FALSE;
++					return 0;
++				}
 +				return 1;
++			}
 +			if(ah == 0x4F && al == 0x02)
 +			{
 +				regs->Client_EAX =
@@ -222,7 +229,7 @@ index 515571c..399e395 100644
  #ifdef VESA
  		if(!VESA_check_int10h(vm, regs))
  		{
-@@ -172,6 +199,14 @@ void __declspec(naked) virtual_0x1ce()
+@@ -172,6 +206,14 @@ void __declspec(naked) virtual_0x1ce()
  		call port_info
  		popad
  	}*/
@@ -237,7 +244,7 @@ index 515571c..399e395 100644
  	VxDCall(VDD, Get_VM_Info); // esi = result
  	_asm{
  		cmp edi, ThisVM             ; Is the CRTC controlled by Windows?
-@@ -262,7 +297,7 @@ void __stdcall print_ctrl(DWORD type)
+@@ -262,7 +304,7 @@ void __stdcall print_ctrl(DWORD type)
  
  /*
   * service module calls (init, exit, deviceIoControl, ...)
@@ -246,7 +253,7 @@ index 515571c..399e395 100644
   */
  void __declspec(naked) VXD_control()
  {
-@@ -318,31 +353,45 @@ void __declspec(naked) VXD_control()
+@@ -318,31 +360,45 @@ void __declspec(naked) VXD_control()
  		jnz control_4
  			pushad
  			push ebx ; VM handle
@@ -300,7 +307,7 @@ index 515571c..399e395 100644
  /*
  	https://www.codeproject.com/Articles/3874/The-Ultimate-Process-Thread-spy-for-Windows-9x
  	
-@@ -781,6 +830,15 @@ BOOL Device_Init_proc(DWORD VM)
+@@ -781,6 +837,15 @@ BOOL Device_Init_proc(DWORD VM)
  {
  	critical_section_enter();
  	dbg_printf(dbg_Device_Init_proc);
@@ -316,7 +323,7 @@ index 515571c..399e395 100644
  
  #ifndef GSW
  	VMMCall(_Allocate_Device_CB_Area);
-@@ -797,6 +855,7 @@ BOOL Device_Init_proc(DWORD VM)
+@@ -797,6 +862,7 @@ BOOL Device_Init_proc(DWORD VM)
  # ifdef GSW
  	if(!VBE_init_hw())
  	{
@@ -324,7 +331,7 @@ index 515571c..399e395 100644
  		critical_section_leave();
  		return FALSE;
  	}
-@@ -841,6 +900,15 @@ BOOL Device_Init_proc(DWORD VM)
+@@ -841,6 +907,15 @@ BOOL Device_Init_proc(DWORD VM)
  	}
  	#include "vxd_vdd_list.h"
  	gsw_dispatch_installed = TRUE;
@@ -340,7 +347,7 @@ index 515571c..399e395 100644
  #else
  	if(DispatchTableLength >= 0x31)
  	{
-@@ -854,6 +922,10 @@ BOOL Device_Init_proc(DWORD VM)
+@@ -854,6 +929,10 @@ BOOL Device_Init_proc(DWORD VM)
  #ifdef SVGA
  	vxd_hstats_update();
  #endif
@@ -351,7 +358,7 @@ index 515571c..399e395 100644
  
  	critical_section_leave();
  	dbg_printf("Device_Init_proc DONE\n");
-@@ -1165,9 +1237,28 @@ void Device_Init_Complete(DWORD VM)
+@@ -1165,9 +1244,28 @@ void Device_Init_Complete(DWORD VM)
  }
  
  /* shutdown procedure */
@@ -381,7 +388,7 @@ index 515571c..399e395 100644
  	GSW_restore_vdd_dispatch();
  	if(is_qemu)
  	{
-@@ -1189,6 +1280,7 @@ void Device_Exit_proc(DWORD VM)
+@@ -1189,6 +1287,7 @@ void Device_Exit_proc(DWORD VM)
  	dbg_printf(dbg_destroy);
  	
  	// TODO: free memory

@@ -62,9 +62,9 @@ The final package payloads are:
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `gswmini.drv` | 16,922 | `2efd695c9c1601b21312bffbbb3aa8724645ff9df21f23a2fe8c32162b1b743e` |
-| `gswmini.vxd` | 39,265 | `76a6508489580b455e4418fde6bf442a21674ae55ba5704dff5f5c1fd0cd3b32` |
-| `gswmini.inf` | 3,188 | `329c30927818cbb42d9b852e69a60996c167bf3bbf705eb9a74d8c3ab629dfd7` |
+| `gswmini.drv` | 16,922 | `9748b9feeebfaa4b4597f63a17fd8699ddfa01bce1aba6fc8ecc8ec7542fb13d` |
+| `gswmini.vxd` | 39,277 | `1bc520b7552c926ac62186efd70193352e54a74d47a8d02937fd8eac31986f3b` |
+| `gswmini.inf` | 3,188 | `952c2a18697a363944879b64031872266505d34ac50fca7080663bfa54783dea` |
 | `gswhal9x.dll` | 46,592 | `8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38` |
 | `gswdd32.dll` | 32,256 | `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4` |
 
@@ -75,7 +75,7 @@ The mini-VDD contains the capability-gated GSW3D guest transport, but it exposes
 no usable 3D path unless the host explicitly advertises the guarded proof
 backend.
 
-GSW-VGA 0.2.0.4 also provides capability-gated screen and offscreen VRAM GDI
+GSW-VGA 0.2.0.5 also provides capability-gated screen and offscreen VRAM GDI
 `BitBlt` acceleration for packed 8-, 16-, 24-, and 32-bit modes. Its private
 pointer-free command supports all 256 ROP3 truth tables with solid or opaque
 native-color 8x8 brushes. Unsupported surfaces, brushes, formats, and failed
@@ -84,14 +84,15 @@ The synchronous GDI hot path uses a separately negotiated shared-memory
 completion cookie, reducing successful submissions to one MMIO doorbell while
 retaining the two-exit and generic fenced paths for older hosts.
 
-Version 0.2.0.4 revalidates PCI BARs and decode state across ConfigMgr
+Version 0.2.0.5 revalidates PCI BARs and decode state across ConfigMgr
 re-enumeration, updates the existing Win16 framebuffer selector after a BAR
 move, reconnects a resident Win16 driver to a dynamically reloaded mini-VDD,
 and balances VDD mode-change notifications on every restore outcome. While
 Windows owns high-resolution mode, the mini-VDD rejects BIOS standard and VBE
-mode-set probes and swallows direct Bochs VBE register access; explicit VDD
-transitions release that guard first. The required V86 hook has checked
-installation and removal, and a failed unhook rejects dynamic unload.
+mode-set probes and swallows direct Bochs VBE register access. Mode 13h remains
+available for fullscreen Win32 software renderers, and explicit VDD transitions
+release the guard. The required V86 hook has checked installation and removal,
+and a failed unhook rejects dynamic unload.
 
 ## GSW-Sound deferred native package
 

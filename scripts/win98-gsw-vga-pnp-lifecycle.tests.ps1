@@ -123,8 +123,11 @@ Assert-Match $lifecycle 'BOOL Hook_V86_Int_Chain\(DWORD int_num, DWORD HookProc\
 Assert-Match $lifecycle 'BOOL Unhook_V86_Int_Chain\(DWORD int_num, DWORD HookProc\)[\s\S]+VMMCall\(Unhook_V86_Int_Chain\)[\s\S]+setnc al[\s\S]+return result;' (
     'The V86 interrupt unhook wrapper must preserve the VMM carry-clear success result.'
 )
-Assert-Match $lifecycle 'if\(gsw_windows_hires_active && !mode_changing\)[\s\S]+if\(ah == 0\)[\s\S]+return 1;[\s\S]+ah == 0x4F && al == 0x02[\s\S]+0xFFFF0000UL\) \| 0x034FUL;[\s\S]+return 1;' (
+Assert-Match $lifecycle 'if\(gsw_windows_hires_active && !mode_changing\)[\s\S]+if\(ah == 0\)[\s\S]+if\(al == 0x13\)[\s\S]+gsw_windows_hires_active = FALSE;[\s\S]+return 0;[\s\S]+return 1;[\s\S]+ah == 0x4F && al == 0x02[\s\S]+0xFFFF0000UL\) \| 0x034FUL;[\s\S]+return 1;' (
     'PnP BIOS standard and VBE mode sets must be blocked only while Windows owns high-resolution mode.'
+)
+Assert-Match $lifecycle 'if\(al == 0x13\)[\s\S]+gsw_windows_hires_active = FALSE;[\s\S]+return 0;' (
+    'A WinQuake-style BIOS mode 13h request must release high-resolution ownership and continue to the VGA BIOS.'
 )
 Assert-Match $lifecycle 'cmp gsw_windows_hires_active,0[\s\S]+je _Virtual1CECheckOwner[\s\S]+ret[\s\S]+_Virtual1CECheckOwner:[\s\S]+VxDCall\(VDD, Get_VM_Info\)' (
     'Physical Bochs VBE port access must be swallowed before the ambiguous system-VM owner heuristic.'
