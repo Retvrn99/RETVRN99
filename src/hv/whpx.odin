@@ -135,6 +135,13 @@ whpx_destroy :: proc(vm: ^Vm) {
 	vm.mmio_reservations = nil
 	delete(vm.shadow_mappings)
 	vm.shadow_mappings = nil
+	for alias in vm.device_aliases {
+		if alias.dirty_bitmap != nil {
+			delete(alias.dirty_bitmap, runtime.heap_allocator())
+		}
+	}
+	delete(vm.device_aliases)
+	vm.device_aliases = nil
 	for mapping in vm.device_mappings {
 		if mapping.dirty_bitmap != nil {
 			delete(mapping.dirty_bitmap, runtime.heap_allocator())
@@ -409,6 +416,123 @@ whpx_query_device_memory_dirty :: proc(vm: ^Vm, backing: []u8) -> (dirty: bool, 
 }
 
 @(private = "file")
+whpx_device_alias_index :: proc(vm: ^Vm, gpa, size: u64) -> int {
+	if vm == nil {return -1}
+	for alias, i in vm.device_aliases {
+		if alias.gpa == gpa && alias.size == size {return i}
+	}
+	return -1
+}
+
+@(private = "file")
+whpx_capture_device_alias_dirty :: proc(vm: ^Vm, alias: ^Device_Alias) -> bool {
+	if vm == nil || alias == nil || !alias.mapped {return true}
+	if alias.mapping_index < 0 || alias.mapping_index >= len(vm.device_mappings) {return false}
+	mapping := &vm.device_mappings[alias.mapping_index]
+	if !mapping.track_dirty {return true}
+	if len(alias.dirty_bitmap) == 0 {return false}
+	for &word in alias.dirty_bitmap {word = 0}
+	bitmap_size := u32(len(alias.dirty_bitmap) * size_of(u64))
+	if WHvQueryGpaRangeDirtyBitmap(
+		   vm.part,
+		   alias.gpa,
+		   alias.size,
+		   &alias.dirty_bitmap[0],
+		   bitmap_size,
+	   ) <
+	   0 {
+		return false
+	}
+	for word in alias.dirty_bitmap {
+		if word != 0 {
+			alias.dirty_pending = true
+			break
+		}
+	}
+	return true
+}
+
+whpx_query_device_memory_alias_dirty :: proc(vm: ^Vm, gpa, size: u64) -> (dirty: bool, ok: bool) {
+	if vm == nil || vm.part == nil {return false, false}
+	index := whpx_device_alias_index(vm, gpa, size)
+	if index < 0 {return false, false}
+	alias := &vm.device_aliases[index]
+	mapping := &vm.device_mappings[alias.mapping_index]
+	if !mapping.track_dirty {return false, false}
+	if !whpx_capture_device_alias_dirty(vm, alias) {return false, false}
+	dirty = alias.dirty_pending
+	alias.dirty_pending = false
+	return dirty, true
+}
+
+@(private = "file")
+whpx_device_alias_target_valid :: proc(vm: ^Vm, gpa, size: u64, ignore_index := -1) -> bool {
+	if vm == nil || !whpx_page_range_valid(gpa, size) {return false}
+	contained := false
+	for reservation in vm.mmio_reservations {
+		if reservation.kind == .Mmio &&
+		   gpa >= reservation.gpa &&
+		   gpa + size <= reservation.gpa + reservation.size {
+			contained = true
+			break
+		}
+	}
+	if !contained {return false}
+	for alias, i in vm.device_aliases {
+		if i == ignore_index {continue}
+		if whpx_ranges_overlap(gpa, size, alias.gpa, alias.size) {return false}
+	}
+	return true
+}
+
+whpx_set_device_memory_alias :: proc(
+	vm: ^Vm,
+	backing: []u8,
+	gpa, backing_offset, size: u64,
+	enabled: bool,
+) -> bool {
+	if vm == nil || vm.part == nil {return false}
+	mapping_index := whpx_device_mapping_index(vm, backing)
+	if mapping_index < 0 || !whpx_page_range_valid(backing_offset, size) {return false}
+	mapping := &vm.device_mappings[mapping_index]
+	if backing_offset > u64(mapping.size) || size > u64(mapping.size) - backing_offset {
+		return false
+	}
+	alias_index := whpx_device_alias_index(vm, gpa, size)
+	if !whpx_device_alias_target_valid(vm, gpa, size, alias_index) {return false}
+	if alias_index < 0 {
+		dirty_bitmap: []u64
+		if mapping.track_dirty {
+			pages := size / 0x1000
+			words := int((pages + 63) / 64)
+			dirty_bitmap = make([]u64, words, runtime.heap_allocator())
+			if dirty_bitmap == nil {return false}
+		}
+		append(
+			&vm.device_aliases,
+			Device_Alias {
+				gpa = gpa,
+				size = size,
+				mapping_index = mapping_index,
+				backing_offset = backing_offset,
+				dirty_bitmap = dirty_bitmap,
+				requested_offset = backing_offset,
+				requested_mapped = enabled,
+				request_pending = enabled,
+			},
+		)
+		return true
+	}
+
+	alias := &vm.device_aliases[alias_index]
+	if alias.mapping_index != mapping_index {return false}
+	alias.requested_offset = backing_offset
+	alias.requested_mapped = enabled
+	alias.request_pending = alias.backing_offset != backing_offset || alias.mapped != enabled
+	return true
+}
+
+@(private = "file")
 whpx_device_mapping_target_valid :: proc(vm: ^Vm, index: int, gpa: u64, enabled: bool) -> bool {
 	if vm == nil || index < 0 || index >= len(vm.device_mappings) {return false}
 	size := u64(vm.device_mappings[index].size)
@@ -564,6 +688,56 @@ whpx_apply_device_mapping_requests :: proc(vm: ^Vm) -> (ok: bool, rollback_ok: b
 }
 
 @(private = "file")
+whpx_map_device_alias_at :: proc(vm: ^Vm, alias: ^Device_Alias, backing_offset: u64) -> bool {
+	if alias.mapping_index < 0 || alias.mapping_index >= len(vm.device_mappings) {return false}
+	mapping := &vm.device_mappings[alias.mapping_index]
+	source := rawptr(uintptr(mapping.host) + uintptr(backing_offset))
+	flags := whpx_device_mapping_flags(mapping.track_dirty)
+	return WHvMapGpaRange(vm.part, source, alias.gpa, alias.size, flags) >= 0
+}
+
+@(private = "file")
+whpx_apply_device_alias_request :: proc(
+	vm: ^Vm,
+	alias: ^Device_Alias,
+) -> (
+	ok: bool,
+	rollback_ok: bool,
+) {
+	if !alias.request_pending {return true, true}
+	old_mapped := alias.mapped
+	new_offset, new_mapped := alias.requested_offset, alias.requested_mapped
+
+	if old_mapped {
+		if !whpx_capture_device_alias_dirty(vm, alias) {
+			alias.dirty_pending = true
+		}
+		if WHvUnmapGpaRange(vm.part, alias.gpa, alias.size) < 0 {return false, true}
+	}
+	if new_mapped && !whpx_map_device_alias_at(vm, alias, new_offset) {
+		alias.backing_offset = new_offset
+		alias.mapped = false
+		alias.request_pending = false
+		return true, true
+	}
+
+	alias.backing_offset = new_offset
+	alias.mapped = new_mapped
+	alias.request_pending = false
+	return true, true
+}
+
+@(private = "file")
+whpx_apply_device_alias_requests :: proc(vm: ^Vm) -> (ok: bool, rollback_ok: bool) {
+	for &alias in vm.device_aliases {
+		if applied, rollback_applied := whpx_apply_device_alias_request(vm, &alias); !applied {
+			return false, rollback_applied
+		}
+	}
+	return true, true
+}
+
+@(private = "file")
 whpx_apply_a20_mapping :: proc(vm: ^Vm, enabled: bool) -> bool {
 	for odd_base := WHPX_A20_BIT; odd_base < u64(len(vm.ram)); odd_base += WHPX_A20_PAIR_SIZE {
 		if !whpx_map_a20_region(vm, odd_base, enabled) {return false}
@@ -709,6 +883,11 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			if !rollback_ok {detail = "device memory remap and rollback failed"}
 			return Exit{kind = .Failed, detail = detail}
 		}
+		if ok, rollback_ok := whpx_apply_device_alias_requests(vm); !ok {
+			detail := "device memory alias remap failed"
+			if !rollback_ok {detail = "device memory alias remap and rollback failed"}
+			return Exit{kind = .Failed, detail = detail}
+		}
 		if handled >= WHPX_EXIT_BUDGET {
 			return Exit{kind = .Io}
 		}
@@ -792,9 +971,9 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 			// advance RIP past the HLT
 			whpx_advance_rip(vm, &exit_ctx.VpContext)
 			return Exit {
-				kind   = .Halt,
-				cs     = exit_ctx.VpContext.Cs.Selector,
-				rip    = exit_ctx.VpContext.Rip,
+				kind = .Halt,
+				cs = exit_ctx.VpContext.Cs.Selector,
+				rip = exit_ctx.VpContext.Rip,
 				rflags = exit_ctx.VpContext.Rflags,
 			}
 		case .X64InterruptWindow:

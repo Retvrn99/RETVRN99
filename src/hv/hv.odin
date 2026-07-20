@@ -81,6 +81,19 @@ Device_Mapping :: struct {
 	request_pending:  bool,
 }
 
+Device_Alias :: struct {
+	gpa:              u64,
+	size:             u64,
+	mapping_index:    int,
+	backing_offset:   u64,
+	dirty_pending:    bool,
+	dirty_bitmap:     []u64,
+	mapped:           bool,
+	requested_offset: u64,
+	requested_mapped: bool,
+	request_pending:  bool,
+}
+
 Io_Origin :: struct {
 	valid:          bool,
 	protected_mode: bool,
@@ -97,6 +110,7 @@ Vm :: struct {
 	mmio_reservations:           [dynamic]Mmio_Reservation,
 	shadow_mappings:             [dynamic]Shadow_Mapping,
 	device_mappings:             [dynamic]Device_Mapping,
+	device_aliases:              [dynamic]Device_Alias,
 	a20_enabled:                 bool,
 	a20_requested:               bool,
 	a20_request_count:           u64,
@@ -291,10 +305,25 @@ query_device_memory_dirty :: proc(vm: ^Vm, backing: []u8) -> (dirty: bool, ok: b
 	return whpx_query_device_memory_dirty(vm, backing)
 }
 
+query_device_memory_alias_dirty :: proc(vm: ^Vm, gpa, size: u64) -> (dirty: bool, ok: bool) {
+	return whpx_query_device_memory_alias_dirty(vm, gpa, size)
+}
+
 // Requests a page-aligned device mapping state change. The backing allocation
 // remains stable; WHPX applies the request at the next safe vCPU run boundary.
 set_device_memory_mapping :: proc(vm: ^Vm, backing: []u8, gpa: u64, enabled: bool) -> bool {
 	return whpx_set_device_memory_mapping(vm, backing, gpa, enabled)
+}
+
+// Maps a page-aligned subrange of an existing device allocation into a fixed
+// MMIO reservation. Changes apply at the next safe vCPU run boundary.
+set_device_memory_alias :: proc(
+	vm: ^Vm,
+	backing: []u8,
+	gpa, backing_offset, size: u64,
+	enabled: bool,
+) -> bool {
+	return whpx_set_device_memory_alias(vm, backing, gpa, backing_offset, size, enabled)
 }
 
 // Requests an HMA mapping change at the next safe vCPU run boundary.

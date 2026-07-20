@@ -1705,6 +1705,9 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 	   decoded {
 		if write {
 			video.gsw_vga_mmio_write(&m.gsw_vga, offset, data, m.vm.ram)
+			if !machine_refresh_vbe_bank_alias(m) {
+				bus_freeze(&m.bus, "VBE bank alias synchronization failed")
+			}
 		} else {
 			video.gsw_vga_mmio_read(&m.gsw_vga, offset, data)
 		}
@@ -2310,6 +2313,24 @@ machine_pci_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	return pci_in(&m.pci, port, size)
 }
 
+@(private = "file")
+machine_refresh_vbe_bank_alias :: proc(m: ^Machine) -> bool {
+	if m == nil || m.vm.part == nil {return true}
+	framebuffer := video.vga_vram(&m.vga)
+	if len(framebuffer) == 0 {return false}
+	alias, enabled := video.vga_vbe_bank_alias(&m.vga)
+	offset := u64(0)
+	if enabled {offset = u64(alias.offset)}
+	return hv.set_device_memory_alias(
+		&m.vm,
+		framebuffer,
+		video.LEGACY_APERTURE_BASE,
+		offset,
+		video.DISPI_BANK_SIZE,
+		enabled,
+	)
+}
+
 @(private = "package")
 machine_sync_pci_devices :: proc(m: ^Machine) -> bool {
 	if m == nil {return false}
@@ -2329,6 +2350,7 @@ machine_sync_pci_devices :: proc(m: ^Machine) -> bool {
 		return false
 	}
 	video.vga_set_pci_decode(&m.vga, vga_io, vga_memory, framebuffer_base)
+	if !machine_refresh_vbe_bank_alias(m) {return false}
 	video.gsw_vga_set_pci_decode(&m.gsw_vga, vga_memory, control_base)
 	sound.gsw_pcm_set_pci_decode(
 		&m.gsw_pcm,
@@ -2394,6 +2416,10 @@ machine_vga_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	machine_sync_time(m)
 	video.vga_begin_raster_change(&m.vga, m.active_ns)
 	video.vga_io_write(&m.vga, port, size, val)
+	if !machine_refresh_vbe_bank_alias(m) {
+		bus_freeze(&m.bus, "VBE bank alias synchronization failed")
+		return
+	}
 	machine_scheduler_refresh(m)
 	machine_rearm_wake(m)
 }
@@ -2406,34 +2432,39 @@ machine_vga_sync :: proc(m: ^Machine) {
 }
 
 @(private = "file")
-machine_publish_vbe_lfb_writes :: proc(m: ^Machine) -> bool {
+machine_publish_vbe_writes :: proc(m: ^Machine) -> bool {
 	if m == nil || m.vm.part == nil {return true}
-	dirty, ok := hv.query_device_memory_dirty(&m.vm, video.vga_vram(&m.vga))
-	if !ok {
+	lfb_dirty, lfb_ok := hv.query_device_memory_dirty(&m.vm, video.vga_vram(&m.vga))
+	bank_dirty, bank_ok := hv.query_device_memory_alias_dirty(
+		&m.vm,
+		video.LEGACY_APERTURE_BASE,
+		video.DISPI_BANK_SIZE,
+	)
+	if !lfb_ok || !bank_ok {
 		bus_freeze(&m.bus, "WHPX VGA dirty-page query failed")
 		return false
 	}
-	_ = video.vga_publish_external_lfb_writes(&m.vga, dirty)
+	_ = video.vga_publish_external_vbe_writes(&m.vga, lfb_dirty || bank_dirty)
 	return true
 }
 
 machine_display_frame :: proc(m: ^Machine) -> ^video.Display_Frame {
 	machine_vga_sync(m)
-	_ = machine_publish_vbe_lfb_writes(m)
+	_ = machine_publish_vbe_writes(m)
 	return video.vga_display_frame(&m.vga)
 }
 
 machine_capture_scanout :: proc(m: ^Machine, descriptor: ^video.Scanout_Descriptor) -> bool {
 	if m == nil || descriptor == nil {return false}
 	machine_vga_sync(m)
-	if !machine_publish_vbe_lfb_writes(m) {return false}
+	if !machine_publish_vbe_writes(m) {return false}
 	return video.scanout_descriptor_capture(descriptor, &m.vga)
 }
 
 machine_scanout_generation :: proc(m: ^Machine) -> u64 {
 	if m == nil {return 0}
 	machine_vga_sync(m)
-	_ = machine_publish_vbe_lfb_writes(m)
+	_ = machine_publish_vbe_writes(m)
 	return m.vga.content_generation
 }
 

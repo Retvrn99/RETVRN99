@@ -76,6 +76,60 @@ whpx_device_mapping_test_write :: proc(t: ^testing.T, vm: ^Vm, gpa: u64, value: 
 	return testing.expect_value(t, run(vm).kind, Exit_Kind.Halt)
 }
 
+@(private = "file")
+whpx_device_mapping_test_indexed_store :: proc(
+	t: ^testing.T,
+	vm: ^Vm,
+	gpa: u64,
+	value: u32,
+) -> bool {
+	copy(vm.ram[0x7000:], []u8{0x89, 0x0C, 0x86, 0xF4})
+	code := WHV_X64_SEGMENT_REGISTER {
+		Base       = 0,
+		Limit      = 0xFFFF_FFFF,
+		Selector   = 8,
+		Attributes = 0xC09B,
+	}
+	data := WHV_X64_SEGMENT_REGISTER {
+		Base       = 0,
+		Limit      = 0xFFFF_FFFF,
+		Selector   = 16,
+		Attributes = 0xC093,
+	}
+	names := [?]WHV_REGISTER_NAME {
+		.Cs,
+		.Ds,
+		.Es,
+		.Ss,
+		.Fs,
+		.Gs,
+		.Rip,
+		.Rflags,
+		.Rsp,
+		.Rax,
+		.Rcx,
+		.Rsi,
+		.Cr0,
+	}
+	values: [len(names)]WHV_REGISTER_VALUE
+	values[0].Segment = code
+	for i in 1 ..< 6 {values[i].Segment = data}
+	values[6].Reg64 = 0x7000
+	values[7].Reg64 = 0x2
+	values[8].Reg64 = 0x8000
+	values[9].Reg64 = 0
+	values[10].Reg64 = u64(value)
+	values[11].Reg64 = gpa
+	values[12].Reg64 = 0x11
+	if !testing.expect(
+		t,
+		WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0,
+	) {
+		return false
+	}
+	return testing.expect_value(t, run(vm).kind, Exit_Kind.Halt)
+}
+
 @(test)
 whpx_tracked_device_mapping_reports_and_clears_guest_writes :: proc(t: ^testing.T) {
 	if !available() {
@@ -97,6 +151,128 @@ whpx_tracked_device_mapping_reports_and_clears_guest_writes :: proc(t: ^testing.
 	testing.expect_value(t, backing[0x1003], u8(0x5A))
 	dirty, query_ok = query_device_memory_dirty(&vm, backing)
 	testing.expect(t, query_ok && !dirty)
+}
+
+@(test)
+whpx_device_alias_maps_banked_subrange_and_tracks_writes :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	aperture: u64 = 0xA0000
+	if !testing.expect(t, reserve_mmio(&vm, aperture, 0x2000)) {return}
+	backing, mapped := map_device_memory_tracked(&vm, 0xE000_0000, 0x4000)
+	if !testing.expect(t, mapped) {return}
+	backing[0x1000] = 0x31
+	backing[0x2000] = 0x72
+
+	testing.expect(t, set_device_memory_alias(&vm, backing, aperture, 0x1000, 0x1000, true))
+	dirty, query_ok := query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	testing.expect(t, query_ok && !dirty)
+	fallbacks := vm.mmio_fallbacks
+	if !whpx_device_mapping_test_indexed_store(t, &vm, aperture, 0xA1B2_C3D4) {return}
+	testing.expect_value(t, vm.mmio_fallbacks, fallbacks)
+	testing.expect_value(t, (transmute(^u32)&backing[0x1000])^, u32(0xA1B2_C3D4))
+	if value, ok := whpx_device_mapping_test_read(t, &vm, aperture); ok {
+		testing.expect_value(t, value, u8(0xD4))
+	}
+	if !whpx_device_mapping_test_write(t, &vm, aperture + 3, 0x5A) {return}
+	testing.expect_value(t, backing[0x1003], u8(0x5A))
+	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	testing.expect(t, query_ok && dirty)
+	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	testing.expect(t, query_ok && !dirty)
+
+	// A dirty alias is sampled before its source bank changes.
+	if !whpx_device_mapping_test_write(t, &vm, aperture + 4, 0xA5) {return}
+	testing.expect(t, set_device_memory_alias(&vm, backing, aperture, 0x2000, 0x1000, true))
+	if value, ok := whpx_device_mapping_test_read(t, &vm, aperture); ok {
+		testing.expect_value(t, value, u8(0x72))
+	}
+	testing.expect_value(t, backing[0x1004], u8(0xA5))
+	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	testing.expect(t, query_ok && dirty)
+
+	if !whpx_device_mapping_test_write(t, &vm, aperture + 5, 0xC3) {return}
+	testing.expect(t, set_device_memory_alias(&vm, backing, aperture, 0x2000, 0x1000, false))
+	if value, ok := whpx_device_mapping_test_read(t, &vm, aperture); ok {
+		testing.expect_value(t, value, u8(0xFF))
+	}
+	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	testing.expect(t, query_ok && dirty)
+	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	testing.expect(t, query_ok && !dirty)
+	testing.expect_value(t, backing[0x2005], u8(0xC3))
+	testing.expect(t, !vm.device_aliases[0].mapped)
+}
+
+@(test)
+whpx_device_alias_cross_boundary_store_remains_precise :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	aperture: u64 = 0xA0000
+	if !testing.expect(t, reserve_mmio(&vm, aperture, 0x2000)) {return}
+	backing, mapped := map_device_memory_tracked(&vm, 0xE000_0000, 0x4000)
+	if !testing.expect(t, mapped) {return}
+	backing[0x1FFF] = 0x6E
+	if !testing.expect(t, set_device_memory_alias(&vm, backing, aperture, 0x1000, 0x1000, true)) {
+		return
+	}
+	probe: Whpx_Memory_Test_Probe
+	vm.io_ctx = &probe
+	vm.mmio = whpx_memory_test_mmio
+	if !whpx_device_mapping_test_indexed_store(t, &vm, aperture + 0xFFF, 0xA1B2_C3D4) {return}
+
+	testing.expect_value(t, backing[0x1FFF], u8(0x6E))
+	testing.expect_value(t, probe.calls, 2)
+	testing.expect_value(t, probe.gpa[0], aperture + 0xFFF)
+	testing.expect_value(t, probe.size[0], 1)
+	testing.expect_value(t, probe.bytes[0][0], u8(0xD4))
+	testing.expect_value(t, probe.gpa[1], aperture + 0x1000)
+	testing.expect_value(t, probe.size[1], 3)
+	testing.expect_value(t, probe.bytes[1][0], u8(0xC3))
+	testing.expect_value(t, probe.bytes[1][1], u8(0xB2))
+	testing.expect_value(t, probe.bytes[1][2], u8(0xA1))
+}
+
+@(test)
+whpx_device_alias_rejects_invalid_or_ambiguous_ranges :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	if !testing.expect(t, reserve_mmio(&vm, 0xA0000, 0x2000)) {return}
+	if !testing.expect(t, reserve_open_bus(&vm, 0xB0000, 0x1000)) {return}
+	backing, mapped := map_device_memory_tracked(&vm, 0xE000_0000, 0x4000)
+	if !testing.expect(t, mapped) {return}
+	other, other_mapped := map_device_memory_tracked(&vm, 0xD000_0000, 0x4000)
+	if !testing.expect(t, other_mapped) {return}
+
+	testing.expect(t, !set_device_memory_alias(&vm, backing, 0x90000, 0, 0x1000, true))
+	testing.expect(t, !set_device_memory_alias(&vm, backing, 0xB0000, 0, 0x1000, true))
+	testing.expect(t, !set_device_memory_alias(&vm, backing, 0xA0001, 0, 0x1000, true))
+	testing.expect(t, !set_device_memory_alias(&vm, backing, 0xA0000, 1, 0x1000, true))
+	testing.expect(t, !set_device_memory_alias(&vm, backing, 0xA0000, 0x4000, 0x1000, true))
+	testing.expect(t, !set_device_memory_alias(&vm, backing[:0x2000], 0xA0000, 0, 0x1000, true))
+	testing.expect(t, set_device_memory_alias(&vm, backing, 0xA0000, 0, 0x1000, true))
+	testing.expect(t, !set_device_memory_alias(&vm, other, 0xA0000, 0, 0x1000, true))
+	testing.expect(t, !set_device_memory_alias(&vm, backing, 0xA0000, 0x1000, 0x2000, true))
+	dirty, query_ok := query_device_memory_alias_dirty(&vm, 0xA1000, 0x1000)
+	testing.expect(t, !query_ok && !dirty)
 }
 
 @(test)

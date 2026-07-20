@@ -38,6 +38,11 @@ DISPI_MAX_YRES :: 1600
 DISPI_BANK_SIZE :: 64 * 1024
 DISPI_BANK_GRANULARITY :: 32 * 1024
 
+Vbe_Bank_Alias :: struct {
+	offset: int,
+	size:   int,
+}
+
 dispi_bank_granularity :: proc(v: ^Vga) -> int {
 	return v.dispi[DISPI_INDEX_ENABLE] & DISPI_BANK_GRANULARITY_32K != 0 ? 32 * 1024 : 64 * 1024
 }
@@ -50,8 +55,29 @@ vga_vbe_lfb_enabled :: proc(v: ^Vga) -> bool {
 	return vga_vbe_enabled(v) && v.dispi[DISPI_INDEX_ENABLE] & DISPI_LFB_ENABLED != 0
 }
 
+vga_vbe_bank_alias :: proc(v: ^Vga) -> (Vbe_Bank_Alias, bool) {
+	if v == nil ||
+	   v.vram == nil ||
+	   !v.pci_memory_enabled ||
+	   !legacy_video_memory_enabled(v) ||
+	   !vga_vbe_enabled(v) ||
+	   dispi_effective_bpp(v.dispi[DISPI_INDEX_BPP]) == 4 ||
+	   v.bank_read != v.bank_write {
+		return {}, false
+	}
+	offset := int(v.bank_read) * dispi_bank_granularity(v)
+	if offset < 0 || offset + DISPI_BANK_SIZE > len(v.vram) {return {}, false}
+	return Vbe_Bank_Alias{offset = offset, size = DISPI_BANK_SIZE}, true
+}
+
 vga_publish_external_lfb_writes :: proc(v: ^Vga, dirty: bool) -> bool {
 	if v == nil || !dirty || !vga_vbe_lfb_enabled(v) {return false}
+	vga_note_content_change(v)
+	return true
+}
+
+vga_publish_external_vbe_writes :: proc(v: ^Vga, dirty: bool) -> bool {
+	if v == nil || !dirty || !vga_vbe_enabled(v) {return false}
 	vga_note_content_change(v)
 	return true
 }
