@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import disk "../disk"
 import hv "../hv"
 import video "../vga"
 import "core:strings"
@@ -139,4 +140,76 @@ test_machine_runtime_diagnostic_ignores_completed_gsw_shutdown :: proc(t: ^testi
 	_, available := machine_take_runtime_diagnostic(m)
 	testing.expect(t, !available)
 	testing.expect_value(t, m.runtime_diagnostic.shutdown_marker_count, u64(2))
+}
+
+@(test)
+test_machine_runtime_diagnostic_reports_storage_first_failure_once :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	m.ide.first_failure = {
+		valid      = true,
+		reason     = .Dma_Write,
+		command    = 0xCA,
+		lba        = 1234,
+		byte_count = 4096,
+		block      = disk.block_failure_make(
+			.Write,
+			.Helper,
+			1234,
+			4096,
+			8,
+			42,
+			40,
+			"protected write at FAT sector",
+		),
+	}
+	m.bmide.first_failure = {
+		valid       = true,
+		reason      = .Device_Commit,
+		channel     = 0,
+		prd_address = 0x12345000,
+		requested   = 4096,
+		completed   = 4096,
+	}
+	machine_runtime_diagnostic_check_storage(m)
+
+	message, available := machine_take_runtime_diagnostic(m)
+	defer delete(message)
+	testing.expect(t, available)
+	testing.expect(t, strings.contains(message, "storage first failure"))
+	testing.expect(t, strings.contains(message, "cmd=ca lba=1234 bytes=4096"))
+	testing.expect(
+		t,
+		strings.contains(message, "direction=0 prd=12345000 requested=4096 completed=4096"),
+	)
+	testing.expect(t, strings.contains(message, "code=8 seq=42 durable=40"))
+	testing.expect(t, strings.contains(message, "detail=protected write at FAT sector"))
+	machine_runtime_diagnostic_check_storage(m)
+	_, repeated := machine_take_runtime_diagnostic(m)
+	testing.expect(t, !repeated)
+}
+
+@(test)
+test_machine_runtime_diagnostic_labels_bmide_only_failure_without_block_context :: proc(
+	t: ^testing.T,
+) {
+	m := new(Machine)
+	defer free(m)
+	m.bmide.first_failure = {
+		valid       = true,
+		reason      = .Prd_Parse,
+		channel     = 0,
+		direction   = .Memory_To_Device,
+		prd_address = 0x23456000,
+		requested   = 8192,
+	}
+	machine_runtime_diagnostic_check_storage(m)
+
+	message, available := machine_take_runtime_diagnostic(m)
+	defer delete(message)
+	testing.expect(t, available)
+	testing.expect(t, strings.contains(message, "ide=0"))
+	testing.expect(t, strings.contains(message, "bmide=1 reason=3 channel=0 direction=1"))
+	testing.expect(t, strings.contains(message, "context=bmide-only"))
+	testing.expect(t, strings.contains(message, "block=0 detail=no-block-device-failure"))
 }

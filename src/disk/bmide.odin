@@ -25,6 +25,27 @@ Bmide_Direction :: enum u8 {
 	Memory_To_Device,
 }
 
+Bmide_Failure_Reason :: enum u8 {
+	None,
+	Command_Changed,
+	Direction_Or_Callback,
+	Prd_Parse,
+	Device_Begin,
+	Bus_Master_Disabled,
+	Device_Commit,
+	Transfer,
+}
+
+Bmide_Failure :: struct {
+	valid:       bool,
+	reason:      Bmide_Failure_Reason,
+	channel:     u8,
+	direction:   Bmide_Direction,
+	prd_address: u32,
+	requested:   u32,
+	completed:   u32,
+}
+
 Bmide_Memory_Adapter :: struct {
 	ctx:    rawptr,
 	size:   u64,
@@ -93,6 +114,7 @@ Bmide :: struct {
 	prd_spans:            u64,
 	memory_copies:        u64,
 	host_calls:           u64,
+	first_failure:        Bmide_Failure,
 }
 
 bmide_init :: proc(bm: ^Bmide) {
@@ -159,7 +181,25 @@ bmide_abort_adapter :: proc(channel: ^Bmide_Channel, channel_index: u8) {
 }
 
 @(private = "file")
-bmide_fail_channel :: proc(channel: ^Bmide_Channel, channel_index: u8) {
+bmide_fail_channel :: proc(
+	bm: ^Bmide,
+	channel: ^Bmide_Channel,
+	channel_index: u8,
+	reason: Bmide_Failure_Reason,
+) {
+	if bm != nil && !bm.first_failure.valid {
+		requested := channel.request.byte_count
+		if requested == 0 {requested = channel.transfer.byte_count}
+		bm.first_failure = {
+			valid       = true,
+			reason      = reason,
+			channel     = channel_index,
+			direction   = channel.request.direction,
+			prd_address = channel.prd_latched ? channel.latched_prd_address : channel.prd_address,
+			requested   = requested,
+			completed   = channel.transfer.completed,
+		}
+	}
 	bmide_abort_adapter(channel, channel_index)
 	channel.request = {}
 	channel.request_pending = false
@@ -186,7 +226,7 @@ bmide_read_byte :: proc(bm: ^Bmide, offset: u8) -> u8 {
 }
 
 @(private = "file")
-bmide_write_command :: proc(channel: ^Bmide_Channel, channel_index, value: u8) {
+bmide_write_command :: proc(bm: ^Bmide, channel: ^Bmide_Channel, channel_index, value: u8) {
 	old := channel.command
 	channel.command = value & (BMIDE_COMMAND_START | BMIDE_COMMAND_READ_FROM_DISK)
 	started := old & BMIDE_COMMAND_START == 0 && channel.command & BMIDE_COMMAND_START != 0
@@ -205,7 +245,7 @@ bmide_write_command :: proc(channel: ^Bmide_Channel, channel_index, value: u8) {
 	}
 	if stopped && (channel.transfer.active || channel.request_pending) ||
 	   direction_changed && channel.transfer.active {
-		bmide_fail_channel(channel, channel_index)
+		bmide_fail_channel(bm, channel, channel_index, .Command_Changed)
 		return
 	}
 	if stopped {
@@ -229,7 +269,7 @@ bmide_write_byte :: proc(bm: ^Bmide, offset, value: u8) {
 	channel_index := offset >> 3
 	switch register {
 	case 0:
-		bmide_write_command(channel, channel_index, value)
+		bmide_write_command(bm, channel, channel_index, value)
 	case 2:
 		bmide_write_status(channel, value)
 	case 4 ..= 7:
@@ -274,7 +314,8 @@ bmide_submit_request :: proc(bm: ^Bmide, channel_index: u8, request: Bmide_Reque
 bmide_cancel_request :: proc(bm: ^Bmide, channel_index: u8) {
 	if channel_index >= BMIDE_CHANNEL_COUNT {return}
 	channel := &bm.channels[channel_index]
-	had_operation := channel.request_pending || channel.transfer.active || channel.completion_waits_for_stop
+	had_operation :=
+		channel.request_pending || channel.transfer.active || channel.completion_waits_for_stop
 	bmide_abort_adapter(channel, channel_index)
 	channel.request = {}
 	channel.request_pending = false
@@ -436,7 +477,7 @@ bmide_arm_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Ad
 	read_from_disk := channel.command & BMIDE_COMMAND_READ_FROM_DISK != 0
 	if read_from_disk != (request.direction == .Device_To_Memory) ||
 	   !bmide_request_callbacks_valid(memory, request) {
-		bmide_fail_channel(channel, channel_index)
+		bmide_fail_channel(bm, channel, channel_index, .Direction_Or_Callback)
 		return
 	}
 	transfer := Bmide_Transfer {
@@ -450,7 +491,7 @@ bmide_arm_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Ad
 	table := channel.prd_address
 	if channel.prd_latched {table = channel.latched_prd_address}
 	if !bmide_parse_prds(memory, request, table, &transfer) {
-		bmide_fail_channel(channel, channel_index)
+		bmide_fail_channel(bm, channel, channel_index, .Prd_Parse)
 		return
 	}
 	if request.device.begin != nil &&
@@ -460,7 +501,7 @@ bmide_arm_channel :: proc(bm: ^Bmide, channel_index: u8, memory: Bmide_Memory_Ad
 			   request.direction,
 			   request.byte_count,
 		   ) {
-		bmide_fail_channel(channel, channel_index)
+		bmide_fail_channel(bm, channel, channel_index, .Device_Begin)
 		return
 	}
 	transfer.active = true
@@ -473,7 +514,9 @@ bmide_synchronize :: proc(bm: ^Bmide, bus_master_enabled: bool, memory: Bmide_Me
 	for index in 0 ..< BMIDE_CHANNEL_COUNT {
 		channel := &bm.channels[index]
 		if channel.transfer.active {
-			if !bus_master_enabled {bmide_fail_channel(channel, u8(index))}
+			if !bus_master_enabled {
+				bmide_fail_channel(bm, channel, u8(index), .Bus_Master_Disabled)
+			}
 			continue
 		}
 		if channel.completion_waits_for_stop {
@@ -492,10 +535,10 @@ bmide_synchronize :: proc(bm: ^Bmide, bus_master_enabled: bool, memory: Bmide_Me
 }
 
 @(private = "file")
-bmide_complete_channel :: proc(channel: ^Bmide_Channel, channel_index: u8) -> bool {
+bmide_complete_channel :: proc(bm: ^Bmide, channel: ^Bmide_Channel, channel_index: u8) -> bool {
 	adapter := channel.request.device
 	if adapter.commit != nil && !adapter.commit(adapter.ctx, channel_index) {
-		bmide_fail_channel(channel, channel_index)
+		bmide_fail_channel(bm, channel, channel_index, .Device_Commit)
 		return false
 	}
 	retired := channel.transfer.retires_eot
@@ -548,7 +591,7 @@ bmide_transfer_channel :: proc(
 	if transfer.completed != transfer.byte_count {return false}
 	completed := transfer.completed
 	span_count := transfer.span_count
-	if bmide_complete_channel(channel, channel_index) {
+	if bmide_complete_channel(bm, channel, channel_index) {
 		bm.transactions += 1
 		bm.bytes_moved += u64(completed)
 		bm.channel_transactions[channel_index] += 1
@@ -586,7 +629,7 @@ bmide_advance_to :: proc(
 			channel := &bm.channels[index]
 			if !channel.transfer.active || channel.transfer.deadline_tick != deadline {continue}
 			if !bmide_transfer_channel(bm, u8(index), memory) {
-				bmide_fail_channel(channel, u8(index))
+				bmide_fail_channel(bm, channel, u8(index), .Transfer)
 			}
 			irq_mask |= u8(1 << uint(index))
 		}

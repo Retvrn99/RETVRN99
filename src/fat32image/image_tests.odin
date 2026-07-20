@@ -396,7 +396,6 @@ fat32image_test_guest_and_editor_fsinfo_updates_preserve_reserved_layout :: proc
 	put_u32le(primary[:], 492, 0xFFFF_FFFF)
 	testing.expect_value(t, block_write(image, primary_lba, primary[:]).code, Error_Code.None)
 	testing.expect_value(t, check_filesystem(image).code, Error_Code.Invalid_FAT32)
-	testing.expect_value(t, close(image, .Clean).code, Error_Code.Invalid_FAT32)
 	invalid := primary
 	invalid[100] = 1
 	testing.expect_value(

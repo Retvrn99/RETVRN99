@@ -54,6 +54,26 @@ Ide_Deadline_Action :: enum u8 {
 	Flush_Complete,
 }
 
+Ide_Failure_Reason :: enum u8 {
+	None,
+	Pio_Read,
+	Pio_Write,
+	Dma_Read,
+	Dma_Write,
+	Flush,
+	Write_Command,
+	Dma_Command,
+}
+
+Ide_Failure :: struct {
+	valid:      bool,
+	reason:     Ide_Failure_Reason,
+	command:    u8,
+	lba:        u64,
+	byte_count: u32,
+	block:      Block_Failure,
+}
+
 Ide :: struct {
 	bd:                      Block_Device,
 	state:                   Ide_State,
@@ -103,6 +123,20 @@ Ide :: struct {
 	dma_bytes:               int,
 	dma_buf:                 [IDE_DMA_MAX_BYTES]u8,
 	activity_generation:     u64,
+	first_failure:           Ide_Failure,
+}
+
+ide_record_failure :: proc(ide: ^Ide, reason: Ide_Failure_Reason, lba: u64, byte_count: int) {
+	if ide == nil || ide.first_failure.valid {return}
+	failure := Ide_Failure {
+		valid      = true,
+		reason     = reason,
+		command    = ide.cmd,
+		lba        = lba,
+		byte_count = u32(max(byte_count, 0)),
+	}
+	if ide.bd.failure != nil {failure.block = ide.bd.failure(ide.bd.ctx)}
+	ide.first_failure = failure
 }
 
 ide_init :: proc(ide: ^Ide, bd: Block_Device) {
@@ -309,6 +343,7 @@ ide_flush :: proc(ide: ^Ide) -> bool {
 ide_checkpoint :: proc(ide: ^Ide) -> bool {
 	if ide == nil {return true}
 	if !ide_flush(ide) {
+		ide_record_failure(ide, .Flush, ide_current_lba(ide), 0)
 		ide.writeback_failed = true
 		ide.writeback_deadline_tick = 0
 		ide.reg_error = IDE_ERROR_ABRT
@@ -329,6 +364,7 @@ ide_background_checkpoint :: proc(ide: ^Ide) -> bool {
 		ide.writeback_deadline_tick = 0
 		return true
 	}
+	ide_record_failure(ide, .Flush, ide_current_lba(ide), 0)
 	ide.writeback_deadline_tick =
 		ide.now_tick + min(IDE_WRITEBACK_IDLE_TICKS, ~u64(0) - ide.now_tick)
 	return false
@@ -350,6 +386,7 @@ ide_load_sector :: proc(ide: ^Ide) -> bool {
 		byte_count := ide.pio_read_sectors * IDE_SECTOR_SIZE
 		if byte_count > len(ide.dma_buf) ||
 		   !ide.bd.read(ide.bd.ctx, ide.pio_read_start_lba, ide.dma_buf[:byte_count]) {
+			ide_record_failure(ide, .Pio_Read, ide.pio_read_start_lba, byte_count)
 			ide_abort(ide)
 			return false
 		}
@@ -410,13 +447,18 @@ ide_command :: proc(ide: ^Ide, cmd: u8) {
 			ide_abort(ide)
 			return
 		}
-		if ide.writeback_failed {ide_abort(ide); return}
+		if ide.writeback_failed {
+			ide_record_failure(ide, .Write_Command, ide_current_lba(ide), 0)
+			ide_abort(ide)
+			return
+		}
 		ide.lba = ide_current_lba(ide)
 		ide.pending = int(ide.reg_seccount)
 		if ide.pending == 0 {ide.pending = 256}
 		if ide.bd.write == nil ||
 		   ide.lba > ide.bd.sector_count ||
 		   u64(ide.pending) > ide.bd.sector_count - ide.lba {
+			ide_record_failure(ide, .Write_Command, ide.lba, ide.pending * IDE_SECTOR_SIZE)
 			ide_abort(ide)
 			return
 		}
@@ -442,7 +484,11 @@ ide_command :: proc(ide: ^Ide, cmd: u8) {
 		ide_begin_dma(ide, .Device_To_Memory)
 	case 0xCA, 0xCB:
 		// WRITE DMA / WRITE DMA WITHOUT RETRY
-		if ide.writeback_failed {ide_abort(ide); return}
+		if ide.writeback_failed {
+			ide_record_failure(ide, .Dma_Command, ide_current_lba(ide), 0)
+			ide_abort(ide)
+			return
+		}
 		ide_begin_dma(ide, .Memory_To_Device)
 	case 0xEF:
 		// SET FEATURES
@@ -504,6 +550,7 @@ ide_begin_dma :: proc(ide: ^Ide, direction: Bmide_Direction) {
 	   ide_transfer_mode_rate(ide.transfer_mode) == 0 ||
 	   lba > ide.bd.sector_count ||
 	   u64(sectors) > ide.bd.sector_count - lba {
+		ide_record_failure(ide, .Dma_Command, lba, int(sectors) * IDE_SECTOR_SIZE)
 		ide_abort(ide)
 		return
 	}
@@ -550,6 +597,7 @@ ide_dma_begin_adapter :: proc(
 	}
 	if direction == .Device_To_Memory {
 		if !ide.bd.read(ide.bd.ctx, ide.dma_lba, ide.dma_buf[:ide.dma_bytes]) {
+			ide_record_failure(ide, .Dma_Read, ide.dma_lba, ide.dma_bytes)
 			return false
 		}
 		ide.activity_generation += 1
@@ -589,6 +637,7 @@ ide_dma_commit_adapter :: proc(ctx: rawptr, channel: u8) -> bool {
 	if channel != 0 || !ide.dma_pending {return false}
 	if ide.dma_direction == .Memory_To_Device {
 		if !ide.bd.write(ide.bd.ctx, ide.dma_lba, ide.dma_buf[:ide.dma_bytes]) {
+			ide_record_failure(ide, .Dma_Write, ide.dma_lba, ide.dma_bytes)
 			return false
 		}
 		ide.activity_generation += 1

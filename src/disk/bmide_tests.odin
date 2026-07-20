@@ -596,6 +596,12 @@ bmide_test_rejected_commit_aborts_transaction :: proc(t: ^testing.T) {
 	testing.expect_value(t, bm.prd_spans, u64(0))
 	status := u8(bmide_io_read(&bm, 2, 1))
 	testing.expect_value(t, status & (BMIDE_STATUS_ERROR | BMIDE_STATUS_INTERRUPT), u8(0x06))
+	testing.expect(t, bm.first_failure.valid)
+	testing.expect_value(t, bm.first_failure.reason, Bmide_Failure_Reason.Device_Commit)
+	testing.expect_value(t, bm.first_failure.channel, u8(0))
+	testing.expect_value(t, bm.first_failure.prd_address, BMIDE_TEST_TABLE)
+	testing.expect_value(t, bm.first_failure.requested, u32(512))
+	testing.expect_value(t, bm.first_failure.completed, u32(512))
 }
 
 @(test)
@@ -663,6 +669,9 @@ bmide_test_invalid_prds_abort_before_data_moves :: proc(t: ^testing.T) {
 		bmide_synchronize(&bm, true, adapter)
 		testing.expect_value(t, device.begins, 0)
 		testing.expect_value(t, device.aborts, 1)
+		testing.expect(t, bm.first_failure.valid)
+		testing.expect_value(t, bm.first_failure.reason, Bmide_Failure_Reason.Prd_Parse)
+		testing.expect_value(t, bm.first_failure.prd_address, invalid.table & ~u32(3))
 		testing.expect_value(t, memory.data[BMIDE_TEST_BUFFER], u8(0))
 		testing.expect_value(
 			t,

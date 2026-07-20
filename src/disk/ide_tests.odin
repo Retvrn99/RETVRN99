@@ -19,6 +19,7 @@ Ide_Test_Ram :: struct {
 	read_fail:        bool,
 	write_fail:       bool,
 	flush_fail:       bool,
+	failure_snapshot: Block_Failure,
 }
 
 ide_test_ram_read :: proc(ctx: rawptr, lba: u64, buf: []u8) -> bool {
@@ -51,6 +52,10 @@ ide_test_ram_flush :: proc(ctx: rawptr) -> bool {
 	return !r.flush_fail
 }
 
+ide_test_ram_failure :: proc(ctx: rawptr) -> Block_Failure {
+	return (^Ide_Test_Ram)(ctx).failure_snapshot
+}
+
 ide_test_setup :: proc(ram: ^Ide_Test_Ram, ide: ^Ide) {
 	ram.data = make([]u8, 1024 * 1024)
 	bd := Block_Device {
@@ -59,6 +64,7 @@ ide_test_setup :: proc(ram: ^Ide_Test_Ram, ide: ^Ide) {
 		read         = ide_test_ram_read,
 		write        = ide_test_ram_write,
 		flush        = ide_test_ram_flush,
+		failure      = ide_test_ram_failure,
 	}
 	ide_init(ide, bd)
 	ide.irq_ctx = ram
@@ -785,6 +791,44 @@ ide_test_dma_request_uses_udma_66_rate :: proc(t: ^testing.T) {
 }
 
 @(test)
+ide_test_dma_read_failure_records_block_context :: proc(t: ^testing.T) {
+	ram: Ide_Test_Ram
+	ide: Ide
+	ide_test_setup(&ram, &ide)
+	defer delete(ram.data)
+	ram.read_fail = true
+	ram.failure_snapshot = block_failure_make(
+		.Read,
+		.Helper,
+		9,
+		IDE_SECTOR_SIZE,
+		8,
+		12,
+		11,
+		"FAT32 helper read failed",
+	)
+
+	ide_test_outb(&ide, 0x1F1, 0x03)
+	ide_test_outb(&ide, 0x1F2, 0x40 | IDE_UDMA_MODE)
+	ide_test_command(&ide, 0xEF)
+	ide_test_set_lba28(&ide, 9, 1)
+	ide_test_outb(&ide, 0x1F7, 0xC8)
+	request, pending := ide_bmide_request(&ide)
+	if !testing.expect(t, pending) {return}
+	testing.expect(
+		t,
+		!request.device.begin(request.device.ctx, 0, request.direction, request.byte_count),
+	)
+	testing.expect(t, ide.first_failure.valid)
+	testing.expect_value(t, ide.first_failure.reason, Ide_Failure_Reason.Dma_Read)
+	testing.expect_value(t, ide.first_failure.command, u8(0xC8))
+	testing.expect_value(t, ide.first_failure.lba, u64(9))
+	testing.expect_value(t, ide.first_failure.byte_count, u32(IDE_SECTOR_SIZE))
+	testing.expect_value(t, ide.first_failure.block.operation, Block_Operation.Read)
+	testing.expect_value(t, ide.first_failure.block.code, u32(8))
+}
+
+@(test)
 ide_test_pio_read_phases_obey_deadlines :: proc(t: ^testing.T) {
 	ram: Ide_Test_Ram
 	ide: Ide
@@ -878,6 +922,16 @@ ide_test_pio_batched_read_failure_aborts_at_first_ready_deadline :: proc(t: ^tes
 	ide_test_setup(&ram, &ide)
 	defer delete(ram.data)
 	ram.read_fail = true
+	ram.failure_snapshot = block_failure_make(
+		.Read,
+		.Helper,
+		17,
+		3 * IDE_SECTOR_SIZE,
+		8,
+		7,
+		6,
+		"FAT32 helper read failed",
+	)
 
 	ide_test_set_lba28(&ide, 17, 3)
 	ide_test_outb(&ide, 0x1F7, 0x20)
@@ -896,6 +950,13 @@ ide_test_pio_batched_read_failure_aborts_at_first_ready_deadline :: proc(t: ^tes
 	status := ide_test_inb(&ide, 0x1F7)
 	testing.expect(t, status & IDE_STATUS_ERR != 0)
 	testing.expect(t, status & (IDE_STATUS_BSY | IDE_STATUS_DRQ) == 0)
+	testing.expect(t, ide.first_failure.valid)
+	testing.expect_value(t, ide.first_failure.reason, Ide_Failure_Reason.Pio_Read)
+	testing.expect_value(t, ide.first_failure.command, u8(0x20))
+	testing.expect_value(t, ide.first_failure.lba, u64(17))
+	testing.expect_value(t, ide.first_failure.byte_count, u32(3 * IDE_SECTOR_SIZE))
+	testing.expect_value(t, ide.first_failure.block.operation, Block_Operation.Read)
+	testing.expect_value(t, ide.first_failure.block.code, u32(8))
 	_, still_pending := ide_next_deadline(&ide)
 	testing.expect(t, !still_pending)
 }
@@ -909,6 +970,16 @@ ide_test_multisector_write_rejection_has_no_partial_commit :: proc(t: ^testing.T
 	start := 11 * IDE_SECTOR_SIZE
 	for &byte in ram.data[start:start + 3 * IDE_SECTOR_SIZE] {byte = 0xA5}
 	ram.write_fail = true
+	ram.failure_snapshot = block_failure_make(
+		.Write,
+		.Helper,
+		11,
+		3 * IDE_SECTOR_SIZE,
+		8,
+		7,
+		6,
+		"protected FAT32 write",
+	)
 
 	ide_test_set_lba28(&ide, 11, 3)
 	ide_test_command(&ide, 0x30)
@@ -924,6 +995,13 @@ ide_test_multisector_write_rejection_has_no_partial_commit :: proc(t: ^testing.T
 	testing.expect_value(t, ram.data[start], u8(0xA5))
 	testing.expect_value(t, ram.data[start + 2 * IDE_SECTOR_SIZE], u8(0xA5))
 	testing.expect(t, ide_test_inb(&ide, 0x1F7) & IDE_STATUS_ERR != 0)
+	testing.expect(t, ide.first_failure.valid)
+	testing.expect_value(t, ide.first_failure.reason, Ide_Failure_Reason.Pio_Write)
+	testing.expect_value(t, ide.first_failure.command, u8(0x30))
+	testing.expect_value(t, ide.first_failure.lba, u64(11))
+	testing.expect_value(t, ide.first_failure.byte_count, u32(3 * IDE_SECTOR_SIZE))
+	testing.expect_value(t, ide.first_failure.block.code, u32(8))
+	testing.expect_value(t, block_failure_text(&ide.first_failure.block), "protected FAT32 write")
 }
 
 @(test)

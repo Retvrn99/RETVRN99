@@ -493,6 +493,10 @@ close :: proc(image: ^Image, mode: Close_Mode) -> Image_Error {
 	if (mode == .Clean || mode == .Clean_Compatible) &&
 	   image.mode == .Read_Write &&
 	   image.write_started {
+		if mode == .Clean {
+			fsinfo_error := recover_fsinfo_mirror(image)
+			if fsinfo_error.code != .None {return fsinfo_error}
+		}
 		filesystem_error := check_filesystem_compatible(image)
 		if mode == .Clean {filesystem_error = check_filesystem(image)}
 		if filesystem_error.code != .None {return filesystem_error}

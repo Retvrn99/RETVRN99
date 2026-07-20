@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package fat32session
 
+import disk "../disk"
 import fat32image "../fat32image"
 import "core:fmt"
 import "core:os"
@@ -698,6 +699,14 @@ process_adapter_test_protected_write_freezes_parent_with_helper_error :: proc(t:
 	if !testing.expect(t, device.read(device.ctx, 0, mbr[:])) {return}
 	mbr[446] = mbr[446] ~ 0x80
 	testing.expect(t, !device.write(device.ctx, 0, mbr[:]))
+	failure := device.failure(device.ctx)
+	testing.expect(t, failure.valid)
+	testing.expect_value(t, failure.operation, disk.Block_Operation.Write)
+	testing.expect_value(t, failure.source, disk.Block_Failure_Source.Helper)
+	testing.expect_value(t, failure.lba, u64(0))
+	testing.expect_value(t, failure.byte_count, u32(fat32image.SECTOR_BYTES))
+	testing.expect_value(t, failure.code, u32(Error_Code.Protected_Write))
+	testing.expect(t, len(disk.block_failure_text(&failure)) > 0)
 	terminal_error, terminal := session_terminal_error(session)
 	testing.expect(t, terminal)
 	testing.expect_value(t, terminal_error.code, Error_Code.Protected_Write)

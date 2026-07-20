@@ -19,6 +19,35 @@ In_Process_Implementation :: struct {
 	closed:             bool,
 	frozen:             bool,
 	last_error:         Session_Error,
+	block_failure:      disk.Block_Failure,
+}
+
+@(private = "file")
+in_process_block_record_error :: proc(
+	impl: ^In_Process_Implementation,
+	operation: disk.Block_Operation,
+	lba: u64,
+	byte_count: int,
+	err: Session_Error,
+) {
+	if impl == nil || impl.block_failure.valid {return}
+	value := err
+	impl.block_failure = disk.block_failure_make(
+		operation,
+		.Helper,
+		lba,
+		u32(max(byte_count, 0)),
+		u32(err.code),
+		err.sequence,
+		err.durable_sequence,
+		error_text(&value),
+	)
+}
+
+in_process_block_failure :: proc(ctx: rawptr) -> disk.Block_Failure {
+	impl := (^In_Process_Implementation)(ctx)
+	if impl == nil {return {}}
+	return impl.block_failure
 }
 
 open_in_process :: proc(
@@ -115,6 +144,7 @@ open_in_process :: proc(
 		read         = in_process_block_read,
 		write        = in_process_block_write,
 		flush        = in_process_block_flush,
+		failure      = in_process_block_failure,
 	}
 	session.operations = Machine_Operations {
 		ready = in_process_ready,
@@ -204,34 +234,52 @@ in_process_backing_valid :: proc(impl: ^In_Process_Implementation) -> bool {
 
 in_process_block_read :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 	impl := (^In_Process_Implementation)(ctx)
-	if !in_process_backing_valid(impl) {return false}
+	if !in_process_backing_valid(impl) {
+		if impl !=
+		   nil {in_process_block_record_error(impl, .Read, lba, len(data), impl.last_error)}
+		return false
+	}
 	read_error := fat32image.block_read(impl.image, lba, data)
 	if read_error.code == .None {return true}
-	_ = in_process_freeze(impl, image_error_map(read_error, impl.sequence, impl.durable_sequence))
+	failure := in_process_freeze(
+		impl,
+		image_error_map(read_error, impl.sequence, impl.durable_sequence),
+	)
+	in_process_block_record_error(impl, .Read, lba, len(data), failure)
 	return false
 }
 
 in_process_block_write :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 	impl := (^In_Process_Implementation)(ctx)
-	if !in_process_backing_valid(impl) {return false}
+	if !in_process_backing_valid(impl) {
+		if impl !=
+		   nil {in_process_block_record_error(impl, .Write, lba, len(data), impl.last_error)}
+		return false
+	}
 	ignored, validation_error := fat32image.validate_write(impl.image, lba, data)
 	if validation_error.code != .None {
-		_ = in_process_freeze(
+		failure := in_process_freeze(
 			impl,
 			image_error_map(validation_error, impl.sequence, impl.durable_sequence),
 		)
+		in_process_block_record_error(impl, .Write, lba, len(data), failure)
 		return false
 	}
 	if ignored {return true}
 	sequence := impl.sequence + 1
 	wal_error := wal_append(&impl.wal, sequence, lba, data)
 	if wal_error.code != .None {
-		_ = in_process_freeze(impl, wal_error)
+		failure := in_process_freeze(impl, wal_error)
+		in_process_block_record_error(impl, .Write, lba, len(data), failure)
 		return false
 	}
 	write_error := fat32image.block_write(impl.image, lba, data)
 	if write_error.code != .None {
-		_ = in_process_freeze(impl, image_error_map(write_error, sequence, impl.durable_sequence))
+		failure := in_process_freeze(
+			impl,
+			image_error_map(write_error, sequence, impl.durable_sequence),
+		)
+		in_process_block_record_error(impl, .Write, lba, len(data), failure)
 		return false
 	}
 	impl.sequence = sequence
@@ -239,7 +287,8 @@ in_process_block_write :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 	if wal_checkpoint_due(&impl.wal, impl.sequence) {
 		checkpoint_error := wal_checkpoint(&impl.wal, impl.image, impl.sequence)
 		if checkpoint_error.code != .None {
-			_ = in_process_freeze(impl, checkpoint_error)
+			failure := in_process_freeze(impl, checkpoint_error)
+			in_process_block_record_error(impl, .Write, lba, len(data), failure)
 			return false
 		}
 		impl.durable_sequence = impl.sequence
@@ -248,7 +297,9 @@ in_process_block_write :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 }
 
 in_process_block_flush :: proc(ctx: rawptr) -> bool {
+	impl := (^In_Process_Implementation)(ctx)
 	_, err := in_process_barrier(ctx, .Block_Flush)
+	if err.code != .None {in_process_block_record_error(impl, .Flush, 0, 0, err)}
 	return err.code == .None
 }
 
@@ -265,6 +316,19 @@ in_process_barrier :: proc(
 	}
 	if impl.frozen {return {}, impl.last_error}
 	if !in_process_backing_valid(impl) {return {}, impl.last_error}
+	if reason != .Block_Flush {
+		_, backup_lba, _, backup, changed, prepare_error :=
+			fat32image.prepare_fsinfo_mirror(impl.image)
+		if prepare_error.code != .None {
+			return {}, in_process_freeze(
+				impl,
+				image_error_map(prepare_error, impl.sequence, impl.durable_sequence),
+			)
+		}
+		if changed && !in_process_block_write(impl, backup_lba, backup[:]) {
+			return {}, impl.last_error
+		}
+	}
 	checkpoint_error := wal_checkpoint(&impl.wal, impl.image, impl.sequence)
 	if checkpoint_error.code != .None {
 		return {}, in_process_freeze(impl, checkpoint_error)

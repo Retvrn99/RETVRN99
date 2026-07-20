@@ -6,6 +6,76 @@ import "core:os"
 import "core:testing"
 
 @(test)
+session_test_clean_close_journals_windows_primary_fsinfo_backup :: proc(t: ^testing.T) {
+	root, root_error := os.make_directory_temp(
+		"",
+		"retvrn99-session-fsinfo-clean-*",
+		context.temp_allocator,
+	)
+	if !testing.expect_value(t, root_error, os.Error(nil)) {return}
+	defer os.remove_all(root)
+
+	adapters := [2]Adapter_Kind{Adapter_Kind.In_Process, Adapter_Kind.Process}
+	for adapter in adapters {
+		name := adapter == .In_Process ? "fsinfo-clean-in-process.img" : "fsinfo-clean-process.img"
+		path, created := session_test_image(t, root, name)
+		if !created {continue}
+		session, open_error := open_machine(path, name, adapter)
+		if !testing.expect_value(t, open_error.code, Error_Code.None) {continue}
+		device := block_device(session)
+		vbr, primary: [fat32image.SECTOR_BYTES]u8
+		if !testing.expect(t, device.read(device.ctx, 63, vbr[:])) {
+			_ = close(session, .Retain)
+			continue
+		}
+		primary_lba := u64(63) + u64(get_u16le(vbr[:], 48))
+		backup_lba := u64(63) + u64(get_u16le(vbr[:], 50)) + u64(get_u16le(vbr[:], 48))
+		if !testing.expect(t, device.read(device.ctx, primary_lba, primary[:])) {
+			_ = close(session, .Retain)
+			continue
+		}
+		put_u32le(primary[:], 488, 1234)
+		put_u32le(primary[:], 492, 0)
+		if !testing.expect(t, device.write(device.ctx, primary_lba, primary[:])) {
+			_ = close(session, .Retain)
+			continue
+		}
+		result, barrier_error := barrier(session, .Clean_Close)
+		if !testing.expect_value(t, barrier_error.code, Error_Code.None) {
+			_ = close(session, .Retain)
+			continue
+		}
+		testing.expect_value(t, result.sequence, u64(2))
+		testing.expect_value(t, result.durable_sequence, u64(2))
+		testing.expect_value(t, result.materialization, Materialization.Materialized)
+		if !testing.expect_value(t, close(session, .Commit).code, Error_Code.None) {continue}
+
+		validated, validation_error := fat32image.validate(path)
+		if !testing.expect_value(t, validation_error.code, fat32image.Error_Code.None) {continue}
+		testing.expect(t, !validated.dirty)
+		fat32image.info_destroy(&validated)
+
+		reader, reader_error := fat32image.open(path, .Read_Only)
+		if !testing.expect_value(t, reader_error.code, fat32image.Error_Code.None) {continue}
+		read_primary, read_backup: [fat32image.SECTOR_BYTES]u8
+		testing.expect_value(
+			t,
+			fat32image.block_read(reader, primary_lba, read_primary[:]).code,
+			fat32image.Error_Code.None,
+		)
+		testing.expect_value(
+			t,
+			fat32image.block_read(reader, backup_lba, read_backup[:]).code,
+			fat32image.Error_Code.None,
+		)
+		testing.expect_value(t, read_primary, read_backup)
+		testing.expect_value(t, get_u32le(read_primary[:], 488), u32(1234))
+		testing.expect_value(t, get_u32le(read_primary[:], 492), u32(0))
+		testing.expect_value(t, fat32image.close(reader, .Retain).code, fat32image.Error_Code.None)
+	}
+}
+
+@(test)
 session_test_dirty_single_fsinfo_update_recovers_to_coherent_mirrors :: proc(t: ^testing.T) {
 	root, root_error := os.make_directory_temp(
 		"",

@@ -22,6 +22,70 @@ Process_Implementation :: struct {
 	sequence:         u64,
 	durable_sequence: u64,
 	last_error:       Session_Error,
+	block_failure:    disk.Block_Failure,
+}
+
+@(private = "file")
+process_block_failure_source :: proc(code: Error_Code) -> disk.Block_Failure_Source {
+	if code == .Transport_Lost || code == .Helper_Missing || code == .Helper_Launch_Failed {
+		return .Transport
+	}
+	if code == .Protocol_Mismatch ||
+	   code == .Protocol_Malformed ||
+	   code == .Protocol_Order ||
+	   code == .Frame_Too_Large {
+		return .Protocol
+	}
+	return .Helper
+}
+
+@(private = "file")
+process_block_record_error :: proc(
+	impl: ^Process_Implementation,
+	operation: disk.Block_Operation,
+	lba: u64,
+	byte_count: int,
+	err: Session_Error,
+) {
+	if impl == nil || impl.block_failure.valid {return}
+	value := err
+	text := error_text(&value)
+	impl.block_failure = disk.block_failure_make(
+		operation,
+		process_block_failure_source(err.code),
+		lba,
+		u32(max(byte_count, 0)),
+		u32(err.code),
+		err.sequence,
+		err.durable_sequence,
+		text,
+	)
+}
+
+@(private = "file")
+process_block_record_validation :: proc(
+	impl: ^Process_Implementation,
+	operation: disk.Block_Operation,
+	lba: u64,
+	byte_count: int,
+) {
+	if impl == nil || impl.block_failure.valid {return}
+	impl.block_failure = disk.block_failure_make(
+		operation,
+		.Adapter_Validation,
+		lba,
+		u32(max(byte_count, 0)),
+		u32(Error_Code.Invalid_Argument),
+		impl.sequence,
+		impl.durable_sequence,
+		"FAT32 block request failed adapter validation",
+	)
+}
+
+process_block_failure :: proc(ctx: rawptr) -> disk.Block_Failure {
+	impl := (^Process_Implementation)(ctx)
+	if impl == nil {return {}}
+	return impl.block_failure
 }
 
 process_helper_path :: proc(allocator: runtime.Allocator) -> (string, Session_Error) {
@@ -397,6 +461,7 @@ open_process_configured :: proc(
 		read         = process_block_read,
 		write        = process_block_write,
 		flush        = process_block_flush,
+		failure      = process_block_failure,
 	}
 	session.operations = Machine_Operations {
 		ready = process_ready,
@@ -455,16 +520,20 @@ process_terminal_error :: proc(ctx: rawptr) -> (Session_Error, bool) {
 
 process_block_read :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 	impl := (^Process_Implementation)(ctx)
-	if len(data) == 0 ||
-	   len(data) > MAX_BLOCK_BYTES ||
-	   len(data) % fat32image.SECTOR_BYTES != 0 {return false}
+	if len(data) == 0 || len(data) > MAX_BLOCK_BYTES || len(data) % fat32image.SECTOR_BYTES != 0 {
+		process_block_record_validation(impl, .Read, lba, len(data))
+		return false
+	}
 	payload: [12]u8
 	put_u64le(payload[:], 0, lba)
 	put_u32le(payload[:], 8, u32(len(data)))
 	length, err := process_exchange_into(impl, .Read, payload[:], data)
-	if err.code != .None {return false}
+	if err.code != .None {
+		process_block_record_error(impl, .Read, lba, len(data), err)
+		return false
+	}
 	if length != len(data) {
-		_ = process_transport_fail(
+		failure := process_transport_fail(
 			impl,
 			error_make(
 				.Protocol_Malformed,
@@ -475,6 +544,7 @@ process_block_read :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 				"FAT32 read response length is invalid",
 			),
 		)
+		process_block_record_error(impl, .Read, lba, len(data), failure)
 		return false
 	}
 	return true
@@ -482,16 +552,20 @@ process_block_read :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 
 process_block_write :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 	impl := (^Process_Implementation)(ctx)
-	if len(data) == 0 ||
-	   len(data) > MAX_BLOCK_BYTES ||
-	   len(data) % fat32image.SECTOR_BYTES != 0 {return false}
+	if len(data) == 0 || len(data) > MAX_BLOCK_BYTES || len(data) % fat32image.SECTOR_BYTES != 0 {
+		process_block_record_validation(impl, .Write, lba, len(data))
+		return false
+	}
 	prefix: [8]u8
 	put_u64le(prefix[:], 0, lba)
 	frame, err := process_exchange_parts(impl, .Write, prefix[:], data)
-	if err.code != .None {return false}
+	if err.code != .None {
+		process_block_record_error(impl, .Write, lba, len(data), err)
+		return false
+	}
 	defer protocol_frame_destroy(&frame, context.temp_allocator)
 	if len(frame.payload) != 16 {
-		_ = process_transport_fail(
+		failure := process_transport_fail(
 			impl,
 			error_make(
 				.Protocol_Malformed,
@@ -502,6 +576,7 @@ process_block_write :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 				"FAT32 write response is malformed",
 			),
 		)
+		process_block_record_error(impl, .Write, lba, len(data), failure)
 		return false
 	}
 	impl.sequence = get_u64le(frame.payload, 0)
@@ -510,7 +585,9 @@ process_block_write :: proc(ctx: rawptr, lba: u64, data: []u8) -> bool {
 }
 
 process_block_flush :: proc(ctx: rawptr) -> bool {
+	impl := (^Process_Implementation)(ctx)
 	_, err := process_barrier(ctx, .Block_Flush)
+	if err.code != .None {process_block_record_error(impl, .Flush, 0, 0, err)}
 	return err.code == .None
 }
 

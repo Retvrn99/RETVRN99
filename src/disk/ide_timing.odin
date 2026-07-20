@@ -45,6 +45,7 @@ ide_publish_data_in :: proc(ide: ^Ide) {
 ide_complete_write :: proc(ide: ^Ide) {
 	if ide.pio_staged_bytes <= 0 ||
 	   !ide.bd.write(ide.bd.ctx, ide.pio_start_lba, ide.dma_buf[:ide.pio_staged_bytes]) {
+		ide_record_failure(ide, .Pio_Write, ide.pio_start_lba, ide.pio_staged_bytes)
 		ide_abort(ide)
 		return
 	}

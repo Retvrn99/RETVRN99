@@ -84,8 +84,6 @@ prepare_fsinfo_mirror :: proc(
 	}
 	changed = !slice.equal(primary[:], backup[:])
 	if !changed {return}
-	put_u32le(primary[:], 488, 0xFFFF_FFFF)
-	put_u32le(primary[:], 492, 0xFFFF_FFFF)
 	copy(backup[:], primary[:])
 	primary_lba = u64(image.geometry.partition_lba) + u64(image.geometry.fsinfo_sector)
 	backup_lba =
@@ -96,14 +94,11 @@ prepare_fsinfo_mirror :: proc(
 }
 
 recover_fsinfo_mirror :: proc(image: ^Image) -> Image_Error {
-	primary_lba, backup_lba, primary, backup, changed, prepare_error := prepare_fsinfo_mirror(
+	_, backup_lba, _, backup, changed, prepare_error := prepare_fsinfo_mirror(
 		image,
 	)
 	if prepare_error.code != .None {return prepare_error}
 	if !changed {return {}}
-	if write_error := block_write(image, primary_lba, primary[:]); write_error.code != .None {
-		return write_error
-	}
 	if write_error := block_write(image, backup_lba, backup[:]); write_error.code != .None {
 		return write_error
 	}

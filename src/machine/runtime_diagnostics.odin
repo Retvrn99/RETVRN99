@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import disk "../disk"
 import hv "../hv"
 import video "../vga"
 import "core:fmt"
@@ -22,6 +23,7 @@ Runtime_Diagnostic_Kind :: enum u8 {
 	Vga_Irq_Storm,
 	Gsw_Shutdown,
 	Mmio_Storm,
+	Storage_First_Failure,
 }
 
 Runtime_Diagnostic_State :: struct {
@@ -59,6 +61,7 @@ Runtime_Diagnostic_State :: struct {
 	mmio_report_scalar:       u64,
 	mmio_report_string:       u64,
 	mmio_reported:            bool,
+	storage_reported:         bool,
 }
 
 @(private = "file")
@@ -228,6 +231,15 @@ machine_runtime_diagnostic_check_mmio :: proc(m: ^Machine) {
 	machine_runtime_diagnostic_queue(m, .Mmio_Storm)
 }
 
+@(private = "package")
+machine_runtime_diagnostic_check_storage :: proc(m: ^Machine) {
+	if m == nil || m.runtime_diagnostic.storage_reported {return}
+	if !m.ide.first_failure.valid && !m.bmide.first_failure.valid {return}
+	if m.runtime_diagnostic.pending != .None {return}
+	m.runtime_diagnostic.storage_reported = true
+	machine_runtime_diagnostic_queue(m, .Storage_First_Failure)
+}
+
 machine_take_runtime_diagnostic :: proc(m: ^Machine) -> (string, bool) {
 	if m == nil || m.runtime_diagnostic.pending == .None {return "", false}
 	d := &m.runtime_diagnostic
@@ -302,6 +314,43 @@ machine_take_runtime_diagnostic :: proc(m: ^Machine) -> (string, bool) {
 			m.vm.device_alias_dirty_queries,
 			m.vm.device_alias_query_failures,
 		)
+	case .Storage_First_Failure:
+		ide_failure := &m.ide.first_failure
+		bmide_failure := &m.bmide.first_failure
+		fmt.sbprintf(
+			&builder,
+			"diagnostic: storage first failure ide=%d reason=%d cmd=%02x lba=%d bytes=%d bmide=%d reason=%d channel=%d direction=%d prd=%08x requested=%d completed=%d",
+			ide_failure.valid ? 1 : 0,
+			u8(ide_failure.reason),
+			ide_failure.command,
+			ide_failure.lba,
+			ide_failure.byte_count,
+			bmide_failure.valid ? 1 : 0,
+			u8(bmide_failure.reason),
+			bmide_failure.channel,
+			u8(bmide_failure.direction),
+			bmide_failure.prd_address,
+			bmide_failure.requested,
+			bmide_failure.completed,
+		)
+		if !ide_failure.valid && bmide_failure.valid {
+			fmt.sbprintf(&builder, " context=bmide-only")
+		}
+		if ide_failure.block.valid {
+			block := &ide_failure.block
+			fmt.sbprintf(
+				&builder,
+				" block=1 op=%d source=%d code=%d seq=%d durable=%d detail=%s",
+				u8(block.operation),
+				u8(block.source),
+				block.code,
+				block.sequence,
+				block.durable_sequence,
+				disk.block_failure_text(block),
+			)
+		} else {
+			fmt.sbprintf(&builder, " block=0 detail=no-block-device-failure")
+		}
 	case .None:
 		strings.builder_destroy(&builder)
 		return "", false
