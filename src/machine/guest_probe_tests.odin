@@ -22,6 +22,8 @@ GUEST_PROBE_REP_IRQ_PROGRESS := #load("../../assets/probes/rep_irq_progress.bin"
 GUEST_PROBE_PAGING_AD := #load("../../assets/probes/paging_ad.bin")
 @(rodata)
 GUEST_PROBE_VGA_CLEAR_PIT := #load("../../assets/probes/vga_clear_pit.bin")
+@(rodata)
+GUEST_PROBE_VGA_COPY_PAGING := #load("../../assets/probes/vga_copy_paging.bin")
 
 GUEST_PROBE_LOAD_ADDRESS :: 0x7C00
 GUEST_PROBE_STEP_NS :: u64(2_000_000)
@@ -173,6 +175,11 @@ guest_probe_rep_string_budget :: proc(ctx: rawptr) -> u64 {
 	return 64
 }
 
+@(private = "file")
+guest_probe_full_rep_string_budget :: proc(ctx: rawptr) -> u64 {
+	return 4096
+}
+
 @(test)
 test_guest_probe_hlt_wakes_for_pit_irq_and_returns_through_iret :: proc(t: ^testing.T) {
 	if !hv.available() {
@@ -253,4 +260,26 @@ test_guest_probe_pit_irq_survives_repeated_vga_aperture_clears :: proc(t: ^testi
 		if value != 0 {nonzero += 1}
 	}
 	testing.expect(t, nonzero > 0)
+}
+
+@(test)
+test_guest_probe_paged_rep_movsd_copies_to_vga_aperture :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available; skipping paged VGA copy guest probe")
+		return
+	}
+	testing.set_fail_timeout(t, 20 * time.Second)
+	m := new(Machine)
+	defer free(m)
+	if !guest_probe_prepare(t, m, GUEST_PROBE_VGA_COPY_PAGING) {return}
+	defer machine_destroy(m)
+	m.vm.io_string_budget = guest_probe_full_rep_string_budget
+
+	if !testing.expect(t, guest_probe_run(m, 12 * time.Second)) {return}
+	testing.expect_value(t, m.vm.mmio_string_fallbacks, u64(200))
+	testing.expect_value(t, m.vm.mmio_string_chunks, u64(212))
+	testing.expect_value(t, m.vm.mmio_string_elements, u64(16000))
+	for value in video.vga_vram(&m.vga)[:64000] {
+		testing.expect_value(t, value, u8(0xA5))
+	}
 }

@@ -781,24 +781,9 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 				return Exit{kind = .Io}
 			}
 		case .MemoryAccess:
-			status: WHV_EMULATOR_STATUS
-			hr = WHvEmulatorTryMmioEmulation(
-				vm.emu,
-				vm,
-				&exit_ctx.VpContext,
-				&exit_ctx.u.MemoryAccess,
-				&status,
-			)
-			if hr < 0 || status.AsUINT32 & 1 == 0 {
-				return Exit {
-					kind = .Failed,
-					detail = fmt.tprintf(
-						"MMIO emulation gpa=0x%x hr=0x%08x status=0x%08x",
-						exit_ctx.u.MemoryAccess.Gpa,
-						u32(hr),
-						status.AsUINT32,
-					),
-				}
+			if ok, detail := whpx_emulate_mmio(vm, &exit_ctx.VpContext, &exit_ctx.u.MemoryAccess);
+			   !ok {
+				return Exit{kind = .Failed, detail = detail}
 			}
 			if vm.io_should_yield != nil && vm.io_should_yield(vm.io_ctx) {
 				return Exit{kind = .Io}

@@ -12,7 +12,8 @@ $probes = @(
     "hlt_pit_irq",
     "rep_irq_progress",
     "paging_ad",
-    "vga_clear_pit"
+    "vga_clear_pit",
+    "vga_copy_paging"
 )
 
 foreach ($probe in $probes) {

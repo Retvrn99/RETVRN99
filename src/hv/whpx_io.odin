@@ -51,12 +51,12 @@ whpx_io_mask :: proc(size: u8) -> u32 {
 	return 0
 }
 
-@(private = "file")
+@(private = "package")
 whpx_io_low :: proc(value: u64, bits: int) -> u64 {
 	return bits == 16 ? value & 0xFFFF : value & 0xFFFFFFFF
 }
 
-@(private = "file")
+@(private = "package")
 whpx_io_replace_low :: proc(value, low: u64, bits: int) -> u64 {
 	if bits == 16 {return value & ~u64(0xFFFF) | low & 0xFFFF}
 	return value & ~u64(0xFFFFFFFF) | low & 0xFFFFFFFF
@@ -184,7 +184,7 @@ whpx_io_page_fault_error :: proc(result: WHV_TRANSLATE_GVA_RESULT_CODE, write, u
 	return error
 }
 
-@(private = "file")
+@(private = "package")
 whpx_io_translate :: proc(
 	vm: ^Vm,
 	segment: WHV_X64_SEGMENT_REGISTER,
@@ -200,7 +200,7 @@ whpx_io_translate :: proc(
 	   fault.kind != .None {
 		return fault
 	}
-	linear := segment.Base + offset
+	linear := (segment.Base + offset) & 0xFFFF_FFFF
 	flags := u32(0x10)
 	if write {flags |= 0x2} else {flags |= 0x1}
 	for i in 0 ..< int(size) {
@@ -314,7 +314,7 @@ whpx_next_rip :: proc(vp: ^WHV_VP_EXIT_CONTEXT) -> u64 {
 	return vp.Cs.Attributes & 0x4000 != 0 ? rip & 0xFFFFFFFF : rip & 0xFFFF
 }
 
-@(private = "file")
+@(private = "package")
 whpx_io_commit :: proc(vm: ^Vm, rax, rcx, rsi, rdi, rip: u64) -> bool {
 	names := [?]WHV_REGISTER_NAME{.Rax, .Rcx, .Rsi, .Rdi, .Rip}
 	values: [len(names)]WHV_REGISTER_VALUE
@@ -343,7 +343,7 @@ whpx_io_commit_rax_rip :: proc(vm: ^Vm, rax, rip: u64) -> bool {
 	return WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0
 }
 
-@(private = "file")
+@(private = "package")
 whpx_io_raise_fault :: proc(
 	vm: ^Vm,
 	fault: Whpx_IO_Fault,
@@ -354,18 +354,18 @@ whpx_io_raise_fault :: proc(
 	string,
 ) {
 	if !whpx_io_commit(vm, rax, rcx, rsi, rdi, rip) {
-		return false, "failed to commit faulting string-I/O state"
+		return false, "failed to commit faulting string state"
 	}
 	if fault.kind == .Host {
 		return false, fmt.tprintf(
-			"string I/O %s translation failed at 0x%x (%v)",
+			"string %s translation failed at 0x%x (%v)",
 			operand,
 			fault.linear,
 			fault.translation,
 		)
 	}
 	if !whpx_io_inject_fault(vm, fault) {
-		return false, fmt.tprintf("failed to inject string-I/O %s fault", operand)
+		return false, fmt.tprintf("failed to inject string %s fault", operand)
 	}
 	return true, ""
 }
@@ -383,7 +383,7 @@ whpx_io_write_port :: proc(vm: ^Vm, port: u16, size: u8, value: u32) -> bool {
 	return vm.io_write(vm.io_ctx, port, size, value & whpx_io_mask(size))
 }
 
-@(private = "file")
+@(private = "package")
 whpx_io_ram_span_available :: proc(vm: ^Vm, gpa: u64, size: u64) -> bool {
 	if gpa > u64(len(vm.ram)) || size > u64(len(vm.ram)) - gpa {return false}
 	for reservation in vm.mmio_reservations {
