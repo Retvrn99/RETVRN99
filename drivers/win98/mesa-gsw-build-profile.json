@@ -1,0 +1,87 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "mesa-gsw-build-profile.schema.json",
+    "sha256": "bc3a10912a7b4c582e25b06b7d82ccea5fcf37c4bee8b2e383b16eda2a21e692"
+  },
+  "status": "blocked",
+  "reason": "The pruned source and license closure, guest CPU profile, original GSW adapters, direct recipe, backend exclusions, and reproducible compile outputs are not proven. The reviewed generated-output lock and generated-source reproducibility grant no build, delivery, activation, or capability authority.",
+  "source": {
+    "upstream_name": "mesa9x",
+    "repository": "https://github.com/JHRobotics/mesa9x.git",
+    "owning_commit": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f",
+    "mesa_version": "23.1.9",
+    "mesa_subtree": "mesa-23.1.x"
+  },
+  "generation_strategy": "hash-locked-generated-outputs",
+  "target": {
+    "id": "mesa-23-1-9-gsw-i686-win98se",
+    "kind": "direct-pruned-compile-only",
+    "guest_os": "windows-98-se",
+    "architecture": "i686",
+    "command_ir": "svga10-internal-only",
+    "host_renderer": "sdl-gpu-vulkan-only",
+    "winsys_implementation": "retvrn99-original-gsw",
+    "memory_helper_implementation": "retvrn99-original-gsw",
+    "artifact_class": "non-package-compile-evidence",
+    "compile_only": true,
+    "build_authorized": false,
+    "staging_authorized": false,
+    "guest_install_authorized": false,
+    "dll_activation_authorized": false,
+    "renderer_selection": false
+  },
+  "allowed_families": [
+    "mesa-core",
+    "wgl",
+    "svga-gallium",
+    "nine",
+    "d3d8to9"
+  ],
+  "required_support_families": [
+    "gallium-auxiliary"
+  ],
+  "forbidden_features": [
+    "alternate-mesa-generations",
+    "bochs-3d",
+    "d3d10",
+    "final-dll-activation",
+    "llvm",
+    "llvmpipe",
+    "osmesa",
+    "qemu-3dfx",
+    "renderer-selection",
+    "softgpu-dependency",
+    "softgpu-device-identity",
+    "softgpu-installer",
+    "softgpu-runtime",
+    "softpipe",
+    "svga9-production",
+    "user-selectable-renderer",
+    "vesa-3d",
+    "virgl",
+    "virtualbox-memory-helpers",
+    "virtualbox-winsys",
+    "vmware-branding",
+    "vmware-device-emulation",
+    "vmware-memory-helpers",
+    "vmware-winsys",
+    "windows-95-payloads",
+    "windows-me-payloads",
+    "wine9x-runtime",
+    "wined3d",
+    "zink"
+  ],
+  "dependencies": [
+    {"id":"mesa-file-license-closure","proven":false,"evidence_sha256":""},
+    {"id":"mesa-generator-output-lock","proven":true,"evidence_sha256":"8274e5dd8cc50b41e4f0e510e87e9a2d669248bd69ae988e6dbdb48ce28390e5"},
+    {"id":"mesa-generated-source-reproducibility","proven":true,"evidence_sha256":"d37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b"},
+    {"id":"direct-pruned-build-recipe","proven":false,"evidence_sha256":""},
+    {"id":"gsw-886-win98-i686-v1","proven":false,"evidence_sha256":""},
+    {"id":"original-gsw-winsys","proven":false,"evidence_sha256":""},
+    {"id":"original-gsw-memory-helpers","proven":false,"evidence_sha256":""},
+    {"id":"backend-exclusion-proof","proven":false,"evidence_sha256":""},
+    {"id":"compile-output-reproducibility","proven":false,"evidence_sha256":""}
+  ]
+}

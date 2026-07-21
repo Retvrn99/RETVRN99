@@ -1,0 +1,115 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "mesa-generated-source-reproducibility.schema.json",
+    "sha256": "714ad34a83cfe5de7de4e633c9391b36f3d4cdddd6ddf4e3db304545f44ebce0"
+  },
+  "status": "proven",
+  "reason": "Two independent pinned Mesa 23.1.9 generation checkouts with LF and CRLF source modes produced byte-identical normalized generated-source roots. This evidence proves only normalized output reproducibility and grants no execution, build, delivery, installation, activation, or capability authority.",
+  "component": {
+    "upstream_name": "mesa9x",
+    "repository": "https://github.com/JHRobotics/mesa9x.git",
+    "owning_commit": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f",
+    "mesa_version": "23.1.9",
+    "mesa_subtree": "mesa-23.1.x"
+  },
+  "inputs": {
+    "generated_source_plan": {
+      "relative_path": "mesa-generated-source-plan.json",
+      "bytes": 4354,
+      "sha256": "7d08ea089889105443935fb48a59a69698e5c0cac9f5f87ff02c8710c2a5718c"
+    },
+    "generated_source_plan_schema": {
+      "relative_path": "mesa-generated-source-plan.schema.json",
+      "bytes": 10706,
+      "sha256": "adc69c44e1ebd9e465f667ef42a605451c05a601c4db59bdd2652cf7709cec97"
+    },
+    "generator_recipe": {
+      "relative_path": "generator/mesa-23.1.x-gen.mk",
+      "git_blob": "68b2fd13d08ae0ce4276cb1f720ee9bbb1cd54e9",
+      "bytes": 13288,
+      "sha256": "9ad77b1fe55e4097621dbefeffe989fb00f3c354320ce6521d69f8efd8a44dce"
+    },
+    "source_seed": {
+      "relative_path": "mesa-source-seed.json",
+      "bytes": 6915,
+      "sha256": "b7a18f8bfe4bfe5fac1ef8b4f36105d585e7d69349766d865c8c79a180d79dd8"
+    }
+  },
+  "runs": [
+    {
+      "id": "mesa-generated-lf-v1",
+      "source_mode": "lf",
+      "core_autocrlf": false,
+      "source_checkout_identity": "independent-pinned-checkout",
+      "output_root_identity": "external-content-addressed-root",
+      "normalization": "strict-utf-8-no-bom-lf",
+      "descriptor": {
+        "file_count": 67,
+        "directory_count": 20,
+        "total_entries": 87,
+        "aggregate_bytes": 34876554,
+        "maximum_file_bytes": 20214289,
+        "maximum_path_bytes": 65,
+        "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+        "sha256": "dd0ae888829eabf2a0043f27100aa64c57b43ad12054270bee62f50ccc451d84"
+      },
+      "validation_side_output_count": 0,
+      "run_binding_sha256": "fa3d0f5ed1eceebacf90bfb12f6a172738a858d590c10e277a52c45d7f23f82a"
+    },
+    {
+      "id": "mesa-generated-crlf-v1",
+      "source_mode": "crlf",
+      "core_autocrlf": true,
+      "source_checkout_identity": "independent-pinned-checkout",
+      "output_root_identity": "external-content-addressed-root",
+      "normalization": "strict-utf-8-no-bom-lf",
+      "descriptor": {
+        "file_count": 67,
+        "directory_count": 20,
+        "total_entries": 87,
+        "aggregate_bytes": 34876554,
+        "maximum_file_bytes": 20214289,
+        "maximum_path_bytes": 65,
+        "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+        "sha256": "dd0ae888829eabf2a0043f27100aa64c57b43ad12054270bee62f50ccc451d84"
+      },
+      "validation_side_output_count": 0,
+      "run_binding_sha256": "9373c9e734ba71974ddde8b4edb4823fc6c60fa6d70a6a0bfc8339dc1d16f2c8"
+    }
+  ],
+  "comparison": {
+    "source_checkout_relationship": "independent",
+    "output_root_relationship": "distinct-non-nested",
+    "path_identity": "content-only-no-absolute-root",
+    "normalized_outputs_byte_identical": true,
+    "validation_side_output_paths": [
+      "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.h",
+      "mesa-23.1.x/src/compiler/glsl/glsl_parser.h",
+      "mesa-23.1.x/src/gallium/auxiliary/driver_trace/tr_util.h",
+      "mesa-23.1.x/src/mesa/program/program_parse.tab.h"
+    ],
+    "validation_side_output_count_per_root": 0
+  },
+  "scope": {
+    "classification": "normalized-generated-source-reproducibility-only",
+    "claims": {
+      "normalized_output_reproducibility": true,
+      "generator_execution": false,
+      "generator_trust": false,
+      "package_trust": false,
+      "generated_output_lock": false,
+      "file_license_closure": false,
+      "build_closure": false
+    },
+    "authorizations": {
+      "generator_execution": false,
+      "build": false,
+      "stage": false,
+      "guest_install": false,
+      "dll_activation": false,
+      "capability_advertisement": false
+    }
+  }
+}

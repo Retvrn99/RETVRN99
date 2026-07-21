@@ -1,0 +1,20 @@
+/* SPDX-License-Identifier: GPL-3.0-only */
+#ifndef RETVRN99_MESA_GSW_GIT_SHA1_H
+#define RETVRN99_MESA_GSW_GIT_SHA1_H
+
+#define RETVRN99_MESA_SOURCE_VERSION "23.1.9-retvrn99-gsw"
+#define RETVRN99_MESA_SOURCE_COMMIT \
+    "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"
+#define RETVRN99_MESA_SOURCE_COMMIT_SHORT "29b9adb44b"
+
+#ifdef PACKAGE_VERSION
+#undef PACKAGE_VERSION
+#endif
+#define PACKAGE_VERSION RETVRN99_MESA_SOURCE_VERSION
+
+#ifdef MESA_GIT_SHA1
+#undef MESA_GIT_SHA1
+#endif
+#define MESA_GIT_SHA1 " (git-29b9adb44b)"
+
+#endif

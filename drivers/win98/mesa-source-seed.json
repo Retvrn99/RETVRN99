@@ -1,0 +1,201 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "mesa-source-seed.schema.json",
+    "sha256": "987a11af8aecbbbb509adf4419e42b29e2f5ca9ae324b1bb05ed34cac5d1f884"
+  },
+  "status": "blocked",
+  "reason": "This inventory is only an exact source-list seed. Header and depfile closure, generated outputs, file-level licensing, original GSW replacements, and a direct pruned build remain unproven.",
+  "source": {
+    "upstream_name": "mesa9x",
+    "repository": "https://github.com/JHRobotics/mesa9x.git",
+    "owning_commit": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f",
+    "mesa_version": "23.1.9",
+    "mesa_subtree": "mesa-23.1.x",
+    "definition_files": [
+      {
+        "relative_path": "mesa-23.1.x.mk",
+        "git_blob": "bd847297fc0c874480dec09bc1ce63442bdc5901",
+        "bytes": 58030,
+        "sha256": "a2bab2c9329df8cf8852247dd4cf3e786a7790f8b3350158c3be8fc3b2f060b8"
+      },
+      {
+        "relative_path": "Makefile",
+        "git_blob": "fe49eb7abffefab98e6681fc97029b69204b35d0",
+        "bytes": 33844,
+        "sha256": "7d578346607fe6dd3171b04d7b4eedc905a893df5094183c724e066e93e37d93"
+      }
+    ],
+    "normalization_file": {
+      "relative_path": "mesa-23.1.x/.gitattributes",
+      "git_blob": "c0386978fadab6dc403690c4fd6b38433a8e9a4e",
+      "bytes": 79,
+      "sha256": "a560a09c4e6a6d5350465a615678e25fdf252669cb72569d1dd642b8f98bc180"
+    },
+    "confirmed_absent_input": "mesa-23.1.x/Makefile.sources"
+  },
+  "selection": {
+    "variables": [
+      {
+        "name": "MesaUtilLib_SRC",
+        "definition_file": "mesa-23.1.x.mk",
+        "occurrences": 78
+      },
+      {
+        "name": "MesaLib_SRC",
+        "definition_file": "mesa-23.1.x.mk",
+        "occurrences": 519
+      },
+      {
+        "name": "MesaWglLib_SRC",
+        "definition_file": "mesa-23.1.x.mk",
+        "occurrences": 18
+      },
+      {
+        "name": "MesaGalliumAuxLib_SRC",
+        "definition_file": "mesa-23.1.x.mk",
+        "occurrences": 143
+      },
+      {
+        "name": "MesaNineLib_SRC",
+        "definition_file": "mesa-23.1.x.mk",
+        "occurrences": 42
+      },
+      {
+        "name": "MesaSVGALib_SRC",
+        "definition_file": "mesa-23.1.x.mk",
+        "occurrences": 59
+      },
+      {
+        "name": "eight_SRC",
+        "definition_file": "Makefile",
+        "occurrences": 11
+      }
+    ],
+    "forbidden_variables": [
+      "MesaSVGAWinsysLib_SRC",
+      "MesaGdiLib_SRC"
+    ],
+    "disabled_conditionals": [
+      {
+        "definition_file": "mesa-23.1.x.mk",
+        "macro": "USE_ASM",
+        "state": "undefined",
+        "variable": "MesaLib_SRC",
+        "operator": "+=",
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/glapi_x86.S"
+      }
+    ],
+    "normalization": {
+      "mesa_version_token": "$(MESA_VER)/",
+      "mesa_version_prefix": "mesa-23.1.x/",
+      "path_separator": "/",
+      "candidate_order": "ordinal-case-sensitive",
+      "canonical_encoding": "utf-8-no-bom-lf-terminal-newline"
+    },
+    "worktree_normalization": {
+      "strategy": "crlf-to-lf-only",
+      "allowed_prefixes": [
+        "mesa-23.1.x/",
+        "win9x/eight/",
+        "win9x/nine/"
+      ],
+      "forbidden_attributes": [
+        "filter",
+        "working-tree-encoding",
+        "ident"
+      ],
+      "final_rehash": true
+    },
+    "occurrence_count": 870,
+    "unique_count": 869,
+    "tracked_present_count": 840,
+    "generated_absent_count": 29,
+    "expected_duplicate": {
+      "relative_path": "mesa-23.1.x/src/mesa/main/es1_conversion.c",
+      "occurrences": 2
+    },
+    "candidate_set_sha256": "6cbc9ffcad7d06f01ad019b9f62bc7c647ff19da3f4993ac0707ef5b5faed716",
+    "occurrence_sequence_sha256": "4ecdda04b89dabc541f837a0972806a88187b9f6751b75905f4df6dbd762b8f2",
+    "generated_absent_paths": [
+      "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-lex.c",
+      "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.c",
+      "mesa-23.1.x/src/compiler/glsl/glsl_lexer.cpp",
+      "mesa-23.1.x/src/compiler/glsl/glsl_parser.cpp",
+      "mesa-23.1.x/src/compiler/nir/nir_constant_expressions.c",
+      "mesa-23.1.x/src/compiler/nir/nir_intrinsics.c",
+      "mesa-23.1.x/src/compiler/nir/nir_opcodes.c",
+      "mesa-23.1.x/src/compiler/nir/nir_opt_algebraic.c",
+      "mesa-23.1.x/src/compiler/spirv/spirv_info.c",
+      "mesa-23.1.x/src/compiler/spirv/vtn_gather_types.c",
+      "mesa-23.1.x/src/gallium/auxiliary/driver_trace/tr_util.c",
+      "mesa-23.1.x/src/gallium/auxiliary/indices/u_indices_gen.c",
+      "mesa-23.1.x/src/gallium/auxiliary/indices/u_unfilled_gen.c",
+      "mesa-23.1.x/src/mapi/glapi/enums.c",
+      "mesa-23.1.x/src/mesa/main/api_exec_init.c",
+      "mesa-23.1.x/src/mesa/main/format_fallback.c",
+      "mesa-23.1.x/src/mesa/main/marshal_generated0.c",
+      "mesa-23.1.x/src/mesa/main/marshal_generated1.c",
+      "mesa-23.1.x/src/mesa/main/marshal_generated2.c",
+      "mesa-23.1.x/src/mesa/main/marshal_generated3.c",
+      "mesa-23.1.x/src/mesa/main/marshal_generated4.c",
+      "mesa-23.1.x/src/mesa/main/marshal_generated5.c",
+      "mesa-23.1.x/src/mesa/main/marshal_generated6.c",
+      "mesa-23.1.x/src/mesa/main/marshal_generated7.c",
+      "mesa-23.1.x/src/mesa/main/unmarshal_table.c",
+      "mesa-23.1.x/src/mesa/program/lex.yy.c",
+      "mesa-23.1.x/src/mesa/program/program_parse.tab.c",
+      "mesa-23.1.x/src/util/format/u_format_table.c",
+      "mesa-23.1.x/src/util/format_srgb.c"
+    ]
+  },
+  "scope": {
+    "classification": "source-list-seed-only",
+    "claims": {
+      "header_closure": false,
+      "depfile_closure": false,
+      "generator_closure": false,
+      "build_closure": false,
+      "license_closure": false
+    },
+    "authorizations": {
+      "build": false,
+      "stage": false,
+      "guest_install": false,
+      "capability_advertisement": false
+    }
+  },
+  "blockers": [
+    {
+      "relative_path": "include/git_sha1.h",
+      "candidate_relation": "transitive-include-risk",
+      "required_disposition": "original-replacement-required"
+    },
+    {
+      "relative_path": "win9x/nine/nine_memory_helper.c",
+      "candidate_relation": "selected",
+      "required_disposition": "original-replacement-required"
+    },
+    {
+      "relative_path": "extra/clock_gettime32.c",
+      "candidate_relation": "selected",
+      "required_disposition": "omit-unless-file-license-approved"
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/gallium/auxiliary/postprocess/pp_mlaa.c",
+      "candidate_relation": "selected",
+      "required_disposition": "omit-unless-file-license-approved"
+    },
+    {
+      "relative_path": "win9x/wddm_screen.h",
+      "candidate_relation": "transitive-include-risk",
+      "required_disposition": "omit-from-private-gsw-build"
+    },
+    {
+      "relative_path": "include/winddk",
+      "candidate_relation": "transitive-include-risk",
+      "required_disposition": "omit-from-private-gsw-build"
+    }
+  ]
+}

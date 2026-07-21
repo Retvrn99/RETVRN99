@@ -1,0 +1,13 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "status": "blocked",
+  "reason": "The libs/vkd3d-shader file and license closure has not been reviewed.",
+  "upstream_name": "vkd3d-shader",
+  "owning_commit": "1b0924d12c18df03912a8876ed17fd017ce9308e",
+  "source_prefixes": [
+    {"id":"vkd3d-shader","relative_path":"libs/vkd3d-shader","mode":"subtree"}
+  ],
+  "notices": [],
+  "files": []
+}

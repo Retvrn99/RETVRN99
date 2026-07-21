@@ -1,0 +1,115 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "mesa-generated-source-plan.schema.json",
+    "sha256": "adc69c44e1ebd9e465f667ef42a605451c05a601c4db59bdd2652cf7709cec97"
+  },
+  "status": "draft",
+  "reason": "This plan can only normalize and describe an already generated checkout. Generator execution, package payload execution, reproducibility, generated-output locking, licensing, build, staging, guest installation, and capability advertisement remain unproven and unauthorized.",
+  "component": {
+    "upstream_name": "mesa9x",
+    "repository": "https://github.com/JHRobotics/mesa9x.git",
+    "owning_commit": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f",
+    "mesa_version": "23.1.9",
+    "mesa_subtree": "mesa-23.1.x"
+  },
+  "inputs": {
+    "generator_recipe": {
+      "relative_path": "generator/mesa-23.1.x-gen.mk",
+      "git_blob": "68b2fd13d08ae0ce4276cb1f720ee9bbb1cd54e9",
+      "bytes": 13288,
+      "sha256": "9ad77b1fe55e4097621dbefeffe989fb00f3c354320ce6521d69f8efd8a44dce"
+    },
+    "source_seed": {
+      "relative_path": "mesa-source-seed.json",
+      "bytes": 6915,
+      "sha256": "b7a18f8bfe4bfe5fac1ef8b4f36105d585e7d69349766d865c8c79a180d79dd8"
+    }
+  },
+  "selection": {
+    "recipe_variable": "GENERATE_FILES",
+    "recipe_output_count": 67,
+    "recipe_output_sequence_sha256": "480f4000b3d6c10eced24e4538ee4aabdd59e3dbe3172054910bc7eac01c7140",
+    "validation_side_outputs": [
+      {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.h",
+        "head_git_blob": "9bc42a206946d60b6aa25d3cd0cab08b9ad21815",
+        "generated_git_blob": "f39ad6717efeb51933041ae7624797ecb7aa8f18",
+        "git_status": "required-worktree-modified",
+        "validation": "exact-generated-blob-and-c-noncomment-token-equivalence"
+      },
+      {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glsl_parser.h",
+        "head_git_blob": "37e20a8e402cf0875152e8bd5cd35166b4a3262c",
+        "generated_git_blob": "a9b3ffa8fb7056b26d2055c77e60e2bd1f505529",
+        "git_status": "required-worktree-modified",
+        "validation": "exact-generated-blob-and-c-noncomment-token-equivalence"
+      },
+      {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/driver_trace/tr_util.h",
+        "head_git_blob": "b7c1c8287976b22aece09cefdb1cf779954e286b",
+        "generated_git_blob": "b7c1c8287976b22aece09cefdb1cf779954e286b",
+        "git_status": "optional-worktree-modified",
+        "validation": "exact-head-blob-equivalence"
+      },
+      {
+        "relative_path": "mesa-23.1.x/src/mesa/program/program_parse.tab.h",
+        "head_git_blob": "ccd992c3b4e4d1069ad99534e63b960badac38b0",
+        "generated_git_blob": "31026bf74dc5eaa717704a425b0ae41933ed3158",
+        "git_status": "required-worktree-modified",
+        "validation": "exact-generated-blob-and-c-noncomment-token-equivalence"
+      }
+    ],
+    "validation_side_output_count": 4,
+    "published_output_count": 67,
+    "git_state": {
+      "recipe_outputs": "ignored-present",
+      "validation_side_outputs": "three-required-modified-one-optional-modified-never-published",
+      "staged_paths": 0,
+      "other_changed_untracked_or_ignored_paths": 0
+    }
+  },
+  "normalization": {
+    "input_encoding": "strict-utf-8-no-bom",
+    "accepted_line_endings": [
+      "lf",
+      "crlf"
+    ],
+    "output_encoding": "strict-utf-8-no-bom-lf",
+    "reject_bom": true,
+    "reject_nul": true,
+    "reject_isolated_cr": true
+  },
+  "bounds": {
+    "maximum_recipe_bytes": 1048576,
+    "maximum_seed_bytes": 1048576,
+    "maximum_file_bytes": 33554432,
+    "maximum_aggregate_bytes": 67108864,
+    "maximum_path_bytes": 512,
+    "maximum_directories": 64,
+    "maximum_entries": 135
+  },
+  "descriptor": {
+    "schema": 1,
+    "path_order": "ordinal-case-sensitive",
+    "tree_digest_algorithm": "retvrn99-file-tree-sha256-v1"
+  },
+  "scope": {
+    "classification": "generated-source-preparation-only",
+    "claims": {
+      "generator_execution": false,
+      "output_reproducibility": false,
+      "generated_output_lock": false,
+      "file_license_closure": false,
+      "build_closure": false
+    },
+    "authorizations": {
+      "generator_execution": false,
+      "build": false,
+      "stage": false,
+      "guest_install": false,
+      "capability_advertisement": false
+    }
+  }
+}

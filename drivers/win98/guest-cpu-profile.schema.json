@@ -1,0 +1,307 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "guest-cpu-profile.schema.json",
+  "title": "RETVRN99 Windows 98 guest CPU profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "profile_id",
+    "cpu_persona",
+    "cpuid",
+    "toolchains",
+    "proof"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {"$ref": "#/$defs/filePin"},
+    "profile_id": {"const": "gsw-886-win98-i686-v1"},
+    "cpu_persona": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "architecture"],
+      "properties": {
+        "name": {"const": "GSW-886"},
+        "architecture": {"const": "i686"}
+      }
+    },
+    "cpuid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policy", "changes_allowed"],
+      "properties": {
+        "policy": {"const": "unchanged"},
+        "changes_allowed": {"const": false}
+      }
+    },
+    "toolchains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mingw", "open_watcom"],
+      "properties": {
+        "mingw": {"$ref": "#/$defs/mingw"},
+        "open_watcom": {"$ref": "#/$defs/openWatcom"}
+      }
+    },
+    "proof": {"$ref": "#/$defs/proof"}
+  },
+  "$defs": {
+    "filePin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "mingw": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolchain_id",
+        "toolchain_lock",
+        "compiler",
+        "objdump",
+        "target",
+        "architecture",
+        "required_features",
+        "disabled_features",
+        "cpu_flags"
+      ],
+      "properties": {
+        "toolchain_id": {"const": "msys2-mingw32-gcc-15.2.0-rev13"},
+        "toolchain_lock": {
+          "allOf": [
+            {"$ref": "#/$defs/filePin"},
+            {
+              "properties": {
+                "relative_path": {"const": "mingw32-toolchain.lock.json"},
+                "sha256": {
+                  "const": "db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12"
+                }
+              }
+            }
+          ]
+        },
+        "compiler": {
+          "allOf": [
+            {"$ref": "#/$defs/filePin"},
+            {
+              "properties": {
+                "relative_path": {"const": "bin/gcc.exe"},
+                "sha256": {
+                  "const": "0c79d47814364067e560ba4d26849126388a44fc5765d33df00c1fdd582c89a9"
+                }
+              }
+            }
+          ]
+        },
+        "objdump": {
+          "allOf": [
+            {"$ref": "#/$defs/filePin"},
+            {
+              "properties": {
+                "relative_path": {"const": "bin/objdump.exe"},
+                "sha256": {
+                  "const": "3a3309d8a8f8898193d5e41e73085d8c8702a1efe296c6236a48f925fc5411f5"
+                }
+              }
+            }
+          ]
+        },
+        "target": {"const": "i686-w64-mingw32"},
+        "architecture": {"const": "i686"},
+        "required_features": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "mmx"},
+            {"const": "sse"},
+            {"const": "sse2"},
+            {"const": "sse3"}
+          ],
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "disabled_features": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "cx16"},
+            {"const": "ssse3"},
+            {"const": "sse4"},
+            {"const": "sse4a"},
+            {"const": "avx"},
+            {"const": "avx2"},
+            {"const": "avx512"},
+            {"const": "aes"},
+            {"const": "pclmul"},
+            {"const": "fma"},
+            {"const": "fma4"},
+            {"const": "f16c"},
+            {"const": "xop"},
+            {"const": "bmi"},
+            {"const": "bmi2"},
+            {"const": "abm"},
+            {"const": "tbm"},
+            {"const": "movbe"},
+            {"const": "rdrand"},
+            {"const": "rdseed"},
+            {"const": "adx"},
+            {"const": "sha"},
+            {"const": "gfni"},
+            {"const": "vaes"},
+            {"const": "vpclmulqdq"},
+            {"const": "rtm"},
+            {"const": "hle"},
+            {"const": "sgx"},
+            {"const": "pku"},
+            {"const": "xsave"},
+            {"const": "waitpkg"},
+            {"const": "enqcmd"},
+            {"const": "movdir"},
+            {"const": "serialize"},
+            {"const": "uintr"},
+            {"const": "amx"}
+          ],
+          "minItems": 36,
+          "maxItems": 36
+        },
+        "cpu_flags": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "-march=i686"},
+            {"const": "-mmmx"},
+            {"const": "-msse"},
+            {"const": "-msse2"},
+            {"const": "-msse3"},
+            {"const": "-mno-cx16"},
+            {"const": "-mno-ssse3"},
+            {"const": "-mno-sse4"},
+            {"const": "-mno-sse4.1"},
+            {"const": "-mno-sse4.2"},
+            {"const": "-mno-sse4a"},
+            {"const": "-mno-avx"},
+            {"const": "-mno-avx2"},
+            {"const": "-mno-avx512f"},
+            {"const": "-mno-avx512bw"},
+            {"const": "-mno-avx512cd"},
+            {"const": "-mno-avx512dq"},
+            {"const": "-mno-avx512vl"},
+            {"const": "-mno-aes"},
+            {"const": "-mno-pclmul"},
+            {"const": "-mno-fma"},
+            {"const": "-mno-fma4"},
+            {"const": "-mno-f16c"},
+            {"const": "-mno-xop"},
+            {"const": "-mno-bmi"},
+            {"const": "-mno-bmi2"},
+            {"const": "-mno-abm"},
+            {"const": "-mno-tbm"},
+            {"const": "-mno-movbe"},
+            {"const": "-mno-rdrnd"},
+            {"const": "-mno-rdseed"},
+            {"const": "-mno-adx"},
+            {"const": "-mno-sha"},
+            {"const": "-mno-gfni"},
+            {"const": "-mno-vaes"},
+            {"const": "-mno-vpclmulqdq"},
+            {"const": "-mno-rtm"},
+            {"const": "-mno-hle"},
+            {"const": "-mno-sgx"},
+            {"const": "-mno-pku"},
+            {"const": "-mno-xsave"},
+            {"const": "-mno-waitpkg"},
+            {"const": "-mno-enqcmd"},
+            {"const": "-mno-movdiri"},
+            {"const": "-mno-movdir64b"},
+            {"const": "-mno-serialize"},
+            {"const": "-mno-uintr"},
+            {"const": "-mno-amx-tile"},
+            {"const": "-mno-amx-int8"},
+            {"const": "-mno-amx-bf16"}
+          ],
+          "minItems": 50,
+          "maxItems": 50
+        }
+      }
+    },
+    "openWatcom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "toolchain_id",
+        "toolchain_lock",
+        "processor_switch",
+        "architecture",
+        "floating_point",
+        "cpu_flags"
+      ],
+      "properties": {
+        "toolchain_id": {"const": "open-watcom-c-win32-1.9"},
+        "toolchain_lock": {
+          "allOf": [
+            {"$ref": "#/$defs/filePin"},
+            {
+              "properties": {
+                "relative_path": {"const": "toolchain.lock.json"},
+                "sha256": {
+                  "const": "e97012fb9d9b1257e59ac5ea46ac8aa1b54b62e2feb03fed70545c5769e07dff"
+                }
+              }
+            }
+          ]
+        },
+        "processor_switch": {"const": "-6"},
+        "architecture": {"const": "i686"},
+        "floating_point": {"const": "x87"},
+        "cpu_flags": {
+          "type": "array",
+          "prefixItems": [
+            {"const": "-6s"},
+            {"const": "-fpi87"}
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    },
+    "proof": {
+      "$comment": "Schema v1 accepts no candidate evidence. A later schema must bind a hash-pinned capture publisher, the pinned empty translation unit, canonical compile/query arguments, deterministic environment, a 30000 ms timeout, exit code zero, raw stdout and stderr byte counts and SHA-256 digests, an authoritative final build inventory, and complete executable-section opcode classification.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "evidence_status",
+        "reason",
+        "compiler_feature_report",
+        "final_pe_outputs",
+        "final_binary_objdump_evidence"
+      ],
+      "properties": {
+        "status": {"const": "blocked"},
+        "evidence_status": {"const": "absent"},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+        "compiler_feature_report": {"type": "null"},
+        "final_pe_outputs": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "final_binary_objdump_evidence": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    }
+  }
+}

@@ -11,9 +11,8 @@ $ErrorActionPreference = 'Stop'
 $sourceDirectory = [IO.Path]::GetFullPath($PSScriptRoot)
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $sourceDirectory '..\..\..\..'))
 $lockFile = Join-Path $repoRoot 'drivers\win98\mingw32-toolchain.lock.json'
-& (Join-Path $repoRoot 'scripts\verify-win98-driver-toolchain.ps1') `
-    -ToolchainRoot $ToolchainRoot -LockFile $lockFile | Out-Host
-$lock = Get-Content -Raw -LiteralPath $lockFile | ConvertFrom-Json
+$lock = & (Join-Path $repoRoot 'scripts\verify-win98-driver-toolchain.ps1') `
+    -ToolchainRoot $ToolchainRoot -LockFile $lockFile -PassThruLock
 $toolRoot = Join-Path ([IO.Path]::GetFullPath($ToolchainRoot)) $lock.extracted.relative_path
 $gcc = Join-Path $toolRoot 'bin\gcc.exe'
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {

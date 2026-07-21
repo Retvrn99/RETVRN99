@@ -1,0 +1,2376 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 2,
+  "status": "reviewed-generated-source",
+  "reason": "",
+  "component": {
+    "component_id": "mesa-23-1-9-generated",
+    "upstream_name": "mesa9x",
+    "repository": "https://github.com/JHRobotics/mesa9x.git",
+    "owning_commit": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f",
+    "mesa_version": "23.1.9",
+    "mesa_subtree": "mesa-23.1.x"
+  },
+  "provenance": {
+    "generated_source_plan": {
+      "relative_path": "mesa-generated-source-plan.json",
+      "bytes": 4354,
+      "sha256": "7d08ea089889105443935fb48a59a69698e5c0cac9f5f87ff02c8710c2a5718c"
+    },
+    "generated_source_reproducibility": {
+      "relative_path": "mesa-generated-source-reproducibility.json",
+      "bytes": 4418,
+      "sha256": "d37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b"
+    },
+    "component_closure": {
+      "relative_path": "component-closures/mesa9x-23.1.x.json",
+      "bytes": 815285,
+      "sha256": "d93a476656ec9f18c1d257a65ae6461111c7e85ec0b704360bcc42b836dbefc5"
+    },
+    "generator_recipe": {
+      "relative_path": "generator/mesa-23.1.x-gen.mk",
+      "git_blob": "68b2fd13d08ae0ce4276cb1f720ee9bbb1cd54e9",
+      "bytes": 13288,
+      "sha256": "9ad77b1fe55e4097621dbefeffe989fb00f3c354320ce6521d69f8efd8a44dce"
+    },
+    "source_seed": {
+      "relative_path": "mesa-source-seed.json",
+      "bytes": 6915,
+      "sha256": "b7a18f8bfe4bfe5fac1ef8b4f36105d585e7d69349766d865c8c79a180d79dd8"
+    },
+    "recipe_variable": "GENERATE_FILES",
+    "recipe_output_sequence_sha256": "480f4000b3d6c10eced24e4538ee4aabdd59e3dbe3172054910bc7eac01c7140"
+  },
+  "license_evidence": [
+    {
+      "id": "01-mit-output-06",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-lex.c",
+        "bytes": 91086,
+        "sha256": "cfeafa42c7910a2c4c4a8a5bf277561f46c53e700a470956e7a33b041875febd"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-lex.c",
+        "bytes": 91086,
+        "sha256": "cfeafa42c7910a2c4c4a8a5bf277561f46c53e700a470956e7a33b041875febd"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 28923,
+        "byte_count": 1155,
+        "sha256": "59b5406d7a1d9e6c834d8dc3709af7ca2bb09a08fe8c8855693d26d6410e48e9"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-07",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.c",
+        "bytes": 170644,
+        "sha256": "8b2f1679bed27ec00bf8fe6ea551baf80127deab65c0772ba31bd73b0290cc63"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.c",
+        "bytes": 170644,
+        "sha256": "8b2f1679bed27ec00bf8fe6ea551baf80127deab65c0772ba31bd73b0290cc63"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 2857,
+        "byte_count": 1155,
+        "sha256": "59b5406d7a1d9e6c834d8dc3709af7ca2bb09a08fe8c8855693d26d6410e48e9"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-08",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glsl_lexer.cpp",
+        "bytes": 158552,
+        "sha256": "7b5e02ef7339fce6148f4819ff96c21364943127958e861a7d6bb3354a0f47e7"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glsl_lexer.cpp",
+        "bytes": 158552,
+        "sha256": "7b5e02ef7339fce6148f4819ff96c21364943127958e861a7d6bb3354a0f47e7"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 62227,
+        "byte_count": 1161,
+        "sha256": "e75948fa374d2c4072db360a44e8b1b861f4bb6f9d062d4fa3a3cf96af80fe32"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-09",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glsl_parser.cpp",
+        "bytes": 264511,
+        "sha256": "114e83e5f704e4c1bd2523abe3f43db25891e930e1b228373b727cb119b23eed"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glsl_parser.cpp",
+        "bytes": 264511,
+        "sha256": "114e83e5f704e4c1bd2523abe3f43db25891e930e1b228373b727cb119b23eed"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 2848,
+        "byte_count": 1161,
+        "sha256": "e75948fa374d2c4072db360a44e8b1b861f4bb6f9d062d4fa3a3cf96af80fe32"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-11",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/ir_expression_operation_strings.h",
+        "bytes": 5850,
+        "sha256": "67bed528eb9f90510366a78c0373aa0248221c9e936c29b7b836ef378641e9ed"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/ir_expression_operation_strings.h",
+        "bytes": 5850,
+        "sha256": "67bed528eb9f90510366a78c0373aa0248221c9e936c29b7b836ef378641e9ed"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1156,
+        "sha256": "3a487a74732a8365953cb33a428aada713dc52ad61a66c5d71b11036bbb89b15"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-12",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/ir_expression_operation.h",
+        "bytes": 4797,
+        "sha256": "a523f6b315fe5229028efb9ec012ff282061801c806b60c482d6aa3cdf7320c7"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/ir_expression_operation.h",
+        "bytes": 4797,
+        "sha256": "a523f6b315fe5229028efb9ec012ff282061801c806b60c482d6aa3cdf7320c7"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1156,
+        "sha256": "3a487a74732a8365953cb33a428aada713dc52ad61a66c5d71b11036bbb89b15"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-13",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_builder_opcodes.h",
+        "bytes": 746665,
+        "sha256": "3d893f463a4561ec542a35c1835fb5393b84f5e17acdda64357bd352b7751588"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_builder_opcodes.h",
+        "bytes": 746665,
+        "sha256": "3d893f463a4561ec542a35c1835fb5393b84f5e17acdda64357bd352b7751588"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1144,
+        "sha256": "b1cf1997dd06a00a9468c75c78b5ff02d87aa5a43e706e37ab01f1bdd7b84fe7"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-14",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_constant_expressions.c",
+        "bytes": 1173720,
+        "sha256": "53687f6baa538dabfd8b0bb637862b3fd716eb67fef3857ae984448f30cb1c96"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_constant_expressions.c",
+        "bytes": 1173720,
+        "sha256": "53687f6baa538dabfd8b0bb637862b3fd716eb67fef3857ae984448f30cb1c96"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1156,
+        "sha256": "e9ec55f6b1c489a4821a8599dfe0b6dcd54c608bf339142d03e5cc548f2b89ce"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-15",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_intrinsics.c",
+        "bytes": 233196,
+        "sha256": "66bd2db561d6f1f9d6a27a41e2bfc92baab7b8b9118726d5344e6bab7f814d58"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_intrinsics.c",
+        "bytes": 233196,
+        "sha256": "66bd2db561d6f1f9d6a27a41e2bfc92baab7b8b9118726d5344e6bab7f814d58"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1143,
+        "sha256": "31279e12ebd426fb9c4a8e379e7d5d7a718c95276d1698b0f43f5abaeb1d1cc8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-16",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_intrinsics.h",
+        "bytes": 29614,
+        "sha256": "e89e368e7940be36550f6c5787923ebe1715f164702d159a38d3e33059a6d4ba"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_intrinsics.h",
+        "bytes": 29614,
+        "sha256": "e89e368e7940be36550f6c5787923ebe1715f164702d159a38d3e33059a6d4ba"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1143,
+        "sha256": "31279e12ebd426fb9c4a8e379e7d5d7a718c95276d1698b0f43f5abaeb1d1cc8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-17",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_intrinsics_indices.h",
+        "bytes": 41371,
+        "sha256": "58d95cb56b2e2d71326c5e9098c1b35c9e3dfe63bd678c257cd3ec0facfc559c"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_intrinsics_indices.h",
+        "bytes": 41371,
+        "sha256": "58d95cb56b2e2d71326c5e9098c1b35c9e3dfe63bd678c257cd3ec0facfc559c"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1183,
+        "sha256": "2786e44ae999a0aa33bec846ce270b4ce888a0290639a8818f95d0e9505107c8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-19",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opcodes.h",
+        "bytes": 10475,
+        "sha256": "a112a41b53944ba32746aef0b19f88cf1277e8bac69cadec50b34b0e6557077c"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opcodes.h",
+        "bytes": 10475,
+        "sha256": "a112a41b53944ba32746aef0b19f88cf1277e8bac69cadec50b34b0e6557077c"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1206,
+        "sha256": "ad2a1cdf3bf8ee1c03697495040b47c3ddcd779d56dc855760f3545e191abc33"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-21",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/spirv/spirv_info.c",
+        "bytes": 99646,
+        "sha256": "05bff67af4d1820204aa5a45933ef9525e249ce3c59cb5ff553f0e46b88d36b1"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/spirv/spirv_info.c",
+        "bytes": 99646,
+        "sha256": "05bff67af4d1820204aa5a45933ef9525e249ce3c59cb5ff553f0e46b88d36b1"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 84,
+        "byte_count": 1156,
+        "sha256": "ad8ad52f18449d340b90b42b4361c0a4d96d733a4b6c3c79b2a8788a61342ed5"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-22",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/spirv/vtn_gather_types.c",
+        "bytes": 43132,
+        "sha256": "6fb0cce85356fb57377ad95dec127f144376ad78e56dad81de8a6d2fc59b15e2"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/spirv/vtn_gather_types.c",
+        "bytes": 43132,
+        "sha256": "6fb0cce85356fb57377ad95dec127f144376ad78e56dad81de8a6d2fc59b15e2"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1156,
+        "sha256": "ad8ad52f18449d340b90b42b4361c0a4d96d733a4b6c3c79b2a8788a61342ed5"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-23",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/spirv/vtn_generator_ids.h",
+        "bytes": 2281,
+        "sha256": "086bb2b414e6303af8f2a1c88902ba1cf7f4bccd8be191dba623f6de0ad5652d"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/spirv/vtn_generator_ids.h",
+        "bytes": 2281,
+        "sha256": "086bb2b414e6303af8f2a1c88902ba1cf7f4bccd8be191dba623f6de0ad5652d"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 89,
+        "byte_count": 1159,
+        "sha256": "879cc6dfc20a302279745e79d89476a945adeebfd1b41cc4b7fa25b9b7750d95"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-25",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/indices/u_indices_gen.c",
+        "bytes": 722425,
+        "sha256": "d196432e66b4cbd86c8e824655c79e4255184e4d1976658989ca9f327edeef7e"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/indices/u_indices_gen.c",
+        "bytes": 722425,
+        "sha256": "d196432e66b4cbd86c8e824655c79e4255184e4d1976658989ca9f327edeef7e"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 56,
+        "byte_count": 1173,
+        "sha256": "009609ee54527ccfd6e361c21ce64964d3022ab6300f79bd6aaa70dfb5c935b2"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-26",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/indices/u_unfilled_gen.c",
+        "bytes": 40487,
+        "sha256": "07d9dad34decda38fa05b32cffda70d83dfb874ed8f3e921cbe94971853a13ea"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/indices/u_unfilled_gen.c",
+        "bytes": 40487,
+        "sha256": "07d9dad34decda38fa05b32cffda70d83dfb874ed8f3e921cbe94971853a13ea"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 57,
+        "byte_count": 1173,
+        "sha256": "009609ee54527ccfd6e361c21ce64964d3022ab6300f79bd6aaa70dfb5c935b2"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-27",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/util/u_tracepoints.c",
+        "bytes": 5938,
+        "sha256": "47b65c83385a65e212c78be5c1fcf72dcc08b6526d359b6ddcbf63581df5746a"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/util/u_tracepoints.c",
+        "bytes": 5938,
+        "sha256": "47b65c83385a65e212c78be5c1fcf72dcc08b6526d359b6ddcbf63581df5746a"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1148,
+        "sha256": "5972ad79194183a825702ab696bbb76747ee6bb94aaa1cf5c5d089c9ea4025df"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-28",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/util/u_tracepoints.h",
+        "bytes": 3481,
+        "sha256": "0ae2f818f15c6b5642293dd7dc49d7b0d45ad9ae9a7c9236414525fc89959619"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/util/u_tracepoints.h",
+        "bytes": 3481,
+        "sha256": "0ae2f818f15c6b5642293dd7dc49d7b0d45ad9ae9a7c9236414525fc89959619"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1148,
+        "sha256": "5972ad79194183a825702ab696bbb76747ee6bb94aaa1cf5c5d089c9ea4025df"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-29",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/enums.c",
+        "bytes": 691612,
+        "sha256": "77c03789673b6130f1ad59b05ac15a61b672dd2db75b4092f1ab8ef24a28226c"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/enums.c",
+        "bytes": 691612,
+        "sha256": "77c03789673b6130f1ad59b05ac15a61b672dd2db75b4092f1ab8ef24a28226c"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 89,
+        "byte_count": 1206,
+        "sha256": "836f84c52c376851007a25088368c97a1154c9e1befb0305413d8921a9ea4f76"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-30",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/glapi_x86.S",
+        "bytes": 162619,
+        "sha256": "338b383fe21031e6cccc10786ef7c37c60104c9f48240e4f1815e12f6e0695b9"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/glapi_x86.S",
+        "bytes": 162619,
+        "sha256": "338b383fe21031e6cccc10786ef7c37c60104c9f48240e4f1815e12f6e0695b9"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 91,
+        "byte_count": 1258,
+        "sha256": "062f654811b691e3201d141c5dfa48ca33847c5752c9cf6888e1da299c7df5e0"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-31",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect.c",
+        "bytes": 366278,
+        "sha256": "2d8b9750144d33c3e6e472ea173c881b8c3e3da0268f2307bc2f03d4db1f838e"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect.c",
+        "bytes": 366278,
+        "sha256": "2d8b9750144d33c3e6e472ea173c881b8c3e3da0268f2307bc2f03d4db1f838e"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 95,
+        "byte_count": 1184,
+        "sha256": "88e978998d27c5175c3aece8b544173c062ec44a559e992d930d82efc47b9bf3"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-32",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect.h",
+        "bytes": 59645,
+        "sha256": "d90af225334c46a0dee006dbe0026ccdef00fc344a2cd5589d17a60a22cd9b30"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect.h",
+        "bytes": 59645,
+        "sha256": "d90af225334c46a0dee006dbe0026ccdef00fc344a2cd5589d17a60a22cd9b30"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 95,
+        "byte_count": 1264,
+        "sha256": "ebad10b721b57b17457eff9a1b0981fc82d491882d66d85c57a39f8f2313f821"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-33",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect_init.c",
+        "bytes": 56372,
+        "sha256": "315da9f4a333f6e7f5b89c67acc876010832dc92e22071af6d9474f5aaef3f5b"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect_init.c",
+        "bytes": 56372,
+        "sha256": "315da9f4a333f6e7f5b89c67acc876010832dc92e22071af6d9474f5aaef3f5b"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 95,
+        "byte_count": 1264,
+        "sha256": "ebad10b721b57b17457eff9a1b0981fc82d491882d66d85c57a39f8f2313f821"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-34",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect_size.c",
+        "bytes": 10232,
+        "sha256": "fa94857807b15f9100b12333749d27bf8c525b131a8da7d2380c5a3c153b84fa"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect_size.c",
+        "bytes": 10232,
+        "sha256": "fa94857807b15f9100b12333749d27bf8c525b131a8da7d2380c5a3c153b84fa"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 95,
+        "byte_count": 1178,
+        "sha256": "15735d12efc031dc08c234b5d1c66f693dfa3a05bbf61885a9c62faa46e4fa94"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-35",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect_size.h",
+        "bytes": 3736,
+        "sha256": "215d4043ae0c29e27c0176b94c5eeac5159d83a3ac7f76b312af81dafc3a5cba"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect_size.h",
+        "bytes": 3736,
+        "sha256": "215d4043ae0c29e27c0176b94c5eeac5159d83a3ac7f76b312af81dafc3a5cba"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 95,
+        "byte_count": 1178,
+        "sha256": "15735d12efc031dc08c234b5d1c66f693dfa3a05bbf61885a9c62faa46e4fa94"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-36",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/glapi_gentable.c",
+        "bytes": 65513,
+        "sha256": "798e518b3ad916ef57f5d01f174606ac47743d8b93b795536d33b24ac9751ff9"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/glapi_gentable.c",
+        "bytes": 65513,
+        "sha256": "798e518b3ad916ef57f5d01f174606ac47743d8b93b795536d33b24ac9751ff9"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 92,
+        "byte_count": 1290,
+        "sha256": "15d2c2f1bb2caed820da4bd4b10a813027134684203b1fc128ad859525c74b01"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-38",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/glapitable.h",
+        "bytes": 174766,
+        "sha256": "ae5a2ee4a449c8ae9162e6fe9653943b80b2c08eaba75f04af0ea40f49f246f9"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/glapitable.h",
+        "bytes": 174766,
+        "sha256": "ae5a2ee4a449c8ae9162e6fe9653943b80b2c08eaba75f04af0ea40f49f246f9"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 89,
+        "byte_count": 1252,
+        "sha256": "9efbe07d9d78120b100328695d815b667d09d0a416627cebf711f5978f012444"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-39",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/glapitemp.h",
+        "bytes": 836264,
+        "sha256": "88d7996fcf54985296530bd5e77127d3e7b0d68426ac3986b6a4ec428209d3e4"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/glapitemp.h",
+        "bytes": 836264,
+        "sha256": "88d7996fcf54985296530bd5e77127d3e7b0d68426ac3986b6a4ec428209d3e4"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 91,
+        "byte_count": 1252,
+        "sha256": "60b63b20086d25cbc66f62fecbd20126af8d0317d75803689f011040297a249f"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-40",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/glprocs.h",
+        "bytes": 341449,
+        "sha256": "430b86c63d1f7970648d322f05d9780c0c2e0f94c4495ec822f49052e4b51e24"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/glprocs.h",
+        "bytes": 341449,
+        "sha256": "430b86c63d1f7970648d322f05d9780c0c2e0f94c4495ec822f49052e4b51e24"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 89,
+        "byte_count": 1258,
+        "sha256": "95c3cb4bd0c35e1f3d46e50fdfc937685fa6f19aed6535f9e12d5c6b7c2af146"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-41",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_beginend_init.h",
+        "bytes": 20117,
+        "sha256": "7552e856cc7459d2bbbabda236084adb8f79c3b09ffbf192a1da1609e4badfc2"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_beginend_init.h",
+        "bytes": 20117,
+        "sha256": "7552e856cc7459d2bbbabda236084adb8f79c3b09ffbf192a1da1609e4badfc2"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 88,
+        "byte_count": 1235,
+        "sha256": "58eb2943109b358d6e943f96cf0a694fc24313a23bc8e2b1a62efec79637c087"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-42",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_exec_decl.h",
+        "bytes": 175242,
+        "sha256": "d886dfc0f8fc7b0e154fc7bef741a78938ecbec1d2e41adc85b201a21da910ff"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_exec_decl.h",
+        "bytes": 175242,
+        "sha256": "d886dfc0f8fc7b0e154fc7bef741a78938ecbec1d2e41adc85b201a21da910ff"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 84,
+        "byte_count": 1235,
+        "sha256": "58eb2943109b358d6e943f96cf0a694fc24313a23bc8e2b1a62efec79637c087"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-43",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_exec_init.c",
+        "bytes": 99030,
+        "sha256": "1ccba032b0a436e7a3ec16de3802423c818f6875c5a32f924ac9183d681cfd5c"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_exec_init.c",
+        "bytes": 99030,
+        "sha256": "1ccba032b0a436e7a3ec16de3802423c818f6875c5a32f924ac9183d681cfd5c"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 82,
+        "byte_count": 1194,
+        "sha256": "bcf34b374520a176b7eab171e4b9fed1fb8335f0bbe9e77f77c1ec81dcc8223e"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-44",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_hw_select_init.h",
+        "bytes": 9241,
+        "sha256": "485559234389c371e5938fda9f4a934047bf022cbe2d42382e8b7158deee843f"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_hw_select_init.h",
+        "bytes": 9241,
+        "sha256": "485559234389c371e5938fda9f4a934047bf022cbe2d42382e8b7158deee843f"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 89,
+        "byte_count": 1235,
+        "sha256": "58eb2943109b358d6e943f96cf0a694fc24313a23bc8e2b1a62efec79637c087"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-45",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_save.h",
+        "bytes": 50004,
+        "sha256": "4bc4831f6f464798c45bc096005e3713bf557727a4bfc4e5637f7c7b776e907d"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_save.h",
+        "bytes": 50004,
+        "sha256": "4bc4831f6f464798c45bc096005e3713bf557727a4bfc4e5637f7c7b776e907d"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1235,
+        "sha256": "58eb2943109b358d6e943f96cf0a694fc24313a23bc8e2b1a62efec79637c087"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-46",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_save_init.h",
+        "bytes": 27333,
+        "sha256": "71805942e8db80f1a67dd9611470a060c8f774d2b19034638e0ab88e72cfa5e0"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/api_save_init.h",
+        "bytes": 27333,
+        "sha256": "71805942e8db80f1a67dd9611470a060c8f774d2b19034638e0ab88e72cfa5e0"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 84,
+        "byte_count": 1235,
+        "sha256": "58eb2943109b358d6e943f96cf0a694fc24313a23bc8e2b1a62efec79637c087"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-47",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/dispatch.h",
+        "bytes": 993038,
+        "sha256": "b808b53082a1791b466dc815779e4eb74841c46df669af9223a1bab9722fcd26"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/dispatch.h",
+        "bytes": 993038,
+        "sha256": "b808b53082a1791b466dc815779e4eb74841c46df669af9223a1bab9722fcd26"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 89,
+        "byte_count": 1178,
+        "sha256": "b1bb46d53b3e09eaf334c78b9c6a39c217af33aebdd77256e3bd468a93456c69"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-48",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/format_fallback.c",
+        "bytes": 6079,
+        "sha256": "b1f1ca5fd4341d7e70b59268b5e5bc51892dfd77aee8ffb56eb6b7b417fa1da8"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/format_fallback.c",
+        "bytes": 6079,
+        "sha256": "b1f1ca5fd4341d7e70b59268b5e5bc51892dfd77aee8ffb56eb6b7b417fa1da8"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1140,
+        "sha256": "446c3b431a2f9f982ec6c526c714ca0b3decbafd8635b95c54abd4e12d15fa8b"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-49",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/format_info.h",
+        "bytes": 161632,
+        "sha256": "5a0d013cc49c505484c528e3269bbff30166752866392e2b2a140e02da209315"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/format_info.h",
+        "bytes": 161632,
+        "sha256": "5a0d013cc49c505484c528e3269bbff30166752866392e2b2a140e02da209315"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 1,
+        "byte_count": 1154,
+        "sha256": "8dad9edbf3f827133d28815030a88590ee0afb20eaaf94d8b00de16a51a578fe"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-51",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated.h",
+        "bytes": 286402,
+        "sha256": "14116c666ba2de3e8f38d07ee227f8678ac0921ef57f18aa9db08980660ac75f"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated.h",
+        "bytes": 286402,
+        "sha256": "14116c666ba2de3e8f38d07ee227f8678ac0921ef57f18aa9db08980660ac75f"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 81,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-52",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated0.c",
+        "bytes": 194398,
+        "sha256": "af6c45ff87e1bf7397a4d71477baf4145bf7017b0ac8c70a166feb4f0bb0e28d"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated0.c",
+        "bytes": 194398,
+        "sha256": "af6c45ff87e1bf7397a4d71477baf4145bf7017b0ac8c70a166feb4f0bb0e28d"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-53",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated1.c",
+        "bytes": 194088,
+        "sha256": "ac6b173548f1c9b47fc5e3388adf1be62a3691880d37216b68a75733fe7f42f4"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated1.c",
+        "bytes": 194088,
+        "sha256": "ac6b173548f1c9b47fc5e3388adf1be62a3691880d37216b68a75733fe7f42f4"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-54",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated2.c",
+        "bytes": 188411,
+        "sha256": "2888b82ae8e8dded8bc0f00e6a8536d45743fe89c5f1777190d2590f4051ceff"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated2.c",
+        "bytes": 188411,
+        "sha256": "2888b82ae8e8dded8bc0f00e6a8536d45743fe89c5f1777190d2590f4051ceff"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-55",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated3.c",
+        "bytes": 229979,
+        "sha256": "e57708c619fb78d6ff6bae139a642e0ef404e1b61ad6f94acba1655f7cec36a1"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated3.c",
+        "bytes": 229979,
+        "sha256": "e57708c619fb78d6ff6bae139a642e0ef404e1b61ad6f94acba1655f7cec36a1"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-56",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated4.c",
+        "bytes": 230186,
+        "sha256": "87f647bb25f66a8c629aa3d0e5897bab3ec4f2d7959f4c0f159ff9ec71d07ff4"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated4.c",
+        "bytes": 230186,
+        "sha256": "87f647bb25f66a8c629aa3d0e5897bab3ec4f2d7959f4c0f159ff9ec71d07ff4"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-57",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated5.c",
+        "bytes": 228866,
+        "sha256": "8b04420dcfeeac928b54ad878862dbaa0243b5836f705dceb417d1080018d3ca"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated5.c",
+        "bytes": 228866,
+        "sha256": "8b04420dcfeeac928b54ad878862dbaa0243b5836f705dceb417d1080018d3ca"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-58",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated6.c",
+        "bytes": 260669,
+        "sha256": "5320d01d0148a87db1dd12782a5a49b3c04d202e0687a78a19b5ef2192019340"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated6.c",
+        "bytes": 260669,
+        "sha256": "5320d01d0148a87db1dd12782a5a49b3c04d202e0687a78a19b5ef2192019340"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-59",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated7.c",
+        "bytes": 205495,
+        "sha256": "e8b677403c068a44817efe0bb0b5056ca7e46a644a30b1d276be1eb77d960679"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated7.c",
+        "bytes": 205495,
+        "sha256": "e8b677403c068a44817efe0bb0b5056ca7e46a644a30b1d276be1eb77d960679"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-60",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/remap_helper.h",
+        "bytes": 305834,
+        "sha256": "3490055c1aa4588b6aedf4d72b1e20397d5089afd01c327edb3cdce6185f7473"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/remap_helper.h",
+        "bytes": 305834,
+        "sha256": "3490055c1aa4588b6aedf4d72b1e20397d5089afd01c327edb3cdce6185f7473"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 93,
+        "byte_count": 1194,
+        "sha256": "35c1e23ef3e708eca85b2c59200117b28669b6e2b64a75ecafbfd276302dabf5"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-61",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/unmarshal_table.c",
+        "bytes": 121155,
+        "sha256": "e1ff8a5765b920d4150e0f598f8782b17b204e22e9a8e0b1c6b9f7a24bc0cb88"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/unmarshal_table.c",
+        "bytes": 121155,
+        "sha256": "e1ff8a5765b920d4150e0f598f8782b17b204e22e9a8e0b1c6b9f7a24bc0cb88"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 79,
+        "byte_count": 1194,
+        "sha256": "f5ea1e953e279de643b640d9843ec7be907dd676b9453a03339853dbb15c4be8"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-62",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/program/lex.yy.c",
+        "bytes": 109134,
+        "sha256": "9b21f4ef461d9ac26b7acf9e5f85b01783a8f65753eedc36793b665a75e2b551"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/program/lex.yy.c",
+        "bytes": 109134,
+        "sha256": "9b21f4ef461d9ac26b7acf9e5f85b01783a8f65753eedc36793b665a75e2b551"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 44906,
+        "byte_count": 1155,
+        "sha256": "6862765686cb7168edc0a27445f6671f163254c122d5ade7bf3e6bdac43dd8d7"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-63",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/program/program_parse.tab.c",
+        "bytes": 191371,
+        "sha256": "eb526d246b8d1e81d0dde3c9bce2547796a9150cf5e12f8664ae1bca3baea6e0"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/program/program_parse.tab.c",
+        "bytes": 191371,
+        "sha256": "eb526d246b8d1e81d0dde3c9bce2547796a9150cf5e12f8664ae1bca3baea6e0"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 2596,
+        "byte_count": 1155,
+        "sha256": "6862765686cb7168edc0a27445f6671f163254c122d5ade7bf3e6bdac43dd8d7"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-64",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/util/format/u_format_pack.h",
+        "bytes": 197666,
+        "sha256": "5e3c30b3290200c125a0a5844cb77e7ed8492a7763526204bf1d97c7b1c830f0"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/util/format/u_format_pack.h",
+        "bytes": 197666,
+        "sha256": "5e3c30b3290200c125a0a5844cb77e7ed8492a7763526204bf1d97c7b1c830f0"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 96,
+        "byte_count": 1322,
+        "sha256": "1ee15c2c55585a6448592d66367105c1fe9b30981ddb4406876ec0da956b9638"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-65",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/util/format/u_format_table.c",
+        "bytes": 1768718,
+        "sha256": "89021bf8dfd3aa35c3aafaacb9255a8110a5b1d618f3a37724d81901c39115f8"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/util/format/u_format_table.c",
+        "bytes": 1768718,
+        "sha256": "89021bf8dfd3aa35c3aafaacb9255a8110a5b1d618f3a37724d81901c39115f8"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 96,
+        "byte_count": 1322,
+        "sha256": "1ee15c2c55585a6448592d66367105c1fe9b30981ddb4406876ec0da956b9638"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-output-66",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/util/format_srgb.c",
+        "bytes": 10265,
+        "sha256": "7655886fb99a1d91cc58e069ea2da424d5f928d2cb4c4f5a1311f1c648e48374"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/util/format_srgb.c",
+        "bytes": 10265,
+        "sha256": "7655886fb99a1d91cc58e069ea2da424d5f928d2cb4c4f5a1311f1c648e48374"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 77,
+        "byte_count": 1322,
+        "sha256": "1ee15c2c55585a6448592d66367105c1fe9b30981ddb4406876ec0da956b9638"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-astc",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/astc_decoder.glsl",
+        "git_blob": "838229c3c2bd56589d74f57aee4d6be3f90839b6",
+        "bytes": 39521,
+        "sha256": "a0797fa1a80d8cf919f67706c35a11d3c9e2ae43c6f445f12b98bdf322576fd8"
+      },
+      "component_evidence_id": "inline-0009",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/astc_decoder.glsl",
+        "git_blob": "838229c3c2bd56589d74f57aee4d6be3f90839b6",
+        "bytes": 39521,
+        "sha256": "a0797fa1a80d8cf919f67706c35a11d3c9e2ae43c6f445f12b98bdf322576fd8"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1342,
+        "sha256": "c7b7fa05d7252bd0f629fe9cd95840d6d3781cc0c375f5fee7dd14a547173e7d"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-bc1",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/bc1.glsl",
+        "git_blob": "251635d7b69e8be161675e437e33c79aafacaced",
+        "bytes": 16970,
+        "sha256": "80da1f13343401c13bc86b084a587a58632a6a697e0fea1240f96d3f1d9bdfab"
+      },
+      "component_evidence_id": "inline-0010",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/bc1.glsl",
+        "git_blob": "251635d7b69e8be161675e437e33c79aafacaced",
+        "bytes": 16970,
+        "sha256": "80da1f13343401c13bc86b084a587a58632a6a697e0fea1240f96d3f1d9bdfab"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1159,
+        "sha256": "e32d671dc17a36a9bf5c979391064d1a762199f8fdd635c17354de4fdeba4ed2"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-bc4",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/bc4.glsl",
+        "git_blob": "2486fa4ae0c84427c5252f070601e3a695f3e612",
+        "bytes": 5762,
+        "sha256": "dd3c2289681e03983cfb70f4df213ff1e779baa768e79b254f6d224edb31df34"
+      },
+      "component_evidence_id": "inline-0011",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/bc4.glsl",
+        "git_blob": "2486fa4ae0c84427c5252f070601e3a695f3e612",
+        "bytes": 5762,
+        "sha256": "dd3c2289681e03983cfb70f4df213ff1e779baa768e79b254f6d224edb31df34"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1159,
+        "sha256": "e32d671dc17a36a9bf5c979391064d1a762199f8fdd635c17354de4fdeba4ed2"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-cross-platform",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/CrossPlatformSettings_piece_all.glsl",
+        "git_blob": "7ef940a160317e6b0da153c98f0702712f66f5be",
+        "bytes": 3823,
+        "sha256": "acd2310c7f56e18070b4eedb84f708674d46068ecac4b5fcca6ddd7ee9546a4f"
+      },
+      "component_evidence_id": "inline-0003",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/CrossPlatformSettings_piece_all.glsl",
+        "git_blob": "7ef940a160317e6b0da153c98f0702712f66f5be",
+        "bytes": 3823,
+        "sha256": "acd2310c7f56e18070b4eedb84f708674d46068ecac4b5fcca6ddd7ee9546a4f"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1123,
+        "sha256": "5b02cac206661f0c755e98908ffa7dd63a78b3cea61e33def699d33e8291e9f6"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-enums2names",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/driver_trace/enums2names.py",
+        "git_blob": "8b4f2482cfe9b95bcebce14984574a673a5aab7c",
+        "bytes": 8629,
+        "sha256": "1869072cd721ff8923c9aa0a7d9370710b155f494ea604eea5be6a0d935b33da"
+      },
+      "component_evidence_id": "inline-0355",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/gallium/auxiliary/driver_trace/enums2names.py",
+        "git_blob": "8b4f2482cfe9b95bcebce14984574a673a5aab7c",
+        "bytes": 8629,
+        "sha256": "1869072cd721ff8923c9aa0a7d9370710b155f494ea604eea5be6a0d935b33da"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 5889,
+        "sha256": "d1639122d78ca1b0aaa829de7e6011243f9f7948d723bf5bbc683c636b829f5b"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-etc2",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/etc2_rgba_stitch.glsl",
+        "git_blob": "f90accb82e13c679b6b79ea2eb271b311e0ca47a",
+        "bytes": 1981,
+        "sha256": "d496013edc9b96c9d86399db0a8b7249b01bacf659ccb9183466b80c0798ab47"
+      },
+      "component_evidence_id": "inline-0015",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/etc2_rgba_stitch.glsl",
+        "git_blob": "f90accb82e13c679b6b79ea2eb271b311e0ca47a",
+        "bytes": 1981,
+        "sha256": "d496013edc9b96c9d86399db0a8b7249b01bacf659ccb9183466b80c0798ab47"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1159,
+        "sha256": "e32d671dc17a36a9bf5c979391064d1a762199f8fdd635c17354de4fdeba4ed2"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-get-hash-generator",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/get_hash_generator.py",
+        "git_blob": "fb006ad82d6b8cb3d91753a8d584591c6255d90b",
+        "bytes": 7397,
+        "sha256": "819ef1e2bf646856291ca9d99ab143534381b6374f444cc305bfb5ca44cf0ab4"
+      },
+      "component_evidence_id": "inline-0649",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/get_hash_generator.py",
+        "git_blob": "fb006ad82d6b8cb3d91753a8d584591c6255d90b",
+        "bytes": 7397,
+        "sha256": "819ef1e2bf646856291ca9d99ab143534381b6374f444cc305bfb5ca44cf0ab4"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 7397,
+        "sha256": "819ef1e2bf646856291ca9d99ab143534381b6374f444cc305bfb5ca44cf0ab4"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-get-hash-params",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/main/get_hash_params.py",
+        "git_blob": "90d09c4a6315aa9a2a163d8e14731e50d4bbe235",
+        "bytes": 69973,
+        "sha256": "2953961c91cdbf05802094cdef6433efa2b415cba0db20f6fc2d435c9cfd6ec6"
+      },
+      "component_evidence_id": "mesa-default-mit",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/docs/license.rst",
+        "git_blob": "e24cfe5f48b2d92be640ae1daea082d67fe06dc1",
+        "bytes": 4026,
+        "sha256": "a00275a53178e2645fb65be99a785c110513446a5071ff2c698ed260ad917d75"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 1337,
+        "byte_count": 1178,
+        "sha256": "9b5b902ab47f144977b55586d9068884b325e62219fbfd82304fd30a9fde96b6"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-gl-and-es-api",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/gl_and_es_API.xml",
+        "git_blob": "0c8a1d5a9d10e8c31f9c3dcf5f1d9e9b61f8426b",
+        "bytes": 10870,
+        "sha256": "0b998975bec84c37b5cbc848c259c44b743ee89a299a060018b9d8910f3e3e9e"
+      },
+      "component_evidence_id": "mesa-default-mit",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/docs/license.rst",
+        "git_blob": "e24cfe5f48b2d92be640ae1daea082d67fe06dc1",
+        "bytes": 4026,
+        "sha256": "a00275a53178e2645fb65be99a785c110513446a5071ff2c698ed260ad917d75"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 1337,
+        "byte_count": 1178,
+        "sha256": "9b5b902ab47f144977b55586d9068884b325e62219fbfd82304fd30a9fde96b6"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-ir-expression",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/ir_expression_operation.py",
+        "git_blob": "fa3118b249b48cea05abc2ea51d526094935a04e",
+        "bytes": 46308,
+        "sha256": "c187733945423f48f1f22c965651555feb7df62354018992e83fff3574b0dc5a"
+      },
+      "component_evidence_id": "inline-0050",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/ir_expression_operation.py",
+        "git_blob": "fa3118b249b48cea05abc2ea51d526094935a04e",
+        "bytes": 46308,
+        "sha256": "c187733945423f48f1f22c965651555feb7df62354018992e83fff3574b0dc5a"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 7218,
+        "sha256": "6c518710a4d1322789e53ccee013f03596244cce9d2d1dd0715f15e08f723ba7"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-mapi-abi",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/mapi_abi.py",
+        "git_blob": "f1d3c0d3caa99947bbdbc63fa33907323ba56769",
+        "bytes": 22154,
+        "sha256": "eb95f3306df131d522aa97127be9017764dcabcb95ad4e286f6079f4dc017ca2"
+      },
+      "component_evidence_id": "inline-0598",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/mapi_abi.py",
+        "git_blob": "f1d3c0d3caa99947bbdbc63fa33907323ba56769",
+        "bytes": 22154,
+        "sha256": "eb95f3306df131d522aa97127be9017764dcabcb95ad4e286f6079f4dc017ca2"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 7754,
+        "sha256": "4b928b21b31769127cf0b680c4d6f6f9176e77c471aace0ea209bf402e132b49"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-nir-algebraic",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_algebraic.py",
+        "git_blob": "21ef9d7363280d1cbbc7e141b42b259b86ecde63",
+        "bytes": 51107,
+        "sha256": "9954695c3ecde6b4acafeef34941ca54d4a26907d48b6077c889b4c7a66acc69"
+      },
+      "component_evidence_id": "inline-0103",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_algebraic.py",
+        "git_blob": "21ef9d7363280d1cbbc7e141b42b259b86ecde63",
+        "bytes": 51107,
+        "sha256": "9954695c3ecde6b4acafeef34941ca54d4a26907d48b6077c889b4c7a66acc69"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 6255,
+        "sha256": "b6e92264c666e81951f5d7379623006f0561c8b064d9a28bfb238ca2ed40cb31"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-nir-opcodes",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opcodes.py",
+        "git_blob": "442d018cd0c02436dfacbf0a77f9d1e9ff4baaa0",
+        "bytes": 58982,
+        "sha256": "b04efe333d5ac42c95c77cbc46b4a9d9ee3bf403187364dc12ff4b4621e7ba54"
+      },
+      "component_evidence_id": "inline-0231",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opcodes.py",
+        "git_blob": "442d018cd0c02436dfacbf0a77f9d1e9ff4baaa0",
+        "bytes": 58982,
+        "sha256": "b04efe333d5ac42c95c77cbc46b4a9d9ee3bf403187364dc12ff4b4621e7ba54"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 18178,
+        "sha256": "0d1d3dfc19f28518eaa365c3eca9979caa75f4b2db92a8d05d7fe400880c4918"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-nir-opcodes-c",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opcodes_c.py",
+        "git_blob": "2909a15da963754f3885e4a04a45ea745f101f4d",
+        "bytes": 5202,
+        "sha256": "824f44500f8d7eb5b73e92152fd45e1db060e49856c1a2234af89339bcc38faa"
+      },
+      "component_evidence_id": "inline-0232",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opcodes_c.py",
+        "git_blob": "2909a15da963754f3885e4a04a45ea745f101f4d",
+        "bytes": 5202,
+        "sha256": "824f44500f8d7eb5b73e92152fd45e1db060e49856c1a2234af89339bcc38faa"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 2134,
+        "sha256": "141ccc7b17580029be60ff22220b2b6376803c091ea5fedfe9e8ab550e45ce5e"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-nir-opt-algebraic",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opt_algebraic.py",
+        "git_blob": "96c3e47329d166f829f66cbac025f0f78e8163c8",
+        "bytes": 176812,
+        "sha256": "41448855b0460378fcfaf14da8525ccfc7ab2e53a869b8b037d637217fae21da"
+      },
+      "component_evidence_id": "inline-0235",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opt_algebraic.py",
+        "git_blob": "96c3e47329d166f829f66cbac025f0f78e8163c8",
+        "bytes": 176812,
+        "sha256": "41448855b0460378fcfaf14da8525ccfc7ab2e53a869b8b037d637217fae21da"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 176812,
+        "sha256": "41448855b0460378fcfaf14da8525ccfc7ab2e53a869b8b037d637217fae21da"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-p-defines",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/gallium/include/pipe/p_defines.h",
+        "git_blob": "800e9015d9025d3aac15149509cc344984f54db2",
+        "bytes": 43070,
+        "sha256": "63e78775acf180643c3adbe8fb8db3649d916794692957ad4a1efc3b131644f8"
+      },
+      "component_evidence_id": "inline-0564",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/gallium/include/pipe/p_defines.h",
+        "git_blob": "800e9015d9025d3aac15149509cc344984f54db2",
+        "bytes": 43070,
+        "sha256": "63e78775acf180643c3adbe8fb8db3649d916794692957ad4a1efc3b131644f8"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 1322,
+        "sha256": "a05bdc1e693992277ce0d8c38dd5371cc973b6ccf9bb33a5666768fa09f97123"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "01-mit-source-xxd",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/util/xxd.py",
+        "git_blob": "e5c0e9d1a960ca6c31a670a847a2c85119f13c38",
+        "bytes": 3574,
+        "sha256": "4004acc6d9812a72be508a1ea45967ec2b4a8be716e5293f4cf817b732b2fc3a"
+      },
+      "component_evidence_id": "inline-0889",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/util/xxd.py",
+        "git_blob": "e5c0e9d1a960ca6c31a670a847a2c85119f13c38",
+        "bytes": 3574,
+        "sha256": "4004acc6d9812a72be508a1ea45967ec2b4a8be716e5293f4cf817b732b2fc3a"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 3574,
+        "sha256": "4004acc6d9812a72be508a1ea45967ec2b4a8be716e5293f4cf817b732b2fc3a"
+      },
+      "license_expression": "MIT"
+    },
+    {
+      "id": "02-apache-source-gl-xml",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/registry/gl.xml",
+        "git_blob": "e2cd8c8c1484a826e3a74bd79ed3590d267013e5",
+        "bytes": 2798260,
+        "sha256": "9b8204381951a3a581c3a22e2f77d49b0297bd06de0d7dcef6328846084d3aad"
+      },
+      "component_evidence_id": "inline-0597",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mapi/glapi/registry/gl.xml",
+        "git_blob": "e2cd8c8c1484a826e3a74bd79ed3590d267013e5",
+        "bytes": 2798260,
+        "sha256": "9b8204381951a3a581c3a22e2f77d49b0297bd06de0d7dcef6328846084d3aad"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 635,
+        "sha256": "64c8d5d2ab890953cdbd8b30bf7f29ac12692220039b2dc99221dcda0f36b226"
+      },
+      "license_expression": "Apache-2.0"
+    },
+    {
+      "id": "02-bison-output-07",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.c",
+        "bytes": 170644,
+        "sha256": "8b2f1679bed27ec00bf8fe6ea551baf80127deab65c0772ba31bd73b0290cc63"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.c",
+        "bytes": 170644,
+        "sha256": "8b2f1679bed27ec00bf8fe6ea551baf80127deab65c0772ba31bd73b0290cc63"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 49,
+        "byte_count": 1483,
+        "sha256": "f6cdfc334399cbca9e3f7620d7227e8cee96a22c07507635a0f22ec3b80eda11"
+      },
+      "license_expression": "GPL-3.0-or-later WITH Bison-exception-2.2"
+    },
+    {
+      "id": "02-bison-output-09",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glsl_parser.cpp",
+        "bytes": 264511,
+        "sha256": "114e83e5f704e4c1bd2523abe3f43db25891e930e1b228373b727cb119b23eed"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/glsl_parser.cpp",
+        "bytes": 264511,
+        "sha256": "114e83e5f704e4c1bd2523abe3f43db25891e930e1b228373b727cb119b23eed"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 49,
+        "byte_count": 1483,
+        "sha256": "f6cdfc334399cbca9e3f7620d7227e8cee96a22c07507635a0f22ec3b80eda11"
+      },
+      "license_expression": "GPL-3.0-or-later WITH Bison-exception-2.2"
+    },
+    {
+      "id": "02-bison-output-63",
+      "origin": "generated-output",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/mesa/program/program_parse.tab.c",
+        "bytes": 191371,
+        "sha256": "eb526d246b8d1e81d0dde3c9bce2547796a9150cf5e12f8664ae1bca3baea6e0"
+      },
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/mesa/program/program_parse.tab.c",
+        "bytes": 191371,
+        "sha256": "eb526d246b8d1e81d0dde3c9bce2547796a9150cf5e12f8664ae1bca3baea6e0"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 49,
+        "byte_count": 1483,
+        "sha256": "f6cdfc334399cbca9e3f7620d7227e8cee96a22c07507635a0f22ec3b80eda11"
+      },
+      "license_expression": "GPL-3.0-or-later WITH Bison-exception-2.2"
+    },
+    {
+      "id": "02-bsd-source-float64",
+      "origin": "component-closure-source",
+      "subject": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/float64.glsl",
+        "git_blob": "64bdbee2421d5f7e15262372c06c048e42af73f3",
+        "bytes": 55910,
+        "sha256": "9c4866d1f796e5ba2d167cde8122754ec38e1c5361186ae70b4d05cd6cac837b"
+      },
+      "component_evidence_id": "inline-0016",
+      "evidence_file": {
+        "relative_path": "mesa-23.1.x/src/compiler/glsl/float64.glsl",
+        "git_blob": "64bdbee2421d5f7e15262372c06c048e42af73f3",
+        "bytes": 55910,
+        "sha256": "9c4866d1f796e5ba2d167cde8122754ec38e1c5361186ae70b4d05cd6cac837b"
+      },
+      "locator": {
+        "kind": "byte-range",
+        "byte_offset": 0,
+        "byte_count": 2039,
+        "sha256": "7186463862091dc139e34f766b6d9c60bbd712906599cce3ca1dd1d4afa29388"
+      },
+      "license_expression": "BSD-3-Clause"
+    }
+  ],
+  "outputs": [
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/astc_glsl.h",
+      "bytes": 248899,
+      "sha256": "3e73a0ae8d8bd86e1b1cbb3a4551582a6a8d3cb9b8dbba0344be863444653071",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-astc",
+        "01-mit-source-xxd"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/bc1_glsl.h",
+      "bytes": 106794,
+      "sha256": "0da6620ae877e2922fb7e446a011acc7bd3c768e293d6e0acac958cfba85c676",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-bc1",
+        "01-mit-source-xxd"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/bc4_glsl.h",
+      "bytes": 36302,
+      "sha256": "0a2034d91276b901699d13329f611d1fe3c75e0a7e39110b1c15fcbcc1f3fb14",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-bc4",
+        "01-mit-source-xxd"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/cross_platform_settings_piece_all.h",
+      "bytes": 23970,
+      "sha256": "f09785e85ae5957adc143e3642021763fe382b22bd5499c7e24ab4b71ce2821f",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-cross-platform",
+        "01-mit-source-xxd"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/etc2_rgba_stitch_glsl.h",
+      "bytes": 12409,
+      "sha256": "f633e4648bf7f625963c98473cba9b0d0b964a28357fbd1371423400378f18ee",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-etc2",
+        "01-mit-source-xxd"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/float64_glsl.h",
+      "bytes": 351338,
+      "sha256": "9874cd8a0d4211a501de5c3403b07ad7e0cf38479565df08288ca7394105c64f",
+      "license_expression": "MIT AND BSD-3-Clause",
+      "license_evidence_ids": [
+        "01-mit-source-xxd",
+        "02-bsd-source-float64"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-lex.c",
+      "bytes": 91086,
+      "sha256": "cfeafa42c7910a2c4c4a8a5bf277561f46c53e700a470956e7a33b041875febd",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-06"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.c",
+      "bytes": 170644,
+      "sha256": "8b2f1679bed27ec00bf8fe6ea551baf80127deab65c0772ba31bd73b0290cc63",
+      "license_expression": "MIT AND (GPL-3.0-or-later WITH Bison-exception-2.2)",
+      "license_evidence_ids": [
+        "01-mit-output-07",
+        "02-bison-output-07"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/glsl_lexer.cpp",
+      "bytes": 158552,
+      "sha256": "7b5e02ef7339fce6148f4819ff96c21364943127958e861a7d6bb3354a0f47e7",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-08"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/glsl_parser.cpp",
+      "bytes": 264511,
+      "sha256": "114e83e5f704e4c1bd2523abe3f43db25891e930e1b228373b727cb119b23eed",
+      "license_expression": "MIT AND (GPL-3.0-or-later WITH Bison-exception-2.2)",
+      "license_evidence_ids": [
+        "01-mit-output-09",
+        "02-bison-output-09"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/ir_expression_operation_constant.h",
+      "bytes": 71281,
+      "sha256": "2bc533b7679bd728e35121159c3beabcad3c21bd93185f6ec50a4cb264702629",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-ir-expression"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/glsl/ir_expression_operation_strings.h",
+      "bytes": 5850,
+      "sha256": "67bed528eb9f90510366a78c0373aa0248221c9e936c29b7b836ef378641e9ed",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-11"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/ir_expression_operation.h",
+      "bytes": 4797,
+      "sha256": "a523f6b315fe5229028efb9ec012ff282061801c806b60c482d6aa3cdf7320c7",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-12"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/nir/nir_builder_opcodes.h",
+      "bytes": 746665,
+      "sha256": "3d893f463a4561ec542a35c1835fb5393b84f5e17acdda64357bd352b7751588",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-13"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/nir/nir_constant_expressions.c",
+      "bytes": 1173720,
+      "sha256": "53687f6baa538dabfd8b0bb637862b3fd716eb67fef3857ae984448f30cb1c96",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-14"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/nir/nir_intrinsics.c",
+      "bytes": 233196,
+      "sha256": "66bd2db561d6f1f9d6a27a41e2bfc92baab7b8b9118726d5344e6bab7f814d58",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-15"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/nir/nir_intrinsics.h",
+      "bytes": 29614,
+      "sha256": "e89e368e7940be36550f6c5787923ebe1715f164702d159a38d3e33059a6d4ba",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-16"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/nir/nir_intrinsics_indices.h",
+      "bytes": 41371,
+      "sha256": "58d95cb56b2e2d71326c5e9098c1b35c9e3dfe63bd678c257cd3ec0facfc559c",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-17"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opcodes.c",
+      "bytes": 124919,
+      "sha256": "7cd177d751c885d5e1a7e1e6c6b8020dfb49d7a397d5daa660e0efa369b57dfa",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-nir-opcodes",
+        "01-mit-source-nir-opcodes-c"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opcodes.h",
+      "bytes": 10475,
+      "sha256": "a112a41b53944ba32746aef0b19f88cf1277e8bac69cadec50b34b0e6557077c",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-19"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/nir/nir_opt_algebraic.c",
+      "bytes": 20214289,
+      "sha256": "384a5f4be1888136e354c8876bab3e120e966854a5524b6dccafcdd23fab4896",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-nir-algebraic",
+        "01-mit-source-nir-opcodes",
+        "01-mit-source-nir-opt-algebraic"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/spirv/spirv_info.c",
+      "bytes": 99646,
+      "sha256": "05bff67af4d1820204aa5a45933ef9525e249ce3c59cb5ff553f0e46b88d36b1",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-21"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/spirv/vtn_gather_types.c",
+      "bytes": 43132,
+      "sha256": "6fb0cce85356fb57377ad95dec127f144376ad78e56dad81de8a6d2fc59b15e2",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-22"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/compiler/spirv/vtn_generator_ids.h",
+      "bytes": 2281,
+      "sha256": "086bb2b414e6303af8f2a1c88902ba1cf7f4bccd8be191dba623f6de0ad5652d",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-23"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/gallium/auxiliary/driver_trace/tr_util.c",
+      "bytes": 35614,
+      "sha256": "660e3ed2c6f4c395254ce372f86d50f360cdc7fe7a44b610f856e927056836b2",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-enums2names",
+        "01-mit-source-p-defines"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/gallium/auxiliary/indices/u_indices_gen.c",
+      "bytes": 722425,
+      "sha256": "d196432e66b4cbd86c8e824655c79e4255184e4d1976658989ca9f327edeef7e",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-25"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/gallium/auxiliary/indices/u_unfilled_gen.c",
+      "bytes": 40487,
+      "sha256": "07d9dad34decda38fa05b32cffda70d83dfb874ed8f3e921cbe94971853a13ea",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-26"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/gallium/auxiliary/util/u_tracepoints.c",
+      "bytes": 5938,
+      "sha256": "47b65c83385a65e212c78be5c1fcf72dcc08b6526d359b6ddcbf63581df5746a",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-27"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/gallium/auxiliary/util/u_tracepoints.h",
+      "bytes": 3481,
+      "sha256": "0ae2f818f15c6b5642293dd7dc49d7b0d45ad9ae9a7c9236414525fc89959619",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-28"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/enums.c",
+      "bytes": 691612,
+      "sha256": "77c03789673b6130f1ad59b05ac15a61b672dd2db75b4092f1ab8ef24a28226c",
+      "license_expression": "MIT AND Apache-2.0",
+      "license_evidence_ids": [
+        "01-mit-output-29",
+        "02-apache-source-gl-xml"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/glapi_x86.S",
+      "bytes": 162619,
+      "sha256": "338b383fe21031e6cccc10786ef7c37c60104c9f48240e4f1815e12f6e0695b9",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-30"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect.c",
+      "bytes": 366278,
+      "sha256": "2d8b9750144d33c3e6e472ea173c881b8c3e3da0268f2307bc2f03d4db1f838e",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-31"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect.h",
+      "bytes": 59645,
+      "sha256": "d90af225334c46a0dee006dbe0026ccdef00fc344a2cd5589d17a60a22cd9b30",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-32"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect_init.c",
+      "bytes": 56372,
+      "sha256": "315da9f4a333f6e7f5b89c67acc876010832dc92e22071af6d9474f5aaef3f5b",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-33"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect_size.c",
+      "bytes": 10232,
+      "sha256": "fa94857807b15f9100b12333749d27bf8c525b131a8da7d2380c5a3c153b84fa",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-34"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/gen/indirect_size.h",
+      "bytes": 3736,
+      "sha256": "215d4043ae0c29e27c0176b94c5eeac5159d83a3ac7f76b312af81dafc3a5cba",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-35"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/glapi_gentable.c",
+      "bytes": 65513,
+      "sha256": "798e518b3ad916ef57f5d01f174606ac47743d8b93b795536d33b24ac9751ff9",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-36"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/glapi_mapi_tmp.h",
+      "bytes": 655963,
+      "sha256": "fc100191d0289d345513ebdacfad2a37ac0eb98be02a295860552d3c9560d270",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-gl-and-es-api",
+        "01-mit-source-mapi-abi"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/glapitable.h",
+      "bytes": 174766,
+      "sha256": "ae5a2ee4a449c8ae9162e6fe9653943b80b2c08eaba75f04af0ea40f49f246f9",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-38"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/glapitemp.h",
+      "bytes": 836264,
+      "sha256": "88d7996fcf54985296530bd5e77127d3e7b0d68426ac3986b6a4ec428209d3e4",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-39"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mapi/glapi/glprocs.h",
+      "bytes": 341449,
+      "sha256": "430b86c63d1f7970648d322f05d9780c0c2e0f94c4495ec822f49052e4b51e24",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-40"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/api_beginend_init.h",
+      "bytes": 20117,
+      "sha256": "7552e856cc7459d2bbbabda236084adb8f79c3b09ffbf192a1da1609e4badfc2",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-41"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/api_exec_decl.h",
+      "bytes": 175242,
+      "sha256": "d886dfc0f8fc7b0e154fc7bef741a78938ecbec1d2e41adc85b201a21da910ff",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-42"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/api_exec_init.c",
+      "bytes": 99030,
+      "sha256": "1ccba032b0a436e7a3ec16de3802423c818f6875c5a32f924ac9183d681cfd5c",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-43"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/api_hw_select_init.h",
+      "bytes": 9241,
+      "sha256": "485559234389c371e5938fda9f4a934047bf022cbe2d42382e8b7158deee843f",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-44"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/api_save.h",
+      "bytes": 50004,
+      "sha256": "4bc4831f6f464798c45bc096005e3713bf557727a4bfc4e5637f7c7b776e907d",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-45"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/api_save_init.h",
+      "bytes": 27333,
+      "sha256": "71805942e8db80f1a67dd9611470a060c8f774d2b19034638e0ab88e72cfa5e0",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-46"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/dispatch.h",
+      "bytes": 993038,
+      "sha256": "b808b53082a1791b466dc815779e4eb74841c46df669af9223a1bab9722fcd26",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-47"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/format_fallback.c",
+      "bytes": 6079,
+      "sha256": "b1f1ca5fd4341d7e70b59268b5e5bc51892dfd77aee8ffb56eb6b7b417fa1da8",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-48"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/format_info.h",
+      "bytes": 161632,
+      "sha256": "5a0d013cc49c505484c528e3269bbff30166752866392e2b2a140e02da209315",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-49"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/get_hash.h",
+      "bytes": 114066,
+      "sha256": "6c6818753baf592f26423671db66fa85dd73aca21121c20353dd1986a48a56f1",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-source-get-hash-generator",
+        "01-mit-source-get-hash-params",
+        "01-mit-source-gl-and-es-api"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated.h",
+      "bytes": 286402,
+      "sha256": "14116c666ba2de3e8f38d07ee227f8678ac0921ef57f18aa9db08980660ac75f",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-51"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated0.c",
+      "bytes": 194398,
+      "sha256": "af6c45ff87e1bf7397a4d71477baf4145bf7017b0ac8c70a166feb4f0bb0e28d",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-52"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated1.c",
+      "bytes": 194088,
+      "sha256": "ac6b173548f1c9b47fc5e3388adf1be62a3691880d37216b68a75733fe7f42f4",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-53"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated2.c",
+      "bytes": 188411,
+      "sha256": "2888b82ae8e8dded8bc0f00e6a8536d45743fe89c5f1777190d2590f4051ceff",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-54"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated3.c",
+      "bytes": 229979,
+      "sha256": "e57708c619fb78d6ff6bae139a642e0ef404e1b61ad6f94acba1655f7cec36a1",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-55"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated4.c",
+      "bytes": 230186,
+      "sha256": "87f647bb25f66a8c629aa3d0e5897bab3ec4f2d7959f4c0f159ff9ec71d07ff4",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-56"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated5.c",
+      "bytes": 228866,
+      "sha256": "8b04420dcfeeac928b54ad878862dbaa0243b5836f705dceb417d1080018d3ca",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-57"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated6.c",
+      "bytes": 260669,
+      "sha256": "5320d01d0148a87db1dd12782a5a49b3c04d202e0687a78a19b5ef2192019340",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-58"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/marshal_generated7.c",
+      "bytes": 205495,
+      "sha256": "e8b677403c068a44817efe0bb0b5056ca7e46a644a30b1d276be1eb77d960679",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-59"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/remap_helper.h",
+      "bytes": 305834,
+      "sha256": "3490055c1aa4588b6aedf4d72b1e20397d5089afd01c327edb3cdce6185f7473",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-60"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/main/unmarshal_table.c",
+      "bytes": 121155,
+      "sha256": "e1ff8a5765b920d4150e0f598f8782b17b204e22e9a8e0b1c6b9f7a24bc0cb88",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-61"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/program/lex.yy.c",
+      "bytes": 109134,
+      "sha256": "9b21f4ef461d9ac26b7acf9e5f85b01783a8f65753eedc36793b665a75e2b551",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-62"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/mesa/program/program_parse.tab.c",
+      "bytes": 191371,
+      "sha256": "eb526d246b8d1e81d0dde3c9bce2547796a9150cf5e12f8664ae1bca3baea6e0",
+      "license_expression": "MIT AND (GPL-3.0-or-later WITH Bison-exception-2.2)",
+      "license_evidence_ids": [
+        "01-mit-output-63",
+        "02-bison-output-63"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/util/format/u_format_pack.h",
+      "bytes": 197666,
+      "sha256": "5e3c30b3290200c125a0a5844cb77e7ed8492a7763526204bf1d97c7b1c830f0",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-64"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/util/format/u_format_table.c",
+      "bytes": 1768718,
+      "sha256": "89021bf8dfd3aa35c3aafaacb9255a8110a5b1d618f3a37724d81901c39115f8",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-65"
+      ]
+    },
+    {
+      "relative_path": "mesa-23.1.x/src/util/format_srgb.c",
+      "bytes": 10265,
+      "sha256": "7655886fb99a1d91cc58e069ea2da424d5f928d2cb4c4f5a1311f1c648e48374",
+      "license_expression": "MIT",
+      "license_evidence_ids": [
+        "01-mit-output-66"
+      ]
+    }
+  ],
+  "validation_only_side_outputs": [
+    "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.h",
+    "mesa-23.1.x/src/compiler/glsl/glsl_parser.h",
+    "mesa-23.1.x/src/gallium/auxiliary/driver_trace/tr_util.h",
+    "mesa-23.1.x/src/mesa/program/program_parse.tab.h"
+  ],
+  "output_tree": {
+    "file_count": 67,
+    "directory_count": 20,
+    "total_entries": 87,
+    "aggregate_bytes": 34876554,
+    "maximum_file_bytes": 20214289,
+    "maximum_path_bytes": 65,
+    "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+    "sha256": "dd0ae888829eabf2a0043f27100aa64c57b43ad12054270bee62f50ccc451d84"
+  },
+  "scope": {
+    "classification": "reviewed-generated-source",
+    "claims": {
+      "generated_source_bytes_reviewed": true,
+      "output_reproducibility": true,
+      "file_license_evidence_complete": true,
+      "generator_input_closure": false,
+      "component_closure": false,
+      "build_closure": false
+    },
+    "authorizations": {
+      "generator_execution": false,
+      "build": false,
+      "stage": false,
+      "guest_install": false,
+      "capability_advertisement": false
+    }
+  }
+}

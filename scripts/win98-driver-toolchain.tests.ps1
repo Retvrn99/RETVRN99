@@ -25,7 +25,7 @@ function Assert-Throws {
         }
         return
     }
-    throw 'Expected an exception.'
+    throw "Expected an exception at caller line $($MyInvocation.ScriptLineNumber)."
 }
 
 function Invoke-SelfTest {
@@ -152,6 +152,81 @@ try {
             "Verified Windows 98 toolchain 'fixture-open-watcom-1.9' " +
             '(7 files, 19 bytes, tree 12d34c7f434075ddce253237ebb82e1509c12ce7736fcafe3b48a0426477273b).'
         )
+
+        $metadata = @(& $verifyScript -ToolchainRoot $toolchainRoot `
+            -LockFile $lockPath -PassThruLock)
+        Assert-Equal $metadata.Count 1 'PassThruLock emitted more than one object.'
+        Assert-Equal $metadata[0].GetType().FullName `
+            'System.Management.Automation.PSCustomObject' `
+            'PassThruLock did not emit the parsed lock object.'
+        Assert-Equal $metadata[0].name 'fixture-open-watcom-1.9'
+        Assert-Equal $metadata[0].extracted.relative_path 'open-watcom-1.9'
+    }
+
+    Invoke-SelfTest 'Toolchain locks require bounded BOM-free strict UTF-8' {
+        [byte[]]$original = [IO.File]::ReadAllBytes($lockPath)
+        $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+        try {
+            [byte[]]$utf8Bom = New-Object byte[] ($original.Length + 3)
+            $utf8Bom[0] = 0xef
+            $utf8Bom[1] = 0xbb
+            $utf8Bom[2] = 0xbf
+            [Array]::Copy($original, 0, $utf8Bom, 3, $original.Length)
+            [IO.File]::WriteAllBytes($lockPath, $utf8Bom)
+            Assert-Throws {
+                & $verifyScript -ToolchainRoot $toolchainRoot -LockFile $lockPath
+            } 'strict UTF-8 without a byte-order mark'
+
+            $text = $strictUtf8.GetString($original)
+            $utf16 = New-Object Text.UnicodeEncoding($false, $true, $true)
+            [byte[]]$preamble = $utf16.GetPreamble()
+            [byte[]]$payload = $utf16.GetBytes($text)
+            [byte[]]$utf16Bytes = New-Object byte[] ($preamble.Length + $payload.Length)
+            [Array]::Copy($preamble, 0, $utf16Bytes, 0, $preamble.Length)
+            [Array]::Copy($payload, 0, $utf16Bytes, $preamble.Length, $payload.Length)
+            [IO.File]::WriteAllBytes($lockPath, $utf16Bytes)
+            Assert-Throws {
+                & $verifyScript -ToolchainRoot $toolchainRoot -LockFile $lockPath
+            } 'strict UTF-8 without a byte-order mark'
+
+            [IO.File]::WriteAllBytes(
+                $lockPath,
+                [byte[]](0x7b, 0x22, 0xc3, 0x28, 0x22, 0x3a, 0x31, 0x7d)
+            )
+            Assert-Throws {
+                & $verifyScript -ToolchainRoot $toolchainRoot -LockFile $lockPath
+            } 'not strict UTF-8'
+
+            [IO.File]::WriteAllBytes($lockPath, (New-Object byte[] 4194305))
+            Assert-Throws {
+                & $verifyScript -ToolchainRoot $toolchainRoot -LockFile $lockPath
+            } 'exceeds the 4194304-byte bound'
+        }
+        finally {
+            [IO.File]::WriteAllBytes($lockPath, $original)
+        }
+    }
+
+    Invoke-SelfTest 'A toolchain lock beneath a reparse-point ancestor is rejected' {
+        $metadataTarget = Join-Path $testRoot 'metadata-target'
+        $metadataLink = Join-Path $testRoot 'metadata-link'
+        New-Item -ItemType Directory -Path $metadataTarget | Out-Null
+        [IO.File]::WriteAllBytes(
+            (Join-Path $metadataTarget 'toolchain.lock.json'),
+            [IO.File]::ReadAllBytes($lockPath)
+        )
+        New-DirectoryReparsePoint -Path $metadataLink -Target $metadataTarget
+        try {
+            Assert-Throws {
+                & $verifyScript -ToolchainRoot $toolchainRoot `
+                    -LockFile (Join-Path $metadataLink 'toolchain.lock.json')
+            } 'traverses reparse point'
+        }
+        finally {
+            if (Test-Path -LiteralPath $metadataLink) {
+                [IO.Directory]::Delete($metadataLink, $false)
+            }
+        }
     }
 
     Invoke-SelfTest 'A PATH-only schema-2 toolchain verifies and stays strict' {
@@ -258,20 +333,31 @@ try {
         } 'Duplicate environment.include entry'
 
         $duplicatePropertyLock = Join-Path $testRoot 'duplicate-property.lock.json'
-        $duplicateJson = [IO.File]::ReadAllText($lockPath).Replace(
-            '"schema": 1,',
-            '"schema": 1, "schema": 1,'
-        )
+        $originalJson = [IO.File]::ReadAllText($lockPath)
+        $duplicateJson = $originalJson -replace `
+            '("schema"\s*:\s*1\s*,)', '$1 "schema": 1,'
+        Assert-Equal ($duplicateJson -cne $originalJson) $true `
+            'The duplicate-property mutation was not applied.'
         [IO.File]::WriteAllText($duplicatePropertyLock, $duplicateJson)
         Assert-Throws {
             & $verifyScript -ToolchainRoot $toolchainRoot -LockFile $duplicatePropertyLock
         } 'Duplicate JSON property'
 
-        $wrongTypeLock = Join-Path $testRoot 'wrong-type.lock.json'
-        $wrongTypeJson = [IO.File]::ReadAllText($lockPath).Replace(
-            '"relative_path": "downloads/open-watcom-c-win32-1.9.exe"',
-            '"relative_path": 123'
+        $deepNestingLock = Join-Path $testRoot 'deep-nesting.lock.json'
+        [IO.File]::WriteAllText(
+            $deepNestingLock,
+            (('[' * 18) + '0' + (']' * 18))
         )
+        Assert-Throws {
+            & $verifyScript -ToolchainRoot $toolchainRoot -LockFile $deepNestingLock
+        } 'JSON nesting exceeds the depth bound'
+
+        $wrongTypeLock = Join-Path $testRoot 'wrong-type.lock.json'
+        $wrongTypeJson = $originalJson -replace `
+            '"relative_path"\s*:\s*"downloads/open-watcom-c-win32-1\.9\.exe"', `
+            '"relative_path": 123'
+        Assert-Equal ($wrongTypeJson -cne $originalJson) $true `
+            'The wrong-type mutation was not applied.'
         [IO.File]::WriteAllText($wrongTypeLock, $wrongTypeJson)
         Assert-Throws {
             & $verifyScript -ToolchainRoot $toolchainRoot -LockFile $wrongTypeLock
@@ -371,10 +457,11 @@ try {
         }
 
         $hardBoundLock = Join-Path $testRoot 'hard-bound.lock.json'
-        $hardBoundJson = [IO.File]::ReadAllText($lockPath).Replace(
-            '"file_count": 7,',
-            '"file_count": 10001,'
-        )
+        $originalJson = [IO.File]::ReadAllText($lockPath)
+        $hardBoundJson = $originalJson -replace `
+            '("file_count"\s*:)\s*7\s*,', '$1 10001,'
+        Assert-Equal ($hardBoundJson -cne $originalJson) $true `
+            'The hard-bound mutation was not applied.'
         [IO.File]::WriteAllText($hardBoundLock, $hardBoundJson)
         Assert-Throws {
             & $verifyScript -ToolchainRoot $toolchainRoot -LockFile $hardBoundLock
@@ -392,7 +479,9 @@ try {
             } 'Reparse-point path component'
         }
         finally {
-            Remove-Item -LiteralPath $downloadsPath -Force
+            if (Test-Path -LiteralPath $downloadsPath) {
+                [IO.Directory]::Delete($downloadsPath, $false)
+            }
             Move-Item -LiteralPath $downloadsTarget -Destination $downloadsPath
         }
 
@@ -410,7 +499,9 @@ try {
             } 'Reparse-point path component'
         }
         finally {
-            Remove-Item -LiteralPath $payloadLink -Force
+            if (Test-Path -LiteralPath $payloadLink) {
+                [IO.Directory]::Delete($payloadLink, $false)
+            }
             Move-Item -LiteralPath (Join-Path $payloadTarget 'open-watcom-1.9') -Destination $extractedPath
             Remove-Item -LiteralPath $payloadTarget
         }
@@ -425,7 +516,9 @@ try {
             } 'Reparse-point path component'
         }
         finally {
-            Remove-Item -LiteralPath $headerPath -Force
+            if (Test-Path -LiteralPath $headerPath) {
+                [IO.Directory]::Delete($headerPath, $false)
+            }
             Move-Item -LiteralPath $headerTarget -Destination $headerPath
         }
     }

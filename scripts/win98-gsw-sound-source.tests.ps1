@@ -429,7 +429,7 @@ Invoke-SelfTest 'Hash-locked twin-build plan covers every deterministic input an
     Assert-Equal $plan.schema 1
     Assert-Equal $plan.status 'ready-for-manual-install'
     Assert-Equal @($plan.source_files).Count 26
-    Assert-Equal @($plan.repository_files).Count 10
+    Assert-Equal @($plan.repository_files).Count 12
     Assert-Equal @($plan.outputs).Count 3
     foreach ($record in @($plan.source_files)) {
         $path = Join-Path $sourceRoot ([string]$record.relative_path).Replace('/', '\')

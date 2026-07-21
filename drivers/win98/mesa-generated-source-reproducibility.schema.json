@@ -1,0 +1,269 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mesa-generated-source-reproducibility.schema.json",
+  "title": "RETVRN99 Mesa generated-source reproducibility evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "status",
+    "reason",
+    "component",
+    "inputs",
+    "runs",
+    "comparison",
+    "scope"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {"const": "mesa-generated-source-reproducibility.schema.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "status": {"const": "proven"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upstream_name",
+        "repository",
+        "owning_commit",
+        "mesa_version",
+        "mesa_subtree"
+      ],
+      "properties": {
+        "upstream_name": {"const": "mesa9x"},
+        "repository": {"const": "https://github.com/JHRobotics/mesa9x.git"},
+        "owning_commit": {"const": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"},
+        "mesa_version": {"const": "23.1.9"},
+        "mesa_subtree": {"const": "mesa-23.1.x"}
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generated_source_plan",
+        "generated_source_plan_schema",
+        "generator_recipe",
+        "source_seed"
+      ],
+      "properties": {
+        "generated_source_plan": {
+          "$ref": "#/$defs/pinned_file",
+          "properties": {
+            "relative_path": {"const": "mesa-generated-source-plan.json"},
+            "bytes": {"const": 4354},
+            "sha256": {"const": "7d08ea089889105443935fb48a59a69698e5c0cac9f5f87ff02c8710c2a5718c"}
+          }
+        },
+        "generated_source_plan_schema": {
+          "$ref": "#/$defs/pinned_file",
+          "properties": {
+            "relative_path": {"const": "mesa-generated-source-plan.schema.json"},
+            "bytes": {"const": 10706},
+            "sha256": {"const": "adc69c44e1ebd9e465f667ef42a605451c05a601c4db59bdd2652cf7709cec97"}
+          }
+        },
+        "generator_recipe": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relative_path", "git_blob", "bytes", "sha256"],
+          "properties": {
+            "relative_path": {"const": "generator/mesa-23.1.x-gen.mk"},
+            "git_blob": {"const": "68b2fd13d08ae0ce4276cb1f720ee9bbb1cd54e9"},
+            "bytes": {"const": 13288},
+            "sha256": {"const": "9ad77b1fe55e4097621dbefeffe989fb00f3c354320ce6521d69f8efd8a44dce"}
+          }
+        },
+        "source_seed": {
+          "$ref": "#/$defs/pinned_file",
+          "properties": {
+            "relative_path": {"const": "mesa-source-seed.json"},
+            "bytes": {"const": 6915},
+            "sha256": {"const": "b7a18f8bfe4bfe5fac1ef8b4f36105d585e7d69349766d865c8c79a180d79dd8"}
+          }
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/run",
+          "properties": {
+            "id": {"const": "mesa-generated-lf-v1"},
+            "source_mode": {"const": "lf"},
+            "core_autocrlf": {"const": false},
+            "run_binding_sha256": {"const": "fa3d0f5ed1eceebacf90bfb12f6a172738a858d590c10e277a52c45d7f23f82a"}
+          }
+        },
+        {
+          "$ref": "#/$defs/run",
+          "properties": {
+            "id": {"const": "mesa-generated-crlf-v1"},
+            "source_mode": {"const": "crlf"},
+            "core_autocrlf": {"const": true},
+            "run_binding_sha256": {"const": "9373c9e734ba71974ddde8b4edb4823fc6c60fa6d70a6a0bfc8339dc1d16f2c8"}
+          }
+        }
+      ],
+      "items": false
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_checkout_relationship",
+        "output_root_relationship",
+        "path_identity",
+        "normalized_outputs_byte_identical",
+        "validation_side_output_paths",
+        "validation_side_output_count_per_root"
+      ],
+      "properties": {
+        "source_checkout_relationship": {"const": "independent"},
+        "output_root_relationship": {"const": "distinct-non-nested"},
+        "path_identity": {"const": "content-only-no-absolute-root"},
+        "normalized_outputs_byte_identical": {"const": true},
+        "validation_side_output_paths": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "prefixItems": [
+            {"const": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.h"},
+            {"const": "mesa-23.1.x/src/compiler/glsl/glsl_parser.h"},
+            {"const": "mesa-23.1.x/src/gallium/auxiliary/driver_trace/tr_util.h"},
+            {"const": "mesa-23.1.x/src/mesa/program/program_parse.tab.h"}
+          ],
+          "items": false
+        },
+        "validation_side_output_count_per_root": {"const": 0}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "claims", "authorizations"],
+      "properties": {
+        "classification": {"const": "normalized-generated-source-reproducibility-only"},
+        "claims": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "normalized_output_reproducibility",
+            "generator_execution",
+            "generator_trust",
+            "package_trust",
+            "generated_output_lock",
+            "file_license_closure",
+            "build_closure"
+          ],
+          "properties": {
+            "normalized_output_reproducibility": {"const": true},
+            "generator_execution": {"const": false},
+            "generator_trust": {"const": false},
+            "package_trust": {"const": false},
+            "generated_output_lock": {"const": false},
+            "file_license_closure": {"const": false},
+            "build_closure": {"const": false}
+          }
+        },
+        "authorizations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generator_execution",
+            "build",
+            "stage",
+            "guest_install",
+            "dll_activation",
+            "capability_advertisement"
+          ],
+          "properties": {
+            "generator_execution": {"const": false},
+            "build": {"const": false},
+            "stage": {"const": false},
+            "guest_install": {"const": false},
+            "dll_activation": {"const": false},
+            "capability_advertisement": {"const": false}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "pinned_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "tree_descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file_count",
+        "directory_count",
+        "total_entries",
+        "aggregate_bytes",
+        "maximum_file_bytes",
+        "maximum_path_bytes",
+        "digest_algorithm",
+        "sha256"
+      ],
+      "properties": {
+        "file_count": {"const": 67},
+        "directory_count": {"const": 20},
+        "total_entries": {"const": 87},
+        "aggregate_bytes": {"const": 34876554},
+        "maximum_file_bytes": {"const": 20214289},
+        "maximum_path_bytes": {"const": 65},
+        "digest_algorithm": {"const": "retvrn99-file-tree-sha256-v1"},
+        "sha256": {"const": "dd0ae888829eabf2a0043f27100aa64c57b43ad12054270bee62f50ccc451d84"}
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_mode",
+        "core_autocrlf",
+        "source_checkout_identity",
+        "output_root_identity",
+        "normalization",
+        "descriptor",
+        "validation_side_output_count",
+        "run_binding_sha256"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "source_mode": {"enum": ["lf", "crlf"]},
+        "core_autocrlf": {"type": "boolean"},
+        "source_checkout_identity": {"const": "independent-pinned-checkout"},
+        "output_root_identity": {"const": "external-content-addressed-root"},
+        "normalization": {"const": "strict-utf-8-no-bom-lf"},
+        "descriptor": {"$ref": "#/$defs/tree_descriptor"},
+        "validation_side_output_count": {"const": 0},
+        "run_binding_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

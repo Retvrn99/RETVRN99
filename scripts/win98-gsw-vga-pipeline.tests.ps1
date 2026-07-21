@@ -67,7 +67,7 @@ try {
     $lockPath = Join-Path $testRoot 'upstream.lock.tsv'
     [IO.File]::WriteAllText(
         $lockPath,
-        "# SPDX-License-Identifier: GPL-3.0-only`r`nname`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tscope`r`n"
+        "# SPDX-License-Identifier: GPL-3.0-only`r`nname`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tclosure_manifest`tclosure_manifest_sha256`tscope`r`n"
     )
     $inventoryPath = Join-Path $testRoot 'inventory.tsv'
     [IO.File]::WriteAllText(

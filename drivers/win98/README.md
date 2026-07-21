@@ -9,12 +9,125 @@ root.
 
 ## Immutable inputs
 
-`upstream.lock.tsv` pins VMDisp9x and VMHAL9x, including their initialized
-gitlinks, by exact origin and commit. The verifier performs no clone or fetch:
+`upstream.lock.tsv` pins every reviewed upstream by exact origin and commit.
+The source verifier also checks initialized gitlinks and performs no clone or
+fetch:
 
 ```powershell
 .\scripts\verify-win98-driver-sources.ps1 -SourceRoot D:\src\retvrn99-win98
 ```
+
+Rows marked `planned-component` link a raw-SHA-256-pinned schema-1 closure
+manifest that also names the lock row's owning commit. A ready closure must
+enumerate each selected regular Git blob with its byte count, SHA-256,
+allowlisted file-level license expression, notice binding, source-prefix ID,
+and role. Prefixes are exact named subtrees or the explicit
+`exact-root-files` mode, which covers only separately listed root files. They
+never imply recursive copying or globs. Notices form their own exact blob
+inventory, and every source file must bind to one notice with the same approved
+license expression. The initial closed allowlist is `MIT` and
+`LGPL-2.1-or-later`; adding another expression requires a schema and verifier
+change. Blocked manifests contain no notices or files and cannot be consumed by
+derivation, build, or staging. Their linkage and schema can be checked without
+turning them into usable source:
+
+```powershell
+.\scripts\verify-win98-component-closure.ps1 `
+    -SourceRoot D:\src\retvrn99-win98 `
+    -PolicyAudit
+```
+
+Mesa9x is still pinned at `29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f`;
+only its `mesa-23.1.x` subtree, whose `VERSION` is 23.1.9, is a candidate
+component. Its populated schema-2 audit binds 1,036 files: 837 source units,
+198 generator inputs, and one generator recipe, with 892 exact license-evidence
+records. It remains blocked pending compiler header and depfile closure,
+omission proofs, and direct-build integration. The `libs/vkd3d-shader` and
+OpenGlide9x manifests also remain blocked; OpenGlide9x currently authorizes no
+source prefixes. Wine9x is reference-only.
+
+`mesa-generator-toolchain-lock.json` records the blocked Mesa 23.1.9 generator
+environment as 26 exact MSYS2 package archives: 24 required and two reserved,
+unselected packages. All 26 detached signatures are present but unverified.
+The trust root, extractor, extracted tree, runtime, tool and module probes,
+and commands are separate audit evidence. The audit
+reads and hashes local files only; it never executes or extracts a package and
+cannot authorize a build or payload:
+
+```powershell
+.\scripts\verify-win98-mesa-generator-toolchain.ps1 `
+    -PolicyAudit `
+    -PackageRoot .\.scratch\graphics-source-tools\packages `
+    -MesaCheckout D:\src\retvrn99-win98\mesa9x
+```
+
+The production path does not consume that package graph. It uses the fixed
+`hash-locked-generated-outputs` strategy. The Generated Source Module verifies
+an already generated checkout against the exact Mesa commit, source seed, and
+generator recipe, then copies only the 67 `GENERATE_FILES` targets into a fresh
+normalized root. Known generator side effects are checked but never replace
+tracked Mesa blobs. The Module never invokes Python, Mako, Flex, Bison, or a
+package-cache executable.
+
+Distinct LF and CRLF generation checkouts now produce the same normalized
+67-file root. `mesa-generated-source-reproducibility.json` binds both run
+identities and the canonical tree digest. The schema-2 generated-output lock
+binds all 67 files and that proof while excluding four validation-only side
+outputs. Its 77 reviewed evidence rows cover 58 generated outputs and 19
+component-closure sources. Source evidence is read from the exact pinned Git
+blobs, so LF and CRLF checkout policy cannot alter the license decision. The
+lock proves generated-output identity and license review only; it cannot
+authorize compilation, staging, installation, or graphics capability
+advertisement.
+
+`mesa-gsw` is the original source Module replacing the prohibited Nine memory
+helper and build-identity implementations. Its strict verifier binds eight MIT
+Mesa Interface and caller blobs plus three GPL-3.0-only local outputs. The
+resident Win32 memory Adapter provides 64-byte aligned owned allocations,
+bounded suballocation arithmetic, worker-safe frees, and deterministic teardown.
+The caller must quiesce its worker before allocator destruction. The external
+pointer Interface carries no extent, so its caller retains extent
+responsibility. This source proof does not wire a recipe or assert compilation:
+
+```powershell
+.\scripts\verify-win98-mesa-gsw-original-source.ps1 `
+    -MesaCheckout D:\src\retvrn99-win98\mesa9x
+```
+
+Its separate compile-only proof derives the complete ordered MinGW CPU flag
+sequence from `guest-cpu-profile.json`, compiles the Nine memory Adapter in two
+private roots, and requires byte-identical normalized i386 COFF outputs. Every
+compiler child has a 10-second timeout, a pinned-toolchain-only `PATH`, and an
+inherited no-dialog error mode. The objects are inspected, never executed, and
+deleted before the verifier returns:
+
+```powershell
+.\scripts\build-win98-mesa-gsw-original-source.ps1 `
+    -MesaCheckout D:\src\retvrn99-win98\mesa9x `
+    -ToolchainRoot D:\src\retvrn99-win98\toolchains
+```
+
+`mesa-compiler-closure.json` is the fail-closed design for the future header
+and depfile proof. Its first schema permits no compiler commands, depfiles,
+headers, twin-run evidence, or execution authority. Clean-checkout discovery
+cannot become proof: the eventual proof root must combine the exact
+materialized component closure with reviewed generated and original GSW roots
+and the locked toolchain. The upstream multi-backend recipes, software and DRM
+SVGA winsys paths, LLVM definitions, and VirtualBox definitions are explicit
+exclusions.
+
+`mesa-gsw-build-profile.json` therefore remains blocked. Its generated-source
+reproducibility and generated-output-lock dependencies are proven; every
+source/license, CPU compile, original Adapter integration, backend-exclusion,
+and compile-output dependency remains false.
+
+Package staging dispatches provenance by lock disposition. Whole-source
+`planned` rows use the immutable checkout verifier, `planned-component` rows
+must pass a ready component closure, and `reference-only` rows always reject a
+package that requires them. The current five-file GSW-VGA package requires only
+VMDisp9x and VMHAL9x. Future GSW DX9 compatibility requires Mesa9x only, and
+future GSW Glide requires OpenGlide9x. Their blocked component manifests keep
+both future packages unavailable.
 
 `toolchain.lock.json` pins the complete Open Watcom 1.9 archive and extraction.
 `mingw32-toolchain.lock.json` pins the complete MinGW32 GCC 15.2.0 extraction.
@@ -38,12 +151,16 @@ closure, and runs ready derivation and build verification in both.
 
 ## Derived sources and build
 
-`derived-source-plan.json` contains ready recipes for `vmdisp9x-gsw` and
-`vmhal9x-gsw`. Each recipe names one immutable upstream, ordered patches pinned
-by size and SHA-256, complete overlays pinned by tree digest, and the exact
-combined output-tree descriptor. Preparation uses exact tracked Git blob
-bytes, rejects dirty or mismatched sources and unsafe paths, and publishes only
-after two matching scans.
+`derived-source-plan.json` contains schema-2 ready recipes for `vmdisp9x-gsw`
+and `vmhal9x-gsw`. Schema 2 retains whole-upstream behavior. Schema 3 requires
+each recipe to select `whole-upstream` or `component-closure`. A component
+selection repeats the closure path and raw SHA-256 from the canonical lock row,
+requires that closure to be ready, and materializes only its declared regular
+notice and source blobs. Component-only recipes may have no patch or overlay;
+whole-upstream recipes retain the existing patch-or-overlay requirement.
+Preparation applies any ordered, hash-pinned patches and complete tree-pinned
+overlays after source materialization, verifies the exact combined output-tree
+descriptor, and publishes only after final source and tree checks.
 
 `build-plan.json` schema 3 links the source plan, upstream lock, and both
 toolchain locks by SHA-256. It runs the pinned tools with literal arguments,

@@ -1,0 +1,129 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "component-closure.schema.json",
+  "title": "RETVRN99 Windows 98 upstream component closure",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "status",
+    "reason",
+    "upstream_name",
+    "owning_commit",
+    "source_prefixes",
+    "notices",
+    "files"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "status": {"enum": ["blocked", "ready"]},
+    "reason": {"type": "string", "maxLength": 512},
+    "upstream_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "owning_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_prefixes": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "relative_path", "mode"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "relative_path": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "mode": {"enum": ["subtree", "exact-root-files"]}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"mode": {"const": "subtree"}}},
+            "then": {"properties": {"relative_path": {"not": {"const": "."}}}}
+          },
+          {
+            "if": {"properties": {"mode": {"const": "exact-root-files"}}},
+            "then": {"properties": {"relative_path": {"const": "."}}}
+          }
+        ]
+      }
+    },
+    "notices": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "relative_path",
+          "git_blob",
+          "bytes",
+          "sha256",
+          "license_expression"
+        ],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "relative_path": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "bytes": {"type": "integer", "minimum": 0, "maximum": 536870912},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "license_expression": {"enum": ["MIT", "LGPL-2.1-or-later"]}
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "maxItems": 20000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "relative_path",
+          "git_blob",
+          "bytes",
+          "sha256",
+          "license_expression",
+          "notice_id",
+          "source_prefix_id",
+          "role"
+        ],
+        "properties": {
+          "relative_path": {"type": "string", "minLength": 1, "maxLength": 1024},
+          "git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+          "bytes": {"type": "integer", "minimum": 0, "maximum": 536870912},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "license_expression": {"enum": ["MIT", "LGPL-2.1-or-later"]},
+          "notice_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "source_prefix_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "role": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "blocked"}}},
+      "then": {
+        "properties": {
+          "reason": {"minLength": 1},
+          "notices": {"maxItems": 0},
+          "files": {"maxItems": 0}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "ready"}}},
+      "then": {
+        "properties": {
+          "reason": {"const": ""},
+          "source_prefixes": {"minItems": 1},
+          "notices": {"minItems": 1},
+          "files": {"minItems": 1}
+        }
+      }
+    }
+  ]
+}

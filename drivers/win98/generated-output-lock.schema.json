@@ -1,0 +1,363 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "generated-output-lock.schema.json",
+  "title": "RETVRN99 Windows 98 generated-output review lock v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "status",
+    "reason",
+    "component",
+    "provenance",
+    "license_evidence",
+    "outputs",
+    "validation_only_side_outputs",
+    "output_tree",
+    "scope"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 2},
+    "status": {"enum": ["blocked", "reviewed-generated-source"]},
+    "reason": {"type": "string", "maxLength": 4096},
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component_id",
+        "upstream_name",
+        "repository",
+        "owning_commit",
+        "mesa_version",
+        "mesa_subtree"
+      ],
+      "properties": {
+        "component_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "upstream_name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^https://"
+        },
+        "owning_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "mesa_version": {"const": "23.1.9"},
+        "mesa_subtree": {"const": "mesa-23.1.x"}
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generated_source_plan",
+        "generated_source_reproducibility",
+        "component_closure",
+        "generator_recipe",
+        "source_seed",
+        "recipe_variable",
+        "recipe_output_sequence_sha256"
+      ],
+      "properties": {
+        "generated_source_plan": {"$ref": "#/$defs/fileDescriptor"},
+        "generated_source_reproducibility": {"$ref": "#/$defs/fileDescriptor"},
+        "component_closure": {"$ref": "#/$defs/fileDescriptor"},
+        "generator_recipe": {"$ref": "#/$defs/gitFileDescriptor"},
+        "source_seed": {"$ref": "#/$defs/fileDescriptor"},
+        "recipe_variable": {"const": "GENERATE_FILES"},
+        "recipe_output_sequence_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "license_evidence": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {"$ref": "#/$defs/licenseEvidence"}
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20000,
+      "items": {"$ref": "#/$defs/output"}
+    },
+    "validation_only_side_outputs": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/path"}
+    },
+    "output_tree": {"$ref": "#/$defs/tree"},
+    "scope": {"$ref": "#/$defs/scope"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "blocked"}}},
+      "then": {
+        "properties": {
+          "reason": {"type": "string", "minLength": 1},
+          "scope": {
+            "properties": {
+              "classification": {"const": "generated-source-review-blocked"},
+              "claims": {
+                "properties": {
+                  "file_license_evidence_complete": {"const": false}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "reviewed-generated-source"}}},
+      "then": {
+        "properties": {
+          "reason": {"const": ""},
+          "license_evidence": {"minItems": 1},
+          "outputs": {
+            "items": {
+              "properties": {
+                "license_evidence_ids": {"minItems": 1}
+              }
+            }
+          },
+          "scope": {
+            "properties": {
+              "classification": {"const": "reviewed-generated-source"},
+              "claims": {
+                "properties": {
+                  "generated_source_bytes_reviewed": {"const": true},
+                  "output_reproducibility": {"const": true},
+                  "file_license_evidence_complete": {"const": true}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\\\]+$"
+    },
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "licenseExpression": {
+      "enum": [
+        "MIT",
+        "MIT AND (GPL-3.0-or-later WITH Bison-exception-2.2)",
+        "MIT AND BSD-3-Clause",
+        "MIT AND Apache-2.0"
+      ]
+    },
+    "evidenceExpression": {
+      "enum": [
+        "MIT",
+        "GPL-3.0-or-later WITH Bison-exception-2.2",
+        "BSD-3-Clause",
+        "Apache-2.0"
+      ]
+    },
+    "fileDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/path"},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 536870912},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "gitFileDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "git_blob", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/path"},
+        "git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 536870912},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "licenseEvidence": {
+      "oneOf": [
+        {"$ref": "#/$defs/generatedOutputEvidence"},
+        {"$ref": "#/$defs/componentSourceEvidence"}
+      ]
+    },
+    "generatedOutputEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "origin",
+        "subject",
+        "evidence_file",
+        "locator",
+        "license_expression"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "origin": {"const": "generated-output"},
+        "subject": {"$ref": "#/$defs/fileDescriptor"},
+        "evidence_file": {"$ref": "#/$defs/fileDescriptor"},
+        "locator": {"$ref": "#/$defs/evidenceLocator"},
+        "license_expression": {"$ref": "#/$defs/evidenceExpression"}
+      }
+    },
+    "componentSourceEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "origin",
+        "subject",
+        "component_evidence_id",
+        "evidence_file",
+        "locator",
+        "license_expression"
+      ],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "origin": {"const": "component-closure-source"},
+        "subject": {"$ref": "#/$defs/gitFileDescriptor"},
+        "component_evidence_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$"
+        },
+        "evidence_file": {"$ref": "#/$defs/gitFileDescriptor"},
+        "locator": {"$ref": "#/$defs/evidenceLocator"},
+        "license_expression": {"$ref": "#/$defs/evidenceExpression"}
+      }
+    },
+    "evidenceLocator": {
+      "oneOf": [
+        {"$ref": "#/$defs/wholeFileLocator"},
+        {"$ref": "#/$defs/byteRangeLocator"}
+      ]
+    },
+    "wholeFileLocator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sha256"],
+      "properties": {
+        "kind": {"const": "whole-file"},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "byteRangeLocator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "byte_offset", "byte_count", "sha256"],
+      "properties": {
+        "kind": {"const": "byte-range"},
+        "byte_offset": {"type": "integer", "minimum": 0, "maximum": 536870912},
+        "byte_count": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "bytes",
+        "sha256",
+        "license_expression",
+        "license_evidence_ids"
+      ],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/path"},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "sha256": {"$ref": "#/$defs/hash"},
+        "license_expression": {"$ref": "#/$defs/licenseExpression"},
+        "license_evidence_ids": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}
+        }
+      }
+    },
+    "tree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "file_count",
+        "directory_count",
+        "total_entries",
+        "aggregate_bytes",
+        "maximum_file_bytes",
+        "maximum_path_bytes",
+        "digest_algorithm",
+        "sha256"
+      ],
+      "properties": {
+        "file_count": {"type": "integer", "minimum": 1, "maximum": 20000},
+        "directory_count": {"type": "integer", "minimum": 0, "maximum": 10000},
+        "total_entries": {"type": "integer", "minimum": 1, "maximum": 30000},
+        "aggregate_bytes": {"type": "integer", "minimum": 0, "maximum": 536870912},
+        "maximum_file_bytes": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "maximum_path_bytes": {"type": "integer", "minimum": 1, "maximum": 512},
+        "digest_algorithm": {"const": "retvrn99-file-tree-sha256-v1"},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "claims", "authorizations"],
+      "properties": {
+        "classification": {
+          "enum": ["generated-source-review-blocked", "reviewed-generated-source"]
+        },
+        "claims": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generated_source_bytes_reviewed",
+            "output_reproducibility",
+            "file_license_evidence_complete",
+            "generator_input_closure",
+            "component_closure",
+            "build_closure"
+          ],
+          "properties": {
+            "generated_source_bytes_reviewed": {"type": "boolean"},
+            "output_reproducibility": {"type": "boolean"},
+            "file_license_evidence_complete": {"type": "boolean"},
+            "generator_input_closure": {"const": false},
+            "component_closure": {"const": false},
+            "build_closure": {"const": false}
+          }
+        },
+        "authorizations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generator_execution",
+            "build",
+            "stage",
+            "guest_install",
+            "capability_advertisement"
+          ],
+          "properties": {
+            "generator_execution": {"const": false},
+            "build": {"const": false},
+            "stage": {"const": false},
+            "guest_install": {"const": false},
+            "capability_advertisement": {"const": false}
+          }
+        }
+      }
+    }
+  }
+}

@@ -79,9 +79,27 @@ function Write-UpstreamLock {
 
     $contents = @(
         '# SPDX-License-Identifier: GPL-3.0-only'
-        "name`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tscope"
-        "vmdisp9x`tvmdisp9x`thttps://example.invalid/vmdisp9x.git`t$DisplayCommit`tMIT`tplanned`tdisplay-driver"
-        "vmhal9x`tvmhal9x`thttps://example.invalid/vmhal9x.git`t$DisplayCommit`tMIT`tplanned`tdirectdraw-hal"
+        "name`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tclosure_manifest`tclosure_manifest_sha256`tscope"
+        "vmdisp9x`tvmdisp9x`thttps://example.invalid/vmdisp9x.git`t$DisplayCommit`tMIT`tplanned`t`t`tdisplay-driver"
+        "vmhal9x`tvmhal9x`thttps://example.invalid/vmhal9x.git`t$DisplayCommit`tMIT`tplanned`t`t`tdirectdraw-hal"
+    ) -join "`r`n"
+    [IO.File]::WriteAllText($Path, $contents + "`r`n")
+}
+
+function Write-MixedUpstreamLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$DisplayCommit,
+        [Parameter(Mandatory = $true)][string]$ManifestRelativePath,
+        [Parameter(Mandatory = $true)][string]$ManifestHash
+    )
+
+    $contents = @(
+        '# SPDX-License-Identifier: GPL-3.0-only'
+        "name`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tclosure_manifest`tclosure_manifest_sha256`tscope"
+        "vmdisp9x`tvmdisp9x`thttps://example.invalid/vmdisp9x.git`t$DisplayCommit`tMIT`tplanned`t`t`tdisplay-driver"
+        "vmhal9x`tvmhal9x`thttps://example.invalid/vmhal9x.git`t$DisplayCommit`tMIT`tplanned`t`t`tdirectdraw-hal"
+        "fixture-component`tfixture-component`thttps://example.invalid/component.git`t$DisplayCommit`tMIT`tplanned-component`t$ManifestRelativePath`t$ManifestHash`tfixture-component"
     ) -join "`r`n"
     [IO.File]::WriteAllText($Path, $contents + "`r`n")
 }
@@ -89,9 +107,13 @@ function Write-UpstreamLock {
 function Get-ByteHash {
     param([Parameter(Mandatory = $true)][byte[]]$Bytes)
 
-    return [Convert]::ToHexString(
-        [Security.Cryptography.SHA256]::HashData($Bytes)
-    ).ToLowerInvariant()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash($Bytes)) -replace '-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha.Dispose()
+    }
 }
 
 function Set-UInt16LE {
@@ -183,6 +205,188 @@ try {
     Invoke-SelfTest 'A source-name allowlist verifies only selected checkouts' {
         $output = @(& $verifyScript -SourceRoot $sourceRoot -LockFile $lockPath -SourceName 'vmdisp9x')
         Assert-Equal ($output -join [Environment]::NewLine) 'Verified 1 immutable Windows 98 source checkouts.'
+    }
+
+    Invoke-SelfTest 'Strict upstream TSV rejects ambiguous rows and headers' {
+        $originalLock = [IO.File]::ReadAllText($lockPath)
+        $header = @(
+            'name', 'source_directory', 'repository', 'commit', 'upstream_license',
+            'disposition', 'closure_manifest', 'closure_manifest_sha256', 'scope'
+        )
+        $validRow = @(
+            'vmdisp9x', 'vmdisp9x', 'https://example.invalid/vmdisp9x.git',
+            $displayCommit, 'MIT', 'planned', '', '', 'display-driver'
+        ) -join "`t"
+        $duplicateHeader = @($header)
+        $duplicateHeader[1] = 'name'
+        $mutations = @(
+            [pscustomobject]@{
+                Name = 'surplus field'
+                Header = $header -join "`t"
+                Row = $validRow + "`textra"
+                Pattern = 'data row 1 has 10 fields'
+            },
+            [pscustomobject]@{
+                Name = 'missing field'
+                Header = $header -join "`t"
+                Row = (@($validRow.Split([char]"`t"))[0..7] -join "`t")
+                Pattern = 'data row 1 has 8 fields'
+            },
+            [pscustomobject]@{
+                Name = 'reordered header'
+                Header = (@($header[1], $header[0]) + @($header[2..8])) -join "`t"
+                Row = $validRow
+                Pattern = "header column 1 must be 'name'"
+            },
+            [pscustomobject]@{
+                Name = 'extra header'
+                Header = ($header + 'unexpected') -join "`t"
+                Row = $validRow + "`textra"
+                Pattern = 'header must contain exactly 9 ordered columns'
+            },
+            [pscustomobject]@{
+                Name = 'duplicate header'
+                Header = $duplicateHeader -join "`t"
+                Row = $validRow
+                Pattern = "duplicate header column 'name'"
+            },
+            [pscustomobject]@{
+                Name = 'quoted field'
+                Header = $header -join "`t"
+                Row = $validRow.Replace('vmdisp9x', 'vmd"isp9x')
+                Pattern = 'contains unsupported quoting'
+            },
+            [pscustomobject]@{
+                Name = 'control character'
+                Header = $header -join "`t"
+                Row = $validRow.Replace('vmdisp9x', ('vmd' + [char]1 + 'isp9x'))
+                Pattern = 'contains a control character'
+            }
+        )
+        try {
+            foreach ($mutation in $mutations) {
+                $text = @(
+                    '# SPDX-License-Identifier: GPL-3.0-only'
+                    $mutation.Header
+                    $mutation.Row
+                ) -join "`r`n"
+                [IO.File]::WriteAllText($lockPath, $text + "`r`n")
+                Assert-Throws {
+                    & $verifyScript -SourceRoot $sourceRoot -LockFile $lockPath `
+                        -SourceName 'vmdisp9x'
+                } $mutation.Pattern
+            }
+
+            . (Join-Path $PSScriptRoot 'strict-tsv.ps1')
+            $parsed = @(ConvertFrom-StrictTsv `
+                -Lines @('# comment', '', "left`tmiddle`tright", "x`ty`t") `
+                -ExpectedHeader @('left', 'middle', 'right') -Name 'fixture TSV')
+            Assert-Equal $parsed.Count 1
+            Assert-Equal $parsed[0].right '' 'A trailing empty field was not preserved.'
+            Assert-Throws {
+                ConvertFrom-StrictTsv `
+                    -Lines @("left`tmiddle`tright", "x`ty`ninside") `
+                    -ExpectedHeader @('left', 'middle', 'right') -Name 'fixture TSV'
+            } 'contains a control character'
+            Assert-Throws {
+                ConvertFrom-StrictTsv `
+                    -Lines @("# comment`rsmuggled", "left`tmiddle`tright", "x`ty`tz") `
+                    -ExpectedHeader @('left', 'middle', 'right') -Name 'fixture TSV'
+            } 'contains a control character'
+            Assert-Throws {
+                ConvertFrom-StrictTsv `
+                    -Lines @("left`tmiddle`tright", (('x' * 65) + "`ty`tz")) `
+                    -ExpectedHeader @('left', 'middle', 'right') -Name 'fixture TSV' `
+                    -MaximumLineBytes 64
+            } 'exceeds the 64-byte limit'
+        }
+        finally {
+            [IO.File]::WriteAllText($lockPath, $originalLock)
+        }
+    }
+
+    Invoke-SelfTest 'Strict TSV file decoding is UTF-8 deterministic and bounded' {
+        . (Join-Path $PSScriptRoot 'strict-tsv.ps1')
+        $fixturePath = Join-Path $testRoot 'strict-utf8.tsv'
+        $expectedHeader = @('left', 'right')
+        $utf8 = New-Object Text.UTF8Encoding($false, $true)
+        [byte[]]$validBytes = $utf8.GetBytes("left`tright`ncaf$([char]0x00e9)`tok`n")
+        [IO.File]::WriteAllBytes($fixturePath, $validBytes)
+
+        $parsed = @(Read-StrictTsvFile -Path $fixturePath `
+            -ExpectedHeader $expectedHeader -Name 'UTF-8 fixture' `
+            -MaximumBytes 1024 -MaximumRows 4 -MaximumLineBytes 128 `
+            -MaximumPhysicalLines 8)
+        Assert-Equal $parsed.Count 1
+        Assert-Equal $parsed[0].left "caf$([char]0x00e9)" `
+            'The strict byte decoder did not preserve the UTF-8 field.'
+
+        [byte[]]$oneBom = New-Object byte[] ($validBytes.Length + 3)
+        $oneBom[0] = 0xef
+        $oneBom[1] = 0xbb
+        $oneBom[2] = 0xbf
+        [Array]::Copy($validBytes, 0, $oneBom, 3, $validBytes.Length)
+        [IO.File]::WriteAllBytes($fixturePath, $oneBom)
+        $bomParsed = @(Read-StrictTsvFile -Path $fixturePath `
+            -ExpectedHeader $expectedHeader -Name 'UTF-8 fixture' `
+            -MaximumBytes 1024 -MaximumRows 4 -MaximumLineBytes 128 `
+            -MaximumPhysicalLines 8)
+        Assert-Equal $bomParsed[0].left "caf$([char]0x00e9)" `
+            'One leading UTF-8 BOM was not handled consistently.'
+
+        [byte[]]$twoBoms = New-Object byte[] ($validBytes.Length + 6)
+        [Array]::Copy($oneBom, 0, $twoBoms, 0, 3)
+        [Array]::Copy($oneBom, 0, $twoBoms, 3, $oneBom.Length)
+        [IO.File]::WriteAllBytes($fixturePath, $twoBoms)
+        Assert-Throws {
+            Read-StrictTsvFile -Path $fixturePath `
+                -ExpectedHeader $expectedHeader -Name 'UTF-8 fixture' `
+                -MaximumBytes 1024 -MaximumRows 4 -MaximumLineBytes 128 `
+                -MaximumPhysicalLines 8
+        } 'unsupported UTF-8 byte-order mark'
+
+        [byte[]]$prefix = [Text.Encoding]::ASCII.GetBytes("left`tright`nx`t")
+        [byte[]]$malformed = New-Object byte[] ($prefix.Length + 3)
+        [Array]::Copy($prefix, 0, $malformed, 0, $prefix.Length)
+        $malformed[$prefix.Length] = 0xc3
+        $malformed[$prefix.Length + 1] = 0x28
+        $malformed[$prefix.Length + 2] = 0x0a
+        [IO.File]::WriteAllBytes($fixturePath, $malformed)
+        Assert-Throws {
+            Read-StrictTsvFile -Path $fixturePath `
+                -ExpectedHeader $expectedHeader -Name 'UTF-8 fixture' `
+                -MaximumBytes 1024 -MaximumRows 4 -MaximumLineBytes 128 `
+                -MaximumPhysicalLines 8
+        } 'not valid UTF-8'
+
+        [IO.File]::WriteAllBytes(
+            $fixturePath,
+            $utf8.GetBytes("# comment`n`nleft`tright`nx`ty")
+        )
+        Assert-Throws {
+            Read-StrictTsvFile -Path $fixturePath `
+                -ExpectedHeader $expectedHeader -Name 'UTF-8 fixture' `
+                -MaximumBytes 1024 -MaximumRows 4 -MaximumLineBytes 128 `
+                -MaximumPhysicalLines 3
+        } 'exceeds the 3-physical-line limit'
+
+        [IO.File]::WriteAllBytes($fixturePath, $validBytes)
+        Assert-Throws {
+            Read-StrictTsvFile -Path $fixturePath `
+                -ExpectedHeader $expectedHeader -Name 'UTF-8 fixture' `
+                -MaximumBytes ($validBytes.Length - 1) -MaximumRows 4 `
+                -MaximumLineBytes 128 -MaximumPhysicalLines 8
+        } 'byte limit'
+        [IO.File]::WriteAllBytes(
+            $fixturePath,
+            $utf8.GetBytes("left`tright`rx`ty")
+        )
+        Assert-Throws {
+            Read-StrictTsvFile -Path $fixturePath `
+                -ExpectedHeader $expectedHeader -Name 'UTF-8 fixture' `
+                -MaximumBytes 1024 -MaximumRows 4 -MaximumLineBytes 128 `
+                -MaximumPhysicalLines 8
+        } 'bare carriage return'
     }
 
     Invoke-SelfTest 'Default verification still requires every locked checkout' {
@@ -511,6 +715,98 @@ try {
         $planPath = Join-Path $testRoot 'build-plan.json'
         [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
 
+        $validBuildPlanText = [IO.File]::ReadAllText($planPath)
+        $duplicateBuildPlanText = $validBuildPlanText -replace `
+            '("schema"\s*:\s*2\s*,)', '$1 "SCHEMA": 2,'
+        Assert-True ($duplicateBuildPlanText -cne $validBuildPlanText) `
+            'The duplicate build-plan JSON mutation was not applied.'
+        try {
+            [IO.File]::WriteAllText($planPath, $duplicateBuildPlanText)
+            Assert-Throws {
+                & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+                    -OutputRoot (Join-Path $testRoot 'duplicate-build-plan-json') `
+                    -BuildPlan $planPath -LockFile $lockPath
+            } "Duplicate JSON property 'SCHEMA'"
+
+            $plan.schema = '2'
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+            Assert-Throws {
+                & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+                    -OutputRoot (Join-Path $testRoot 'typed-build-plan-json') `
+                    -BuildPlan $planPath -LockFile $lockPath
+            } 'schema must be a JSON integer'
+        }
+        finally {
+            $plan.schema = 2
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+        }
+
+        $strictBuildLockText = [IO.File]::ReadAllText($lockPath)
+        try {
+            $strictBuildLockLines = @([IO.File]::ReadAllLines($lockPath))
+            $strictBuildLockLines[1] += "`tunexpected"
+            [IO.File]::WriteAllLines($lockPath, $strictBuildLockLines)
+            $plan.upstream_lock.sha256 = (
+                Get-FileHash $lockPath -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+            Assert-Throws {
+                & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+                    -OutputRoot (Join-Path $testRoot 'strict-build-lock') `
+                    -BuildPlan $planPath -LockFile $lockPath
+            } 'upstream lock header must contain exactly 9 ordered columns'
+        }
+        finally {
+            [IO.File]::WriteAllText($lockPath, $strictBuildLockText)
+            $plan.upstream_lock.sha256 = (
+                Get-FileHash $lockPath -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+        }
+
+        $componentManifestRelativePath = 'component-closures/blocked.json'
+        $componentManifestPath = Join-Path $testRoot 'component-closures\blocked.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $componentManifestPath) | Out-Null
+        $componentManifest = [ordered]@{
+            _spdx = 'GPL-3.0-only'
+            schema = 1
+            status = 'blocked'
+            reason = 'Fixture component source closure remains blocked.'
+            upstream_name = 'fixture-component'
+            owning_commit = $displayCommit
+            source_prefixes = @()
+            notices = @()
+            files = @()
+        }
+        [IO.File]::WriteAllText(
+            $componentManifestPath,
+            ($componentManifest | ConvertTo-Json -Depth 8)
+        )
+        Write-MixedUpstreamLock -Path $lockPath -DisplayCommit $displayCommit `
+            -ManifestRelativePath $componentManifestRelativePath `
+            -ManifestHash ((Get-FileHash $componentManifestPath -Algorithm SHA256).Hash.ToLowerInvariant())
+        $plan.upstream_lock.sha256 = (Get-FileHash $lockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+        $mixedBuildOutput = Join-Path $testRoot 'mixed-lock-build'
+        $componentManifestText = [IO.File]::ReadAllText($componentManifestPath)
+        try {
+            & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+                -OutputRoot $mixedBuildOutput -BuildPlan $planPath -LockFile $lockPath `
+                -BeforeLinkedMetadataUse {
+                    [IO.File]::AppendAllText($componentManifestPath, ' ')
+                } | Out-Null
+        }
+        finally {
+            [IO.File]::WriteAllText($componentManifestPath, $componentManifestText)
+            Write-UpstreamLock -Path $lockPath -DisplayCommit $displayCommit
+            $plan.upstream_lock.sha256 = (Get-FileHash $lockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+        }
+        Assert-True (Test-Path -LiteralPath (
+            Join-Path $mixedBuildOutput 'vmdisp9x-derived\artifact.bin'
+        ) -PathType Leaf) 'The mixed-lock build did not publish its verified output.'
+        & $assertBuildEnvironmentRestored
+
         $plan.steps[0].outputs[0].relative_path = 'unexpected.drv'
         [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
         Assert-Throws {
@@ -759,7 +1055,9 @@ try {
         Assert-True (($output -join [Environment]::NewLine) -match 'Built, normalized, and verified 4')
         $artifactPath = Join-Path $buildOutput 'vmdisp9x-derived\artifact.bin'
         Assert-True (Test-Path -LiteralPath $artifactPath -PathType Leaf)
-        Assert-Equal ([Convert]::ToHexString([IO.File]::ReadAllBytes($artifactPath))) '616263'
+        Assert-Equal (([BitConverter]::ToString(
+            [IO.File]::ReadAllBytes($artifactPath)
+        ) -replace '-', '')) '616263'
         $driverPath = Join-Path $buildOutput 'vmdisp9x-derived\artifact.drv'
         Assert-Equal (Get-ByteHash ([IO.File]::ReadAllBytes($driverPath))) (Get-ByteHash $normalizedDriverBytes)
         Assert-Equal ([IO.File]::ReadAllText(

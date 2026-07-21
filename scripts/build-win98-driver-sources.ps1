@@ -12,12 +12,15 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'strict-json.ps1')
+. (Join-Path $PSScriptRoot 'strict-tsv.ps1')
 $script:MaximumSteps = 32
 $script:MaximumToolchains = 8
 $script:MaximumArguments = 128
 $script:MaximumArgumentCharacters = 4096
 $script:MaximumOutputs = 128
 $script:MaximumBuildTreeEntries = 50000
+$script:MaximumComponentManifests = 64
 if ([string]::IsNullOrWhiteSpace($BuildPlan)) {
     $BuildPlan = Join-Path $PSScriptRoot '..\drivers\win98\build-plan.json'
 }
@@ -65,28 +68,153 @@ function Restore-ProcessEnvironmentEntry {
     }
 }
 
-function Assert-JsonPropertiesAreUnique {
+function Skip-BuildJsonWhitespace {
     param(
-        [Parameter(Mandatory = $true)][Text.Json.JsonElement]$Element,
-        [Parameter(Mandatory = $true)][string]$JsonPath
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Position
     )
 
-    if ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Object) {
-        $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($property in $Element.EnumerateObject()) {
-            if (-not $names.Add($property.Name)) {
-                throw "Duplicate JSON property '$($property.Name)' at $JsonPath."
+    while ($Position.Value -lt $Json.Length -and
+        $Json[$Position.Value] -in @(' ', "`t", "`r", "`n")) {
+        $Position.Value++
+    }
+}
+
+function Read-BuildJsonString {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Position,
+        [Parameter(Mandatory = $true)][string]$Source
+    )
+
+    if ($Position.Value -ge $Json.Length -or $Json[$Position.Value] -ne '"') {
+        throw "Invalid JSON string in $Source."
+    }
+    $Position.Value++
+    $builder = New-Object Text.StringBuilder
+    while ($Position.Value -lt $Json.Length) {
+        $character = $Json[$Position.Value]
+        $Position.Value++
+        if ($character -eq '"') { return $builder.ToString() }
+        if ([int][char]$character -lt 0x20) {
+            throw "Invalid control character in JSON string in $Source."
+        }
+        if ($character -ne '\') {
+            [void]$builder.Append($character)
+            continue
+        }
+        if ($Position.Value -ge $Json.Length) {
+            throw "Incomplete JSON escape in $Source."
+        }
+        $escaped = $Json[$Position.Value]
+        $Position.Value++
+        switch ($escaped) {
+            '"' { [void]$builder.Append('"') }
+            '\' { [void]$builder.Append('\') }
+            '/' { [void]$builder.Append('/') }
+            'b' { [void]$builder.Append([char]0x08) }
+            'f' { [void]$builder.Append([char]0x0c) }
+            'n' { [void]$builder.Append([char]0x0a) }
+            'r' { [void]$builder.Append([char]0x0d) }
+            't' { [void]$builder.Append([char]0x09) }
+            'u' {
+                if ($Position.Value + 4 -gt $Json.Length) {
+                    throw "Incomplete JSON Unicode escape in $Source."
+                }
+                $hex = $Json.Substring($Position.Value, 4)
+                if ($hex -cnotmatch '^[0-9a-fA-F]{4}$') {
+                    throw "Invalid JSON Unicode escape in $Source."
+                }
+                [void]$builder.Append([char][Convert]::ToInt32($hex, 16))
+                $Position.Value += 4
             }
-            Assert-JsonPropertiesAreUnique -Element $property.Value -JsonPath "$JsonPath.$($property.Name)"
+            default { throw "Invalid JSON escape in $Source." }
         }
     }
-    elseif ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Array) {
-        $index = 0
-        foreach ($item in $Element.EnumerateArray()) {
-            Assert-JsonPropertiesAreUnique -Element $item -JsonPath "${JsonPath}[$index]"
-            $index++
-        }
+    throw "Unterminated JSON string in $Source."
+}
+
+function Read-BuildJsonValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Position,
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][int]$Depth
+    )
+
+    if ($Depth -gt 16) { throw "JSON nesting exceeds the depth bound in $Source." }
+    Skip-BuildJsonWhitespace $Json $Position
+    if ($Position.Value -ge $Json.Length) { throw "Incomplete JSON value in $Source." }
+    switch ($Json[$Position.Value]) {
+        '{' { Read-BuildJsonObject $Json $Position $Source $Depth; return }
+        '[' { Read-BuildJsonArray $Json $Position $Source $Depth; return }
+        '"' { $null = Read-BuildJsonString $Json $Position $Source; return }
     }
+    $start = $Position.Value
+    while ($Position.Value -lt $Json.Length -and
+        $Json[$Position.Value] -notin @(',', ']', '}', ' ', "`t", "`r", "`n")) {
+        $Position.Value++
+    }
+    if ($Position.Value -eq $start) { throw "Invalid JSON value in $Source." }
+}
+
+function Read-BuildJsonObject {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Position,
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][int]$Depth
+    )
+
+    $Position.Value++
+    $names = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    Skip-BuildJsonWhitespace $Json $Position
+    if ($Position.Value -lt $Json.Length -and $Json[$Position.Value] -eq '}') {
+        $Position.Value++
+        return
+    }
+    while ($Position.Value -lt $Json.Length) {
+        Skip-BuildJsonWhitespace $Json $Position
+        $name = Read-BuildJsonString $Json $Position $Source
+        if (-not $names.Add($name)) { throw "Duplicate JSON property '$name' in $Source." }
+        Skip-BuildJsonWhitespace $Json $Position
+        if ($Position.Value -ge $Json.Length -or $Json[$Position.Value] -ne ':') {
+            throw "Missing JSON property separator in $Source."
+        }
+        $Position.Value++
+        Read-BuildJsonValue $Json $Position $Source ($Depth + 1)
+        Skip-BuildJsonWhitespace $Json $Position
+        if ($Position.Value -ge $Json.Length) { throw "Unterminated JSON object in $Source." }
+        if ($Json[$Position.Value] -eq '}') { $Position.Value++; return }
+        if ($Json[$Position.Value] -ne ',') { throw "Invalid JSON object separator in $Source." }
+        $Position.Value++
+    }
+    throw "Unterminated JSON object in $Source."
+}
+
+function Read-BuildJsonArray {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Position,
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][int]$Depth
+    )
+
+    $Position.Value++
+    Skip-BuildJsonWhitespace $Json $Position
+    if ($Position.Value -lt $Json.Length -and $Json[$Position.Value] -eq ']') {
+        $Position.Value++
+        return
+    }
+    while ($Position.Value -lt $Json.Length) {
+        Read-BuildJsonValue $Json $Position $Source ($Depth + 1)
+        Skip-BuildJsonWhitespace $Json $Position
+        if ($Position.Value -ge $Json.Length) { throw "Unterminated JSON array in $Source." }
+        if ($Json[$Position.Value] -eq ']') { $Position.Value++; return }
+        if ($Json[$Position.Value] -ne ',') { throw "Invalid JSON array separator in $Source." }
+        $Position.Value++
+    }
+    throw "Unterminated JSON array in $Source."
 }
 
 function Read-StrictJson {
@@ -95,30 +223,22 @@ function Read-StrictJson {
         [Parameter(Mandatory = $true)][string]$Name
     )
 
-    $json = [IO.File]::ReadAllText($Path)
-    return Read-StrictJsonText $json $Name
-}
-
-function Read-StrictJsonText {
-    param(
-        [Parameter(Mandatory = $true)][string]$Json,
-        [Parameter(Mandatory = $true)][string]$Name
-    )
-
     try {
-        $document = [Text.Json.JsonDocument]::Parse($Json)
+        return Read-GswStrictJsonFile -Path $Path -Name $Name -MaximumBytes 4194304
     }
     catch {
         throw "Malformed $Name JSON: $($_.Exception.Message)"
     }
+}
+
+function Read-StrictJsonText {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Json,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
     try {
-        Assert-JsonPropertiesAreUnique -Element $document.RootElement -JsonPath '$'
-    }
-    finally {
-        $document.Dispose()
-    }
-    try {
-        return $Json | ConvertFrom-Json -Depth 16
+        return ConvertFrom-GswStrictJson -Json $Json -Source $Name
     }
     catch {
         throw "Malformed $Name JSON: $($_.Exception.Message)"
@@ -322,7 +442,8 @@ function Get-LinkedFileSnapshot {
     param(
         [Parameter(Mandatory = $true)][string]$PlanDirectory,
         [Parameter(Mandatory = $true)][object]$Metadata,
-        [Parameter(Mandatory = $true)][string]$Name
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][UInt64]$MaximumBytes
     )
 
     Assert-ExactProperties $Metadata @('relative_path', 'sha256') $Name
@@ -332,18 +453,63 @@ function Get-LinkedFileSnapshot {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "$Name not found: $path"
     }
-    $bytes = [IO.File]::ReadAllBytes($path)
-    $hash = [Convert]::ToHexString(
-        [Security.Cryptography.SHA256]::HashData($bytes)
-    ).ToLowerInvariant()
+    $snapshot = Read-GswBoundedFileSnapshot -Path $path -Name $Name `
+        -MaximumBytes $MaximumBytes
+    [byte[]]$bytes = $snapshot.Bytes
+    $hash = $snapshot.Sha256
     if ($hash -cne $Metadata.sha256) {
         throw "$Name failed its exact SHA-256 check."
     }
     return [pscustomobject]@{
         OriginalPath = $path
         Bytes = $bytes
-        Json = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
     }
+}
+
+function Get-ComponentManifestSnapshots {
+    param([Parameter(Mandatory = $true)][object]$UpstreamLockSnapshot)
+
+    $header = @(
+        'name', 'source_directory', 'repository', 'commit', 'upstream_license',
+        'disposition', 'closure_manifest', 'closure_manifest_sha256', 'scope'
+    )
+    $entries = @(ConvertFrom-StrictTsvUtf8Bytes `
+        -Bytes $UpstreamLockSnapshot.Bytes `
+        -ExpectedHeader $header -Name 'upstream lock' `
+        -MaximumBytes 1048576 -MaximumRows 256 -MaximumLineBytes 16384 `
+        -MaximumPhysicalLines 1024)
+
+    $lockDirectory = Split-Path -Parent $UpstreamLockSnapshot.OriginalPath
+    $seenPaths = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    $snapshots = [Collections.Generic.List[object]]::new()
+    foreach ($entry in $entries) {
+        if ($entry.disposition -cne 'planned-component') { continue }
+        if ($snapshots.Count -ge $script:MaximumComponentManifests) {
+            throw 'The upstream lock exceeds the component closure manifest count bound.'
+        }
+        if ($entry.closure_manifest -isnot [string] -or
+            $entry.closure_manifest -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*\.json$' -or
+            -not $seenPaths.Add($entry.closure_manifest)) {
+            throw "Invalid or duplicate component closure manifest '$($entry.closure_manifest)'."
+        }
+        Assert-LowercaseHash $entry.closure_manifest_sha256 `
+            "component closure manifest '$($entry.closure_manifest)' sha256"
+        $link = [pscustomobject]@{
+            relative_path = [string]$entry.closure_manifest
+            sha256 = [string]$entry.closure_manifest_sha256
+        }
+        $snapshot = Get-LinkedFileSnapshot -PlanDirectory $lockDirectory -Metadata $link `
+            -Name "component closure manifest '$($entry.closure_manifest)'" `
+            -MaximumBytes 1048576
+        [void]$snapshots.Add([pscustomobject]@{
+            RelativePath = [string]$entry.closure_manifest
+            OriginalPath = $snapshot.OriginalPath
+            Bytes = $snapshot.Bytes
+        })
+    }
+    return @($snapshots)
 }
 
 $planPath = Get-FullPath $BuildPlan
@@ -398,10 +564,12 @@ if ($toolchains.Count -eq 0 -or $toolchains.Count -gt $script:MaximumToolchains 
 }
 
 $planDirectory = Split-Path -Parent $planPath
-$derivedPlanSnapshot = Get-LinkedFileSnapshot $planDirectory $plan.derived_source_plan 'derived_source_plan'
+$derivedPlanSnapshot = Get-LinkedFileSnapshot -PlanDirectory $planDirectory `
+    -Metadata $plan.derived_source_plan -Name 'derived_source_plan' -MaximumBytes 4194304
 $toolchainLockSnapshots = @{}
 if ($planSchema -eq 2) {
-    $toolchainLockSnapshots['default'] = Get-LinkedFileSnapshot $planDirectory $plan.toolchain_lock 'toolchain_lock'
+    $toolchainLockSnapshots['default'] = Get-LinkedFileSnapshot -PlanDirectory $planDirectory `
+        -Metadata $plan.toolchain_lock -Name 'toolchain_lock' -MaximumBytes 4194304
 }
 else {
     if ($plan.toolchain_locks -isnot [Array] -or @($plan.toolchain_locks).Count -eq 0 -or
@@ -419,17 +587,21 @@ else {
             sha256 = [string]$metadata.sha256
         }
         $toolchainLockSnapshots[$metadata.name] = Get-LinkedFileSnapshot `
-            $planDirectory $link "toolchain_lock '$($metadata.name)'"
+            -PlanDirectory $planDirectory -Metadata $link `
+            -Name "toolchain_lock '$($metadata.name)'" -MaximumBytes 4194304
     }
 }
-$upstreamLockSnapshot = Get-LinkedFileSnapshot $planDirectory $plan.upstream_lock 'upstream_lock'
+$upstreamLockSnapshot = Get-LinkedFileSnapshot -PlanDirectory $planDirectory `
+    -Metadata $plan.upstream_lock -Name 'upstream_lock' -MaximumBytes 1048576
 $requestedLockPath = Get-FullPath $LockFile
 if (-not $requestedLockPath.Equals(
         $upstreamLockSnapshot.OriginalPath, [StringComparison]::OrdinalIgnoreCase
     )) {
     throw 'LockFile must resolve to the SHA-linked upstream_lock path.'
 }
-$derivedPlan = Read-StrictJsonText $derivedPlanSnapshot.Json 'derived-source plan'
+$componentManifestSnapshots = @(Get-ComponentManifestSnapshots $upstreamLockSnapshot)
+$derivedPlan = ConvertFrom-GswStrictJsonUtf8Bytes -Bytes $derivedPlanSnapshot.Bytes `
+    -Source 'derived-source plan'
 if ($derivedPlan.status -cne 'ready' -or $derivedPlan.recipes -isnot [Array]) {
     throw 'A ready build plan must link one ready derived-source plan.'
 }
@@ -446,7 +618,8 @@ $toolchainRootPath = Get-FullPath $ToolchainRoot
 $toolchainContexts = @{}
 foreach ($lockName in $toolchainLockSnapshots.Keys) {
     $snapshot = $toolchainLockSnapshots[$lockName]
-    $lock = Read-StrictJsonText $snapshot.Json "toolchain lock '$lockName'"
+    $lock = ConvertFrom-GswStrictJsonUtf8Bytes -Bytes $snapshot.Bytes `
+        -Source "toolchain lock '$lockName'"
     $lockSchema = Assert-UnsignedInteger $lock.schema "toolchain lock '$lockName' schema"
     $extractedRoot = Get-ContainedPath $toolchainRootPath $lock.extracted.relative_path "extracted toolchain '$lockName'"
     if ($lockSchema -eq 1) {
@@ -673,6 +846,17 @@ try {
         $toolchainLockPath = Join-Path $temporaryMetadataRoot ("toolchain-$lockName.lock.json")
         [IO.File]::WriteAllBytes($toolchainLockPath, $toolchainContexts[$lockName].Snapshot.Bytes)
         $temporaryToolchainLocks[$lockName] = $toolchainLockPath
+    }
+    foreach ($manifest in $componentManifestSnapshots) {
+        $manifestPath = Get-ContainedPath $temporaryMetadataRoot $manifest.RelativePath `
+            "component closure manifest '$($manifest.RelativePath)' snapshot"
+        if (Test-Path -LiteralPath $manifestPath) {
+            throw "Component closure manifest snapshot collides with build metadata: $($manifest.RelativePath)"
+        }
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $manifestPath))
+        Assert-PathComponentsAreNotReparsePoints $temporaryMetadataRoot $manifest.RelativePath `
+            "component closure manifest '$($manifest.RelativePath)' snapshot"
+        [IO.File]::WriteAllBytes($manifestPath, $manifest.Bytes)
     }
     if ($null -ne $BeforeLinkedMetadataUse) {
         $firstToolchainSnapshot = $toolchainContexts[@($toolchainContexts.Keys)[0]].Snapshot

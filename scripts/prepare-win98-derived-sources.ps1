@@ -28,6 +28,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'strict-json.ps1')
+. (Join-Path $PSScriptRoot 'strict-tsv.ps1')
 $script:HardMaximumRecipes = 8
 $script:HardMaximumPatches = 64
 $script:HardMaximumNormalizedPaths = 128
@@ -39,6 +41,8 @@ $script:HardMaximumEntries = [UInt64]30000
 $script:HardMaximumAggregateBytes = [UInt64]536870912
 $script:HardMaximumFileBytes = [UInt64]67108864
 $script:HardMaximumPathBytes = [UInt64]512
+$script:HardMaximumLockBytes = [UInt64]1048576
+$script:HardMaximumLockRows = 256
 
 if ([string]::IsNullOrWhiteSpace($RecipePlan)) {
     $RecipePlan = Join-Path $PSScriptRoot '..\drivers\win98\derived-source-plan.json'
@@ -90,48 +94,12 @@ function Restore-ProcessEnvironmentEntry {
     }
 }
 
-function Assert-JsonPropertiesAreUnique {
-    param(
-        [Parameter(Mandatory = $true)][Text.Json.JsonElement]$Element,
-        [Parameter(Mandatory = $true)][string]$JsonPath
-    )
-
-    if ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Object) {
-        $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($property in $Element.EnumerateObject()) {
-            if (-not $names.Add($property.Name)) {
-                throw "Duplicate JSON property '$($property.Name)' at $JsonPath."
-            }
-            Assert-JsonPropertiesAreUnique -Element $property.Value -JsonPath "$JsonPath.$($property.Name)"
-        }
-    }
-    elseif ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Array) {
-        $index = 0
-        foreach ($item in $Element.EnumerateArray()) {
-            Assert-JsonPropertiesAreUnique -Element $item -JsonPath "${JsonPath}[$index]"
-            $index++
-        }
-    }
-}
-
 function Read-StrictJson {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $json = [IO.File]::ReadAllText($Path)
     try {
-        $document = [Text.Json.JsonDocument]::Parse($json)
-    }
-    catch {
-        throw "Malformed derived-source plan JSON: $($_.Exception.Message)"
-    }
-    try {
-        Assert-JsonPropertiesAreUnique -Element $document.RootElement -JsonPath '$'
-    }
-    finally {
-        $document.Dispose()
-    }
-    try {
-        return $json | ConvertFrom-Json -Depth 16
+        return Read-GswStrictJsonFile -Path $Path -Name 'derived-source metadata' `
+            -MaximumBytes 4194304
     }
     catch {
         throw "Malformed derived-source plan JSON: $($_.Exception.Message)"
@@ -260,10 +228,10 @@ function Convert-FileToCanonicalLf {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "LF-normalization input '$RelativePath' is not a regular file."
     }
-    $bytes = [IO.File]::ReadAllBytes($path)
-    if ([UInt64]$bytes.Length -gt $script:HardMaximumFileBytes) {
-        throw "LF-normalization input '$RelativePath' exceeds the file-size bound."
-    }
+    $snapshot = Read-GswBoundedFileSnapshot -Path $path `
+        -Name "LF-normalization input '$RelativePath'" `
+        -MaximumBytes $script:HardMaximumFileBytes -AllowEmpty
+    [byte[]]$bytes = $snapshot.Bytes
     $normalized = [Collections.Generic.List[byte]]::new($bytes.Length)
     for ($index = 0; $index -lt $bytes.Length; $index++) {
         $value = $bytes[$index]
@@ -284,13 +252,42 @@ function Convert-FileToCanonicalLf {
     )
     try {
         [IO.File]::WriteAllBytes($temporaryPath, $normalized.ToArray())
-        [IO.File]::Move($temporaryPath, $path, $true)
+        $overwriteMove = [IO.File].GetMethod(
+            'Move',
+            [Reflection.BindingFlags]'Public,Static',
+            $null,
+            [Type[]]@([string], [string], [bool]),
+            $null
+        )
+        if ($null -ne $overwriteMove) {
+            [IO.File]::Move($temporaryPath, $path, $true)
+        }
+        else {
+            [IO.File]::Delete($path)
+            [IO.File]::Move($temporaryPath, $path)
+        }
     }
     finally {
         if (Test-Path -LiteralPath $temporaryPath) {
             [IO.File]::Delete($temporaryPath)
         }
     }
+}
+
+function Get-DerivedGitExecutable {
+    $commands = @(Get-Command git -CommandType Application -ErrorAction Stop)
+    if ($commands.Count -eq 0) {
+        throw 'git is required for derived-source preparation.'
+    }
+    $gitPath = [IO.Path]::GetFullPath($commands[0].Source)
+    if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+        $gitRoot = Split-Path -Parent (Split-Path -Parent $gitPath)
+        $directPath = Join-Path $gitRoot 'mingw64\bin\git.exe'
+        if (Test-Path -LiteralPath $directPath -PathType Leaf) {
+            return [IO.Path]::GetFullPath($directPath)
+        }
+    }
+    return $gitPath
 }
 
 function Invoke-GitLines {
@@ -300,7 +297,7 @@ function Invoke-GitLines {
     )
 
     $output = @(Invoke-WithIsolatedGitEnvironment {
-        & git -c core.quotePath=false -C $Checkout @Arguments
+        & (Get-DerivedGitExecutable) -c core.quotePath=false -C $Checkout @Arguments
     })
     if ($LASTEXITCODE -ne 0) {
         throw "git $($Arguments -join ' ') failed for '$Checkout'."
@@ -364,13 +361,106 @@ function Get-BigEndianBytes {
     return $bytes
 }
 
+function ConvertTo-LowerHex {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    return ([BitConverter]::ToString($Bytes) -replace '-', '').ToLowerInvariant()
+}
+
+function Read-UpstreamLockSnapshot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $snapshot = Read-GswBoundedFileSnapshot -Path $Path -Name 'upstream lock' `
+            -MaximumBytes $script:HardMaximumLockBytes
+    }
+    catch {
+        throw "The upstream lock failed its hard byte bound or regular-file check: $($_.Exception.Message)"
+    }
+    [byte[]]$bytes = $snapshot.Bytes
+    $hash = $snapshot.Sha256
+    $header = @(
+        'name', 'source_directory', 'repository', 'commit', 'upstream_license',
+        'disposition', 'closure_manifest', 'closure_manifest_sha256', 'scope'
+    )
+    [object[]]$entries = @(ConvertFrom-StrictTsvUtf8Bytes `
+        -Bytes $bytes -ExpectedHeader $header `
+        -Name 'upstream lock' -MaximumRows $script:HardMaximumLockRows `
+        -MaximumBytes ([int]$script:HardMaximumLockBytes) `
+        -MaximumLineBytes 16384 -MaximumPhysicalLines 1024)
+    return [pscustomobject]@{
+        Bytes = [UInt64]$bytes.Length
+        Sha256 = $hash
+        Entries = $entries
+    }
+}
+
+function Assert-ComponentInputsMatchSnapshots {
+    param(
+        [Parameter(Mandatory = $true)][string]$LockPath,
+        [Parameter(Mandatory = $true)]$ExpectedLock,
+        [Parameter(Mandatory = $true)][object[]]$Recipes
+    )
+
+    $currentLock = Read-UpstreamLockSnapshot $LockPath
+    if ($currentLock.Bytes -ne $ExpectedLock.Bytes -or
+        $currentLock.Sha256 -cne $ExpectedLock.Sha256) {
+        throw 'The authoritative upstream lock changed before component publication.'
+    }
+    foreach ($recipe in $Recipes) {
+        $binding = $recipe.Component.LockBinding
+        $rows = @($currentLock.Entries | Where-Object { $_.name -ceq $binding.Name })
+        if ($rows.Count -ne 1) {
+            throw "Recipe '$($recipe.Name)' lost its authoritative component lock row."
+        }
+        $row = $rows[0]
+        foreach ($field in @(
+            [pscustomobject]@{ Lock = 'name'; Snapshot = 'Name' },
+            [pscustomobject]@{ Lock = 'source_directory'; Snapshot = 'SourceDirectory' },
+            [pscustomobject]@{ Lock = 'repository'; Snapshot = 'Repository' },
+            [pscustomobject]@{ Lock = 'commit'; Snapshot = 'Commit' },
+            [pscustomobject]@{ Lock = 'upstream_license'; Snapshot = 'UpstreamLicense' },
+            [pscustomobject]@{ Lock = 'disposition'; Snapshot = 'Disposition' },
+            [pscustomobject]@{ Lock = 'closure_manifest'; Snapshot = 'ClosureManifest' },
+            [pscustomobject]@{ Lock = 'closure_manifest_sha256'; Snapshot = 'ClosureManifestSha256' },
+            [pscustomobject]@{ Lock = 'scope'; Snapshot = 'Scope' }
+        )) {
+            if ([string]$row.($field.Lock) -cne [string]$binding.($field.Snapshot)) {
+                throw "Recipe '$($recipe.Name)' component lock binding changed before publication."
+            }
+        }
+        Assert-PathComponentsAreNotReparsePoints $recipe.Component.LockRoot `
+            $recipe.Component.ManifestRelativePath `
+            "recipe '$($recipe.Name)' component closure manifest"
+        $manifestHash = (Get-FileHash -LiteralPath $recipe.Component.ManifestPath `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($manifestHash -cne $recipe.Component.ManifestHash) {
+            throw "Recipe '$($recipe.Name)' component closure changed before publication."
+        }
+    }
+}
+
 function Get-PortableRelativePath {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
         [Parameter(Mandatory = $true)][string]$Path
     )
 
-    $relativePath = [IO.Path]::GetRelativePath($Root, $Path)
+    $getRelativePath = [IO.Path].GetMethod(
+        'GetRelativePath',
+        [Reflection.BindingFlags]'Public,Static',
+        $null,
+        [Type[]]@([string], [string]),
+        $null
+    )
+    if ($null -ne $getRelativePath) {
+        $relativePath = [IO.Path]::GetRelativePath($Root, $Path)
+    }
+    else {
+        $rootUri = New-Object Uri ($Root.TrimEnd([char[]]'\/') + [IO.Path]::DirectorySeparatorChar)
+        $pathUri = New-Object Uri $Path
+        $relativePath = [Uri]::UnescapeDataString($rootUri.MakeRelativeUri($pathUri).ToString())
+    }
     if ([IO.Path]::DirectorySeparatorChar -ne '/') {
         $relativePath = $relativePath.Replace([IO.Path]::DirectorySeparatorChar, '/')
     }
@@ -473,25 +563,36 @@ function Get-DerivedTreeDescriptor {
 
     [string[]]$paths = @($records.Keys)
     [Array]::Sort($paths, [StringComparer]::Ordinal)
-    $digest = [Security.Cryptography.IncrementalHash]::CreateHash(
-        [Security.Cryptography.HashAlgorithmName]::SHA256
-    )
+    $canonical = New-Object IO.MemoryStream
     try {
-        $digest.AppendData($utf8.GetBytes("RETVRN99-WIN98-TREE-SHA256-V1`0"))
-        $digest.AppendData((Get-BigEndianBytes -Value ([UInt64]$paths.Count) -Width 8))
-        $digest.AppendData((Get-BigEndianBytes -Value $aggregateBytes -Width 8))
+        [byte[]]$field = $utf8.GetBytes("RETVRN99-WIN98-TREE-SHA256-V1`0")
+        $canonical.Write($field, 0, $field.Length)
+        $field = Get-BigEndianBytes -Value ([UInt64]$paths.Count) -Width 8
+        $canonical.Write($field, 0, $field.Length)
+        $field = Get-BigEndianBytes -Value $aggregateBytes -Width 8
+        $canonical.Write($field, 0, $field.Length)
         foreach ($relativePath in $paths) {
             [byte[]]$encodedPath = $utf8.GetBytes($relativePath)
             $record = $records[$relativePath]
-            $digest.AppendData((Get-BigEndianBytes -Value ([UInt64]$encodedPath.Length) -Width 4))
-            $digest.AppendData($encodedPath)
-            $digest.AppendData((Get-BigEndianBytes -Value ([UInt64]$record.Length) -Width 8))
-            $digest.AppendData([byte[]]$record.Hash)
+            $field = Get-BigEndianBytes -Value ([UInt64]$encodedPath.Length) -Width 4
+            $canonical.Write($field, 0, $field.Length)
+            $canonical.Write($encodedPath, 0, $encodedPath.Length)
+            $field = Get-BigEndianBytes -Value ([UInt64]$record.Length) -Width 8
+            $canonical.Write($field, 0, $field.Length)
+            [byte[]]$fileHash = $record.Hash
+            $canonical.Write($fileHash, 0, $fileHash.Length)
         }
-        $treeHash = [Convert]::ToHexString($digest.GetHashAndReset()).ToLowerInvariant()
+        $canonical.Position = 0
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            $treeHash = ConvertTo-LowerHex -Bytes ($sha.ComputeHash($canonical))
+        }
+        finally {
+            $sha.Dispose()
+        }
     }
     finally {
-        $digest.Dispose()
+        $canonical.Dispose()
     }
     return [pscustomobject]@{
         FileCount = $fileCount
@@ -652,6 +753,35 @@ function Copy-OverlayTree {
     }
 }
 
+function ConvertTo-ProcessArgument {
+    param([Parameter(Mandatory = $true)][string]$Argument)
+
+    if ($Argument.Length -gt 0 -and $Argument -notmatch '[\s"]') {
+        return $Argument
+    }
+    $builder = New-Object Text.StringBuilder
+    [void]$builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Argument.ToCharArray()) {
+        if ($character -eq '\') {
+            $backslashes++
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$builder.Append(('\' * (2 * $backslashes + 1)))
+            [void]$builder.Append('"')
+        }
+        else {
+            [void]$builder.Append(('\' * $backslashes))
+            [void]$builder.Append($character)
+        }
+        $backslashes = 0
+    }
+    [void]$builder.Append(('\' * (2 * $backslashes)))
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
 function Copy-GitBlob {
     param(
         [Parameter(Mandatory = $true)][string]$Checkout,
@@ -661,8 +791,7 @@ function Copy-GitBlob {
     )
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $gitCommand = @(Get-Command git -CommandType Application)[0]
-    $startInfo.FileName = $gitCommand.Source
+    $startInfo.FileName = Get-DerivedGitExecutable
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
@@ -671,10 +800,21 @@ function Copy-GitBlob {
         'GIT_CEILING_DIRECTORIES', 'GIT_DIR', 'GIT_WORK_TREE',
         'GIT_PREFIX', 'GIT_INDEX_FILE'
     )) {
-        [void]$startInfo.Environment.Remove($gitVariable)
+        if ($null -ne $startInfo.PSObject.Properties['Environment']) {
+            [void]$startInfo.Environment.Remove($gitVariable)
+        }
+        else {
+            [void]$startInfo.EnvironmentVariables.Remove($gitVariable)
+        }
     }
-    foreach ($argument in @('-C', $Checkout, 'cat-file', 'blob', $Hash)) {
-        $startInfo.ArgumentList.Add($argument)
+    $arguments = @('-C', $Checkout, 'cat-file', 'blob', $Hash)
+    if ($null -ne $startInfo.PSObject.Properties['ArgumentList']) {
+        foreach ($argument in $arguments) { $startInfo.ArgumentList.Add($argument) }
+    }
+    else {
+        $startInfo.Arguments = (@($arguments | ForEach-Object {
+            ConvertTo-ProcessArgument ([string]$_)
+        }) -join ' ')
     }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -813,6 +953,235 @@ function Copy-TrackedSource {
         -FileCount ([ref]$fileCount)
 }
 
+function Get-DosShortAlias {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $lastDot = $Name.LastIndexOf('.')
+    $base = if ($lastDot -gt 0) { $Name.Substring(0, $lastDot) } else { $Name }
+    $extension = if ($lastDot -gt 0) { $Name.Substring($lastDot + 1) } else { '' }
+    if ($base -cmatch '^[A-Za-z0-9_$~!#%&\-{}()@''`_^]{1,8}$' -and
+        ($extension.Length -eq 0 -or
+            $extension -cmatch '^[A-Za-z0-9_$~!#%&\-{}()@''`_^]{1,3}$')) {
+        return $null
+    }
+    $shortBase = ($base -replace '[ .]', '' -replace '[^A-Za-z0-9_$~!#%&\-{}()@''`_^]', '_')
+    $shortExtension = ($extension -replace '[ .]', '' -replace '[^A-Za-z0-9_$~!#%&\-{}()@''`_^]', '_')
+    if ($shortBase.Length -eq 0) { $shortBase = '_' }
+    $shortBase = $shortBase.Substring(0, [Math]::Min(6, $shortBase.Length)) + '~1'
+    if ($shortExtension.Length -gt 3) { $shortExtension = $shortExtension.Substring(0, 3) }
+    $alias = if ($shortExtension.Length -eq 0) {
+        $shortBase
+    }
+    else {
+        "$shortBase.$shortExtension"
+    }
+    return $alias.ToUpperInvariant()
+}
+
+function Assert-PortableComponentPaths {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Records,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $entriesByParent = New-Object 'Collections.Generic.Dictionary[string,object]' `
+        ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($record in $Records) {
+        $components = $record.RelativePath.Split('/')
+        $parent = ''
+        for ($index = 0; $index -lt $components.Count; $index++) {
+            $component = $components[$index]
+            $kind = if ($index -eq $components.Count - 1) { 'file' } else { 'directory' }
+            if (-not $entriesByParent.ContainsKey($parent)) {
+                $entriesByParent.Add($parent, (New-Object Collections.Generic.List[object]))
+            }
+            $siblings = $entriesByParent[$parent]
+            $alias = Get-DosShortAlias $component
+            $matched = $false
+            foreach ($sibling in $siblings) {
+                if ($sibling.Name -ceq $component) {
+                    if ($sibling.Kind -cne $kind) {
+                        throw "$Name has a file/directory collision at '$($record.RelativePath)'."
+                    }
+                    $matched = $true
+                    break
+                }
+                if ($sibling.Name -ieq $component) {
+                    throw "$Name has a case-folded path collision at '$($record.RelativePath)'."
+                }
+                if (($null -ne $alias -and $alias -ieq $sibling.Name) -or
+                    ($null -ne $sibling.Alias -and $sibling.Alias -ieq $component)) {
+                    throw "$Name has a DOS 8.3 path collision at '$($record.RelativePath)'."
+                }
+            }
+            if (-not $matched) {
+                [void]$siblings.Add([pscustomobject]@{
+                    Name = $component
+                    Alias = $alias
+                    Kind = $kind
+                })
+            }
+            $parent = if ($parent.Length -eq 0) { $component } else { "$parent/$component" }
+        }
+    }
+}
+
+function Get-ComponentClosureDescriptor {
+    param(
+        [Parameter(Mandatory = $true)]$LockedSource,
+        [Parameter(Mandatory = $true)]$SourceSelection,
+        [Parameter(Mandatory = $true)][string]$LockRoot,
+        [Parameter(Mandatory = $true)][string]$RecipeName
+    )
+
+    Assert-ExactProperties $SourceSelection @(
+        'mode', 'closure_manifest', 'closure_manifest_sha256'
+    ) "recipe '$RecipeName' component source selection"
+    if ($SourceSelection.mode -cne 'component-closure' -or
+        $SourceSelection.closure_manifest -isnot [string] -or
+        $SourceSelection.closure_manifest -cne $LockedSource.closure_manifest -or
+        $SourceSelection.closure_manifest_sha256 -isnot [string] -or
+        $SourceSelection.closure_manifest_sha256 -cne $LockedSource.closure_manifest_sha256) {
+        throw "Recipe '$RecipeName' must match its canonical component closure link."
+    }
+    Assert-LowercaseHash $SourceSelection.closure_manifest_sha256 `
+        "recipe '$RecipeName' component closure hash"
+    $manifestPath = Get-ContainedPath $LockRoot $SourceSelection.closure_manifest `
+        "recipe '$RecipeName' component closure manifest"
+    Assert-PathComponentsAreNotReparsePoints $LockRoot $SourceSelection.closure_manifest `
+        "recipe '$RecipeName' component closure manifest"
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Recipe '$RecipeName' component closure manifest is missing."
+    }
+    $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($manifestHash -cne $SourceSelection.closure_manifest_sha256) {
+        throw "Recipe '$RecipeName' component closure manifest hash mismatch."
+    }
+    $manifest = Read-StrictJson $manifestPath
+    Assert-ExactProperties $manifest @(
+        '_spdx', 'schema', 'status', 'reason', 'upstream_name', 'owning_commit',
+        'source_prefixes', 'notices', 'files'
+    ) "recipe '$RecipeName' component closure"
+    if ($manifest._spdx -cne 'GPL-3.0-only' -or
+        (Assert-UnsignedInteger $manifest.schema "recipe '$RecipeName' component closure schema") -ne 1 -or
+        $manifest.status -cne 'ready' -or $manifest.reason -cne '' -or
+        $manifest.upstream_name -cne $LockedSource.name -or
+        $manifest.owning_commit -cne $LockedSource.commit -or
+        $manifest.notices -isnot [Array] -or $manifest.files -isnot [Array]) {
+        throw "Recipe '$RecipeName' requires one ready closure for its pinned component source."
+    }
+    $records = New-Object Collections.Generic.List[object]
+    [UInt64]$aggregateBytes = 0
+    foreach ($record in @($manifest.notices) + @($manifest.files)) {
+        $expectedProperties = if ($record.PSObject.Properties.Name -ccontains 'id') {
+            @('id', 'relative_path', 'git_blob', 'bytes', 'sha256', 'license_expression')
+        }
+        else {
+            @(
+                'relative_path', 'git_blob', 'bytes', 'sha256', 'license_expression',
+                'notice_id', 'source_prefix_id', 'role'
+            )
+        }
+        Assert-ExactProperties $record $expectedProperties `
+            "recipe '$RecipeName' component closure record"
+        [void](Get-ContainedPath ([IO.Path]::GetTempPath()) $record.relative_path `
+            "recipe '$RecipeName' component closure record")
+        Assert-LowercaseHash $record.sha256 "recipe '$RecipeName' component closure record sha256"
+        if ($record.git_blob -isnot [string] -or $record.git_blob -cnotmatch '^[0-9a-f]{40}$') {
+            throw "Recipe '$RecipeName' component closure record has an invalid Git blob."
+        }
+        $bytes = Assert-UnsignedInteger $record.bytes `
+            "recipe '$RecipeName' component closure record bytes"
+        if ($bytes -gt $script:HardMaximumFileBytes -or
+            [UInt64]::MaxValue - $aggregateBytes -lt $bytes -or
+            $aggregateBytes + $bytes -gt $script:HardMaximumAggregateBytes) {
+            throw "Recipe '$RecipeName' component source exceeds derived-source size bounds."
+        }
+        $aggregateBytes += $bytes
+        [void]$records.Add([pscustomobject]@{
+            RelativePath = [string]$record.relative_path
+            GitBlob = [string]$record.git_blob
+            Bytes = $bytes
+            Sha256 = [string]$record.sha256
+        })
+    }
+    if ($records.Count -eq 0 -or $records.Count -gt $script:HardMaximumFiles) {
+        throw "Recipe '$RecipeName' component source has an invalid file count."
+    }
+    [object[]]$recordArray = @($records | ForEach-Object { $_ })
+    Assert-PortableComponentPaths $recordArray "Recipe '$RecipeName' component source"
+    $secondManifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($secondManifestHash -cne $manifestHash) {
+        throw "Recipe '$RecipeName' component closure manifest changed during validation."
+    }
+    return [pscustomobject]@{
+        ManifestPath = $manifestPath
+        ManifestRelativePath = [string]$SourceSelection.closure_manifest
+        ManifestHash = $manifestHash
+        LockRoot = $LockRoot
+        LockBinding = [pscustomobject]@{
+            Name = [string]$LockedSource.name
+            SourceDirectory = [string]$LockedSource.source_directory
+            Repository = [string]$LockedSource.repository
+            Commit = [string]$LockedSource.commit
+            UpstreamLicense = [string]$LockedSource.upstream_license
+            Disposition = [string]$LockedSource.disposition
+            ClosureManifest = [string]$LockedSource.closure_manifest
+            ClosureManifestSha256 = [string]$LockedSource.closure_manifest_sha256
+            Scope = [string]$LockedSource.scope
+        }
+        Records = $recordArray
+    }
+}
+
+function Copy-ComponentSource {
+    param(
+        [Parameter(Mandatory = $true)][string]$Checkout,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][object[]]$Records,
+        [Parameter(Mandatory = $true)][string]$RecipeName
+    )
+
+    $validated = New-Object Collections.Generic.List[object]
+    foreach ($record in $Records) {
+        $literalPathspec = ":(top,literal)$($record.RelativePath)"
+        $indexLines = @(Invoke-GitLines $Checkout @(
+            'ls-files', '--cached', '--stage', '--', $literalPathspec
+        ))
+        if ($indexLines.Count -ne 1 -or
+            $indexLines[0] -notmatch '^(?<mode>[0-9]{6}) (?<hash>[0-9a-f]{40}) 0\t(?<path>.+)$' -or
+            $Matches.mode -notin @('100644', '100755') -or
+            $Matches.path -cne $record.RelativePath -or
+            $Matches.hash -cne $record.GitBlob) {
+            throw "Recipe '$RecipeName' component record '$($record.RelativePath)' is not its exact regular Git blob."
+        }
+        $typeLines = @(Invoke-GitLines $Checkout @('cat-file', '-t', $record.GitBlob))
+        $lengthLines = @(Invoke-GitLines $Checkout @('cat-file', '-s', $record.GitBlob))
+        [UInt64]$length = 0
+        if ($typeLines.Count -ne 1 -or $typeLines[0] -cne 'blob' -or
+            $lengthLines.Count -ne 1 -or
+            -not [UInt64]::TryParse($lengthLines[0], [ref]$length) -or
+            $length -ne $record.Bytes) {
+            throw "Recipe '$RecipeName' component record '$($record.RelativePath)' failed Git type or size validation."
+        }
+        [void]$validated.Add($record)
+    }
+    foreach ($record in $validated) {
+        $destinationPath = Get-ContainedPath $Destination $record.RelativePath `
+            "recipe '$RecipeName' component destination"
+        $destinationParent = Split-Path -Parent $destinationPath
+        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+            [void](New-Item -ItemType Directory -Path $destinationParent -Force)
+        }
+        Copy-GitBlob -Checkout $Checkout -Hash $record.GitBlob `
+            -Destination $destinationPath -ExpectedLength $record.Bytes
+        $hash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($hash -cne $record.Sha256) {
+            throw "Recipe '$RecipeName' component record '$($record.RelativePath)' failed SHA-256 validation."
+        }
+    }
+}
+
 if ($PSBoundParameters.ContainsKey('DescribeTree')) {
     foreach ($conflictingParameter in @(
         'SourceRoot', 'OutputRoot', 'DescribeRecipe', 'RecipePlan', 'RecipeRoot', 'LockFile',
@@ -873,8 +1242,8 @@ if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
 }
 $plan = Read-StrictJson $planPath
 Assert-ExactProperties $plan @('_spdx', 'schema', 'status', 'reason', 'recipes') 'root'
-if ($plan._spdx -cne 'GPL-3.0-only' -or
-    (Assert-UnsignedInteger $plan.schema 'schema') -ne 2) {
+$planSchema = Assert-UnsignedInteger $plan.schema 'schema'
+if ($plan._spdx -cne 'GPL-3.0-only' -or $planSchema -notin @(2, 3)) {
     throw 'Unsupported or unlicensed derived-source plan.'
 }
 if ($plan.status -cnotin @('blocked', 'draft', 'ready') -or $plan.reason -isnot [string]) {
@@ -942,18 +1311,8 @@ if (-not (Get-Command git -CommandType Application -ErrorAction SilentlyContinue
     throw 'git is required for deterministic derived-source preparation.'
 }
 
-$lockLines = @(Get-Content -LiteralPath $lockPath |
-    Where-Object { $_.Trim().Length -gt 0 -and -not $_.TrimStart().StartsWith('#') })
-if ($lockLines.Count -lt 2) {
-    throw 'The upstream lock must contain a header and at least one source row.'
-}
-$lockEntries = @($lockLines | ConvertFrom-Csv -Delimiter "`t")
-$lockColumns = @($lockEntries[0].PSObject.Properties.Name)
-foreach ($column in @('name', 'source_directory', 'disposition')) {
-    if ($lockColumns -notcontains $column) {
-        throw "The upstream lock is missing '$column'."
-    }
-}
+$authoritativeLockSnapshot = Read-UpstreamLockSnapshot $lockPath
+$lockEntries = @($authoritativeLockSnapshot.Entries)
 $lockByName = @{}
 foreach ($entry in $lockEntries) {
     if ([string]::IsNullOrWhiteSpace([string]$entry.name) -or $lockByName.ContainsKey($entry.name)) {
@@ -965,13 +1324,17 @@ foreach ($entry in $lockEntries) {
 $validatedRecipes = @()
 $seenNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 $seenDestinations = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-$sourceNames = [Collections.Generic.List[string]]::new()
+$wholeSourceNames = [Collections.Generic.List[string]]::new()
+$componentNames = [Collections.Generic.List[string]]::new()
 [UInt64]$totalPatchBytes = 0
 foreach ($recipe in $recipes) {
     $recipeProperties = @(
         'name', 'upstream_name', 'source_directory', 'destination_directory',
         'patches', 'overlays'
     )
+    if ($planSchema -eq 3) {
+        $recipeProperties += 'source_selection'
+    }
     if (-not $describeRecipeMode) {
         $recipeProperties += 'output_tree'
     }
@@ -985,10 +1348,44 @@ foreach ($recipe in $recipes) {
         throw "Recipe '$($recipe.name)' references an unknown upstream."
     }
     $lockedSource = $lockByName[$recipe.upstream_name]
-    if ($lockedSource.disposition -cne 'planned' -or
-        $recipe.source_directory -isnot [string] -or
+    if ($recipe.source_directory -isnot [string] -or
         $recipe.source_directory -cne $lockedSource.source_directory) {
-        throw "Recipe '$($recipe.name)' must reference its canonical planned source directory."
+        throw "Recipe '$($recipe.name)' must reference its canonical source directory."
+    }
+    $sourceMode = 'whole-upstream'
+    $componentDescriptor = $null
+    if ($planSchema -eq 3) {
+        if ($recipe.source_selection -isnot [psobject] -or
+            $recipe.source_selection.mode -isnot [string]) {
+            throw "Recipe '$($recipe.name)' has an invalid source selection."
+        }
+        $sourceMode = [string]$recipe.source_selection.mode
+    }
+    if ($sourceMode -ceq 'whole-upstream') {
+        if ($planSchema -eq 3) {
+            Assert-ExactProperties $recipe.source_selection @('mode') `
+                "recipe '$($recipe.name)' whole-upstream source selection"
+        }
+        if ($lockedSource.disposition -cne 'planned') {
+            throw "Recipe '$($recipe.name)' whole-upstream source is not planned."
+        }
+    }
+    elseif ($sourceMode -ceq 'component-closure' -and $planSchema -eq 3) {
+        if ($lockedSource.disposition -cne 'planned-component') {
+            throw "Recipe '$($recipe.name)' component source is not planned-component."
+        }
+        $componentVerifier = Join-Path $PSScriptRoot 'verify-win98-component-closure.ps1'
+        Invoke-WithIsolatedGitEnvironment {
+            & $componentVerifier -SourceRoot $sourceRootPath -LockFile $lockPath `
+                -SourceName @([string]$recipe.upstream_name)
+        } | Out-Null
+        $componentDescriptor = Get-ComponentClosureDescriptor `
+            -LockedSource $lockedSource -SourceSelection $recipe.source_selection `
+            -LockRoot (Split-Path -Parent $lockPath) -RecipeName $recipe.name
+        $componentNames.Add([string]$recipe.upstream_name)
+    }
+    else {
+        throw "Recipe '$($recipe.name)' has an unsupported source selection."
     }
     [void](Get-ContainedPath $sourceRootPath $recipe.source_directory "recipe '$($recipe.name)' source")
     Assert-PathComponentsAreNotReparsePoints $sourceRootPath $recipe.source_directory `
@@ -1016,7 +1413,7 @@ foreach ($recipe in $recipes) {
         throw "Recipe '$($recipe.name)' has an invalid patch count."
     }
     if ($overlays.Count -gt $script:HardMaximumOverlays -or
-        $patches.Count + $overlays.Count -eq 0) {
+        ($sourceMode -ceq 'whole-upstream' -and $patches.Count + $overlays.Count -eq 0)) {
         throw "Recipe '$($recipe.name)' must declare a bounded patch or overlay input."
     }
     $validatedPatches = @()
@@ -1159,22 +1556,29 @@ foreach ($recipe in $recipes) {
             throw "Recipe '$($recipe.name)' output-tree descriptor violates hard bounds."
         }
     }
-    $sourceNames.Add([string]$recipe.upstream_name)
+    if ($sourceMode -ceq 'whole-upstream') {
+        $wholeSourceNames.Add([string]$recipe.upstream_name)
+    }
     $validatedRecipes += [pscustomobject]@{
         Name = [string]$recipe.name
         SourceDirectory = [string]$recipe.source_directory
         DestinationDirectory = [string]$recipe.destination_directory
+        SourceMode = $sourceMode
+        Component = $componentDescriptor
         Patches = $validatedPatches
         Overlays = $validatedOverlays
         ExpectedTree = $expectedTree
     }
 }
 
-$sourceVerification = @(Invoke-WithIsolatedGitEnvironment {
-    & (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
-        -SourceRoot $sourceRootPath -LockFile $lockPath `
-        -SourceName @($sourceNames | Sort-Object -Unique)
-})
+$sourceVerification = @()
+if ($wholeSourceNames.Count -gt 0) {
+    $sourceVerification = @(Invoke-WithIsolatedGitEnvironment {
+        & (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
+            -SourceRoot $sourceRootPath -LockFile $lockPath `
+            -SourceName @($wholeSourceNames | Sort-Object -Unique)
+    })
+}
 if (-not $describeRecipeMode) {
     $sourceVerification | Write-Output
 }
@@ -1201,7 +1605,13 @@ try {
         $checkout = Get-ContainedPath $sourceRootPath $recipe.SourceDirectory "recipe '$($recipe.Name)' source"
         $destination = Get-ContainedPath $temporaryRoot $recipe.DestinationDirectory "recipe '$($recipe.Name)' destination"
         [void](New-Item -ItemType Directory -Path $destination)
-        Copy-TrackedSource $checkout $destination
+        if ($recipe.SourceMode -ceq 'component-closure') {
+            Copy-ComponentSource -Checkout $checkout -Destination $destination `
+                -Records $recipe.Component.Records -RecipeName $recipe.Name
+        }
+        else {
+            Copy-TrackedSource $checkout $destination
+        }
         $patchIndex = 0
         foreach ($patch in $recipe.Patches) {
             $patchIndex++
@@ -1229,12 +1639,12 @@ try {
                 try {
                     Push-Location $destination
                     $locationPushed = $true
-                    & git -c core.autocrlf=false -c core.eol=lf apply `
+                    & (Get-DerivedGitExecutable) -c core.autocrlf=false -c core.eol=lf apply `
                         --no-index --check --whitespace=nowarn -- $cachedPatch
                     if ($LASTEXITCODE -ne 0) {
                         throw "Patch '$($patch.RelativePath)' failed its dry-run check."
                     }
-                    & git -c core.autocrlf=false -c core.eol=lf apply `
+                    & (Get-DerivedGitExecutable) -c core.autocrlf=false -c core.eol=lf apply `
                         --no-index --whitespace=nowarn -- $cachedPatch
                     if ($LASTEXITCODE -ne 0) {
                         throw "Patch '$($patch.RelativePath)' failed to apply."
@@ -1305,15 +1715,32 @@ try {
             Assert-DescriptorMatches $secondTree $recipe.ExpectedTree "Recipe '$($recipe.Name)' second scan"
         }
     }
-    $sourceVerification = @(Invoke-WithIsolatedGitEnvironment {
-        & (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
-            -SourceRoot $sourceRootPath -LockFile $lockPath `
-            -SourceName @($sourceNames | Sort-Object -Unique)
-    })
+    $sourceVerification = @()
+    if ($wholeSourceNames.Count -gt 0) {
+        $sourceVerification = @(Invoke-WithIsolatedGitEnvironment {
+            & (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
+                -SourceRoot $sourceRootPath -LockFile $lockPath `
+                -SourceName @($wholeSourceNames | Sort-Object -Unique)
+        })
+    }
     if (-not $describeRecipeMode) {
         $sourceVerification | Write-Output
         if ($null -ne $BeforeFinalPublication) {
             & $BeforeFinalPublication $temporaryRoot
+        }
+        if ($componentNames.Count -gt 0) {
+            [object[]]$componentRecipes = @($validatedRecipes | Where-Object {
+                $_.SourceMode -ceq 'component-closure'
+            })
+            Assert-ComponentInputsMatchSnapshots -LockPath $lockPath `
+                -ExpectedLock $authoritativeLockSnapshot -Recipes $componentRecipes
+            Invoke-WithIsolatedGitEnvironment {
+                & (Join-Path $PSScriptRoot 'verify-win98-component-closure.ps1') `
+                    -SourceRoot $sourceRootPath -LockFile $lockPath `
+                    -SourceName @($componentNames | Sort-Object -Unique)
+            } | Out-Null
+            Assert-ComponentInputsMatchSnapshots -LockPath $lockPath `
+                -ExpectedLock $authoritativeLockSnapshot -Recipes $componentRecipes
         }
         foreach ($recipe in $validatedRecipes) {
             $finalDestination = Get-ContainedPath $temporaryRoot $recipe.DestinationDirectory `
@@ -1321,6 +1748,10 @@ try {
             $finalTree = Get-DerivedTreeDescriptor $finalDestination
             Assert-DescriptorMatches $finalTree $recipe.ExpectedTree `
                 "Recipe '$($recipe.Name)' final publication scan"
+        }
+        if ($componentNames.Count -gt 0) {
+            Assert-ComponentInputsMatchSnapshots -LockPath $lockPath `
+                -ExpectedLock $authoritativeLockSnapshot -Recipes $componentRecipes
         }
         if (Test-Path -LiteralPath $outputRootPath) {
             throw "Derived-source output appeared during preparation: $outputRootPath"

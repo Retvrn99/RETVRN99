@@ -1,0 +1,172 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "mesa-compiler-closure.schema.json",
+    "sha256": "cea82369561ada333da633aa02e136bbb1a45eb3d16aca10a9d583ecfc1ae0a2"
+  },
+  "status": "blocked",
+  "reason": "The direct pruned compile recipe and complete original GSW winsys source do not exist. Exact compiler commands, deterministic depfiles, and header license closure therefore cannot be derived; the upstream multi-backend Makefiles are excluded build inputs.",
+  "source": {
+    "upstream_name": "mesa9x",
+    "repository": "https://github.com/JHRobotics/mesa9x.git",
+    "owning_commit": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f",
+    "mesa_version": "23.1.9",
+    "mesa_subtree": "mesa-23.1.x"
+  },
+  "inputs": [
+    {
+      "id": "mesa-component-closure",
+      "relative_path": "component-closures/mesa9x-23.1.x.json",
+      "bytes": 815285,
+      "sha256": "d93a476656ec9f18c1d257a65ae6461111c7e85ec0b704360bcc42b836dbefc5",
+      "required_state": "blocked-audited"
+    },
+    {
+      "id": "mesa-generated-output-lock",
+      "relative_path": "generated-output-locks/mesa-23.1.9.json",
+      "bytes": 84159,
+      "sha256": "8274e5dd8cc50b41e4f0e510e87e9a2d669248bd69ae988e6dbdb48ce28390e5",
+      "required_state": "reviewed-generated-source"
+    },
+    {
+      "id": "mesa-generated-source-reproducibility",
+      "relative_path": "mesa-generated-source-reproducibility.json",
+      "bytes": 4418,
+      "sha256": "d37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b",
+      "required_state": "proven"
+    },
+    {
+      "id": "original-gsw-source",
+      "relative_path": "mesa-gsw/interface-inputs.lock.json",
+      "bytes": 4336,
+      "sha256": "8b64bed0e4b110b1526ff1bae136b38f23c8441c9a0a64d1d35ff74ebce77f22",
+      "required_state": "reviewed-permissive-interfaces"
+    },
+    {
+      "id": "guest-cpu-profile",
+      "relative_path": "guest-cpu-profile.json",
+      "bytes": 3537,
+      "sha256": "969b45df75c6e1d8366e6ef7468a51f04c42441914ce564ae19f62a07cad0f57",
+      "required_state": "compile-proof-blocked"
+    },
+    {
+      "id": "mingw32-toolchain",
+      "relative_path": "mingw32-toolchain.lock.json",
+      "bytes": 792,
+      "sha256": "db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12",
+      "required_state": "extracted-tree-locked"
+    }
+  ],
+  "blocked_prerequisites": [
+    "reviewed-direct-recipe",
+    "exact-compiler-command-registry",
+    "deterministic-project-and-toolchain-depfiles",
+    "exact-header-license-closure",
+    "original-gsw-winsys-source"
+  ],
+  "direct_recipe": {
+    "required_relative_path": "mesa-gsw-direct-compile-plan.json",
+    "status": "absent",
+    "schema": 0,
+    "bytes": 0,
+    "sha256": "",
+    "compiler_command_count": 0,
+    "upstream_makefile_consumption": false
+  },
+  "observed_selection": {
+    "manifest_file_count": 1036,
+    "upstream_source_unit_count": 837,
+    "c_source_unit_count": 742,
+    "cxx_source_unit_count": 95,
+    "generator_input_count": 198,
+    "build_description_count": 1,
+    "selected_header_like_count": 1,
+    "original_gsw_output_count": 3,
+    "generated_output_count": 67
+  },
+  "depfile_contract": {
+    "compiler_identity": "guest-cpu-profile-pinned-mingw-gcc",
+    "execution_mode": "preprocess-dependency-only",
+    "dependency_mode": "gcc-M-MF-MT",
+    "missing_header_mode": "reject-no-MG",
+    "one_depfile_per_command": true,
+    "include_system_headers": true,
+    "discovery_source_root": "pinned-clean-checkout-non-authoritative",
+    "proof_source_root": "exact-materialized-component-closure",
+    "generated_source_root": "reviewed-normalized-root",
+    "original_source_root": "reviewed-original-gsw-module",
+    "toolchain_root": "full-tree-locked-extraction",
+    "path_identity": "logical-root-forward-slash-ordinal-case-sensitive",
+    "twin_run_required": true
+  },
+  "exclusions": {
+    "upstream_recipe_inputs": [
+      "Makefile",
+      "config.mk",
+      "generator/mesa-23.1.x-gen.mk",
+      "mesa-23.1.x.deps",
+      "mesa-23.1.x.mk",
+      "pthread.mk"
+    ],
+    "upstream_path_prefixes": [
+      "include/git_sha1.h",
+      "win9x/nine/nine_memory_helper.c",
+      "winpthreads",
+      "mesa-23.1.x/include/winddk",
+      "mesa-23.1.x/src/gallium/drivers/llvmpipe",
+      "mesa-23.1.x/src/gallium/drivers/softpipe",
+      "mesa-23.1.x/src/gallium/drivers/zink",
+      "mesa-23.1.x/src/gallium/winsys/sw",
+      "mesa-23.1.x/src/gallium/winsys/svga/drm",
+      "mesa-23.1.x/src/gallium/winsys/virgl",
+      "mesa-23.1.x/src/virtio"
+    ],
+    "include_path_fragments": [
+      "winpthreads/include",
+      "include/winddk",
+      "gallium/winsys/sw",
+      "gallium/winsys/svga/drm",
+      "gallium/winsys/virgl",
+      "LLVM_DIR/include"
+    ],
+    "define_names": [
+      "GALLIUM_SOFTPIPE",
+      "HAVE_PTHREAD",
+      "HAVE_LLVM",
+      "HAVE_GALLIUM_LLVMPIPE",
+      "GALLIUM_LLVMPIPE",
+      "HAVE_LLVMPIPE",
+      "DRAW_LLVM_AVAILABLE"
+    ],
+    "define_prefixes": [
+      "VBOX_"
+    ]
+  },
+  "evidence": {
+    "compiler_commands": [],
+    "depfiles": [],
+    "headers": [],
+    "twin_run_descriptor": null
+  },
+  "scope": {
+    "classification": "blocked-compiler-closure-design",
+    "claims": {
+      "direct_recipe_reviewed": false,
+      "compiler_commands_complete": false,
+      "depfiles_reproducible": false,
+      "project_header_closure": false,
+      "toolchain_header_closure": false,
+      "backend_exclusions_proven": false,
+      "build_closure": false
+    },
+    "authorizations": {
+      "compiler_execution": false,
+      "build": false,
+      "stage": false,
+      "guest_install": false,
+      "dll_activation": false,
+      "capability_advertisement": false
+    }
+  }
+}

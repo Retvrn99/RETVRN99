@@ -1,0 +1,301 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mesa-generator-toolchain-lock.schema.json",
+  "title": "RETVRN99 Mesa generator toolchain lock",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "status",
+    "reason",
+    "component",
+    "package_policy",
+    "packages",
+    "expected_tools",
+    "expected_modules",
+    "proofs",
+    "authorizations"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {"const": "mesa-generator-toolchain-lock.schema.json"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "status": {"const": "blocked"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upstream_name",
+        "repository",
+        "owning_commit",
+        "mesa_version",
+        "generator_recipe"
+      ],
+      "properties": {
+        "upstream_name": {"const": "mesa9x"},
+        "repository": {"const": "https://github.com/JHRobotics/mesa9x.git"},
+        "owning_commit": {"const": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"},
+        "mesa_version": {"const": "23.1.9"},
+        "generator_recipe": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relative_path", "git_blob", "bytes", "sha256"],
+          "properties": {
+            "relative_path": {"const": "generator/mesa-23.1.x-gen.mk"},
+            "git_blob": {"const": "68b2fd13d08ae0ce4276cb1f720ee9bbb1cd54e9"},
+            "bytes": {"const": 13288},
+            "sha256": {"const": "9ad77b1fe55e4097621dbefeffe989fb00f3c354320ce6521d69f8efd8a44dce"}
+          }
+        }
+      }
+    },
+    "package_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_count",
+        "reserved_unselected_count",
+        "virtual_providers",
+        "permitted_dependency_cycles"
+      ],
+      "properties": {
+        "required_count": {"const": 24},
+        "reserved_unselected_count": {"const": 2},
+        "virtual_providers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["dependency", "package", "relative_path"],
+            "properties": {
+              "dependency": {"const": "sh"},
+              "package": {"const": "bash"},
+              "relative_path": {"const": "usr/bin/sh.exe"}
+            }
+          }
+        },
+        "permitted_dependency_cycles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["packages"],
+            "properties": {
+              "packages": {
+                "type": "array",
+                "prefixItems": [
+                  {"const": "libiconv"},
+                  {"const": "libintl"}
+                ],
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    "packages": {
+      "type": "array",
+      "minItems": 26,
+      "maxItems": 26,
+      "items": {"$ref": "#/$defs/package"}
+    },
+    "expected_tools": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {"$ref": "#/$defs/tool_probe"}
+    },
+    "expected_modules": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/module_probe"}
+    },
+    "proofs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trust_root",
+        "extractor",
+        "extracted_tree",
+        "runtime",
+        "commands",
+        "generated_outputs"
+      ],
+      "properties": {
+        "trust_root": {"$ref": "#/$defs/unproven"},
+        "extractor": {"$ref": "#/$defs/unproven"},
+        "extracted_tree": {"$ref": "#/$defs/unproven"},
+        "runtime": {"$ref": "#/$defs/unproven"},
+        "commands": {"$ref": "#/$defs/unproven"},
+        "generated_outputs": {"$ref": "#/$defs/unproven"}
+      }
+    },
+    "authorizations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build",
+        "stage",
+        "guest_install",
+        "capability_advertisement"
+      ],
+      "properties": {
+        "build": {"const": false},
+        "stage": {"const": false},
+        "guest_install": {"const": false},
+        "capability_advertisement": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "safe_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^\\u0000-\\u001f:*?\"<>|]+$"
+    },
+    "signature": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["present", "relative_path", "bytes", "sha256", "verified"],
+          "properties": {
+            "present": {"const": true},
+            "relative_path": {"$ref": "#/$defs/safe_relative_path"},
+            "bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "verified": {"const": false}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["present", "relative_path", "bytes", "sha256", "verified"],
+          "properties": {
+            "present": {"const": false},
+            "relative_path": {"$ref": "#/$defs/safe_relative_path"},
+            "bytes": {"const": 0},
+            "sha256": {"const": ""},
+            "verified": {"const": false}
+          }
+        }
+      ]
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "architecture",
+        "role",
+        "dependencies",
+        "archive",
+        "signature"
+      ],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "architecture": {"enum": ["x86_64", "any"]},
+        "role": {"enum": ["required", "reserved-unselected"]},
+        "dependencies": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "maxLength": 64}
+        },
+        "archive": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relative_path", "bytes", "sha256"],
+          "properties": {
+            "relative_path": {"$ref": "#/$defs/safe_relative_path"},
+            "bytes": {"type": "integer", "minimum": 1, "maximum": 33554432},
+            "sha256": {"$ref": "#/$defs/sha256"}
+          }
+        },
+        "signature": {"$ref": "#/$defs/signature"}
+      }
+    },
+    "tool_probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "package",
+        "relative_path",
+        "arguments",
+        "expected_output",
+        "proven",
+        "evidence_sha256"
+      ],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 32},
+        "package": {"type": "string", "minLength": 1, "maxLength": 64},
+        "relative_path": {"$ref": "#/$defs/safe_relative_path"},
+        "arguments": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {"type": "string", "minLength": 1, "maxLength": 64}
+        },
+        "expected_output": {"type": "string", "minLength": 1, "maxLength": 256},
+        "proven": {"const": false},
+        "evidence_sha256": {"const": ""}
+      }
+    },
+    "module_probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "package",
+        "distribution",
+        "import",
+        "version",
+        "activation",
+        "proven",
+        "evidence_sha256"
+      ],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 32},
+        "package": {"type": "string", "minLength": 1, "maxLength": 64},
+        "distribution": {"type": "string", "minLength": 1, "maxLength": 64},
+        "import": {"type": "string", "minLength": 1, "maxLength": 64},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "activation": {"enum": ["required", "reserved-unselected"]},
+        "proven": {"const": false},
+        "evidence_sha256": {"const": ""}
+      }
+    },
+    "unproven": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["proven", "evidence_sha256"],
+      "properties": {
+        "proven": {"const": false},
+        "evidence_sha256": {"const": ""}
+      }
+    }
+  }
+}

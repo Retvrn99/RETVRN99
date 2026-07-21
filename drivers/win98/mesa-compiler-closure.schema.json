@@ -1,0 +1,328 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mesa-compiler-closure.schema.json",
+  "title": "RETVRN99 Mesa compiler dependency closure",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "status",
+    "reason",
+    "source",
+    "inputs",
+    "blocked_prerequisites",
+    "direct_recipe",
+    "observed_selection",
+    "depfile_contract",
+    "exclusions",
+    "evidence",
+    "scope"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {"const": "mesa-compiler-closure.schema.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "status": {"const": "blocked"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upstream_name",
+        "repository",
+        "owning_commit",
+        "mesa_version",
+        "mesa_subtree"
+      ],
+      "properties": {
+        "upstream_name": {"const": "mesa9x"},
+        "repository": {"const": "https://github.com/JHRobotics/mesa9x.git"},
+        "owning_commit": {"const": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"},
+        "mesa_version": {"const": "23.1.9"},
+        "mesa_subtree": {"const": "mesa-23.1.x"}
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        {"allOf": [{"$ref": "#/$defs/input"}, {"properties": {"id": {"const": "mesa-component-closure"}, "relative_path": {"const": "component-closures/mesa9x-23.1.x.json"}, "required_state": {"const": "blocked-audited"}}}]},
+        {"allOf": [{"$ref": "#/$defs/input"}, {"properties": {"id": {"const": "mesa-generated-output-lock"}, "relative_path": {"const": "generated-output-locks/mesa-23.1.9.json"}, "required_state": {"const": "reviewed-generated-source"}}}]},
+        {"allOf": [{"$ref": "#/$defs/input"}, {"properties": {"id": {"const": "mesa-generated-source-reproducibility"}, "relative_path": {"const": "mesa-generated-source-reproducibility.json"}, "required_state": {"const": "proven"}}}]},
+        {"allOf": [{"$ref": "#/$defs/input"}, {"properties": {"id": {"const": "original-gsw-source"}, "relative_path": {"const": "mesa-gsw/interface-inputs.lock.json"}, "required_state": {"const": "reviewed-permissive-interfaces"}}}]},
+        {"allOf": [{"$ref": "#/$defs/input"}, {"properties": {"id": {"const": "guest-cpu-profile"}, "relative_path": {"const": "guest-cpu-profile.json"}, "required_state": {"const": "compile-proof-blocked"}}}]},
+        {"allOf": [{"$ref": "#/$defs/input"}, {"properties": {"id": {"const": "mingw32-toolchain"}, "relative_path": {"const": "mingw32-toolchain.lock.json"}, "required_state": {"const": "extracted-tree-locked"}}}]}
+      ],
+      "items": false
+    },
+    "blocked_prerequisites": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "prefixItems": [
+        {"const": "reviewed-direct-recipe"},
+        {"const": "exact-compiler-command-registry"},
+        {"const": "deterministic-project-and-toolchain-depfiles"},
+        {"const": "exact-header-license-closure"},
+        {"const": "original-gsw-winsys-source"}
+      ],
+      "items": false
+    },
+    "direct_recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_relative_path",
+        "status",
+        "schema",
+        "bytes",
+        "sha256",
+        "compiler_command_count",
+        "upstream_makefile_consumption"
+      ],
+      "properties": {
+        "required_relative_path": {"const": "mesa-gsw-direct-compile-plan.json"},
+        "status": {"const": "absent"},
+        "schema": {"const": 0},
+        "bytes": {"const": 0},
+        "sha256": {"const": ""},
+        "compiler_command_count": {"const": 0},
+        "upstream_makefile_consumption": {"const": false}
+      }
+    },
+    "observed_selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest_file_count",
+        "upstream_source_unit_count",
+        "c_source_unit_count",
+        "cxx_source_unit_count",
+        "generator_input_count",
+        "build_description_count",
+        "selected_header_like_count",
+        "original_gsw_output_count",
+        "generated_output_count"
+      ],
+      "properties": {
+        "manifest_file_count": {"const": 1036},
+        "upstream_source_unit_count": {"const": 837},
+        "c_source_unit_count": {"const": 742},
+        "cxx_source_unit_count": {"const": 95},
+        "generator_input_count": {"const": 198},
+        "build_description_count": {"const": 1},
+        "selected_header_like_count": {"const": 1},
+        "original_gsw_output_count": {"const": 3},
+        "generated_output_count": {"const": 67}
+      }
+    },
+    "depfile_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compiler_identity",
+        "execution_mode",
+        "dependency_mode",
+        "missing_header_mode",
+        "one_depfile_per_command",
+        "include_system_headers",
+        "discovery_source_root",
+        "proof_source_root",
+        "generated_source_root",
+        "original_source_root",
+        "toolchain_root",
+        "path_identity",
+        "twin_run_required"
+      ],
+      "properties": {
+        "compiler_identity": {"const": "guest-cpu-profile-pinned-mingw-gcc"},
+        "execution_mode": {"const": "preprocess-dependency-only"},
+        "dependency_mode": {"const": "gcc-M-MF-MT"},
+        "missing_header_mode": {"const": "reject-no-MG"},
+        "one_depfile_per_command": {"const": true},
+        "include_system_headers": {"const": true},
+        "discovery_source_root": {"const": "pinned-clean-checkout-non-authoritative"},
+        "proof_source_root": {"const": "exact-materialized-component-closure"},
+        "generated_source_root": {"const": "reviewed-normalized-root"},
+        "original_source_root": {"const": "reviewed-original-gsw-module"},
+        "toolchain_root": {"const": "full-tree-locked-extraction"},
+        "path_identity": {"const": "logical-root-forward-slash-ordinal-case-sensitive"},
+        "twin_run_required": {"const": true}
+      }
+    },
+    "exclusions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upstream_recipe_inputs",
+        "upstream_path_prefixes",
+        "include_path_fragments",
+        "define_names",
+        "define_prefixes"
+      ],
+      "properties": {
+        "upstream_recipe_inputs": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "prefixItems": [
+            {"const": "Makefile"},
+            {"const": "config.mk"},
+            {"const": "generator/mesa-23.1.x-gen.mk"},
+            {"const": "mesa-23.1.x.deps"},
+            {"const": "mesa-23.1.x.mk"},
+            {"const": "pthread.mk"}
+          ],
+          "items": false
+        },
+        "upstream_path_prefixes": {
+          "type": "array",
+          "minItems": 11,
+          "maxItems": 11,
+          "prefixItems": [
+            {"const": "include/git_sha1.h"},
+            {"const": "win9x/nine/nine_memory_helper.c"},
+            {"const": "winpthreads"},
+            {"const": "mesa-23.1.x/include/winddk"},
+            {"const": "mesa-23.1.x/src/gallium/drivers/llvmpipe"},
+            {"const": "mesa-23.1.x/src/gallium/drivers/softpipe"},
+            {"const": "mesa-23.1.x/src/gallium/drivers/zink"},
+            {"const": "mesa-23.1.x/src/gallium/winsys/sw"},
+            {"const": "mesa-23.1.x/src/gallium/winsys/svga/drm"},
+            {"const": "mesa-23.1.x/src/gallium/winsys/virgl"},
+            {"const": "mesa-23.1.x/src/virtio"}
+          ],
+          "items": false
+        },
+        "include_path_fragments": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "prefixItems": [
+            {"const": "winpthreads/include"},
+            {"const": "include/winddk"},
+            {"const": "gallium/winsys/sw"},
+            {"const": "gallium/winsys/svga/drm"},
+            {"const": "gallium/winsys/virgl"},
+            {"const": "LLVM_DIR/include"}
+          ],
+          "items": false
+        },
+        "define_names": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "prefixItems": [
+            {"const": "GALLIUM_SOFTPIPE"},
+            {"const": "HAVE_PTHREAD"},
+            {"const": "HAVE_LLVM"},
+            {"const": "HAVE_GALLIUM_LLVMPIPE"},
+            {"const": "GALLIUM_LLVMPIPE"},
+            {"const": "HAVE_LLVMPIPE"},
+            {"const": "DRAW_LLVM_AVAILABLE"}
+          ],
+          "items": false
+        },
+        "define_prefixes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "prefixItems": [{"const": "VBOX_"}],
+          "items": false
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compiler_commands",
+        "depfiles",
+        "headers",
+        "twin_run_descriptor"
+      ],
+      "properties": {
+        "compiler_commands": {"type": "array", "maxItems": 0},
+        "depfiles": {"type": "array", "maxItems": 0},
+        "headers": {"type": "array", "maxItems": 0},
+        "twin_run_descriptor": {"type": "null"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "claims", "authorizations"],
+      "properties": {
+        "classification": {"const": "blocked-compiler-closure-design"},
+        "claims": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "direct_recipe_reviewed",
+            "compiler_commands_complete",
+            "depfiles_reproducible",
+            "project_header_closure",
+            "toolchain_header_closure",
+            "backend_exclusions_proven",
+            "build_closure"
+          ],
+          "properties": {
+            "direct_recipe_reviewed": {"const": false},
+            "compiler_commands_complete": {"const": false},
+            "depfiles_reproducible": {"const": false},
+            "project_header_closure": {"const": false},
+            "toolchain_header_closure": {"const": false},
+            "backend_exclusions_proven": {"const": false},
+            "build_closure": {"const": false}
+          }
+        },
+        "authorizations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "compiler_execution",
+            "build",
+            "stage",
+            "guest_install",
+            "dll_activation",
+            "capability_advertisement"
+          ],
+          "properties": {
+            "compiler_execution": {"const": false},
+            "build": {"const": false},
+            "stage": {"const": false},
+            "guest_install": {"const": false},
+            "dll_activation": {"const": false},
+            "capability_advertisement": {"const": false}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "relative_path", "bytes", "sha256", "required_state"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "relative_path": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._/-]*$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "required_state": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"}
+      }
+    }
+  }
+}

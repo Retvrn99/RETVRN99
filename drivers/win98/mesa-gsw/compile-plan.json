@@ -1,0 +1,166 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "compile-plan.schema.json",
+    "sha256": "1f28a6c81f7786376df00ea798bcc98fd604165569b617ab911cc47f229a5ef9"
+  },
+  "status": "compile-only-proof",
+  "guest_cpu_profile": {
+    "profile": {
+      "relative_path": "../guest-cpu-profile.json",
+      "bytes": 3537,
+      "sha256": "969b45df75c6e1d8366e6ef7468a51f04c42441914ce564ae19f62a07cad0f57"
+    },
+    "verifier": {
+      "relative_path": "../../../scripts/verify-win98-guest-cpu-profile.ps1",
+      "bytes": 28631,
+      "sha256": "c0e0f0c67e1cc820a2188f005adf4c3f65a449ec40d47b1826ac1ba3f74abaf6"
+    },
+    "profile_id": "gsw-886-win98-i686-v1",
+    "cpu_flags_source": "guest_cpu_profile.toolchains.mingw.cpu_flags"
+  },
+  "source_module": {
+    "lock": {
+      "relative_path": "interface-inputs.lock.json",
+      "bytes": 4336,
+      "sha256": "8b64bed0e4b110b1526ff1bae136b38f23c8441c9a0a64d1d35ff74ebce77f22"
+    },
+    "verifier": {
+      "relative_path": "../../../scripts/verify-win98-mesa-gsw-original-source.ps1",
+      "bytes": 29048,
+      "sha256": "c4aca411f190e50a40cb9acdb294901c645977983f8fc4839392ce7e10ff67e3"
+    },
+    "inputs": [
+      {
+        "relative_path": "include/git_sha1.h",
+        "bytes": 525,
+        "sha256": "a9fbd8a78d0ac9ae5c12f1ef6528e99f6bf9067284a3b3119ed7c9ae86a63c91",
+        "role": "original-mesa-identity-header"
+      },
+      {
+        "relative_path": "include/nine_memory_helper.h",
+        "bytes": 1473,
+        "sha256": "e7aff0715a4f98a2d3aa29bdf0efd43fea8cdb2d9b70ac6b310d8a528b72cade",
+        "role": "original-nine-interface-header"
+      },
+      {
+        "relative_path": "src/nine_memory_helper.c",
+        "bytes": 9301,
+        "sha256": "b1e2f213d6cf2ced951d526e31cf74430ab0b0ce6942fe5a77f898bc65b8b0ef",
+        "role": "original-nine-memory-implementation"
+      },
+      {
+        "relative_path": "probes/compile_probe.c",
+        "bytes": 1055,
+        "sha256": "0e8ed6a108472a6f494c5f66d76d43a626f2831b6cf6a34dda2c2ed0958242d5",
+        "role": "identity-nine-and-cpu-contract-probe"
+      }
+    ]
+  },
+  "toolchain": {
+    "lock": {
+      "relative_path": "../mingw32-toolchain.lock.json",
+      "bytes": 792,
+      "sha256": "db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12"
+    },
+    "verifier": {
+      "relative_path": "../../../scripts/verify-win98-driver-toolchain.ps1",
+      "bytes": 24532,
+      "sha256": "5bddf76fd0c4fdc211cba6102a86f60852441e1f3c3402efb51a4c0f07bf0652"
+    },
+    "name": "msys2-mingw32-gcc-15.2.0-rev13",
+    "extracted_relative_path": "msys2-mingw32-gcc15.2.0-20260717",
+    "tree_sha256": "08491a4bf273920ff9078f444addffe7e08f0d0b77d34d74cc2c742c84bb614a",
+    "compiler": {
+      "relative_path": "bin/i686-w64-mingw32-gcc.exe",
+      "bytes": 3147424,
+      "sha256": "0c79d47814364067e560ba4d26849126388a44fc5765d33df00c1fdd582c89a9"
+    },
+    "inspector": {
+      "relative_path": "bin/objdump.exe",
+      "bytes": 2207753,
+      "sha256": "3a3309d8a8f8898193d5e41e73085d8c8702a1efe296c6236a48f925fc5411f5"
+    }
+  },
+  "compile": {
+    "language": "c-gnu99",
+    "target": "i686-w64-mingw32",
+    "prefix_flags": [
+      "-std=gnu99",
+      "-m32"
+    ],
+    "cpu_flags_source": "guest_cpu_profile.toolchains.mingw.cpu_flags",
+    "suffix_flags": [
+      "-D_WIN32_WINNT=0x0400",
+      "-DWINVER=0x0400",
+      "-D_WIN32_WINDOWS=0x0410",
+      "-fno-ident",
+      "-fno-asynchronous-unwind-tables",
+      "-fno-unwind-tables",
+      "-fno-stack-protector",
+      "-frandom-seed=retvrn99-gsw-nine-memory-helper-v1",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-Wpedantic"
+    ],
+    "root_scoped_flags": [
+      "-ffile-prefix-map={build_root}=.",
+      "-fmacro-prefix-map={build_root}=.",
+      "-I{build_root}/include"
+    ],
+    "probe": "probes/compile_probe.c",
+    "source": "src/nine_memory_helper.c",
+    "temporary_output": "out/nine_memory_helper.o",
+    "repeat_count": 2,
+    "process_timeout_seconds": 10,
+    "required_macros": [
+      "__i386__",
+      "__MMX__",
+      "__SSE__",
+      "__SSE2__",
+      "__SSE3__"
+    ],
+    "forbidden_macros": [
+      "__x86_64__",
+      "__SSE4A__",
+      "__SSE4_1__",
+      "__SSE4_2__",
+      "__AVX__",
+      "__AVX2__",
+      "__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16"
+    ]
+  },
+  "normalization": {
+    "format": "coff-i386",
+    "machine": 332,
+    "timestamp_offset": 4,
+    "timestamp_bytes": 4,
+    "optional_header_bytes": 0,
+    "normalized_output": {
+      "bytes": 4066,
+      "sha256": "b69a37e5561c03ea9c7699a0ea394912d2c9a8a429c22886a5080524dbe0d6b6"
+    }
+  },
+  "forbidden_backend_tokens": [
+    "softpipe",
+    "llvmpipe",
+    "virgl",
+    "zink",
+    "wined3d",
+    "qemu-3dfx",
+    "virtualbox",
+    "vbox",
+    "vmware"
+  ],
+  "claims": {
+    "temporary_compile_proven": true,
+    "dll_link_authorized": false,
+    "production_build_authorized": false,
+    "build_profile_dependency_satisfied": false,
+    "staging_authorized": false,
+    "guest_install_authorized": false,
+    "capability_advertisement_authorized": false
+  }
+}

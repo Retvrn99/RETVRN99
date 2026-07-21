@@ -1,0 +1,726 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "mesa-generator-toolchain-lock.schema.json",
+    "sha256": "a45920aa309e945b5cb316308ed9e8e6268528e3ec8f7893a80a65ac9adeb6c3"
+  },
+  "status": "blocked",
+  "reason": "The 26 local archives and detached signatures are byte-locked inventory only. Every signature remains unverified, and the trust root, extractor, extracted tree, runtime, commands, and generated outputs remain unproven, so build, staging, guest installation, and capability advertisement are forbidden.",
+  "component": {
+    "upstream_name": "mesa9x",
+    "repository": "https://github.com/JHRobotics/mesa9x.git",
+    "owning_commit": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f",
+    "mesa_version": "23.1.9",
+    "generator_recipe": {
+      "relative_path": "generator/mesa-23.1.x-gen.mk",
+      "git_blob": "68b2fd13d08ae0ce4276cb1f720ee9bbb1cd54e9",
+      "bytes": 13288,
+      "sha256": "9ad77b1fe55e4097621dbefeffe989fb00f3c354320ce6521d69f8efd8a44dce"
+    }
+  },
+  "package_policy": {
+    "required_count": 24,
+    "reserved_unselected_count": 2,
+    "virtual_providers": [
+      {
+        "dependency": "sh",
+        "package": "bash",
+        "relative_path": "usr/bin/sh.exe"
+      }
+    ],
+    "permitted_dependency_cycles": [
+      {
+        "packages": [
+          "libiconv",
+          "libintl"
+        ]
+      }
+    ]
+  },
+  "packages": [
+    {
+      "name": "bash",
+      "version": "5.3.009-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [],
+      "archive": {
+        "relative_path": "bash-5.3.009-1-x86_64.pkg.tar.zst",
+        "bytes": 2583004,
+        "sha256": "e193b6e35c4b5397d3603960e4fa4600f2e0bce75ec8c090319e3b59f05d594a"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "bash-5.3.009-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "cc0510159f628663fa9b34d867caf0015955a182b39d235fb1a86f9cfb26d71d",
+        "verified": false
+      }
+    },
+    {
+      "name": "binutils",
+      "version": "2.45.1-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "libiconv",
+        "libintl",
+        "zlib"
+      ],
+      "archive": {
+        "relative_path": "binutils-2.45.1-1-x86_64.pkg.tar.zst",
+        "bytes": 6076084,
+        "sha256": "a8963dac924155fbdeef9ef7d5418d80075886bd318b97dadb7521b184ce9217"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "binutils-2.45.1-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "f93b0c14bfd2fc6eaa0824b3561ccca03ef1b1355e5f94e386731224fceafc2b",
+        "verified": false
+      }
+    },
+    {
+      "name": "bison",
+      "version": "3.8.2-5",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "m4",
+        "sh",
+        "libiconv",
+        "libintl"
+      ],
+      "archive": {
+        "relative_path": "bison-3.8.2-5-x86_64.pkg.tar.zst",
+        "bytes": 795844,
+        "sha256": "7439ca784a9909e0730a513d3aff15852c3b292ac85053fa2dd7a2a19c1ce04c"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "bison-3.8.2-5-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "a3f6c7e07f59a2147e16872011135a3c95dd4882df34f44c3ac765b11b2d34f4",
+        "verified": false
+      }
+    },
+    {
+      "name": "flex",
+      "version": "2.6.4-4",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "m4",
+        "sh",
+        "libiconv",
+        "libintl"
+      ],
+      "archive": {
+        "relative_path": "flex-2.6.4-4-x86_64.pkg.tar.zst",
+        "bytes": 310795,
+        "sha256": "d70fbf25d0dea3cb8ae42670b79a8ba65a48daa140137367b5ebaf37eb48df26"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "flex-2.6.4-4-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "b66bc6370619a0b6cbc6d9466271ce93962587197bbf4262956d75909db94c10",
+        "verified": false
+      }
+    },
+    {
+      "name": "gcc-libs",
+      "version": "15.2.0-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [],
+      "archive": {
+        "relative_path": "gcc-libs-15.2.0-1-x86_64.pkg.tar.zst",
+        "bytes": 1081723,
+        "sha256": "d77e7228e596283cb5fbdcba67bbf9c3abd4bc3e21fc225a9752c0c8cdc8b91d"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "gcc-libs-15.2.0-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "fc9b80959a9ec5df07b4c80682eb4373746f768f17c6ac4e6bb66453d429cedd",
+        "verified": false
+      }
+    },
+    {
+      "name": "libbz2",
+      "version": "1.0.8-4",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "gcc-libs"
+      ],
+      "archive": {
+        "relative_path": "libbz2-1.0.8-4-x86_64.pkg.tar.zst",
+        "bytes": 30786,
+        "sha256": "89fb0e1478b22b80effda55ab4ae7549388d01245d3841a096d8a2d63236c2a1"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libbz2-1.0.8-4-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "8d2642418c1db5f80efdb272196b201ef117292db0f0280dadedd4701763a4f3",
+        "verified": false
+      }
+    },
+    {
+      "name": "libexpat",
+      "version": "2.7.3-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "gcc-libs"
+      ],
+      "archive": {
+        "relative_path": "libexpat-2.7.3-1-x86_64.pkg.tar.zst",
+        "bytes": 61934,
+        "sha256": "b24e314c9cd3517233903ef5d6ca4cd0097ea283890ce4d75a90b095071bd2c5"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libexpat-2.7.3-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "c6afa088bb6a96535b86f222a53e6ca62c76b10e1f8178be471046583db1eb9a",
+        "verified": false
+      }
+    },
+    {
+      "name": "libffi",
+      "version": "3.5.2-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [],
+      "archive": {
+        "relative_path": "libffi-3.5.2-1-x86_64.pkg.tar.zst",
+        "bytes": 31691,
+        "sha256": "ae0ad7e3c733c458e26cee30ee8d16f123ef99027d7ea5edda41c968fc0d91ba"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libffi-3.5.2-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "964b3b4d677b3e01f0c6282c66b9778dce1ebd4cbb7f5498ed882469ffe470a8",
+        "verified": false
+      }
+    },
+    {
+      "name": "libiconv",
+      "version": "1.18-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "gcc-libs",
+        "libintl"
+      ],
+      "archive": {
+        "relative_path": "libiconv-1.18-1-x86_64.pkg.tar.zst",
+        "bytes": 726928,
+        "sha256": "9e298b072b86fa7f4ba4d8c00176b80fb5ab2c5eae2b9dc05e781ae4958efb77"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libiconv-1.18-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "90a4f03ab08f63b7e2d1e5408545d6391cc722cad84e8d08a20e5a76bfad52ee",
+        "verified": false
+      }
+    },
+    {
+      "name": "libintl",
+      "version": "0.22.5-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "gcc-libs",
+        "libiconv"
+      ],
+      "archive": {
+        "relative_path": "libintl-0.22.5-1-x86_64.pkg.tar.zst",
+        "bytes": 50537,
+        "sha256": "336d66b9d95cf9c1804958f8e260762a3e83bf158ed5981f783bc772a31073cf"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libintl-0.22.5-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "1adbb78dc17437af97cea7491aa1637917ec09e69d3d94a628624e2b32b4d937",
+        "verified": false
+      }
+    },
+    {
+      "name": "liblzma",
+      "version": "5.8.1-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [],
+      "archive": {
+        "relative_path": "liblzma-5.8.1-1-x86_64.pkg.tar.zst",
+        "bytes": 88934,
+        "sha256": "28cd861325dab1d7b1ebd63893e93f1d8e7cedc77f1e78dfdd9434386b9f8aa1"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "liblzma-5.8.1-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "f1e1fcc64a37bc59efc0a18ad7c9cec10fc9b55c1d7195919f6c4c62ac917e22",
+        "verified": false
+      }
+    },
+    {
+      "name": "libopenssl",
+      "version": "3.6.0-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [],
+      "archive": {
+        "relative_path": "libopenssl-3.6.0-1-x86_64.pkg.tar.zst",
+        "bytes": 2085883,
+        "sha256": "cd7c25fee9ea12f6a12dd2d6352474a2ee8d0166a30433ae4baffccc59134876"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libopenssl-3.6.0-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "a9da9b5f680247a7bf6b89746ec747ce9850d3dbf771d4a82f1a3648981bc4ff",
+        "verified": false
+      }
+    },
+    {
+      "name": "libreadline",
+      "version": "8.3.003-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "ncurses"
+      ],
+      "archive": {
+        "relative_path": "libreadline-8.3.003-1-x86_64.pkg.tar.zst",
+        "bytes": 388315,
+        "sha256": "f78e11a496010305fb80b6804518d5c1257794fc87bc8caaf8c4a65d7a983dec"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libreadline-8.3.003-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "df5750167ac977dfeb76559f8d04b093a3f77215346e59ff2de4daa065ed8f36",
+        "verified": false
+      }
+    },
+    {
+      "name": "libsqlite",
+      "version": "3.51.1-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [],
+      "archive": {
+        "relative_path": "libsqlite-3.51.1-1-x86_64.pkg.tar.zst",
+        "bytes": 745405,
+        "sha256": "1ab0866e77070d5b617eb0f30dc8811704946d6dae4aaab00c7713a87c2c4a76"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libsqlite-3.51.1-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "d063f9976f33b246e57a6caf569ecfb30f6523ae1bd33db529c8770cc384fc47",
+        "verified": false
+      }
+    },
+    {
+      "name": "libxcrypt",
+      "version": "4.5.2-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [],
+      "archive": {
+        "relative_path": "libxcrypt-4.5.2-1-x86_64.pkg.tar.zst",
+        "bytes": 87371,
+        "sha256": "e63db0aa2b708359e25f61f506e2d2c92c315febf5f88cc9f386e4ec0bdf4fa5"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libxcrypt-4.5.2-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "d2dda19a9fa14dc5c1cba7a41a9b47fedcdfd798fc52e3b530934146c96a6d91",
+        "verified": false
+      }
+    },
+    {
+      "name": "libyaml",
+      "version": "0.2.5-2",
+      "architecture": "x86_64",
+      "role": "reserved-unselected",
+      "dependencies": [],
+      "archive": {
+        "relative_path": "libyaml-0.2.5-2-x86_64.pkg.tar.zst",
+        "bytes": 49068,
+        "sha256": "11509c6e3133b3fc63f99cc04e89a1cc5685aa746e96bd5f481e3424fbd4f6c1"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "libyaml-0.2.5-2-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "0a4c484597592b59775c9f070d51b7b369ac903122d3c5db51e0e5b23152d0ae",
+        "verified": false
+      }
+    },
+    {
+      "name": "m4",
+      "version": "1.4.19-2",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "bash",
+        "gcc-libs",
+        "libiconv"
+      ],
+      "archive": {
+        "relative_path": "m4-1.4.19-2-x86_64.pkg.tar.zst",
+        "bytes": 243775,
+        "sha256": "4a1d296571afa7b8837fd5e227e16c9cb7e26c0f31f03b364e11c1ae8ee2a913"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "m4-1.4.19-2-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "8d572e71c2494aa46b56b6c4f94cd61f4a38585ae4804d185344f303f895d9b4",
+        "verified": false
+      }
+    },
+    {
+      "name": "mpdecimal",
+      "version": "4.0.1-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "gcc-libs"
+      ],
+      "archive": {
+        "relative_path": "mpdecimal-4.0.1-1-x86_64.pkg.tar.zst",
+        "bytes": 75334,
+        "sha256": "01ae3016641af4d499329c68e00a34664b7c7d9095dc6a859317441507132d41"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "mpdecimal-4.0.1-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "329a49f7a5d605494e13ad2897c0064a0027f89511c028a49a42179e8f9c5063",
+        "verified": false
+      }
+    },
+    {
+      "name": "msys2-runtime",
+      "version": "3.6.5-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [],
+      "archive": {
+        "relative_path": "msys2-runtime-3.6.5-1-x86_64.pkg.tar.zst",
+        "bytes": 1987651,
+        "sha256": "16a1729511b553314bed8d9af6d52ae4489007c35a6b4752205869f321963d9d"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "msys2-runtime-3.6.5-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "4b849d294719f7cd8f9c71d4c0880c67928e77337254e03053665dca863de5dc",
+        "verified": false
+      }
+    },
+    {
+      "name": "ncurses",
+      "version": "6.5.20240831-2",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "gcc-libs"
+      ],
+      "archive": {
+        "relative_path": "ncurses-6.5.20240831-2-x86_64.pkg.tar.zst",
+        "bytes": 1249697,
+        "sha256": "9f2db80641574caa58636d1bf3f4737f9b572f148a644dbb02a854b38e008dce"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "ncurses-6.5.20240831-2-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "b4a8243a07c06712fbe3e52e830b404f41589096e5d16f77539ebc24615a90e0",
+        "verified": false
+      }
+    },
+    {
+      "name": "python",
+      "version": "3.12.12-3",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "libbz2",
+        "libexpat",
+        "libffi",
+        "liblzma",
+        "ncurses",
+        "libopenssl",
+        "libreadline",
+        "mpdecimal",
+        "libsqlite",
+        "zlib",
+        "libxcrypt",
+        "binutils"
+      ],
+      "archive": {
+        "relative_path": "python-3.12.12-3-x86_64.pkg.tar.zst",
+        "bytes": 23972474,
+        "sha256": "736d987d5d55d45da3d3eabb222b97e7db83cd58e1eab4e48201ff87d02bc900"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "python-3.12.12-3-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "2a03f7767a8ea552d32197894eb24688613986709519e14886590eb32a45c075",
+        "verified": false
+      }
+    },
+    {
+      "name": "python-beaker",
+      "version": "1.13.0-3",
+      "architecture": "any",
+      "role": "required",
+      "dependencies": [
+        "python"
+      ],
+      "archive": {
+        "relative_path": "python-beaker-1.13.0-3-any.pkg.tar.zst",
+        "bytes": 113204,
+        "sha256": "684802b603b3d0850a6d265e099df6837d7978ad26c06a0d5cde07e074fe3f76"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "python-beaker-1.13.0-3-any.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "b86255362fc366906aea1e683c3e245423df6cf1c30285aadd661c257b0c82db",
+        "verified": false
+      }
+    },
+    {
+      "name": "python-mako",
+      "version": "1.3.10-1",
+      "architecture": "any",
+      "role": "required",
+      "dependencies": [
+        "python-markupsafe",
+        "python-beaker"
+      ],
+      "archive": {
+        "relative_path": "python-mako-1.3.10-1-any.pkg.tar.zst",
+        "bytes": 171041,
+        "sha256": "54cc623312024926f3998aa7cf351086cd0af466759a651d58d983c6495bf349"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "python-mako-1.3.10-1-any.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "91552716c5f7ff3ca4d64eebd249d03bc7fc80e5bbc0e2b40b4e71b90afb979b",
+        "verified": false
+      }
+    },
+    {
+      "name": "python-markupsafe",
+      "version": "3.0.3-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "python"
+      ],
+      "archive": {
+        "relative_path": "python-markupsafe-3.0.3-1-x86_64.pkg.tar.zst",
+        "bytes": 20503,
+        "sha256": "cdc6f3c7039ca77e24e3ea1856aee4af89e4698edab38263711573eda2b8e963"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "python-markupsafe-3.0.3-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "5ef860270af258882646316ff4a64307c491c13a48dcd2d75829a711a97bd543",
+        "verified": false
+      }
+    },
+    {
+      "name": "python-yaml",
+      "version": "6.0.3-1",
+      "architecture": "x86_64",
+      "role": "reserved-unselected",
+      "dependencies": [
+        "python",
+        "libyaml"
+      ],
+      "archive": {
+        "relative_path": "python-yaml-6.0.3-1-x86_64.pkg.tar.zst",
+        "bytes": 197012,
+        "sha256": "1c1da83af8940f63b809d72c48ea9a8f9821f2e17299e6d081cb82d4207cd834"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "python-yaml-6.0.3-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "3196aa457acf365f28584dc232bc185db735a3032721e799172a10e657c1508c",
+        "verified": false
+      }
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.1-1",
+      "architecture": "x86_64",
+      "role": "required",
+      "dependencies": [
+        "gcc-libs"
+      ],
+      "archive": {
+        "relative_path": "zlib-1.3.1-1-x86_64.pkg.tar.zst",
+        "bytes": 50170,
+        "sha256": "8f027ac1b9404196a146efbf46ab12edf7fa20c7d9f6ca500d5cd275e492ef30"
+      },
+      "signature": {
+        "present": true,
+        "relative_path": "zlib-1.3.1-1-x86_64.pkg.tar.zst.sig",
+        "bytes": 566,
+        "sha256": "9b96435ac8123f3b4ecea6e1371585d2feb46811517f33478f8092b0efe8742c",
+        "verified": false
+      }
+    }
+  ],
+  "expected_tools": [
+    {
+      "name": "python",
+      "package": "python",
+      "relative_path": "usr/bin/python3.12.exe",
+      "arguments": ["--version"],
+      "expected_output": "Python 3.12.12",
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    {
+      "name": "bison",
+      "package": "bison",
+      "relative_path": "usr/bin/bison.exe",
+      "arguments": ["--version"],
+      "expected_output": "bison (GNU Bison) 3.8.2",
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    {
+      "name": "flex",
+      "package": "flex",
+      "relative_path": "usr/bin/flex.exe",
+      "arguments": ["--version"],
+      "expected_output": "flex 2.6.4",
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    {
+      "name": "m4",
+      "package": "m4",
+      "relative_path": "usr/bin/m4.exe",
+      "arguments": ["--version"],
+      "expected_output": "m4 (GNU M4) 1.4.19",
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    {
+      "name": "bash",
+      "package": "bash",
+      "relative_path": "usr/bin/bash.exe",
+      "arguments": ["--version"],
+      "expected_output": "GNU bash, version 5.3.9(1)-release (x86_64-pc-cygwin)",
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    {
+      "name": "sh",
+      "package": "bash",
+      "relative_path": "usr/bin/sh.exe",
+      "arguments": ["--version"],
+      "expected_output": "GNU bash, version 5.3.9(1)-release (x86_64-pc-cygwin)",
+      "proven": false,
+      "evidence_sha256": ""
+    }
+  ],
+  "expected_modules": [
+    {
+      "name": "mako",
+      "package": "python-mako",
+      "distribution": "Mako",
+      "import": "mako",
+      "version": "1.3.10",
+      "activation": "required",
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    {
+      "name": "beaker",
+      "package": "python-beaker",
+      "distribution": "Beaker",
+      "import": "beaker",
+      "version": "1.13.0",
+      "activation": "required",
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    {
+      "name": "markupsafe",
+      "package": "python-markupsafe",
+      "distribution": "MarkupSafe",
+      "import": "markupsafe",
+      "version": "3.0.3",
+      "activation": "required",
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    {
+      "name": "pyyaml",
+      "package": "python-yaml",
+      "distribution": "PyYAML",
+      "import": "yaml",
+      "version": "6.0.3",
+      "activation": "reserved-unselected",
+      "proven": false,
+      "evidence_sha256": ""
+    }
+  ],
+  "proofs": {
+    "trust_root": {
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    "extractor": {
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    "extracted_tree": {
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    "runtime": {
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    "commands": {
+      "proven": false,
+      "evidence_sha256": ""
+    },
+    "generated_outputs": {
+      "proven": false,
+      "evidence_sha256": ""
+    }
+  },
+  "authorizations": {
+    "build": false,
+    "stage": false,
+    "guest_install": false,
+    "capability_advertisement": false
+  }
+}

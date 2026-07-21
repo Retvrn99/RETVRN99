@@ -9,11 +9,14 @@ param(
 
     [string]$DescribeRelativePath,
 
-    [scriptblock]$BeforeSecondScan
+    [scriptblock]$BeforeSecondScan,
+
+    [switch]$PassThruLock
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'strict-json.ps1')
 $script:HardMaximumFiles = [UInt64]10000
 $script:HardMaximumDirectories = [UInt64]5000
 $script:HardMaximumEntries = [UInt64]15000
@@ -33,48 +36,12 @@ function Get-FullPath {
     return [IO.Path]::GetFullPath((Join-Path (Get-Location) $Path))
 }
 
-function Assert-JsonPropertiesAreUnique {
-    param(
-        [Parameter(Mandatory = $true)][Text.Json.JsonElement]$Element,
-        [Parameter(Mandatory = $true)][string]$JsonPath
-    )
-
-    if ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Object) {
-        $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($property in $Element.EnumerateObject()) {
-            if (-not $names.Add($property.Name)) {
-                throw "Duplicate JSON property '$($property.Name)' at $JsonPath."
-            }
-            Assert-JsonPropertiesAreUnique -Element $property.Value -JsonPath "$JsonPath.$($property.Name)"
-        }
-    }
-    elseif ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Array) {
-        $index = 0
-        foreach ($item in $Element.EnumerateArray()) {
-            Assert-JsonPropertiesAreUnique -Element $item -JsonPath "${JsonPath}[$index]"
-            $index++
-        }
-    }
-}
-
 function Read-StrictJson {
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $json = [IO.File]::ReadAllText($Path)
     try {
-        $document = [Text.Json.JsonDocument]::Parse($json)
-    }
-    catch {
-        throw "Malformed toolchain lock JSON: $($_.Exception.Message)"
-    }
-    try {
-        Assert-JsonPropertiesAreUnique -Element $document.RootElement -JsonPath '$'
-    }
-    finally {
-        $document.Dispose()
-    }
-    try {
-        return $json | ConvertFrom-Json -Depth 16
+        return Read-GswStrictJsonFile -Path $Path -Name 'toolchain lock' `
+            -MaximumBytes 4194304
     }
     catch {
         throw "Malformed toolchain lock JSON: $($_.Exception.Message)"
@@ -236,7 +203,21 @@ function Get-PortableRelativePath {
         [Parameter(Mandatory = $true)][string]$Path
     )
 
-    $relativePath = [IO.Path]::GetRelativePath($Root, $Path)
+    $getRelativePath = [IO.Path].GetMethod(
+        'GetRelativePath',
+        [Reflection.BindingFlags]'Public,Static',
+        $null,
+        [Type[]]@([string], [string]),
+        $null
+    )
+    if ($null -ne $getRelativePath) {
+        $relativePath = [IO.Path]::GetRelativePath($Root, $Path)
+    }
+    else {
+        $rootUri = New-Object Uri ($Root.TrimEnd([char[]]'\/') + [IO.Path]::DirectorySeparatorChar)
+        $pathUri = New-Object Uri $Path
+        $relativePath = [Uri]::UnescapeDataString($rootUri.MakeRelativeUri($pathUri).ToString())
+    }
     if ([IO.Path]::DirectorySeparatorChar -ne '/') {
         $relativePath = $relativePath.Replace([IO.Path]::DirectorySeparatorChar, '/')
     }
@@ -385,7 +366,7 @@ function Get-ToolchainTreeDescriptor {
             $digest.AppendData((Get-BigEndianBytes -Value ([UInt64]$record.Length) -Width 8))
             $digest.AppendData([byte[]]$record.Hash)
         }
-        $treeHash = [Convert]::ToHexString($digest.GetHashAndReset()).ToLowerInvariant()
+        $treeHash = ([BitConverter]::ToString($digest.GetHashAndReset()) -replace '-', '').ToLowerInvariant()
     }
     finally {
         $digest.Dispose()
@@ -600,7 +581,12 @@ $secondTree = Get-ToolchainTreeDescriptor @scanArguments
 Assert-TreeDescriptorMatches $secondTree $firstTree 'Second extracted-toolchain scan'
 Assert-TreeDescriptorMatches $secondTree $lockedTree 'Extracted toolchain'
 
-Write-Output (
-    "Verified Windows 98 toolchain '$($lock.name)' " +
-    "($($secondTree.FileCount) files, $($secondTree.AggregateBytes) bytes, tree $($secondTree.Sha256))."
-)
+if ($PassThruLock) {
+    Write-Output $lock
+}
+else {
+    Write-Output (
+        "Verified Windows 98 toolchain '$($lock.name)' " +
+        "($($secondTree.FileCount) files, $($secondTree.AggregateBytes) bytes, tree $($secondTree.Sha256))."
+    )
+}

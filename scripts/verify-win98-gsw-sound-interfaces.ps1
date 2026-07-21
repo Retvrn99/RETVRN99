@@ -9,6 +9,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'strict-json.ps1')
+. (Join-Path $PSScriptRoot 'strict-tsv.ps1')
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ([string]::IsNullOrWhiteSpace($InterfaceLock)) {
     $InterfaceLock = Join-Path $repoRoot 'drivers\win98\gsw-sound\interface-inputs.lock.json'
@@ -47,8 +49,8 @@ function Assert-FileIdentity {
 }
 
 $lockPath = [IO.Path]::GetFullPath($InterfaceLock)
-Assert-RegularFile $lockPath 'GSW-Sound Interface lock' | Out-Null
-$lock = [IO.File]::ReadAllText($lockPath) | ConvertFrom-Json
+$lock = Read-GswStrictJsonFile -Path $lockPath -Name 'GSW-Sound Interface lock' `
+    -MaximumBytes 1048576
 if ($lock._spdx -cne 'GPL-3.0-only' -or $lock.schema -ne 1 -or
     $lock.status -cne 'reviewed-compatible-interfaces') {
     throw 'GSW-Sound Interface lock metadata is unsupported.'
@@ -56,10 +58,14 @@ if ($lock._spdx -cne 'GPL-3.0-only' -or $lock.schema -ne 1 -or
 
 $lockDirectory = [IO.Path]::GetDirectoryName($lockPath)
 $upstreamLockPath = [IO.Path]::GetFullPath((Join-Path $lockDirectory $lock.vmm_interface.source_lock))
-Assert-RegularFile $upstreamLockPath 'Windows 98 upstream lock' | Out-Null
-$rows = @(Get-Content -LiteralPath $upstreamLockPath | Where-Object {
-    $_ -and -not $_.StartsWith('#')
-} | ConvertFrom-Csv -Delimiter "`t")
+$upstreamHeader = @(
+    'name', 'source_directory', 'repository', 'commit', 'upstream_license',
+    'disposition', 'closure_manifest', 'closure_manifest_sha256', 'scope'
+)
+$rows = @(Read-StrictTsvFile -Path $upstreamLockPath `
+    -ExpectedHeader $upstreamHeader -Name 'Windows 98 upstream lock' `
+    -MaximumBytes 1048576 -MaximumRows 256 -MaximumLineBytes 16384 `
+    -MaximumPhysicalLines 1024)
 $sourceRows = @($rows | Where-Object { $_.name -ceq $lock.vmm_interface.source_name })
 if ($sourceRows.Count -ne 1) { throw 'The Interface source must have exactly one upstream-lock row.' }
 $sourceRow = $sourceRows[0]
@@ -134,10 +140,8 @@ $watcomLock = Join-Path $repoRoot 'drivers\win98\toolchain.lock.json'
 $mingwLock = [IO.Path]::GetFullPath((Join-Path $lockDirectory $lock.multimedia_interface_reference.toolchain_lock))
 & (Join-Path $PSScriptRoot 'verify-win98-driver-toolchain.ps1') `
     -ToolchainRoot $ToolchainRoot -LockFile $watcomLock
-& (Join-Path $PSScriptRoot 'verify-win98-driver-toolchain.ps1') `
-    -ToolchainRoot $ToolchainRoot -LockFile $mingwLock
-
-$mingwMetadata = [IO.File]::ReadAllText($mingwLock) | ConvertFrom-Json
+$mingwMetadata = & (Join-Path $PSScriptRoot 'verify-win98-driver-toolchain.ps1') `
+    -ToolchainRoot $ToolchainRoot -LockFile $mingwLock -PassThruLock
 $mingwRoot = Join-Path $ToolchainRoot $mingwMetadata.extracted.relative_path
 $reference = Join-Path $mingwRoot $lock.multimedia_interface_reference.source_relative_path
 Assert-FileIdentity $reference ([long]$lock.multimedia_interface_reference.bytes) `

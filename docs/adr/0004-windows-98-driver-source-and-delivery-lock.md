@@ -33,7 +33,18 @@ persona while a separately added inbox legacy SB16 driver is tested.
 
 `drivers/win98/upstream.lock.tsv` is the authoritative source-provenance lock.
 Every entry names an HTTPS repository, a complete immutable Git commit, its
-upstream license, and whether it is planned input or reference-only material.
+repository-level license policy, and whether it is planned input,
+planned-component input, or reference-only material. A planned-component row
+links a schema-1 closure manifest by relative path and raw SHA-256. A ready
+manifest binds itself to the lock row's owning commit and lists exact regular
+Git blobs, byte counts, SHA-256 digests, allowlisted file-specific license
+expressions, notice IDs, source-prefix IDs, and roles. A source prefix is either
+a named subtree or `exact-root-files`, which permits only separately enumerated
+root files. Prefixes never authorize globs or implicit tree copying. Each file
+binds to an exact notice inventory entry with the same approved license
+expression. The initial closed expression set is `MIT` and
+`LGPL-2.1-or-later`. A blocked manifest has no notices or files and authorizes
+no derivation, build, staging, or distribution.
 The verifier accepts only clean local checkouts at those exact origins and
 commits, including initialized and matching submodules. It does not clone,
 fetch, or resolve a branch or tag. With no source selection it verifies the
@@ -61,18 +72,28 @@ NE-resource normalizer zeros only `dwFileDateMS` and `dwFileDateLS`. The four
 corresponding normalized DRVs were byte-identical across both builds.
 
 `drivers/win98/derived-source-plan.json` separates immutable upstream source
-from RETVRN99 adaptations. A schema-2 ready recipe identifies one canonical
-planned upstream, a disjoint output directory, ordered patches pinned by size
-and SHA-256, complete overlay directories pinned by the canonical tree
-descriptor, and the exact descriptor of the combined result. Preparation
-materializes exact Git blob bytes, recursively expands only initialized
-superproject-pinned gitlinks, and verifies provenance before and after. Each
+from RETVRN99 adaptations. Schema 2 retains whole-upstream derivation. Schema 3
+requires each recipe to select either `whole-upstream` or `component-closure`.
+A component recipe must repeat the canonical lock row's closure path and raw
+SHA-256, and the linked closure must be ready at the pinned owning commit. The
+preparer materializes only its declared regular notice and source Git blobs,
+rejects case-folded and DOS 8.3 collisions, and verifies the component again
+after the pre-publication boundary. It never expands a component gitlink or
+copies an omitted upstream file. Whole-upstream recipes retain recursive
+expansion of initialized superproject-pinned gitlinks.
+
+Every recipe identifies a disjoint output directory, ordered patches pinned by
+size and SHA-256, complete overlay directories pinned by the canonical tree
+descriptor, and the exact descriptor of the combined result. A component-only
+recipe may use no patch or overlay because the closure itself is an exact
+selection. Whole-upstream recipes retain the patch-or-overlay requirement. Each
 patch explicitly names the regular text paths whose canonical CRLF bytes must
 be converted to LF; undeclared blobs are unchanged, and unsafe, missing,
 duplicate, reparse-point, NUL-containing, or isolated-CR inputs are rejected.
 The preparer prevents unapproved overlay replacement, rejects overlapping
 recipe destinations, scans each result again before publication, and
-atomically creates a previously absent output root.
+atomically creates a previously absent output root. `reference-only` rows
+remain ineligible for derivation and staging.
 
 The plan may instead be `draft` solely to bootstrap the combined descriptor.
 Draft recipes already require exact patch and overlay descriptors, but omit the
@@ -85,8 +106,9 @@ overlay without changing it.
 `drivers/win98/build-plan.json` is `ready` for the paired VMDisp9x-derived
 display driver and VMHAL9x-derived GSW DirectDraw HAL. The schema-3 plan pins
 the ready derived-source plan, both toolchain locks, and upstream lock. The builder
-snapshots those exact linked bytes before use and rejects an alternate
-upstream-lock path. It names a hash-verified local toolchain executable, a
+snapshots those exact linked bytes and every lock-linked component manifest at
+its canonical relative path before use, and rejects an alternate upstream-lock
+path. It names a hash-verified local toolchain executable, a
 literal argument array, a derived-recipe working directory, one explicit
 Win16 normalization operation, and exact adapted output sizes and SHA-256
 values. Every DRV output must be normalized exactly once. A `build`-origin
@@ -101,9 +123,9 @@ validates every normalized output before atomic publication, performs no
 network operation, and cannot consume a `reference-only` source row. The exact
 declared GSW-VGA payloads are:
 
-- `gswmini.drv`: 14,756 bytes, `fe9e8cecb90212deb41835de7167f629ee631233540fa482fad6a705d85f9146`.
-- `gswmini.vxd`: 38,669 bytes, `fff33344a8ee01b6ca48546e9433c7bb1aae2247fb8a0d25c99ce8d3017572fe`.
-- `gswmini.inf`: 3,188 bytes, `d14bb2396f5f3f7899506c0652fe941a657e18d7a903397fdff85a10c6b6c186`.
+- `gswmini.drv`: 16,922 bytes, `9748b9feeebfaa4b4597f63a17fd8699ddfa01bce1aba6fc8ecc8ec7542fb13d`.
+- `gswmini.vxd`: 39,341 bytes, `61edea1973a7ce17fde3725d930c75495dd1ce2eeeb87fa799b8289cf534d876`.
+- `gswmini.inf`: 3,188 bytes, `952c2a18697a363944879b64031872266505d34ac50fca7080663bfa54783dea`.
 - `gswhal9x.dll`: 46,592 bytes, `8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38`.
 - `gswdd32.dll`: 32,256 bytes, `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4`.
 
@@ -112,9 +134,9 @@ installation or device operation.
 
 `drivers/win98/payload-inventory.schema.tsv` and
 `drivers/win98/payload-manifest.schema.tsv` contain the reviewed closed
-five-file `gsw-vga` destination set and its exact build hashes. The four reserved
+five-file `gsw-vga` destination set and its exact build hashes. The five reserved
 package identities are independently stageable; availability of one package
-does not imply availability of the other three. With no `-PackageId`, staging
+does not imply availability of the other four. With no `-PackageId`, staging
 selects every package declared by the reviewed inventory. An explicit
 `-PackageId` list selects an exact subset and rejects empty, duplicate, unknown,
 or inventory-undeclared IDs.
@@ -132,14 +154,16 @@ and are not install-ready packages.
 Package provenance is a closed mapping to lock `source_directory` values. GSW
 VGA requires `vmdisp9x` and `vmhal9x`; GSW-Sound and the user-supplied DirectX
 9 runtime have no upstream checkout requirement; GSW DX9 compatibility
-requires `mesa9x` and `wine9x`. GSW-Sound's empty upstream requirement means
+requires only `mesa9x`; and GSW Glide requires `openglide9x`. The current
+five-file VGA inventory does not require Mesa until `gswgl32.dll` joins its
+reviewed package shape. GSW-Sound's empty upstream requirement means
 that its guest driver will use original, repository-owned sources; it does not
 make an absent source tree or payload stageable. Staging resolves required
-upstream directories to the authoritative lock names and asks the source
-verifier to validate only that deduplicated set. Every required mapping must
-resolve to exactly one `planned`
-row; a `reference-only` row cannot authorize a package. Missing, ambiguous,
-dirty, or mismatched required provenance still blocks staging.
+upstream directories to the authoritative lock names. A `planned` row uses the
+whole-source verifier. A `planned-component` row must pass its ready component
+closure verifier. A blocked closure or `reference-only` row cannot authorize a
+package. Missing, ambiguous, dirty, or mismatched required provenance also
+blocks staging.
 
 The host-side delivery plan reserves these identities:
 
@@ -151,24 +175,115 @@ The host-side delivery plan reserves these identities:
   100.
 - The GSW DirectX compatibility component is a future RunOnce component at
   order 200.
+- GSW Glide is a future RunOnce component at order 300.
 
 PnP installation occurs during Windows Setup, so the sound and display drivers
 precede the post-Setup component sequence. Within that future sequence, the
-DirectX runtime precedes the compatibility layer so the runtime cannot replace
-the final GSW compatibility files. No RunOnce command is emitted while those
-payloads are unavailable.
+DirectX runtime precedes the compatibility layer, which precedes Glide, so the
+runtime cannot replace the final GSW compatibility files. No RunOnce command is
+emitted while those payloads are unavailable.
 
 The pinned VMDisp9x and VMHAL9x revisions have reviewed RETVRN99 adaptations,
-bounded build proofs, and a closed stageable PnP package. Mesa9x and Wine9x
-remain planned inputs subject to later license and adaptation review. SoftGPU, `libs/vkd3d-shader`, and the VMware
-SVGA Device Developer Kit mirror are reference-only at this decision point.
-Changing a disposition requires a separate review; a lock update alone does
-not approve source copying or binary distribution.
+bounded build proofs, and a closed stageable PnP package. Mesa9x is retained at
+`29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f`, with only its `mesa-23.1.x`
+23.1.9 subtree named as a candidate component. Its schema-2 component audit now
+binds 1,036 unique files: 837 selected source units, 198 generator inputs, and
+one generator recipe. Those rows use 892 exact license-evidence records. The
+manifest remains blocked because compiler header and depfile closure, omission
+proofs, and direct-build integration are incomplete.
+
+`libs/vkd3d-shader` and OpenGlide9x remain blocked candidate components pending
+their exact file and license reviews. The OpenGlide9x manifest currently names
+no source prefix. Wine9x, SoftGPU, and the VMware SVGA Device Developer Kit
+mirror are reference-only. Changing a disposition or manifest status requires
+a separate review; a lock update alone does not approve source copying or
+binary distribution.
+
+`drivers/win98/mesa-generator-toolchain-lock.json` records a blocked-only Mesa
+generator environment. It fixes an immutable 26-package dependency graph with
+24 required packages and two reserved, unselected packages. Every local package
+archive is bound by relative path, byte count, and SHA-256. Detached signatures
+are recorded as present or missing, but none is trusted until the exact signing
+root and verification procedure are separately pinned.
+
+Trust-root validation, extraction, extracted-tree identity, runtime validation,
+tool and Python-module probes, generator commands, and generated-output identity
+remain separate proofs. The verifier accepts this lock only for policy audit.
+It authorizes no build, staging, guest installation, or capability
+advertisement.
+
+Mesa production builds use the alternative allowed by the graphics source
+plan: reviewed, hash-locked generated outputs. The Generated Source Module
+accepts a checkout already populated by an independently run generator,
+verifies the exact Mesa commit, generator recipe, source seed, and permitted
+working-tree state, and publishes only the 67 outputs declared by
+`GENERATE_FILES` into a fresh normalized root. It never executes a generator,
+extracts a package, or reads the package cache. Three Bison header byproducts
+and the byte-identical `tr_util.h` byproduct are validation-only; tracked Mesa
+blobs remain authoritative and are never replaced by publication.
+
+Two distinct LF and CRLF generation checkouts have independently produced the
+same normalized 67-file root. The reproducibility record binds both run
+identities and canonical tree digest
+`dd0ae888829eabf2a0043f27100aa64c57b43ad12054270bee62f50ccc451d84`.
+The generated-output lock binds every published byte, directly binds that
+reproducibility record, and excludes the four validation-only side outputs.
+Its 77 ordered evidence rows prove all 67 output license expressions: 58 rows
+bind ranges in generated outputs and 19 bind exact source evidence from the
+pinned Git blobs already reviewed by the Mesa component manifest. The lock is
+therefore `reviewed-generated-source`. This classification proves generated
+bytes and their license evidence only; generator-input, component, header,
+depfile, and production-build closure remain separate false claims.
+
+`drivers/win98/mesa-gsw` is an original source Module for the two prohibited
+implementation replacements. Its verifier binds eight permissive Mesa
+Interface and caller blobs, the pinned checkout identity, and three
+GPL-3.0-only outputs: deterministic Mesa identity macros, the Nine memory
+Interface, and the resident Win32 memory Adapter. The Adapter uses 64-byte
+aligned process-heap allocations, explicit suballocation ownership, and a
+worker-safe free path. Its caller must quiesce the worker before allocator
+destruction, and external-pointer extent remains a caller responsibility
+because Mesa supplies no extent in that Interface. This Module proves source
+identity only; compile and build claims remain false.
+
+The original-source compile proof binds the canonical GSW-886 CPU profile
+rather than carrying a reduced flag copy. It compiles the Nine memory Adapter
+twice in private roots with the pinned i686 compiler, suppresses Windows crash
+dialogs for every bounded child, inspects but never executes the COFF objects,
+zeros only their timestamps, and requires byte-identical normalized results.
+The proof produces no persistent object or DLL and satisfies no production
+build-profile dependency.
+
+`mesa-compiler-closure.json` defines the next preparation Seam as a deliberately
+blocked Compiler Closure Module. Its first schema contains no commands,
+depfiles, headers, or execution authority. It records that clean-checkout
+discovery is non-authoritative and that the eventual twin proof must use the
+exact materialized component closure, reviewed generated and original roots,
+and locked toolchain. Upstream multi-backend recipe files, software renderers,
+the DRM SVGA winsys, LLVM definitions, and VirtualBox definitions are frozen as
+excluded inputs.
+
+The build profile fixes `hash-locked-generated-outputs` as its only generation
+strategy. Normalized generated-source reproducibility and the generated-output
+review are currently proven. The source/license, CPU compile proof, original
+GSW Adapter integration, direct-build, backend-exclusion, and compile-output
+gates remain false, so the profile remains blocked.
 
 ## Consequences
 
 - Source evaluation can proceed against stable revisions without importing
   binaries into the repository.
+- The Mesa generator package graph and local archive inventory can be audited
+  without treating downloaded bytes or detached signatures as trusted.
+- The production build never runs or extracts that package graph. Completing a
+  generator-toolchain proof does not imply completion of any source or build
+  proof.
+- A policy-audited Mesa generator lock cannot be consumed by build or delivery
+  workflows.
+- Generated-source reproducibility, exact output coverage, and file-level
+  generated-output license evidence are proven. That reviewed source can
+  satisfy only its named build-profile dependency; every remaining closure
+  gate must still pass before a build is authorized.
 - The full compiler extraction, not only its launcher executable, is covered by
   a deterministic integrity check.
 - A missing required checkout, dirty tree, wrong origin, toolchain hash
@@ -193,3 +308,7 @@ not approve source copying or binary distribution.
 - [VxD-first GSW-Sound architecture](0008-gsw-sound-vxd-first-audio-architecture.md)
 - [Default Windows 98 sound path](0009-default-windows-98-sound-path.md)
 - [Pinned upstream source lock](../../drivers/win98/upstream.lock.tsv)
+- [Component closure schema](../../drivers/win98/component-closure.schema.json)
+- [Reviewed component closure schema](../../drivers/win98/component-closure-v2.schema.json)
+- [Mesa generated-output review lock](../../drivers/win98/generated-output-locks/mesa-23.1.9.json)
+- [Original GSW Mesa source Module](../../drivers/win98/mesa-gsw/README.md)

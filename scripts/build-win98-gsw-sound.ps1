@@ -10,6 +10,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'strict-json.ps1')
+. (Join-Path $PSScriptRoot 'strict-tsv.ps1')
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $soundRoot = Join-Path $repoRoot 'drivers\win98\gsw-sound'
 if ([string]::IsNullOrWhiteSpace($BuildPlan)) {
@@ -23,37 +25,11 @@ function Get-Sha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function Assert-JsonPropertiesAreUnique {
-    param(
-        [Parameter(Mandatory = $true)][Text.Json.JsonElement]$Element,
-        [Parameter(Mandatory = $true)][string]$JsonPath
-    )
-    if ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Object) {
-        $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($property in $Element.EnumerateObject()) {
-            if (-not $names.Add($property.Name)) {
-                throw "Duplicate JSON property '$($property.Name)' at $JsonPath."
-            }
-            Assert-JsonPropertiesAreUnique $property.Value "$JsonPath.$($property.Name)"
-        }
-    }
-    elseif ($Element.ValueKind -eq [Text.Json.JsonValueKind]::Array) {
-        $index = 0
-        foreach ($item in $Element.EnumerateArray()) {
-            Assert-JsonPropertiesAreUnique $item "${JsonPath}[$index]"
-            $index++
-        }
-    }
-}
-
 function Read-StrictJson {
     param([Parameter(Mandatory = $true)][string]$Path, [string]$Label = 'JSON')
-    $text = [IO.File]::ReadAllText($Path)
-    try { $document = [Text.Json.JsonDocument]::Parse($text) }
-    catch { throw "Malformed $Label`: $($_.Exception.Message)" }
-    try { Assert-JsonPropertiesAreUnique $document.RootElement '$' }
-    finally { $document.Dispose() }
-    try { return $text | ConvertFrom-Json -Depth 16 }
+    try {
+        return Read-GswStrictJsonFile -Path $Path -Name $Label -MaximumBytes 4194304
+    }
     catch { throw "Malformed $Label`: $($_.Exception.Message)" }
 }
 
@@ -206,8 +182,15 @@ Assert-RegularFile $wmake 'Pinned Open Watcom wmake' | Out-Null
 $wdump = Join-Path $watcomRoot 'binnt\wdump.exe'
 Assert-RegularFile $wdump 'Pinned Open Watcom wdump' | Out-Null
 
-$upstreamRows = @(Get-Content -LiteralPath (Join-Path $repoRoot 'drivers\win98\upstream.lock.tsv') |
-    Where-Object { $_ -and -not $_.StartsWith('#') } | ConvertFrom-Csv -Delimiter "`t")
+$upstreamHeader = @(
+    'name', 'source_directory', 'repository', 'commit', 'upstream_license',
+    'disposition', 'closure_manifest', 'closure_manifest_sha256', 'scope'
+)
+$upstreamRows = @(Read-StrictTsvFile `
+    -Path (Join-Path $repoRoot 'drivers\win98\upstream.lock.tsv') `
+    -ExpectedHeader $upstreamHeader -Name 'Windows 98 upstream lock' `
+    -MaximumBytes 1048576 -MaximumRows 256 -MaximumLineBytes 16384 `
+    -MaximumPhysicalLines 1024)
 $interfaceLock = Read-StrictJson $interfaceLockPath 'GSW-Sound Interface lock JSON'
 $sourceRows = @($upstreamRows | Where-Object { $_.name -ceq $interfaceLock.vmm_interface.source_name })
 if ($sourceRows.Count -ne 1) { throw 'The Interface checkout has no unique upstream source row.' }

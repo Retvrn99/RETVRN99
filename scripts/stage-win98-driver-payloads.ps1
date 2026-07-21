@@ -24,6 +24,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'strict-tsv.ps1')
 if ([string]::IsNullOrWhiteSpace($PayloadInventory)) {
     $PayloadInventory = Join-Path $PSScriptRoot '..\drivers\win98\payload-inventory.schema.tsv'
 }
@@ -180,24 +181,14 @@ $manifestPath = Get-FullPath $PayloadManifest
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
     throw "Payload manifest not found: $manifestPath"
 }
-$dataLines = @(
-    Get-Content -LiteralPath $manifestPath |
-        Where-Object { $_.Trim().Length -gt 0 -and -not $_.TrimStart().StartsWith('#') }
-)
-if ($dataLines.Count -lt 2) {
-    throw 'No install-ready Windows 98 payload rows are declared; staging is blocked.'
-}
-$entries = @($dataLines | ConvertFrom-Csv -Delimiter "`t")
 $requiredColumns = @(
     'package_id', 'source_relative_path', 'destination_relative_path', 'kind',
     'sha256', 'bytes', 'hardware_id', 'run_once_order'
 )
-$columns = @($entries[0].PSObject.Properties.Name)
-foreach ($column in $requiredColumns) {
-    if ($columns -notcontains $column) {
-        throw "The payload manifest is missing '$column'."
-    }
-}
+$entries = @(Read-StrictTsvFile -Path $manifestPath `
+    -ExpectedHeader $requiredColumns -Name 'payload manifest' `
+    -MaximumBytes 1048576 -MaximumRows 128 -MaximumLineBytes 16384 `
+    -MaximumPhysicalLines 512)
 
 $payloadRootPath = Get-FullPath $PayloadRoot
 if (-not (Test-Path -LiteralPath $payloadRootPath -PathType Container)) {
@@ -222,7 +213,12 @@ $packageRules = @{
     'gsw-dx9-compat' = @{
         HardwareId = ''
         RunOnceOrder = 200
-        SourceDirectories = @('mesa9x', 'wine9x')
+        SourceDirectories = @('mesa9x')
+    }
+    'gsw-glide' = @{
+        HardwareId = ''
+        RunOnceOrder = 300
+        SourceDirectories = @('openglide9x')
     }
 }
 $packageSelectionExplicit = $PSBoundParameters.ContainsKey('PackageId')
@@ -255,26 +251,13 @@ $inventoryPath = Get-FullPath $PayloadInventory
 if (-not (Test-Path -LiteralPath $inventoryPath -PathType Leaf)) {
     throw "Reviewed payload inventory not found: $inventoryPath"
 }
-$inventoryLines = @(
-    Get-Content -LiteralPath $inventoryPath |
-        Where-Object { $_.Trim().Length -gt 0 -and -not $_.TrimStart().StartsWith('#') }
-)
-if ($inventoryLines.Count -lt 2) {
-    throw 'No reviewed Windows 98 payload inventory is declared; staging is blocked.'
-}
-$inventoryEntries = @($inventoryLines | ConvertFrom-Csv -Delimiter "`t")
-if ($inventoryEntries.Count -gt $maxPayloadRows) {
-    throw "Payload inventory exceeds the $maxPayloadRows-row limit."
-}
 $inventoryRequiredColumns = @(
     'package_id', 'destination_relative_path', 'kind', 'hardware_id', 'run_once_order'
 )
-$inventoryColumns = @($inventoryEntries[0].PSObject.Properties.Name)
-foreach ($column in $inventoryRequiredColumns) {
-    if ($inventoryColumns -notcontains $column) {
-        throw "The payload inventory is missing '$column'."
-    }
-}
+$inventoryEntries = @(Read-StrictTsvFile -Path $inventoryPath `
+    -ExpectedHeader $inventoryRequiredColumns -Name 'payload inventory' `
+    -MaximumBytes 1048576 -MaximumRows $maxPayloadRows -MaximumLineBytes 16384 `
+    -MaximumPhysicalLines 512)
 
 $reviewedDestinations = @{}
 $expectedAliases = @{}
@@ -367,7 +350,9 @@ foreach ($selectedPackageId in @($selectedPackageIds | Where-Object { $_ -in @('
         throw "Reviewed PnP package '$selectedPackageId' must contain exactly one INF, at least one binary, at most one catalog, and no RunOnce component."
     }
 }
-foreach ($selectedPackageId in @($selectedPackageIds | Where-Object { $_ -in @('directx9-runtime', 'gsw-dx9-compat') })) {
+foreach ($selectedPackageId in @($selectedPackageIds | Where-Object {
+    $_ -in @('directx9-runtime', 'gsw-dx9-compat', 'gsw-glide')
+})) {
     $componentCount = [int]($packageKindCounts["$selectedPackageId|Component"])
     $infCount = [int]($packageKindCounts["$selectedPackageId|INF"])
     $catalogCount = [int]($packageKindCounts["$selectedPackageId|Catalog"])
@@ -476,37 +461,54 @@ if ($requiredSourceDirectories.Count -gt 0) {
     if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
         throw "Upstream lock not found: $lockPath"
     }
-    $lockLines = @(
-        Get-Content -LiteralPath $lockPath |
-            Where-Object { $_.Trim().Length -gt 0 -and -not $_.TrimStart().StartsWith('#') }
+    $lockHeader = @(
+        'name', 'source_directory', 'repository', 'commit', 'upstream_license',
+        'disposition', 'closure_manifest', 'closure_manifest_sha256', 'scope'
     )
-    if ($lockLines.Count -lt 2) {
-        throw 'The upstream lock must contain a header and at least one source row.'
-    }
-    $lockEntries = @($lockLines | ConvertFrom-Csv -Delimiter "`t")
-    $lockColumns = @($lockEntries[0].PSObject.Properties.Name)
-    foreach ($column in @('name', 'source_directory', 'disposition')) {
-        if ($lockColumns -notcontains $column) {
-            throw "The upstream lock is missing '$column'."
-        }
-    }
-    $requiredSourceNames = @()
+    $lockEntries = @(Read-StrictTsvFile -Path $lockPath `
+        -ExpectedHeader $lockHeader -Name 'upstream lock' `
+        -MaximumBytes 1048576 -MaximumRows 256 -MaximumLineBytes 16384 `
+        -MaximumPhysicalLines 1024)
+    $plannedSourceNames = @()
+    $componentSourceNames = @()
     foreach ($requiredSourceDirectory in $requiredSourceDirectories) {
         $matches = @(
             $lockEntries |
                 Where-Object { $_.source_directory -ceq $requiredSourceDirectory }
         )
-        if ($matches.Count -ne 1 -or
-            [string]::IsNullOrWhiteSpace($matches[0].name) -or
-            $matches[0].disposition -cne 'planned') {
-            throw "Required upstream source directory '$requiredSourceDirectory' must have exactly one planned, named lock row."
+        if ($matches.Count -ne 1 -or [string]::IsNullOrWhiteSpace($matches[0].name)) {
+            throw "Required upstream source directory '$requiredSourceDirectory' must have exactly one named lock row."
         }
-        $requiredSourceNames += [string]$matches[0].name
+        switch ([string]$matches[0].disposition) {
+            'planned' {
+                $plannedSourceNames += [string]$matches[0].name
+            }
+            'planned-component' {
+                $componentSourceNames += [string]$matches[0].name
+            }
+            'reference-only' {
+                throw "Reference-only upstream source '$($matches[0].name)' cannot authorize package staging."
+            }
+            default {
+                throw "Required upstream source '$($matches[0].name)' has unsupported disposition '$($matches[0].disposition)'."
+            }
+        }
     }
-    & (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
-        -SourceRoot $SourceRoot -LockFile $lockPath -SourceName $requiredSourceNames
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Pinned Windows 98 source verification failed.'
+    if ($plannedSourceNames.Count -gt 0) {
+        & (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
+            -SourceRoot $SourceRoot -LockFile $lockPath `
+            -SourceName @($plannedSourceNames | Sort-Object -Unique)
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Pinned Windows 98 source verification failed.'
+        }
+    }
+    if ($componentSourceNames.Count -gt 0) {
+        & (Join-Path $PSScriptRoot 'verify-win98-component-closure.ps1') `
+            -SourceRoot $SourceRoot -LockFile $lockPath `
+            -SourceName @($componentSourceNames | Sort-Object -Unique)
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Windows 98 component source closure verification failed.'
+        }
     }
 }
 

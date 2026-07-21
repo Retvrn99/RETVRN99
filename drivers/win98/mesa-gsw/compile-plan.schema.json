@@ -1,0 +1,242 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "compile-plan.schema.json",
+  "title": "RETVRN99 original GSW Mesa compile-only proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "status",
+    "guest_cpu_profile",
+    "source_module",
+    "toolchain",
+    "compile",
+    "normalization",
+    "forbidden_backend_tokens",
+    "claims"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {"const": "compile-plan.schema.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "status": {"const": "compile-only-proof"},
+    "guest_cpu_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "verifier", "profile_id", "cpu_flags_source"],
+      "properties": {
+        "profile": {"$ref": "#/$defs/repository_file"},
+        "verifier": {"$ref": "#/$defs/repository_file"},
+        "profile_id": {"const": "gsw-886-win98-i686-v1"},
+        "cpu_flags_source": {
+          "const": "guest_cpu_profile.toolchains.mingw.cpu_flags"
+        }
+      }
+    },
+    "source_module": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lock", "verifier", "inputs"],
+      "properties": {
+        "lock": {"$ref": "#/$defs/repository_file"},
+        "verifier": {"$ref": "#/$defs/repository_file"},
+        "inputs": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {"$ref": "#/$defs/compile_input"}
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lock",
+        "verifier",
+        "name",
+        "extracted_relative_path",
+        "tree_sha256",
+        "compiler",
+        "inspector"
+      ],
+      "properties": {
+        "lock": {"$ref": "#/$defs/repository_file"},
+        "verifier": {"$ref": "#/$defs/repository_file"},
+        "name": {"const": "msys2-mingw32-gcc-15.2.0-rev13"},
+        "extracted_relative_path": {
+          "const": "msys2-mingw32-gcc15.2.0-20260717"
+        },
+        "tree_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "compiler": {"$ref": "#/$defs/tool_file"},
+        "inspector": {"$ref": "#/$defs/tool_file"}
+      }
+    },
+    "compile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "language",
+        "target",
+        "prefix_flags",
+        "cpu_flags_source",
+        "suffix_flags",
+        "root_scoped_flags",
+        "probe",
+        "source",
+        "temporary_output",
+        "repeat_count",
+        "process_timeout_seconds",
+        "required_macros",
+        "forbidden_macros"
+      ],
+      "properties": {
+        "language": {"const": "c-gnu99"},
+        "target": {"const": "i686-w64-mingw32"},
+        "prefix_flags": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {"type": "string", "minLength": 2, "maxLength": 128}
+        },
+        "cpu_flags_source": {
+          "const": "guest_cpu_profile.toolchains.mingw.cpu_flags"
+        },
+        "suffix_flags": {
+          "type": "array",
+          "minItems": 12,
+          "maxItems": 12,
+          "items": {"type": "string", "minLength": 2, "maxLength": 128}
+        },
+        "root_scoped_flags": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {"const": "-ffile-prefix-map={build_root}=."},
+            {"const": "-fmacro-prefix-map={build_root}=."},
+            {"const": "-I{build_root}/include"}
+          ],
+          "items": false
+        },
+        "probe": {"const": "probes/compile_probe.c"},
+        "source": {"const": "src/nine_memory_helper.c"},
+        "temporary_output": {"const": "out/nine_memory_helper.o"},
+        "repeat_count": {"const": 2},
+        "process_timeout_seconds": {"const": 10},
+        "required_macros": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {"type": "string", "pattern": "^__[A-Za-z0-9_]+__$"}
+        },
+        "forbidden_macros": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": {"type": "string", "pattern": "^__[A-Za-z0-9_]+__$"}
+        }
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "machine",
+        "timestamp_offset",
+        "timestamp_bytes",
+        "optional_header_bytes",
+        "normalized_output"
+      ],
+      "properties": {
+        "format": {"const": "coff-i386"},
+        "machine": {"const": 332},
+        "timestamp_offset": {"const": 4},
+        "timestamp_bytes": {"const": 4},
+        "optional_header_bytes": {"const": 0},
+        "normalized_output": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["bytes", "sha256"],
+          "properties": {
+            "bytes": {"const": 4066},
+            "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
+        }
+      }
+    },
+    "forbidden_backend_tokens": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "items": {"type": "string", "pattern": "^[a-z0-9-]+$"}
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "temporary_compile_proven",
+        "dll_link_authorized",
+        "production_build_authorized",
+        "build_profile_dependency_satisfied",
+        "staging_authorized",
+        "guest_install_authorized",
+        "capability_advertisement_authorized"
+      ],
+      "properties": {
+        "temporary_compile_proven": {"const": true},
+        "dll_link_authorized": {"const": false},
+        "production_build_authorized": {"const": false},
+        "build_profile_dependency_satisfied": {"const": false},
+        "staging_authorized": {"const": false},
+        "guest_install_authorized": {"const": false},
+        "capability_advertisement_authorized": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "repository_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 256},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "compile_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256", "role"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 128},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    },
+    "tool_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 128},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 8388608},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    }
+  }
+}

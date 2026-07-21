@@ -1,0 +1,146 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "guest-cpu-profile.schema.json",
+    "sha256": "2551f1c9785e614ac6090adf45f57ecc7869c1f0c5465982f0df4764b0901cfe"
+  },
+  "profile_id": "gsw-886-win98-i686-v1",
+  "cpu_persona": {
+    "name": "GSW-886",
+    "architecture": "i686"
+  },
+  "cpuid": {
+    "policy": "unchanged",
+    "changes_allowed": false
+  },
+  "toolchains": {
+    "mingw": {
+      "toolchain_id": "msys2-mingw32-gcc-15.2.0-rev13",
+      "toolchain_lock": {
+        "relative_path": "mingw32-toolchain.lock.json",
+        "sha256": "db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12"
+      },
+      "compiler": {
+        "relative_path": "bin/gcc.exe",
+        "sha256": "0c79d47814364067e560ba4d26849126388a44fc5765d33df00c1fdd582c89a9"
+      },
+      "objdump": {
+        "relative_path": "bin/objdump.exe",
+        "sha256": "3a3309d8a8f8898193d5e41e73085d8c8702a1efe296c6236a48f925fc5411f5"
+      },
+      "target": "i686-w64-mingw32",
+      "architecture": "i686",
+      "required_features": ["mmx", "sse", "sse2", "sse3"],
+      "disabled_features": [
+        "cx16",
+        "ssse3",
+        "sse4",
+        "sse4a",
+        "avx",
+        "avx2",
+        "avx512",
+        "aes",
+        "pclmul",
+        "fma",
+        "fma4",
+        "f16c",
+        "xop",
+        "bmi",
+        "bmi2",
+        "abm",
+        "tbm",
+        "movbe",
+        "rdrand",
+        "rdseed",
+        "adx",
+        "sha",
+        "gfni",
+        "vaes",
+        "vpclmulqdq",
+        "rtm",
+        "hle",
+        "sgx",
+        "pku",
+        "xsave",
+        "waitpkg",
+        "enqcmd",
+        "movdir",
+        "serialize",
+        "uintr",
+        "amx"
+      ],
+      "cpu_flags": [
+        "-march=i686",
+        "-mmmx",
+        "-msse",
+        "-msse2",
+        "-msse3",
+        "-mno-cx16",
+        "-mno-ssse3",
+        "-mno-sse4",
+        "-mno-sse4.1",
+        "-mno-sse4.2",
+        "-mno-sse4a",
+        "-mno-avx",
+        "-mno-avx2",
+        "-mno-avx512f",
+        "-mno-avx512bw",
+        "-mno-avx512cd",
+        "-mno-avx512dq",
+        "-mno-avx512vl",
+        "-mno-aes",
+        "-mno-pclmul",
+        "-mno-fma",
+        "-mno-fma4",
+        "-mno-f16c",
+        "-mno-xop",
+        "-mno-bmi",
+        "-mno-bmi2",
+        "-mno-abm",
+        "-mno-tbm",
+        "-mno-movbe",
+        "-mno-rdrnd",
+        "-mno-rdseed",
+        "-mno-adx",
+        "-mno-sha",
+        "-mno-gfni",
+        "-mno-vaes",
+        "-mno-vpclmulqdq",
+        "-mno-rtm",
+        "-mno-hle",
+        "-mno-sgx",
+        "-mno-pku",
+        "-mno-xsave",
+        "-mno-waitpkg",
+        "-mno-enqcmd",
+        "-mno-movdiri",
+        "-mno-movdir64b",
+        "-mno-serialize",
+        "-mno-uintr",
+        "-mno-amx-tile",
+        "-mno-amx-int8",
+        "-mno-amx-bf16"
+      ]
+    },
+    "open_watcom": {
+      "toolchain_id": "open-watcom-c-win32-1.9",
+      "toolchain_lock": {
+        "relative_path": "toolchain.lock.json",
+        "sha256": "e97012fb9d9b1257e59ac5ea46ac8aa1b54b62e2feb03fed70545c5769e07dff"
+      },
+      "processor_switch": "-6",
+      "architecture": "i686",
+      "floating_point": "x87",
+      "cpu_flags": ["-6s", "-fpi87"]
+    }
+  },
+  "proof": {
+    "status": "blocked",
+    "evidence_status": "absent",
+    "reason": "Exact pinned MinGW compiler feature report and final-binary objdump evidence have not been captured.",
+    "compiler_feature_report": null,
+    "final_pe_outputs": [],
+    "final_binary_objdump_evidence": []
+  }
+}

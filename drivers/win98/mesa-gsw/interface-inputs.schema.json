@@ -1,0 +1,277 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "interface-inputs.schema.json",
+  "title": "RETVRN99 original GSW Mesa source Module",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "status",
+    "source",
+    "inputs",
+    "excluded_implementation_paths",
+    "outputs",
+    "claims"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {"const": "interface-inputs.schema.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "status": {"const": "reviewed-permissive-interfaces"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_lock",
+        "source_name",
+        "repository",
+        "commit",
+        "mesa_version",
+        "mesa_subtree"
+      ],
+      "properties": {
+        "source_lock": {"const": "../upstream.lock.tsv"},
+        "source_name": {"const": "mesa9x"},
+        "repository": {"const": "https://github.com/JHRobotics/mesa9x.git"},
+        "commit": {"const": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"},
+        "mesa_version": {"const": "23.1.9"},
+        "mesa_subtree": {"const": "mesa-23.1.x"}
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "prefixItems": [
+        {
+          "allOf": [
+            {"$ref": "#/$defs/input"},
+            {"properties": {
+              "source_relative_path": {"const": "mesa-23.1.x/src/gallium/frontends/nine/nine_memory_helper.h"},
+              "git_blob": {"const": "8e4cde122369b91e02f205f6d7884121dea2046f"},
+              "bytes": {"const": 3407},
+              "sha256": {"const": "882c8bb2598f1beb3de9fb4733f80a9340e9ab4418304ae7eee64230e3f7ec74"},
+              "license_expression": {"const": "MIT"},
+              "role": {"const": "nine-interface-declarations"}
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/input"},
+            {"properties": {
+              "source_relative_path": {"const": "mesa-23.1.x/src/gallium/frontends/nine/device9.c"},
+              "git_blob": {"const": "10f2e7733e2aa2ebc34ab50a01f260b5996a0364"},
+              "bytes": {"const": 156589},
+              "sha256": {"const": "67fc2f66e192c32c7e89634556c571e3dcf7b2735344fb0df1cc5630f9b8d968"},
+              "license_expression": {"const": "MIT"},
+              "role": {"const": "nine-allocator-lifecycle-caller"}
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/input"},
+            {"properties": {
+              "source_relative_path": {"const": "mesa-23.1.x/src/gallium/frontends/nine/surface9.c"},
+              "git_blob": {"const": "93d5d6577395752e4e0ff851d58850d38dc165fa"},
+              "bytes": {"const": 33934},
+              "sha256": {"const": "c2698c513b1c0994de826265ac3408b2a0da8ae85923ed64c2b9fbe1bf279191"},
+              "license_expression": {"const": "MIT"},
+              "role": {"const": "nine-pointer-lifetime-caller"}
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/input"},
+            {"properties": {
+              "source_relative_path": {"const": "mesa-23.1.x/src/gallium/frontends/nine/texture9.c"},
+              "git_blob": {"const": "5843e900dddffd6d11f8bb14b9123212728555ac"},
+              "bytes": {"const": 14606},
+              "sha256": {"const": "95ce21274e423f764895efe27356f7036e0b29354b9efd5776225443831dd10c"},
+              "license_expression": {"const": "MIT"},
+              "role": {"const": "nine-suballocation-caller"}
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/input"},
+            {"properties": {
+              "source_relative_path": {"const": "mesa-23.1.x/src/gallium/frontends/nine/cubetexture9.c"},
+              "git_blob": {"const": "b78da40239e5de99fab453679244bfbb2dc9728f"},
+              "bytes": {"const": 13856},
+              "sha256": {"const": "c77f7bd87194e4dde5eca93ed9c5584c8e8ae15198acd49bafe998e698d98dea"},
+              "license_expression": {"const": "MIT"},
+              "role": {"const": "nine-suballocation-caller"}
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/input"},
+            {"properties": {
+              "source_relative_path": {"const": "mesa-23.1.x/src/gallium/drivers/svga/svga_screen.c"},
+              "git_blob": {"const": "dd26934198d3ed3e7174bed0a44fd3e76eb4be34"},
+              "bytes": {"const": 46069},
+              "sha256": {"const": "98f9990a1dce6607ea353e4bb9209411855beddc0ed5b8d592b8f3f2e2569bc8"},
+              "license_expression": {"const": "MIT"},
+              "role": {"const": "mesa-identity-caller"}
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/input"},
+            {"properties": {
+              "source_relative_path": {"const": "mesa-23.1.x/src/mesa/main/context.c"},
+              "git_blob": {"const": "9763f4de35ea01582ca2584931312e717c64f1ac"},
+              "bytes": {"const": 53798},
+              "sha256": {"const": "50b7d1c67677dfbd74b02bacfcc0dc7254ed407c5239c3e7f8d813b06df39527"},
+              "license_expression": {"const": "MIT"},
+              "role": {"const": "mesa-version-caller"}
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/input"},
+            {"properties": {
+              "source_relative_path": {"const": "mesa-23.1.x/src/mesa/main/version.c"},
+              "git_blob": {"const": "25cc619b0ba8d3d74f5e74abd1217ff44c88352e"},
+              "bytes": {"const": 29474},
+              "sha256": {"const": "ddc513f9f7edfed471183662df60be2873ce31622a988694d1ce2916d6229424"},
+              "license_expression": {"const": "MIT"},
+              "role": {"const": "mesa-version-caller"}
+            }}
+          ]
+        }
+      ],
+      "items": false
+    },
+    "excluded_implementation_paths": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {"const": "include/git_sha1.h"},
+        {"const": "win9x/nine/nine_memory_helper.c"}
+      ],
+      "items": false
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "prefixItems": [
+        {
+          "allOf": [
+            {"$ref": "#/$defs/output"},
+            {"properties": {
+              "relative_path": {"const": "include/git_sha1.h"},
+              "bytes": {"const": 525},
+              "sha256": {"const": "a9fbd8a78d0ac9ae5c12f1ef6528e99f6bf9067284a3b3119ed7c9ae86a63c91"},
+              "license_expression": {"const": "GPL-3.0-only"},
+              "role": {"const": "mesa-build-identity"}
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/output"},
+            {"properties": {
+              "relative_path": {"const": "include/nine_memory_helper.h"},
+              "bytes": {"const": 1473},
+              "sha256": {"const": "e7aff0715a4f98a2d3aa29bdf0efd43fea8cdb2d9b70ac6b310d8a528b72cade"},
+              "license_expression": {"const": "GPL-3.0-only"},
+              "role": {"const": "nine-memory-interface"}
+            }}
+          ]
+        },
+        {
+          "allOf": [
+            {"$ref": "#/$defs/output"},
+            {"properties": {
+              "relative_path": {"const": "src/nine_memory_helper.c"},
+              "bytes": {"const": 9301},
+              "sha256": {"const": "b1e2f213d6cf2ced951d526e31cf74430ab0b0ce6942fe5a77f898bc65b8b0ef"},
+              "license_expression": {"const": "GPL-3.0-only"},
+              "role": {"const": "nine-resident-memory-adapter"}
+            }}
+          ]
+        }
+      ],
+      "items": false
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "build_authorized",
+        "compile_proven",
+        "staging_authorized",
+        "guest_install_authorized",
+        "capability_advertisement_authorized"
+      ],
+      "properties": {
+        "build_authorized": {"const": false},
+        "compile_proven": {"const": false},
+        "staging_authorized": {"const": false},
+        "guest_install_authorized": {"const": false},
+        "capability_advertisement_authorized": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_relative_path",
+        "git_blob",
+        "bytes",
+        "sha256",
+        "license_expression",
+        "role"
+      ],
+      "properties": {
+        "source_relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "license_expression": {"const": "MIT"},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "bytes",
+        "sha256",
+        "license_expression",
+        "role"
+      ],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 128},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "license_expression": {"const": "GPL-3.0-only"},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    }
+  }
+}

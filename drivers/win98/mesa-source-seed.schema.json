@@ -1,0 +1,276 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mesa-source-seed.schema.json",
+  "title": "RETVRN99 Mesa source-list seed audit",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "status",
+    "reason",
+    "source",
+    "selection",
+    "scope",
+    "blockers"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {"const": "mesa-source-seed.schema.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "status": {"const": "blocked"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upstream_name",
+        "repository",
+        "owning_commit",
+        "mesa_version",
+        "mesa_subtree",
+        "definition_files",
+        "normalization_file",
+        "confirmed_absent_input"
+      ],
+      "properties": {
+        "upstream_name": {"const": "mesa9x"},
+        "repository": {"const": "https://github.com/JHRobotics/mesa9x.git"},
+        "owning_commit": {"const": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"},
+        "mesa_version": {"const": "23.1.9"},
+        "mesa_subtree": {"const": "mesa-23.1.x"},
+        "definition_files": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {"$ref": "#/$defs/definition_file"}
+        },
+        "normalization_file": {"$ref": "#/$defs/definition_file"},
+        "confirmed_absent_input": {"const": "mesa-23.1.x/Makefile.sources"}
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "variables",
+        "forbidden_variables",
+        "disabled_conditionals",
+        "normalization",
+        "worktree_normalization",
+        "occurrence_count",
+        "unique_count",
+        "tracked_present_count",
+        "generated_absent_count",
+        "expected_duplicate",
+        "candidate_set_sha256",
+        "occurrence_sequence_sha256",
+        "generated_absent_paths"
+      ],
+      "properties": {
+        "variables": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "items": {"$ref": "#/$defs/variable"}
+        },
+        "forbidden_variables": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {"type": "string"}
+        },
+        "disabled_conditionals": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {"$ref": "#/$defs/disabled_conditional"}
+        },
+        "normalization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mesa_version_token",
+            "mesa_version_prefix",
+            "path_separator",
+            "candidate_order",
+            "canonical_encoding"
+          ],
+          "properties": {
+            "mesa_version_token": {"const": "$(MESA_VER)/"},
+            "mesa_version_prefix": {"const": "mesa-23.1.x/"},
+            "path_separator": {"const": "/"},
+            "candidate_order": {"const": "ordinal-case-sensitive"},
+            "canonical_encoding": {"const": "utf-8-no-bom-lf-terminal-newline"}
+          }
+        },
+        "worktree_normalization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "strategy",
+            "allowed_prefixes",
+            "forbidden_attributes",
+            "final_rehash"
+          ],
+          "properties": {
+            "strategy": {"const": "crlf-to-lf-only"},
+            "allowed_prefixes": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {"type": "string", "minLength": 1, "maxLength": 64}
+            },
+            "forbidden_attributes": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {"type": "string", "minLength": 1, "maxLength": 64}
+            },
+            "final_rehash": {"const": true}
+          }
+        },
+        "occurrence_count": {"const": 870},
+        "unique_count": {"const": 869},
+        "tracked_present_count": {"const": 840},
+        "generated_absent_count": {"const": 29},
+        "expected_duplicate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relative_path", "occurrences"],
+          "properties": {
+            "relative_path": {"const": "mesa-23.1.x/src/mesa/main/es1_conversion.c"},
+            "occurrences": {"const": 2}
+          }
+        },
+        "candidate_set_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "occurrence_sequence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "generated_absent_paths": {
+          "type": "array",
+          "minItems": 29,
+          "maxItems": 29,
+          "items": {"type": "string", "minLength": 1, "maxLength": 512}
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "claims", "authorizations"],
+      "properties": {
+        "classification": {"const": "source-list-seed-only"},
+        "claims": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "header_closure",
+            "depfile_closure",
+            "generator_closure",
+            "build_closure",
+            "license_closure"
+          ],
+          "properties": {
+            "header_closure": {"const": false},
+            "depfile_closure": {"const": false},
+            "generator_closure": {"const": false},
+            "build_closure": {"const": false},
+            "license_closure": {"const": false}
+          }
+        },
+        "authorizations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "build",
+            "stage",
+            "guest_install",
+            "capability_advertisement"
+          ],
+          "properties": {
+            "build": {"const": false},
+            "stage": {"const": false},
+            "guest_install": {"const": false},
+            "capability_advertisement": {"const": false}
+          }
+        }
+      }
+    },
+    "blockers": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {"$ref": "#/$defs/blocker"}
+    }
+  },
+  "$defs": {
+    "definition_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "git_blob", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 131072},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "variable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "definition_file", "occurrences"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
+        "definition_file": {"type": "string", "minLength": 1, "maxLength": 512},
+        "occurrences": {"type": "integer", "minimum": 1, "maximum": 1000}
+      }
+    },
+    "disabled_conditional": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "definition_file",
+        "macro",
+        "state",
+        "variable",
+        "operator",
+        "relative_path"
+      ],
+      "properties": {
+        "definition_file": {"const": "mesa-23.1.x.mk"},
+        "macro": {"const": "USE_ASM"},
+        "state": {"const": "undefined"},
+        "variable": {"const": "MesaLib_SRC"},
+        "operator": {"const": "+="},
+        "relative_path": {
+          "const": "mesa-23.1.x/src/mapi/glapi/gen/glapi_x86.S"
+        }
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "candidate_relation", "required_disposition"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "candidate_relation": {"enum": ["selected", "transitive-include-risk"]},
+        "required_disposition": {
+          "enum": [
+            "original-replacement-required",
+            "omit-unless-file-license-approved",
+            "omit-from-private-gsw-build"
+          ]
+        }
+      }
+    }
+  }
+}

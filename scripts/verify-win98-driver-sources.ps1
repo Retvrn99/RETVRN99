@@ -12,6 +12,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'strict-tsv.ps1')
 if ([string]::IsNullOrWhiteSpace($LockFile)) {
     $LockFile = Join-Path $PSScriptRoot '..\drivers\win98\upstream.lock.tsv'
 }
@@ -40,6 +41,44 @@ function Get-ContainedPath {
     $candidate = [IO.Path]::GetFullPath((Join-Path $rootPath $RelativePath))
     if (-not $candidate.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Source directory '$RelativePath' escapes the source root."
+    }
+    return $candidate
+}
+
+function Get-ContainedLockMetadataPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    if ([IO.Path]::IsPathRooted($RelativePath) -or
+        $RelativePath.Contains('\') -or
+        $RelativePath -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*\.json$') {
+        throw "Unsafe component closure manifest '$RelativePath' in upstream lock."
+    }
+    foreach ($component in $RelativePath.Split('/')) {
+        if ([string]::IsNullOrWhiteSpace($component) -or $component -in @('.', '..')) {
+            throw "Unsafe component closure manifest '$RelativePath' in upstream lock."
+        }
+    }
+    $rootPath = Get-FullPath $Root
+    $rootPrefix = $rootPath.TrimEnd([char[]]'\\/') + [IO.Path]::DirectorySeparatorChar
+    $candidate = [IO.Path]::GetFullPath((Join-Path $rootPath (
+        $RelativePath.Replace('/', [IO.Path]::DirectorySeparatorChar)
+    )))
+    if (-not $candidate.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Component closure manifest '$RelativePath' escapes the lock directory."
+    }
+
+    $current = $rootPath
+    foreach ($component in $RelativePath.Split('/')) {
+        $current = Join-Path $current $component
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Component closure manifest '$RelativePath' crosses a reparse point."
+            }
+        }
     }
     return $candidate
 }
@@ -175,27 +214,19 @@ if (-not (Get-Command git -CommandType Application -ErrorAction SilentlyContinue
     throw 'git is required to verify pinned source checkouts.'
 }
 
-$dataLines = @(
-    Get-Content -LiteralPath $lockPath |
-        Where-Object { $_.Trim().Length -gt 0 -and -not $_.TrimStart().StartsWith('#') }
-)
-if ($dataLines.Count -lt 2) {
-    throw 'The upstream lock must contain a header and at least one source row.'
-}
-$entries = @($dataLines | ConvertFrom-Csv -Delimiter "`t")
 $requiredColumns = @(
     'name', 'source_directory', 'repository', 'commit',
-    'upstream_license', 'disposition', 'scope'
+    'upstream_license', 'disposition', 'closure_manifest',
+    'closure_manifest_sha256', 'scope'
 )
-$columns = @($entries[0].PSObject.Properties.Name)
-foreach ($column in $requiredColumns) {
-    if ($columns -notcontains $column) {
-        throw "The upstream lock is missing '$column'."
-    }
-}
+$entries = @(Read-StrictTsvFile -Path $lockPath `
+    -ExpectedHeader $requiredColumns -Name 'upstream lock' `
+    -MaximumBytes 1048576 -MaximumRows 256 -MaximumLineBytes 16384 `
+    -MaximumPhysicalLines 1024)
 
 $seenNames = @{}
 $seenDirectories = @{}
+$seenClosureManifests = @{}
 $checkoutPaths = @{}
 foreach ($entry in $entries) {
     if ([string]::IsNullOrWhiteSpace($entry.name) -or $entry.name -notmatch '^[a-z0-9][a-z0-9-]*$') {
@@ -217,7 +248,7 @@ foreach ($entry in $entries) {
         $repositoryUri.Fragment.Length -ne 0) {
         throw "Upstream '$($entry.name)' must use a plain HTTPS repository URL."
     }
-    if ($entry.disposition -notin @('planned', 'reference-only')) {
+    if (@('planned', 'planned-component', 'reference-only') -cnotcontains $entry.disposition) {
         throw "Upstream '$($entry.name)' has an invalid disposition."
     }
     if ($entry.upstream_license -notmatch '^[A-Za-z0-9][A-Za-z0-9.+-]*$' -or
@@ -232,6 +263,34 @@ foreach ($entry in $entries) {
     }
     $seenNames[$entry.name] = $true
     $seenDirectories[$entry.source_directory.ToLowerInvariant()] = $true
+
+    if ($entry.disposition -ceq 'planned-component') {
+        if ([string]::IsNullOrWhiteSpace($entry.closure_manifest) -or
+            $entry.closure_manifest_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw "Upstream '$($entry.name)' has invalid component closure linkage."
+        }
+        $manifestKey = $entry.closure_manifest.ToLowerInvariant()
+        if ($seenClosureManifests.ContainsKey($manifestKey)) {
+            throw "Duplicate component closure manifest '$($entry.closure_manifest)'."
+        }
+        $manifestPath = Get-ContainedLockMetadataPath `
+            -Root (Split-Path -Parent $lockPath) -RelativePath $entry.closure_manifest
+        if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw "Component closure manifest not found for '$($entry.name)': $manifestPath"
+        }
+        if ((Get-Item -LiteralPath $manifestPath).Length -gt 1048576) {
+            throw "Component closure manifest for '$($entry.name)' exceeds the size bound."
+        }
+        $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($manifestHash -cne $entry.closure_manifest_sha256) {
+            throw "Component closure manifest hash mismatch for '$($entry.name)'."
+        }
+        $seenClosureManifests[$manifestKey] = $true
+    }
+    elseif (-not [string]::IsNullOrEmpty($entry.closure_manifest) -or
+        -not [string]::IsNullOrEmpty($entry.closure_manifest_sha256)) {
+        throw "Upstream '$($entry.name)' cannot link a component closure manifest."
+    }
 
     $checkout = Get-ContainedPath $sourceRootPath $entry.source_directory
     $checkoutPaths[$entry.name] = $checkout

@@ -71,6 +71,39 @@ function Get-BigEndianBytes {
     return $bytes
 }
 
+function ConvertTo-LowerHex {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    return ([BitConverter]::ToString($Bytes) -replace '-', '').ToLowerInvariant()
+}
+
+function Get-TestRelativePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $method = [IO.Path].GetMethod(
+        'GetRelativePath',
+        [Reflection.BindingFlags]'Public,Static',
+        $null,
+        [Type[]]@([string], [string]),
+        $null
+    )
+    if ($null -ne $method) { return [IO.Path]::GetRelativePath($Root, $Path).Replace('\', '/') }
+    $rootUri = New-Object Uri ($Root.TrimEnd([char[]]'\/') + [IO.Path]::DirectorySeparatorChar)
+    $pathUri = New-Object Uri $Path
+    return [Uri]::UnescapeDataString($rootUri.MakeRelativeUri($pathUri).ToString())
+}
+
+function Get-Sha256Bytes {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [byte[]]$sha.ComputeHash($Bytes) }
+    finally { $sha.Dispose() }
+}
+
 function Get-TestTreeDescriptor {
     param([Parameter(Mandatory = $true)][string]$Root)
 
@@ -83,42 +116,49 @@ function Get-TestTreeDescriptor {
     [UInt64]$maximumPathBytes = 0
     $utf8 = [Text.UTF8Encoding]::new($false, $true)
     foreach ($entry in @($directories + $files)) {
-        $relativePath = [IO.Path]::GetRelativePath($rootPath, $entry.FullName).Replace('\', '/')
+        $relativePath = Get-TestRelativePath $rootPath $entry.FullName
         [UInt64]$pathByteCount = $utf8.GetByteCount($relativePath)
         if ($pathByteCount -gt $maximumPathBytes) { $maximumPathBytes = $pathByteCount }
     }
     foreach ($file in $files) {
-        $relativePath = [IO.Path]::GetRelativePath($rootPath, $file.FullName).Replace('\', '/')
+        $relativePath = Get-TestRelativePath $rootPath $file.FullName
         $bytes = [IO.File]::ReadAllBytes($file.FullName)
         [UInt64]$length = $bytes.Length
         $aggregateBytes += $length
         if ($length -gt $maximumFileBytes) { $maximumFileBytes = $length }
         $records.Add($relativePath, [pscustomobject]@{
             Length = $length
-            Hash = [Security.Cryptography.SHA256]::HashData($bytes)
+            Hash = Get-Sha256Bytes $bytes
         })
     }
     [string[]]$paths = @($records.Keys)
     [Array]::Sort($paths, [StringComparer]::Ordinal)
-    $digest = [Security.Cryptography.IncrementalHash]::CreateHash(
-        [Security.Cryptography.HashAlgorithmName]::SHA256
-    )
+    $canonical = New-Object IO.MemoryStream
     try {
-        $digest.AppendData($utf8.GetBytes("RETVRN99-WIN98-TREE-SHA256-V1`0"))
-        $digest.AppendData((Get-BigEndianBytes -Value ([UInt64]$paths.Count) -Width 8))
-        $digest.AppendData((Get-BigEndianBytes -Value $aggregateBytes -Width 8))
+        [byte[]]$field = $utf8.GetBytes("RETVRN99-WIN98-TREE-SHA256-V1`0")
+        $canonical.Write($field, 0, $field.Length)
+        $field = Get-BigEndianBytes -Value ([UInt64]$paths.Count) -Width 8
+        $canonical.Write($field, 0, $field.Length)
+        $field = Get-BigEndianBytes -Value $aggregateBytes -Width 8
+        $canonical.Write($field, 0, $field.Length)
         foreach ($relativePath in $paths) {
-            $encodedPath = $utf8.GetBytes($relativePath)
+            [byte[]]$encodedPath = $utf8.GetBytes($relativePath)
             $record = $records[$relativePath]
-            $digest.AppendData((Get-BigEndianBytes -Value ([UInt64]$encodedPath.Length) -Width 4))
-            $digest.AppendData($encodedPath)
-            $digest.AppendData((Get-BigEndianBytes -Value ([UInt64]$record.Length) -Width 8))
-            $digest.AppendData([byte[]]$record.Hash)
+            $field = Get-BigEndianBytes -Value ([UInt64]$encodedPath.Length) -Width 4
+            $canonical.Write($field, 0, $field.Length)
+            $canonical.Write($encodedPath, 0, $encodedPath.Length)
+            $field = Get-BigEndianBytes -Value ([UInt64]$record.Length) -Width 8
+            $canonical.Write($field, 0, $field.Length)
+            [byte[]]$fileHash = $record.Hash
+            $canonical.Write($fileHash, 0, $fileHash.Length)
         }
-        $sha256 = [Convert]::ToHexString($digest.GetHashAndReset()).ToLowerInvariant()
+        $canonical.Position = 0
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $sha256 = ConvertTo-LowerHex ($sha.ComputeHash($canonical)) }
+        finally { $sha.Dispose() }
     }
     finally {
-        $digest.Dispose()
+        $canonical.Dispose()
     }
     return [pscustomobject]@{
         FileCount = [UInt64]$files.Count
@@ -297,8 +337,8 @@ try {
     $script:LockPath = Join-Path $script:TestRoot 'upstream.lock.tsv'
     $lockContents = @(
         '# SPDX-License-Identifier: GPL-3.0-only'
-        "name`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tscope"
-        "vmdisp9x`tvmdisp9x`thttps://example.invalid/vmdisp9x.git`t$commit`tMIT`tplanned`tdisplay-driver"
+        "name`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tclosure_manifest`tclosure_manifest_sha256`tscope"
+        "vmdisp9x`tvmdisp9x`thttps://example.invalid/vmdisp9x.git`t$commit`tMIT`tplanned`t`t`tdisplay-driver"
     ) -join "`r`n"
     [IO.File]::WriteAllText($script:LockPath, $lockContents + "`r`n")
 
@@ -312,6 +352,34 @@ try {
     Write-Plan $script:PlanPath @(
         New-Recipe @() @($overlayRecord) $overlayOutputTree
     )
+
+    Invoke-SelfTest 'Preparation rejects malformed upstream TSV before publication' {
+        $originalLock = [IO.File]::ReadAllText($script:LockPath)
+        try {
+            $lines = @([IO.File]::ReadAllLines($script:LockPath))
+            $rowFields = @($lines[2].Split([char]"`t"))
+            $lines[2] = @($rowFields[0..7]) -join "`t"
+            [IO.File]::WriteAllLines($script:LockPath, $lines)
+            Assert-Throws { Invoke-Preparation 'strict-missing-field' } `
+                'upstream lock data row 1 has 8 fields'
+            Assert-True (-not (Test-Path (
+                Join-Path $script:TestRoot 'strict-missing-field'
+            )))
+
+            $lines = @($originalLock -split "`r`n|`n|`r")
+            $headerFields = @($lines[1].Split([char]"`t"))
+            $lines[1] = (@($headerFields[1], $headerFields[0]) + @($headerFields[2..8])) -join "`t"
+            [IO.File]::WriteAllText($script:LockPath, ($lines -join "`r`n"))
+            Assert-Throws { Invoke-Preparation 'strict-reordered-header' } `
+                "upstream lock header column 1 must be 'name'"
+            Assert-True (-not (Test-Path (
+                Join-Path $script:TestRoot 'strict-reordered-header'
+            )))
+        }
+        finally {
+            [IO.File]::WriteAllText($script:LockPath, $originalLock)
+        }
+    }
 
     Invoke-SelfTest 'Descriptor authoring uses the exact ready-mode tree grammar' {
         $description = & $script:PrepareScript -DescribeTree $overlayPath | ConvertFrom-Json
@@ -600,9 +668,9 @@ try {
             Write-Plan $script:PlanPath @(New-Recipe @($declaredPatch) @() $expectedTree)
             Invoke-Preparation 'normalized-scope' | Out-Null
             $normalizedRoot = Join-Path $script:TestRoot 'normalized-scope\vmdisp9x-gsw'
-            Assert-Equal ([Convert]::ToHexString([IO.File]::ReadAllBytes(
+            Assert-Equal (ConvertTo-LowerHex ([IO.File]::ReadAllBytes(
                 (Join-Path $normalizedRoot 'unrelated-crlf.txt')
-            ))) ([Convert]::ToHexString($unrelatedBytes)) 'An undeclared CRLF blob changed.'
+            ))) (ConvertTo-LowerHex $unrelatedBytes) 'An undeclared CRLF blob changed.'
             Assert-Equal (Get-TestTreeDescriptor $normalizedRoot).Sha256 $expectedTree.Sha256
 
             foreach ($failure in @(
@@ -706,7 +774,8 @@ try {
         }
 
         $validJson = [IO.File]::ReadAllText($script:PlanPath)
-        $duplicateJson = $validJson.Replace('"schema": 2,', '"schema": 2, "SCHEMA": 2,')
+        $duplicateJson = $validJson -replace '("schema"\s*:\s*2\s*,)', '$1 "SCHEMA": 2,'
+        Assert-True ($duplicateJson -cne $validJson) 'The duplicate-key mutation was not applied.'
         [IO.File]::WriteAllText($script:PlanPath, $duplicateJson)
         try {
             Assert-Throws { Invoke-Preparation 'duplicate-json' } 'Duplicate JSON property'
@@ -770,13 +839,18 @@ try {
                 "`turl = $submoduleUrl"
             ) -join "`n"
             [IO.File]::WriteAllText((Join-Path $checkout '.gitmodules'), $gitmodules + "`n")
-            Invoke-Git @('-C', $checkout, 'add', '.gitmodules', 'fixlink') | Out-Null
+            Invoke-Git @('-C', $checkout, 'add', '.gitmodules') | Out-Null
+            $submoduleCommit = Invoke-Git @('-C', $submoduleRepository, 'rev-parse', 'HEAD')
+            Invoke-Git @(
+                '-C', $checkout, 'update-index', '--add', '--cacheinfo',
+                "160000,$submoduleCommit,fixlink"
+            ) | Out-Null
             Invoke-Git @('-C', $checkout, 'commit', '-q', '-m', 'Add pinned gitlink') | Out-Null
             $commitWithGitlink = Invoke-Git @('-C', $checkout, 'rev-parse', 'HEAD')
             $lockContentsWithGitlink = @(
                 '# SPDX-License-Identifier: GPL-3.0-only'
-                "name`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tscope"
-                "vmdisp9x`tvmdisp9x`thttps://example.invalid/vmdisp9x.git`t$commitWithGitlink`tMIT`tplanned`tdisplay-driver"
+                "name`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tclosure_manifest`tclosure_manifest_sha256`tscope"
+                "vmdisp9x`tvmdisp9x`thttps://example.invalid/vmdisp9x.git`t$commitWithGitlink`tMIT`tplanned`t`t`tdisplay-driver"
             ) -join "`r`n"
             [IO.File]::WriteAllText($script:LockPath, $lockContentsWithGitlink + "`r`n")
 

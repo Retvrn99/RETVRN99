@@ -1,0 +1,308 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mesa-generated-source-plan.schema.json",
+  "title": "RETVRN99 Mesa generated-source preparation plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "status",
+    "reason",
+    "component",
+    "inputs",
+    "selection",
+    "normalization",
+    "bounds",
+    "descriptor",
+    "scope"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {"const": "mesa-generated-source-plan.schema.json"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "status": {"const": "draft"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upstream_name",
+        "repository",
+        "owning_commit",
+        "mesa_version",
+        "mesa_subtree"
+      ],
+      "properties": {
+        "upstream_name": {"const": "mesa9x"},
+        "repository": {"const": "https://github.com/JHRobotics/mesa9x.git"},
+        "owning_commit": {"const": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"},
+        "mesa_version": {"const": "23.1.9"},
+        "mesa_subtree": {"const": "mesa-23.1.x"}
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generator_recipe", "source_seed"],
+      "properties": {
+        "generator_recipe": {"$ref": "#/$defs/pinned_file"},
+        "source_seed": {"$ref": "#/$defs/pinned_metadata_file"}
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recipe_variable",
+        "recipe_output_count",
+        "recipe_output_sequence_sha256",
+        "validation_side_outputs",
+        "validation_side_output_count",
+        "published_output_count",
+        "git_state"
+      ],
+      "properties": {
+        "recipe_variable": {"const": "GENERATE_FILES"},
+        "recipe_output_count": {"const": 67},
+        "recipe_output_sequence_sha256": {
+          "const": "480f4000b3d6c10eced24e4538ee4aabdd59e3dbe3172054910bc7eac01c7140"
+        },
+        "validation_side_outputs": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/bison_side_output",
+              "properties": {
+                "relative_path": {"const": "mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.h"},
+                "head_git_blob": {"const": "9bc42a206946d60b6aa25d3cd0cab08b9ad21815"},
+                "generated_git_blob": {"const": "f39ad6717efeb51933041ae7624797ecb7aa8f18"},
+                "git_status": {"const": "required-worktree-modified"}
+              }
+            },
+            {
+              "$ref": "#/$defs/bison_side_output",
+              "properties": {
+                "relative_path": {"const": "mesa-23.1.x/src/compiler/glsl/glsl_parser.h"},
+                "head_git_blob": {"const": "37e20a8e402cf0875152e8bd5cd35166b4a3262c"},
+                "generated_git_blob": {"const": "a9b3ffa8fb7056b26d2055c77e60e2bd1f505529"},
+                "git_status": {"const": "required-worktree-modified"}
+              }
+            },
+            {
+              "$ref": "#/$defs/blob_equivalent_side_output",
+              "properties": {
+                "relative_path": {"const": "mesa-23.1.x/src/gallium/auxiliary/driver_trace/tr_util.h"},
+                "head_git_blob": {"const": "b7c1c8287976b22aece09cefdb1cf779954e286b"},
+                "generated_git_blob": {"const": "b7c1c8287976b22aece09cefdb1cf779954e286b"},
+                "git_status": {"const": "optional-worktree-modified"}
+              }
+            },
+            {
+              "$ref": "#/$defs/bison_side_output",
+              "properties": {
+                "relative_path": {"const": "mesa-23.1.x/src/mesa/program/program_parse.tab.h"},
+                "head_git_blob": {"const": "ccd992c3b4e4d1069ad99534e63b960badac38b0"},
+                "generated_git_blob": {"const": "31026bf74dc5eaa717704a425b0ae41933ed3158"},
+                "git_status": {"const": "required-worktree-modified"}
+              }
+            }
+          ],
+          "items": false
+        },
+        "validation_side_output_count": {"const": 4},
+        "published_output_count": {"const": 67},
+        "git_state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "recipe_outputs",
+            "validation_side_outputs",
+            "staged_paths",
+            "other_changed_untracked_or_ignored_paths"
+          ],
+          "properties": {
+            "recipe_outputs": {"const": "ignored-present"},
+            "validation_side_outputs": {"const": "three-required-modified-one-optional-modified-never-published"},
+            "staged_paths": {"const": 0},
+            "other_changed_untracked_or_ignored_paths": {"const": 0}
+          }
+        }
+      }
+    },
+    "normalization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_encoding",
+        "accepted_line_endings",
+        "output_encoding",
+        "reject_bom",
+        "reject_nul",
+        "reject_isolated_cr"
+      ],
+      "properties": {
+        "input_encoding": {"const": "strict-utf-8-no-bom"},
+        "accepted_line_endings": {
+          "type": "array",
+          "prefixItems": [{"const": "lf"}, {"const": "crlf"}],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "output_encoding": {"const": "strict-utf-8-no-bom-lf"},
+        "reject_bom": {"const": true},
+        "reject_nul": {"const": true},
+        "reject_isolated_cr": {"const": true}
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_recipe_bytes",
+        "maximum_seed_bytes",
+        "maximum_file_bytes",
+        "maximum_aggregate_bytes",
+        "maximum_path_bytes",
+        "maximum_directories",
+        "maximum_entries"
+      ],
+      "properties": {
+        "maximum_recipe_bytes": {"const": 1048576},
+        "maximum_seed_bytes": {"const": 1048576},
+        "maximum_file_bytes": {"const": 33554432},
+        "maximum_aggregate_bytes": {"const": 67108864},
+        "maximum_path_bytes": {"const": 512},
+        "maximum_directories": {"const": 64},
+        "maximum_entries": {"const": 135}
+      }
+    },
+    "descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "path_order", "tree_digest_algorithm"],
+      "properties": {
+        "schema": {"const": 1},
+        "path_order": {"const": "ordinal-case-sensitive"},
+        "tree_digest_algorithm": {"const": "retvrn99-file-tree-sha256-v1"}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "claims", "authorizations"],
+      "properties": {
+        "classification": {"const": "generated-source-preparation-only"},
+        "claims": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generator_execution",
+            "output_reproducibility",
+            "generated_output_lock",
+            "file_license_closure",
+            "build_closure"
+          ],
+          "properties": {
+            "generator_execution": {"const": false},
+            "output_reproducibility": {"const": false},
+            "generated_output_lock": {"const": false},
+            "file_license_closure": {"const": false},
+            "build_closure": {"const": false}
+          }
+        },
+        "authorizations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "generator_execution",
+            "build",
+            "stage",
+            "guest_install",
+            "capability_advertisement"
+          ],
+          "properties": {
+            "generator_execution": {"const": false},
+            "build": {"const": false},
+            "stage": {"const": false},
+            "guest_install": {"const": false},
+            "capability_advertisement": {"const": false}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "pinned_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "git_blob", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"const": "generator/mesa-23.1.x-gen.mk"},
+        "git_blob": {"const": "68b2fd13d08ae0ce4276cb1f720ee9bbb1cd54e9"},
+        "bytes": {"const": 13288},
+        "sha256": {"const": "9ad77b1fe55e4097621dbefeffe989fb00f3c354320ce6521d69f8efd8a44dce"}
+      }
+    },
+    "pinned_metadata_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"const": "mesa-source-seed.json"},
+        "bytes": {"const": 6915},
+        "sha256": {"const": "b7a18f8bfe4bfe5fac1ef8b4f36105d585e7d69349766d865c8c79a180d79dd8"}
+      }
+    },
+    "bison_side_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "head_git_blob",
+        "generated_git_blob",
+        "git_status",
+        "validation"
+      ],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "head_git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "generated_git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "git_status": {"const": "required-worktree-modified"},
+        "validation": {"const": "exact-generated-blob-and-c-noncomment-token-equivalence"}
+      }
+    },
+    "blob_equivalent_side_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "head_git_blob",
+        "generated_git_blob",
+        "git_status",
+        "validation"
+      ],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "head_git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "generated_git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "git_status": {"const": "optional-worktree-modified"},
+        "validation": {"const": "exact-head-blob-equivalence"}
+      }
+    }
+  }
+}
