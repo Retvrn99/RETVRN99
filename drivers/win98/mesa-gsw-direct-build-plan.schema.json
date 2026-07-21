@@ -1,0 +1,297 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mesa-gsw-direct-build-plan.schema.json",
+  "title": "RETVRN99 metadata-only Mesa GSW direct-build plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "status",
+    "reason",
+    "source",
+    "inputs",
+    "classification",
+    "inventory",
+    "units",
+    "object_collisions",
+    "empty_evidence",
+    "scope"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {"$ref": "#/$defs/binding"},
+    "status": {"const": "metadata-only"},
+    "reason": {"type": "string", "minLength": 1, "maxLength": 512},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "mesa_version"],
+      "properties": {
+        "repository": {"const": "https://github.com/JHRobotics/mesa9x.git"},
+        "commit": {"const": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"},
+        "mesa_version": {"const": "23.1.9"}
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/named_binding"}
+    },
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unit_order",
+        "object_identity_algorithm",
+        "leaf_collision_algorithm",
+        "artifacts"
+      ],
+      "properties": {
+        "unit_order": {"const": "source-kind-then-relative-path-ordinal-case-sensitive"},
+        "object_identity_algorithm": {"const": "obj/artifact/source-kind/full-path-without-extension.o"},
+        "leaf_collision_algorithm": {"const": "case-sensitive-leaf-without-extension.o"},
+        "artifacts": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 64}
+        }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upstream_source_units",
+        "upstream_c",
+        "upstream_cxx",
+        "generated_source_units",
+        "generated_c",
+        "generated_cxx",
+        "generated_assembly",
+        "original_source_units",
+        "total_source_units",
+        "direct_compile_units",
+        "support_only_units",
+        "artifact_counts"
+      ],
+      "properties": {
+        "upstream_source_units": {"const": 837},
+        "upstream_c": {"const": 742},
+        "upstream_cxx": {"const": 95},
+        "generated_source_units": {"const": 35},
+        "generated_c": {"const": 32},
+        "generated_cxx": {"const": 2},
+        "generated_assembly": {"const": 1},
+        "original_source_units": {"const": 2},
+        "total_source_units": {"const": 874},
+        "direct_compile_units": {"const": 869},
+        "support_only_units": {"const": 5},
+        "artifact_counts": {
+          "type": "object",
+          "minProperties": 7,
+          "maxProperties": 7,
+          "additionalProperties": {"type": "integer", "minimum": 1, "maximum": 874}
+        }
+      }
+    },
+    "units": {
+      "type": "array",
+      "minItems": 874,
+      "maxItems": 874,
+      "items": {"$ref": "#/$defs/unit"}
+    },
+    "object_collisions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "leaf_collision_group_count",
+        "leaf_collision_unit_count",
+        "leaf_collision_groups",
+        "final_identity_collision_count",
+        "final_identity_collisions"
+      ],
+      "properties": {
+        "leaf_collision_group_count": {"type": "integer", "minimum": 0, "maximum": 874},
+        "leaf_collision_unit_count": {"type": "integer", "minimum": 0, "maximum": 874},
+        "leaf_collision_groups": {
+          "type": "array",
+          "maxItems": 874,
+          "items": {"$ref": "#/$defs/collision"}
+        },
+        "final_identity_collision_count": {"const": 0},
+        "final_identity_collisions": {"type": "array", "maxItems": 0}
+      }
+    },
+    "empty_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "compiler_commands",
+        "headers",
+        "depfiles",
+        "exports",
+        "link_steps",
+        "artifacts"
+      ],
+      "properties": {
+        "compiler_commands": {"type": "array", "maxItems": 0},
+        "headers": {"type": "array", "maxItems": 0},
+        "depfiles": {"type": "array", "maxItems": 0},
+        "exports": {"type": "array", "maxItems": 0},
+        "link_steps": {"type": "array", "maxItems": 0},
+        "artifacts": {"type": "array", "maxItems": 0}
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claims", "authorizations"],
+      "properties": {
+        "claims": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source_assignment_complete",
+            "object_identity_collision_free",
+            "compiler_commands_complete",
+            "header_closure_complete",
+            "depfiles_reproducible",
+            "graphics_stack_integrated"
+          ],
+          "properties": {
+            "source_assignment_complete": {"const": true},
+            "object_identity_collision_free": {"const": true},
+            "compiler_commands_complete": {"const": false},
+            "header_closure_complete": {"const": false},
+            "depfiles_reproducible": {"const": false},
+            "graphics_stack_integrated": {"const": false}
+          }
+        },
+        "authorizations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "production_build",
+            "link",
+            "stage",
+            "guest_install",
+            "dll_activation",
+            "capability_advertisement"
+          ],
+          "properties": {
+            "production_build": {"const": false},
+            "link": {"const": false},
+            "stage": {"const": false},
+            "guest_install": {"const": false},
+            "dll_activation": {"const": false},
+            "capability_advertisement": {"const": false}
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 160},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 2097152},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "named_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "relative_path", "bytes", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 64},
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 160},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 2097152},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "relative_path",
+        "language",
+        "family",
+        "disposition",
+        "artifact",
+        "object_identity",
+        "leaf_object_name"
+      ],
+      "properties": {
+        "source_kind": {"enum": ["upstream", "generated", "original-gsw"]},
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+        "language": {"enum": ["c-gnu99", "cxx-gnu++14", "assembler-with-cpp"]},
+        "family": {
+          "enum": [
+            "mesa-core",
+            "wgl",
+            "gallium-auxiliary",
+            "nine",
+            "svga-gallium",
+            "d3d8to9"
+          ]
+        },
+        "disposition": {
+          "enum": [
+            "upstream-direct-compile-metadata-only",
+            "reviewed-generated-direct-compile-metadata-only",
+            "reviewed-generated-support-metadata-only",
+            "retvrn99-original-direct-compile-metadata-only"
+          ]
+        },
+        "artifact": {
+          "enum": [
+            "mesa-util",
+            "mesa-core",
+            "mesa-wgl",
+            "gallium-auxiliary",
+            "nine",
+            "svga-gallium",
+            "d3d8to9"
+          ]
+        },
+        "object_identity": {"type": "string", "pattern": "^obj/.+\\.o$", "maxLength": 768},
+        "leaf_object_name": {"type": "string", "pattern": "^[^/]+\\.o$", "maxLength": 256}
+      }
+    },
+    "collision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["leaf_object_name", "count", "units"],
+      "properties": {
+        "leaf_object_name": {"type": "string", "pattern": "^[^/]+\\.o$"},
+        "count": {"type": "integer", "minimum": 2, "maximum": 874},
+        "units": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 874,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source_kind", "relative_path", "object_identity"],
+            "properties": {
+              "source_kind": {"enum": ["upstream", "generated", "original-gsw"]},
+              "relative_path": {"type": "string", "minLength": 1, "maxLength": 512},
+              "object_identity": {"type": "string", "pattern": "^obj/.+\\.o$", "maxLength": 768}
+            }
+          }
+        }
+      }
+    }
+  }
+}

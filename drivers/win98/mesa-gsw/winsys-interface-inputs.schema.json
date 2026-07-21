@@ -1,0 +1,141 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "winsys-interface-inputs.schema.json",
+  "title": "RETVRN99 GSW SVGA winsys source boundary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx",
+    "schema",
+    "schema_definition",
+    "status",
+    "source",
+    "inputs",
+    "prohibited_implementation_prefixes",
+    "outputs",
+    "contract",
+    "claims"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {"$ref": "#/$defs/binding"},
+    "status": {"const": "capability-disabled-adapter-shell"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "mesa_version"],
+      "properties": {
+        "repository": {"const": "https://github.com/JHRobotics/mesa9x.git"},
+        "commit": {"const": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"},
+        "mesa_version": {"const": "23.1.9"}
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "items": {"$ref": "#/$defs/input"}
+    },
+    "prohibited_implementation_prefixes": {
+      "type": "array",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 160}
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/output"}
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hardware_version",
+        "screen_callback_count",
+        "context_callback_count",
+        "get_fd",
+        "capabilities",
+        "abi_submission_count"
+      ],
+      "properties": {
+        "hardware_version": {"const": "SVGA3D_HWVERSION_WS65_B1"},
+        "screen_callback_count": {"const": 32},
+        "context_callback_count": {"const": 17},
+        "get_fd": {"const": -1},
+        "capabilities": {"const": "all-false"},
+        "abi_submission_count": {"const": 0}
+      }
+    },
+    "claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_shell_complete",
+        "mesa_screen_creation_succeeds",
+        "abi_transport_present",
+        "opengl_capability",
+        "direct3d_capability",
+        "production_build_authorized",
+        "staging_authorized",
+        "guest_install_authorized"
+      ],
+      "properties": {
+        "adapter_shell_complete": {"const": true},
+        "mesa_screen_creation_succeeds": {"const": false},
+        "abi_transport_present": {"const": false},
+        "opengl_capability": {"const": false},
+        "direct3d_capability": {"const": false},
+        "production_build_authorized": {"const": false},
+        "staging_authorized": {"const": false},
+        "guest_install_authorized": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 128},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_relative_path",
+        "git_blob",
+        "bytes",
+        "sha256",
+        "license_expression",
+        "role"
+      ],
+      "properties": {
+        "source_relative_path": {"type": "string", "minLength": 1, "maxLength": 256},
+        "git_blob": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "license_expression": {"const": "MIT"},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256", "license_expression", "role"],
+      "properties": {
+        "relative_path": {"type": "string", "minLength": 1, "maxLength": 128},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 65536},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "license_expression": {"const": "GPL-3.0-only"},
+        "role": {"type": "string", "minLength": 1, "maxLength": 64}
+      }
+    }
+  }
+}

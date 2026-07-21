@@ -1,0 +1,134 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "winsys-interface-inputs.schema.json",
+    "sha256": "206f7b72b74bada1ab6e5830c876d596d6dcf30133e10d83ac7d9b72dbbee225"
+  },
+  "status": "capability-disabled-adapter-shell",
+  "source": {
+    "repository": "https://github.com/JHRobotics/mesa9x.git",
+    "commit": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f",
+    "mesa_version": "23.1.9"
+  },
+  "inputs": [
+    {
+      "source_relative_path": "mesa-23.1.x/src/gallium/drivers/svga/svga_winsys.h",
+      "git_blob": "fce1128f457bc336a7778f7b413e2625c492071f",
+      "bytes": 28247,
+      "sha256": "6a67aae68304883088dd85f895e1d6f65f346af3dae76315ed8881af931dbde5",
+      "license_expression": "MIT",
+      "role": "svga-winsys-interface"
+    },
+    {
+      "source_relative_path": "mesa-23.1.x/src/gallium/drivers/svga/svga_screen.c",
+      "git_blob": "dd26934198d3ed3e7174bed0a44fd3e76eb4be34",
+      "bytes": 46069,
+      "sha256": "98f9990a1dce6607ea353e4bb9209411855beddc0ed5b8d592b8f3f2e2569bc8",
+      "license_expression": "MIT",
+      "role": "screen-create-and-ownership-caller"
+    },
+    {
+      "source_relative_path": "mesa-23.1.x/src/gallium/drivers/svga/svga_context.c",
+      "git_blob": "a1e054b7c40f103c5c8ff1918e56b7c4c983ef0a",
+      "bytes": 18171,
+      "sha256": "c5127f471b9aaf968338b95cdcf3fbdbdc14f9c916577acf73fbe043ed783466",
+      "license_expression": "MIT",
+      "role": "context-lifecycle-caller"
+    },
+    {
+      "source_relative_path": "mesa-23.1.x/src/gallium/drivers/svga/svga_cmd.c",
+      "git_blob": "8347dc1754544ecd60b0de66103457d6f727f18e",
+      "bytes": 53049,
+      "sha256": "f37a1085667d44fca8964951952fb980ec1046d7fea03d42fa88d5df4a6f08b6",
+      "license_expression": "MIT",
+      "role": "command-buffer-caller"
+    },
+    {
+      "source_relative_path": "mesa-23.1.x/src/gallium/drivers/svga/svga_resource_buffer.c",
+      "git_blob": "c34d510960a4a0aec0d38931b6dff7d0288b80b3",
+      "bytes": 19519,
+      "sha256": "2e3141a12ceb9ab5a440daa4bb9eb1500a7ce1290eaca0fbc8595d40ba1601e0",
+      "license_expression": "MIT",
+      "role": "buffer-caller"
+    },
+    {
+      "source_relative_path": "mesa-23.1.x/src/gallium/drivers/svga/svga_resource_texture.c",
+      "git_blob": "752777834523492a055a8e16d156dc7a6a5ad0c3",
+      "bytes": 47900,
+      "sha256": "dcf06db68ecdbe9c0e2544bf03db79a7dfa8f9d46393f3bfce80b4563a99b375",
+      "license_expression": "MIT",
+      "role": "surface-caller"
+    },
+    {
+      "source_relative_path": "mesa-23.1.x/src/gallium/drivers/svga/svga_pipe_query.c",
+      "git_blob": "62fcd48319c261b6ef171fdd68ff82e048c193f6",
+      "bytes": 44366,
+      "sha256": "f6837cca4d5203ae25966a5ea0361165895c0938d69a3b6cdaf23f583ceccd66",
+      "license_expression": "MIT",
+      "role": "query-caller"
+    },
+    {
+      "source_relative_path": "mesa-23.1.x/src/gallium/drivers/svga/svga_pipe_flush.c",
+      "git_blob": "b59935324b2d84bed571427249fa2f8e524de765",
+      "bytes": 3982,
+      "sha256": "610f28dbcf90f9cc706d187cdb2c8b13521bbb4236f5f11ad21714dfc026897a",
+      "license_expression": "MIT",
+      "role": "flush-and-fence-caller"
+    },
+    {
+      "source_relative_path": "mesa-23.1.x/src/gallium/drivers/svga/svga_shader.c",
+      "git_blob": "7f8621faaaa0ec5e37c5407c7d540c267f7d19ea",
+      "bytes": 32101,
+      "sha256": "0b771dca3f680bfd29f6f42e79767b0f7238d95557d4f077456e202d65e1123a",
+      "license_expression": "MIT",
+      "role": "shader-caller"
+    }
+  ],
+  "prohibited_implementation_prefixes": [
+    "mesa-23.1.x/src/gallium/winsys/svga/drm/",
+    "win9x/winsys/",
+    "win9x/3d_svga.c",
+    "win9x/ossvga_target.c",
+    "win9x/svgadrv.c",
+    "win9x/svgadrv.h",
+    "win9x/svgadrv_cb.c",
+    "win9x/svgadrv_cmds.h",
+    "win9x/svgadrv_present.c",
+    "win9x/wddm_screen.h"
+  ],
+  "outputs": [
+    {
+      "relative_path": "include/gsw_svga_winsys.h",
+      "bytes": 612,
+      "sha256": "1d1b697a00c5b52035af24672ac2788c00edf2a0f658894714a2080c512cd48f",
+      "license_expression": "GPL-3.0-only",
+      "role": "gsw-winsys-public-interface"
+    },
+    {
+      "relative_path": "src/gsw_svga_winsys.c",
+      "bytes": 16803,
+      "sha256": "ee56a47d91ef1e9963379685f9e9c8a8fc8a8283f1eb5a43f75685fabd884b0b",
+      "license_expression": "GPL-3.0-only",
+      "role": "capability-disabled-gsw-winsys-adapter"
+    }
+  ],
+  "contract": {
+    "hardware_version": "SVGA3D_HWVERSION_WS65_B1",
+    "screen_callback_count": 32,
+    "context_callback_count": 17,
+    "get_fd": -1,
+    "capabilities": "all-false",
+    "abi_submission_count": 0
+  },
+  "claims": {
+    "adapter_shell_complete": true,
+    "mesa_screen_creation_succeeds": false,
+    "abi_transport_present": false,
+    "opengl_capability": false,
+    "direct3d_capability": false,
+    "production_build_authorized": false,
+    "staging_authorized": false,
+    "guest_install_authorized": false
+  }
+}

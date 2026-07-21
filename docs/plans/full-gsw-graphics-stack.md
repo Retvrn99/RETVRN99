@@ -9,6 +9,31 @@ release gates. It is not evidence that a phase, capability, build, installation,
 or guest-runtime gate has passed. Each claim remains disabled until its named
 proof is complete.
 
+### Implementation progress: 2026-07-21
+
+- Phase 1 provenance infrastructure and normalized generated-source
+  reproducibility are present, but the Phase 1 gate remains open. The exact
+  direct-build inventory contains 837 upstream source units, 35 generated
+  source units, and two original GSW source units. Of those 874 units, 869 have
+  dependency-only compiler commands and five generated files are explicitly
+  support-only.
+- The pinned i686 compiler completed 869 exact dependency-only commands twice.
+  The proof source root contains exactly 1,489 files: 837 selected upstream
+  sources plus 652 observed upstream dependencies. The resulting 1,738
+  normalized depfiles are byte-identical and close 1,070 unique source,
+  generated, original, and toolchain dependencies. This is not object
+  compilation, a production build, or artifact activation. Upstream
+  project-header license review remains open.
+- An original capability-disabled GSW `svga_winsys_screen` shell now populates
+  all 32 screen callbacks and all 17 context callbacks. It reports a pre-WS8
+  hardware version, exposes no capabilities, rejects resource and fence-FD
+  operations, emits no ABI traffic, and retains failed-create ownership. This
+  is only a fail-closed Interface shell and does not implement the Phase 7 ABI
+  v2 Adapter.
+- OpenGL, Direct3D, Nine, d3d8to9, Glide, SVGA10 decoding, Vulkan rendering,
+  build, link, staging, payload, installation, DLL activation, and capability
+  authorization all remain disabled. The graphics stack is not integrated.
+
 ## Summary and fixed decisions
 
 Build a full-featured Windows 98 graphics stack around one private GSW-VGA
@@ -176,6 +201,10 @@ Gate: every frame's cost can be attributed to a named stage, and the existing
 Gate: two clean LF/CRLF builds produce identical normalized outputs and pass
 the complete source/license closure.
 
+Progress: normalized LF/CRLF generated outputs and exact dependency-only twin
+runs are proven. The complete project-header license closure and clean object
+build are not proven, so this gate remains open.
+
 ### Phase 2: Deepen presentation and remove the resolution bottleneck
 
 - Introduce explicit `Legacy_Frame_Update` and `Gsw_Present` records carrying
@@ -287,6 +316,11 @@ accuracy, and transform-feedback round trips.
 - Initially expose only the tested OpenGL version. Raise it feature by feature
   until the complete `GSW_GL31_COMPAT` profile passes, then freeze the profile
   hash.
+
+Progress: the complete callback-table shell exists only in capability-disabled
+form and deliberately fails Mesa screen creation before WS8. It has no ABI v2
+transport, ICD, advertised OpenGL version, or rendering path. This gate remains
+open.
 
 Gate: `glchecker`, `icdtest`, `wgltest`, multi-context and multi-process tests,
 OpenGL 1.1/2.1/3.1 conformance samples, window occlusion, fullscreen churn, and
