@@ -155,13 +155,13 @@ and are not install-ready packages.
 
 Package provenance is a closed mapping to lock `source_directory` values. GSW
 VGA requires `vmdisp9x` and `vmhal9x`; GSW-Sound and the user-supplied DirectX
-9 runtime have no upstream checkout requirement; GSW DX9 compatibility
-requires only `mesa9x`; and GSW Glide requires `openglide9x`. The current
-five-file VGA inventory does not require Mesa until `gswgl32.dll` joins its
-reviewed package shape. GSW-Sound's empty upstream requirement means
-that its guest driver will use original, repository-owned sources; it does not
-make an absent source tree or payload stageable. Staging resolves required
-upstream directories to the authoritative lock names. A `planned` row uses the
+9 runtime have no upstream checkout requirement; and GSW DX9 compatibility
+requires only `mesa9x`. RETVRN99 does not offer a Glide or Voodoo compatibility
+package. The current five-file VGA inventory does not require Mesa until
+`gswgl32.dll` joins its reviewed package shape. GSW-Sound's empty upstream
+requirement means that its guest driver will use original, repository-owned
+sources; it does not make an absent source tree or payload stageable. Staging
+resolves required upstream directories to the authoritative lock names. A `planned` row uses the
 whole-source verifier. A `planned-component` row must pass its ready component
 closure verifier. A blocked closure or `reference-only` row cannot authorize a
 package. Missing, ambiguous, dirty, or mismatched required provenance also
@@ -218,8 +218,9 @@ outputs and linker invocations are zero, and all authority fields remain false.
 The closure uses proof-only `-fno-lto`; production LTO and linking remain
 unproven and unauthorized.
 
-OpenGlide9x remains blocked and names no source prefix. Wine9x, SoftGPU, and the
-VMware SVGA Device Developer Kit mirror are reference-only. Changing a
+OpenGlide9x and pthread9x are excluded because RETVRN99 does not offer Glide or
+Voodoo compatibility. Wine9x, SoftGPU, and the VMware SVGA Device Developer Kit
+mirror are reference-only. Changing a
 disposition or manifest status requires a separate review; a lock update alone
 does not approve source copying or binary distribution.
 

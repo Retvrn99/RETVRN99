@@ -215,11 +215,6 @@ $packageRules = @{
         RunOnceOrder = 200
         SourceDirectories = @('mesa9x')
     }
-    'gsw-glide' = @{
-        HardwareId = ''
-        RunOnceOrder = 300
-        SourceDirectories = @('openglide9x')
-    }
 }
 $packageSelectionExplicit = $PSBoundParameters.ContainsKey('PackageId')
 $requestedPackages = @()
@@ -351,7 +346,7 @@ foreach ($selectedPackageId in @($selectedPackageIds | Where-Object { $_ -in @('
     }
 }
 foreach ($selectedPackageId in @($selectedPackageIds | Where-Object {
-    $_ -in @('directx9-runtime', 'gsw-dx9-compat', 'gsw-glide')
+    $_ -in @('directx9-runtime', 'gsw-dx9-compat')
 })) {
     $componentCount = [int]($packageKindCounts["$selectedPackageId|Component"])
     $infCount = [int]($packageKindCounts["$selectedPackageId|INF"])

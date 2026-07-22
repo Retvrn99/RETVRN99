@@ -46,8 +46,8 @@ schema-2 closure binds 1,687 unique files: 837 source units, 652 compiler
 dependencies, 198 generator inputs, and one generator recipe. The existing
 `p_defines.h` row also carries the compiler-dependency role, so the role counts
 overlap by one file. Every selected file binds exact inline or project-level
-license evidence through 1,502 evidence records. The `libs/vkd3d-shader` and
-OpenGlide9x components are tracked separately.
+license evidence through 1,502 evidence records. The `libs/vkd3d-shader`
+component is tracked separately. Glide and Voodoo compatibility are excluded.
 
 `libs/vkd3d-shader` is pinned at
 `1b0924d12c18df03912a8876ed17fd017ce9308e`. Its ready schema-2 closure binds
@@ -56,8 +56,8 @@ inputs, three build descriptions, and one resource. The
 `include/vkd3d_d3d9types.h` row carries both compiler-dependency and
 generator-input roles, so those role counts overlap by one file. The 39 exact
 license-evidence records bind 38 `LGPL-2.1-or-later` files, one MIT file, and
-the combined `LGPL-2.1-or-later AND MIT` `hlsl.h`. OpenGlide9x remains blocked
-and authorizes no source prefixes. Wine9x is reference-only.
+the combined `LGPL-2.1-or-later AND MIT` `hlsl.h`. OpenGlide9x and pthread9x
+are excluded and authorize no source prefixes. Wine9x is reference-only.
 
 The schema-1 vkd3d-shader compiler closure is `compile-proven` at 2,664,488
 LF-only bytes and SHA-256
@@ -163,8 +163,8 @@ must pass a ready component closure, and `reference-only` rows always reject a
 package that requires them. The current five-file GSW-VGA package requires only
 VMDisp9x and VMHAL9x. Future GSW DX9 compatibility's Mesa prerequisite is ready
 and `compile-proven`, but the package remains unavailable because production
-build, link, and package authorizations remain false. Future GSW Glide
-additionally requires OpenGlide9x, whose component closure remains blocked.
+build, link, and package authorizations remain false. No Glide or Voodoo
+compatibility package is offered.
 
 `toolchain.lock.json` pins the complete Open Watcom 1.9 archive and extraction.
 `mingw32-toolchain.lock.json` pins the complete MinGW32 GCC 15.2.0 extraction.

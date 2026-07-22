@@ -6,7 +6,7 @@
     "sha256": "de12369b6640a83880ac187478853f981e14df907ff6152c8dde024ba3e74e26"
   },
   "status": "compile-proven",
-  "reason": "The exact Mesa source/license closure and reproducible 869-unit object compilation are proven. This evidence-only profile grants no production build, link, staging, installation, activation, renderer-selection, or capability-advertisement authority. The Phase 1 vkd3d-shader closure is complete; OpenGlide9x remains open.",
+  "reason": "The exact Mesa source/license closure and reproducible 869-unit object compilation are proven. This evidence-only profile grants no production build, link, staging, installation, activation, renderer-selection, or capability-advertisement authority. The Phase 1 vkd3d-shader closure is complete; Glide and Voodoo compatibility are excluded.",
   "source": {
     "upstream_name": "mesa9x",
     "repository": "https://github.com/JHRobotics/mesa9x.git",

@@ -1034,18 +1034,14 @@ try {
 
     Invoke-SelfTest 'Production component closure states remain exact' {
         $closureRoot = Join-Path $PSScriptRoot '..\drivers\win98\component-closures'
-        $files = @(Get-ChildItem -LiteralPath $closureRoot -Filter '*.json' -File)
-        Assert-Equal $files.Count 3
+        $files = @(Get-ChildItem -LiteralPath $closureRoot -Filter '*.json' -File |
+            Sort-Object Name)
+        $expectedNames = @('mesa9x-23.1.x.json', 'vkd3d-shader.json')
+        Assert-Equal $files.Count $expectedNames.Count
+        Assert-Equal (@($files.Name) -join ',') ($expectedNames -join ',')
         foreach ($file in $files) {
             $manifest = Get-Content -Raw -LiteralPath $file.FullName | ConvertFrom-Json
-            $expectedStatus = if ($file.Name -cin @(
-                    'mesa9x-23.1.x.json', 'vkd3d-shader.json'
-                )) {
-                'ready'
-            }
-            else {
-                'blocked'
-            }
+            $expectedStatus = 'ready'
             Assert-Equal $manifest.status $expectedStatus
             switch ([int]$manifest.schema) {
                 1 {
@@ -1072,11 +1068,11 @@ try {
                     )
                     $actualProperties = @($manifest.PSObject.Properties.Name)
                     if ($actualProperties.Count -ne $expectedProperties.Count) {
-                        throw "Blocked schema-2 closure '$($file.Name)' has an unexpected root shape."
+                        throw "Production schema-2 closure '$($file.Name)' has an unexpected root shape."
                     }
                     foreach ($property in $expectedProperties) {
                         if ($actualProperties -cnotcontains $property) {
-                            throw "Blocked schema-2 closure '$($file.Name)' is missing root property '$property'."
+                            throw "Production schema-2 closure '$($file.Name)' is missing root property '$property'."
                         }
                     }
                     if ($file.Name -ceq 'vkd3d-shader.json' -and

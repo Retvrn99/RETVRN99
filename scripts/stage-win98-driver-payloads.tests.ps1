@@ -258,9 +258,6 @@ try {
     $mesaOrigin = 'https://example.invalid/mesa9x.git'
     $mesaCheckout = Join-Path $script:SourceRoot 'mesa9x'
     $mesaCommit = New-PinnedCheckout -Path $mesaCheckout -Origin $mesaOrigin
-    $glideOrigin = 'https://example.invalid/openglide9x.git'
-    $glideCheckout = Join-Path $script:SourceRoot 'openglide9x'
-    $glideCommit = New-PinnedCheckout -Path $glideCheckout -Origin $glideOrigin
     $script:LockPath = Join-Path $script:TestRoot 'upstream.lock.tsv'
     $lockColumns = @(
         'name', 'source_directory', 'repository', 'commit',
@@ -272,11 +269,6 @@ try {
     $mesaClosureHash = Write-ComponentClosure -Path $mesaClosurePath `
         -UpstreamName 'mesa9x' -OwningCommit $mesaCommit -Checkout $mesaCheckout `
         -LicenseExpression 'MIT'
-    $glideClosureRelative = 'component-closures/openglide9x.json'
-    $glideClosurePath = Join-Path $script:TestRoot 'component-closures\openglide9x.json'
-    $glideClosureHash = Write-ComponentClosure -Path $glideClosurePath `
-        -UpstreamName 'openglide9x' -OwningCommit $glideCommit -Checkout $glideCheckout `
-        -LicenseExpression 'LGPL-2.1-or-later'
     $defaultLockRows = @(
         [pscustomobject]@{
             name = 'vmdisp9x'; source_directory = 'vmdisp9x'; repository = $displayOrigin
@@ -301,12 +293,6 @@ try {
             commit = '0123456789abcdef0123456789abcdef01234567'; upstream_license = 'LGPL-2.1-or-later'
             disposition = 'reference-only'; closure_manifest = ''; closure_manifest_sha256 = ''
             scope = 'dx9-reference'
-        },
-        [pscustomobject]@{
-            name = 'openglide9x'; source_directory = 'openglide9x'; repository = $glideOrigin
-            commit = $glideCommit; upstream_license = 'LGPL-2.1-or-later'
-            disposition = 'planned-component'; closure_manifest = $glideClosureRelative
-            closure_manifest_sha256 = $glideClosureHash; scope = 'glide-frontend'
         }
     )
     Write-Tsv -Path $script:LockPath -Columns $lockColumns -Rows $defaultLockRows
@@ -323,8 +309,6 @@ try {
         'components\DX9REDIST.EXE' = 'directx-runtime'
         'components\mesa99.dll' = 'direct3d9-compatibility'
         'components\mesa89.dll' = 'direct3d8-compatibility'
-        'components\GLIDE2X.DLL' = 'glide2-compatibility'
-        'components\GLIDE3X.DLL' = 'glide3-compatibility'
     }
     foreach ($relativePath in $payloadFiles.Keys) {
         $path = Join-Path $script:PayloadRoot $relativePath
@@ -350,12 +334,10 @@ try {
     $directX = New-InventoryRow 'directx9-runtime' 'RUNONCE\DX9REDIST.EXE' 'Component' '' 100
     $compat9 = New-InventoryRow 'gsw-dx9-compat' 'RUNONCE\mesa99.dll' 'Component' '' 200
     $compat8 = New-InventoryRow 'gsw-dx9-compat' 'RUNONCE\mesa89.dll' 'Component' '' 200
-    $glide2 = New-InventoryRow 'gsw-glide' 'RUNONCE\GLIDE2X.DLL' 'Component' '' 300
-    $glide3 = New-InventoryRow 'gsw-glide' 'RUNONCE\GLIDE3X.DLL' 'Component' '' 300
     $allInventoryRows = @(
         $vgaInf, $vgaDriver, $vgaVxd, $vgaHal, $vgaBridge,
         $soundInf, $soundDrv, $soundVxd,
-        $directX, $compat9, $compat8, $glide2, $glide3
+        $directX, $compat9, $compat8
     )
     $vgaManifestRows = @(
         New-ManifestRow $vgaInf 'build\vga\GSWVGA.INF' $script:PayloadRoot
@@ -376,13 +358,9 @@ try {
         New-ManifestRow $compat9 'components\mesa99.dll' $script:PayloadRoot
         New-ManifestRow $compat8 'components\mesa89.dll' $script:PayloadRoot
     )
-    $glideManifestRows = @(
-        New-ManifestRow $glide2 'components\GLIDE2X.DLL' $script:PayloadRoot
-        New-ManifestRow $glide3 'components\GLIDE3X.DLL' $script:PayloadRoot
-    )
     $allManifestRows = @(
         $vgaManifestRows + $soundManifestRows + $directXManifestRows +
-        $compatManifestRows + $glideManifestRows
+        $compatManifestRows
     )
     $fullInventory = Join-Path $script:TestRoot 'full-inventory.tsv'
     $vgaInventory = Join-Path $script:TestRoot 'vga-inventory.tsv'
@@ -391,7 +369,6 @@ try {
     $soundManifest = Join-Path $script:TestRoot 'sound-manifest.tsv'
     $directXManifest = Join-Path $script:TestRoot 'directx-manifest.tsv'
     $compatManifest = Join-Path $script:TestRoot 'compat-manifest.tsv'
-    $glideManifest = Join-Path $script:TestRoot 'glide-manifest.tsv'
     $fullManifest = Join-Path $script:TestRoot 'full-manifest.tsv'
     Write-Tsv $fullInventory $inventoryColumns $allInventoryRows
     Write-Tsv $vgaInventory $inventoryColumns @($vgaInf, $vgaDriver, $vgaVxd, $vgaHal, $vgaBridge)
@@ -400,7 +377,6 @@ try {
     Write-Tsv $soundManifest $manifestColumns $soundManifestRows
     Write-Tsv $directXManifest $manifestColumns $directXManifestRows
     Write-Tsv $compatManifest $manifestColumns $compatManifestRows
-    Write-Tsv $glideManifest $manifestColumns $glideManifestRows
     Write-Tsv $fullManifest $manifestColumns $allManifestRows
 
     Invoke-SelfTest 'Staging applies strict TSV shape checks to every table' {
@@ -574,17 +550,13 @@ try {
         }
     }
 
-    Invoke-SelfTest 'DX9 and Glide stage only through their ready component closures' {
+    Invoke-SelfTest 'DX9 stages only through its ready component closure' {
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $script:SourceRoot 'wine9x')))
         $compatOutput = Invoke-Staging 'compat-only' $fullInventory $compatManifest @('gsw-dx9-compat')
         Assert-True (($compatOutput -join [Environment]::NewLine) -match 'Verified 1 ready')
         Assert-True (($compatOutput -join [Environment]::NewLine) -match 'Staged 2 hash-verified')
         Assert-True (Test-Path (Join-Path $script:TestRoot 'compat-only\RUNONCE\mesa99.dll'))
         Assert-True (Test-Path (Join-Path $script:TestRoot 'compat-only\RUNONCE\mesa89.dll'))
-
-        $glideOutput = Invoke-Staging 'glide-only' $fullInventory $glideManifest @('gsw-glide')
-        Assert-True (($glideOutput -join [Environment]::NewLine) -match 'Verified 1 ready')
-        Assert-True (($glideOutput -join [Environment]::NewLine) -match 'Staged 2 hash-verified')
     }
 
     Invoke-SelfTest 'Blocked Mesa closure disables DX9 without widening five-file VGA provenance' {
@@ -609,30 +581,20 @@ try {
         }
     }
 
-    Invoke-SelfTest 'Blocked OpenGlide closure disables the future Glide package' {
-        $glideRow = @($defaultLockRows | Where-Object { $_.name -ceq 'openglide9x' })[0]
-        $glideRow.closure_manifest_sha256 = Write-ComponentClosure -Path $glideClosurePath `
-            -UpstreamName 'openglide9x' -OwningCommit $glideCommit -Checkout $glideCheckout `
-            -LicenseExpression 'LGPL-2.1-or-later' -Status 'blocked'
-        Write-Tsv $script:LockPath $lockColumns $defaultLockRows
-        try {
-            Assert-Throws {
-                Invoke-Staging 'blocked-glide' $fullInventory $glideManifest @('gsw-glide')
-            } "Component closure 'openglide9x' is blocked"
-        }
-        finally {
-            $glideRow.closure_manifest_sha256 = Write-ComponentClosure -Path $glideClosurePath `
-                -UpstreamName 'openglide9x' -OwningCommit $glideCommit -Checkout $glideCheckout `
-                -LicenseExpression 'LGPL-2.1-or-later'
-            Write-Tsv $script:LockPath $lockColumns $defaultLockRows
-        }
+    Invoke-SelfTest 'Glide is absent from provenance and package selection' {
+        Assert-Equal @($defaultLockRows | Where-Object {
+            $_.name -ceq 'openglide9x'
+        }).Count 0
+        Assert-Throws {
+            Invoke-Staging 'excluded-glide' $fullInventory $fullManifest @('gsw-glide')
+        } "Unknown or invalid selected Windows 98 payload package 'gsw-glide'"
     }
 
     Invoke-SelfTest 'Full implicit selection verifies whole and component provenance separately' {
         $fullOutput = Invoke-Staging -Name 'full-selection' -Inventory $fullInventory -Manifest $fullManifest
         Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Verified 2 immutable')
-        Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Verified 2 ready')
-        Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Staged 13 hash-verified')
+        Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Verified 1 ready')
+        Assert-True (($fullOutput -join [Environment]::NewLine) -match 'Staged 11 hash-verified')
     }
 
     Invoke-SelfTest 'Staging rejects a reparse-point output ancestor' {

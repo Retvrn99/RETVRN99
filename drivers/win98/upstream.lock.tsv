@@ -7,5 +7,4 @@ mesa9x	mesa9x	https://github.com/JHRobotics/mesa9x.git	29b9adb44bc5ea54dc53c02b5
 softgpu	softgpu	https://github.com/JHRobotics/softgpu.git	be7a6421068a1d1f475b8939a24237921490c2b8	MIT	reference-only			integration-reference
 wine9x	wine9x	https://github.com/JHRobotics/Wine9x.git	8ab16c6c0930efc1f9138eddda7b3114d7f31e62	LGPL-2.1-or-later	reference-only			dx8-and-dx9-compatibility
 vkd3d-shader	vkd3d	https://gitlab.winehq.org/wine/vkd3d.git	1b0924d12c18df03912a8876ed17fd017ce9308e	LGPL-2.1-or-later	planned-component	component-closures/vkd3d-shader.json	459cab81112ce075532fdee5e4f4b55f38fa03798506a28ecddd1f23ba42d03f	libs-vkd3d-shader
-openglide9x	openglide9x	https://github.com/JHRobotics/openglide9x.git	b8ac1a32c98f9f8e8616aeffcf4b0af163b59b8f	LGPL-2.1-or-later	planned-component	component-closures/openglide9x.json	85655b3b253605f610fc2271a120bf96b87ec61503e3ecbc37be93d502c08afa	glide2-and-glide3-frontend
 vmware-svga-ddk	vmware-svga	https://github.com/prepare/vmware-svga.git	eea7ddcd0d34702f8f0a33c1933718706c6318c5	MIT	reference-only			protocol-and-example-source-headers
