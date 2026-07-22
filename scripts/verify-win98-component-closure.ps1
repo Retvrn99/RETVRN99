@@ -16,6 +16,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'strict-json.ps1')
 . (Join-Path $PSScriptRoot 'strict-tsv.ps1')
+. (Join-Path $PSScriptRoot 'bounded-git-process.ps1')
 
 $script:MaximumFiles = 20000
 $script:MaximumPrefixes = 64
@@ -30,6 +31,9 @@ $script:MaximumFileBytes = [UInt64]536870912
 $script:MaximumAggregateBytes = [UInt64]2147483648
 $script:MaximumPathBytes = 1024
 $script:MaximumManifestBytes = 4194304
+$script:MaximumGitTextBytes = 4194304
+$script:GitTimeoutMilliseconds = 30000
+$script:StrictGitUtf8 = [Text.UTF8Encoding]::new($false, $true)
 $script:AllowedLicenseExpressions = [Collections.Generic.HashSet[string]]::new(
     [StringComparer]::Ordinal
 )
@@ -52,6 +56,7 @@ foreach ($expression in @(
     'LicenseRef-Mesa-U-Atomic-Public-Domain',
     'LicenseRef-Mesa-Vrije-Permissive',
     'LicenseRef-Mesa-Jimenez-MLAA',
+    'LGPL-2.1-or-later AND MIT',
     'MIT AND BSD-3-Clause',
     'MIT AND Apache-2.0',
     'GPL-2.0-only OR MIT',
@@ -89,6 +94,7 @@ foreach ($expression in @(
     'LicenseRef-Mesa-U-Atomic-Public-Domain',
     'LicenseRef-Mesa-Vrije-Permissive',
     'LicenseRef-Mesa-Jimenez-MLAA',
+    'LGPL-2.1-or-later AND MIT',
     'MIT AND BSD-3-Clause',
     'MIT AND Apache-2.0',
     'GPL-2.0-only',
@@ -115,6 +121,7 @@ foreach ($expression in @(
     'LicenseRef-Mesa-DbgHelp-Public-Domain',
     'LicenseRef-Mesa-U-Atomic-Public-Domain',
     'LicenseRef-Mesa-Vrije-Permissive',
+    'LGPL-2.1-or-later AND MIT',
     'MIT AND BSD-3-Clause',
     'MIT AND Apache-2.0',
     'GPL-3.0-or-later WITH Bison-exception-2.2',
@@ -500,12 +507,42 @@ function Invoke-GitLines {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    $git = Get-ComponentClosureGitExecutable
-    $output = @(& $git -c core.quotePath=false -C $Checkout @Arguments 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        throw "git $($Arguments -join ' ') failed for '$Checkout': $($output -join ' ')"
+    $checkoutPath = Get-FullPath $Checkout
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = Get-ComponentClosureGitExecutable
+    foreach ($argument in @(
+        '-c', "safe.directory=$checkoutPath",
+        '-c', 'core.quotePath=false',
+        '-C', $checkoutPath
+    ) + $Arguments) {
+        [void]$info.ArgumentList.Add($argument)
     }
-    return @($output | ForEach-Object { [string]$_ })
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+
+    Set-IsolatedGitEnvironment $info
+    $result = Invoke-GswBoundedProcess -StartInfo $info `
+        -Name 'component-verifier git' `
+        -TimeoutMilliseconds $script:GitTimeoutMilliseconds `
+        -MaximumStdoutBytes $script:MaximumGitTextBytes `
+        -MaximumStderrBytes $script:MaximumGitTextBytes
+    if ($result.exit_code -ne 0) {
+        throw 'git failed for the selected component checkout.'
+    }
+    try {
+        $stdout = $script:StrictGitUtf8.GetString([byte[]]$result.stdout)
+    }
+    catch {
+        throw 'git output is not strict UTF-8.'
+    }
+    if ($stdout.Length -eq 0) {
+        return @()
+    }
+    return @($stdout.TrimEnd("`r", "`n") -split "`n" | ForEach-Object {
+        $_.TrimEnd("`r")
+    })
 }
 
 function ConvertTo-ProcessArgument {
@@ -553,59 +590,24 @@ function Get-ComponentClosureGitExecutable {
     return $gitPath
 }
 
-function Get-ProcessEnvironmentEntry {
-    param([Parameter(Mandatory = $true)][string]$Name)
+function Set-IsolatedGitEnvironment {
+    param([Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$StartInfo)
 
-    $item = Get-Item -LiteralPath ('Env:' + $Name) -ErrorAction SilentlyContinue
-    if ($null -eq $item) {
-        return [pscustomobject]@{
-            Present = $false
-            Name = $Name
-            Value = $null
-        }
-    }
-    return [pscustomobject]@{
-        Present = $true
-        Name = [string]$item.Name
-        Value = [string]$item.Value
-    }
-}
-
-function Restore-ProcessEnvironmentEntry {
-    param(
-        [Parameter(Mandatory = $true)][string]$LookupName,
-        [Parameter(Mandatory = $true)]$Entry
-    )
-
-    Remove-Item -LiteralPath ('Env:' + $LookupName) -ErrorAction SilentlyContinue
-    if ($Entry.Present) {
-        Set-Item -LiteralPath ('Env:' + [string]$Entry.Name) `
-            -Value ([string]$Entry.Value)
-    }
-}
-
-function Start-IsolatedGitProcess {
-    param([Parameter(Mandatory = $true)][Diagnostics.Process]$Process)
-
-    $names = @(
+    $environment = $StartInfo.Environment
+    foreach ($name in @(
         'GIT_CEILING_DIRECTORIES', 'GIT_DIR', 'GIT_WORK_TREE',
-        'GIT_PREFIX', 'GIT_INDEX_FILE'
-    )
-    $saved = @{}
-    foreach ($name in $names) {
-        $saved[$name] = Get-ProcessEnvironmentEntry $name
+        'GIT_PREFIX', 'GIT_INDEX_FILE', 'GIT_CONFIG_GLOBAL',
+        'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM'
+    )) {
+        [void]$environment.Remove($name)
     }
-    try {
-        foreach ($name in $names) {
-            Remove-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue
-        }
-        return $Process.Start()
-    }
-    finally {
-        foreach ($name in $names) {
-            Restore-ProcessEnvironmentEntry $name $saved[$name]
+    foreach ($name in @($environment.Keys | ForEach-Object { [string]$_ })) {
+        if ($name -cmatch '^GIT_CONFIG_(?:COUNT|KEY_[0-9]+|VALUE_[0-9]+)$') {
+            [void]$environment.Remove($name)
         }
     }
+    $environment['GIT_CONFIG_GLOBAL'] = 'NUL'
+    $environment['GIT_CONFIG_NOSYSTEM'] = '1'
 }
 
 function Get-GitBlobDigest {
@@ -614,6 +616,7 @@ function Get-GitBlobDigest {
         [Parameter(Mandatory = $true)][string]$Blob
     )
 
+    $checkoutPath = Get-FullPath $Checkout
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = Get-ComponentClosureGitExecutable
     $startInfo.UseShellExecute = $false
@@ -621,21 +624,22 @@ function Get-GitBlobDigest {
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.Arguments = (@(
-        '-C', $Checkout, 'cat-file', 'blob', $Blob
+        '-c', "safe.directory=$checkoutPath",
+        '-C', $checkoutPath, 'cat-file', 'blob', $Blob
     ) | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
 
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
+    Set-IsolatedGitEnvironment $startInfo
     $digest = [Security.Cryptography.SHA256]::Create()
-    $started = $false
-    [UInt64]$length = 0
     $spdxNeedle = [Text.Encoding]::ASCII.GetBytes('SPDX-License-Identifier:')
     $spdxFailure = New-Object int[] $spdxNeedle.Length
     $spdxDeclarations = [Collections.Generic.List[object]]::new()
-    $currentSpdxCapture = $null
-    [Int64]$currentSpdxOffset = -1
-    $currentSpdxTruncated = $false
-    $spdxMatched = 0
+    $state = [pscustomobject]@{
+        Length = [UInt64]0
+        CurrentSpdxCapture = $null
+        CurrentSpdxOffset = [Int64]-1
+        CurrentSpdxTruncated = $false
+        SpdxMatched = 0
+    }
     $failureMatched = 0
     for ($failureIndex = 1; $failureIndex -lt $spdxNeedle.Length; $failureIndex++) {
         while ($failureMatched -gt 0 -and
@@ -647,114 +651,111 @@ function Get-GitBlobDigest {
         }
         $spdxFailure[$failureIndex] = $failureMatched
     }
+    $onStdoutChunk = {
+        param([byte[]]$buffer, [int]$read)
+
+        [void]$digest.TransformBlock($buffer, 0, $read, $buffer, 0)
+        for ($index = 0; $index -lt $read; $index++) {
+            $byte = $buffer[$index]
+            if ($null -ne $state.CurrentSpdxCapture) {
+                if ($byte -in @([byte]0x0a, [byte]0x0d)) {
+                    if ($spdxDeclarations.Count -ge $script:MaximumSpdxDeclarations) {
+                        throw "Git blob '$Blob' exceeds the SPDX declaration-count bound."
+                    }
+                    [void]$spdxDeclarations.Add([pscustomobject]@{
+                        Offset = $state.CurrentSpdxOffset
+                        ByteCount = [UInt64]$state.CurrentSpdxCapture.Length
+                        Text = [Text.Encoding]::UTF8.GetString(
+                            $state.CurrentSpdxCapture.ToArray()
+                        )
+                        Truncated = $state.CurrentSpdxTruncated
+                    })
+                    $state.CurrentSpdxCapture.Dispose()
+                    $state.CurrentSpdxCapture = $null
+                }
+                elseif ($state.CurrentSpdxCapture.Length -lt
+                    $script:MaximumSpdxDeclarationBytes) {
+                    $state.CurrentSpdxCapture.WriteByte($byte)
+                }
+                else {
+                    $state.CurrentSpdxTruncated = $true
+                }
+            }
+            while ($state.SpdxMatched -gt 0 -and
+                $byte -ne $spdxNeedle[$state.SpdxMatched]) {
+                $state.SpdxMatched = $spdxFailure[$state.SpdxMatched - 1]
+            }
+            if ($byte -eq $spdxNeedle[$state.SpdxMatched]) {
+                $state.SpdxMatched++
+            }
+            if ($state.SpdxMatched -eq $spdxNeedle.Length) {
+                if ($null -ne $state.CurrentSpdxCapture) {
+                    if ($spdxDeclarations.Count -ge $script:MaximumSpdxDeclarations) {
+                        throw "Git blob '$Blob' exceeds the SPDX declaration-count bound."
+                    }
+                    [void]$spdxDeclarations.Add([pscustomobject]@{
+                        Offset = $state.CurrentSpdxOffset
+                        ByteCount = [UInt64]$state.CurrentSpdxCapture.Length
+                        Text = [Text.Encoding]::UTF8.GetString(
+                            $state.CurrentSpdxCapture.ToArray()
+                        )
+                        Truncated = $true
+                    })
+                    $state.CurrentSpdxCapture.Dispose()
+                }
+                $state.CurrentSpdxOffset = [Int64](
+                    $state.Length + [UInt64]$index + 1 -
+                    [UInt64]$spdxNeedle.Length
+                )
+                $state.CurrentSpdxCapture = [IO.MemoryStream]::new(
+                    $script:MaximumSpdxDeclarationBytes
+                )
+                $state.CurrentSpdxCapture.Write(
+                    $spdxNeedle, 0, $spdxNeedle.Length
+                )
+                $state.CurrentSpdxTruncated = $false
+                $state.SpdxMatched = $spdxFailure[$state.SpdxMatched - 1]
+            }
+        }
+        $state.Length += [UInt64]$read
+    }
     try {
-        if (-not (Start-IsolatedGitProcess $process)) {
-            throw "Unable to start git cat-file for '$Blob'."
+        $result = Invoke-GswBoundedProcess -StartInfo $startInfo `
+            -Name 'component-verifier git cat-file' `
+            -TimeoutMilliseconds $script:GitTimeoutMilliseconds `
+            -MaximumStdoutBytes $script:MaximumFileBytes `
+            -MaximumStderrBytes $script:MaximumGitTextBytes `
+            -OnStdoutChunk $onStdoutChunk
+        if ($result.exit_code -ne 0) {
+            throw "git cat-file failed for the selected component blob '$Blob'."
         }
-        $started = $true
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        $buffer = New-Object byte[] 65536
-        while (($read = $process.StandardOutput.BaseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            [void]$digest.TransformBlock($buffer, 0, $read, $buffer, 0)
-            for ($index = 0; $index -lt $read; $index++) {
-                $byte = $buffer[$index]
-                if ($null -ne $currentSpdxCapture) {
-                    if ($byte -in @([byte]0x0a, [byte]0x0d)) {
-                        if ($spdxDeclarations.Count -ge $script:MaximumSpdxDeclarations) {
-                            throw "Git blob '$Blob' exceeds the SPDX declaration-count bound."
-                        }
-                        [void]$spdxDeclarations.Add([pscustomobject]@{
-                            Offset = $currentSpdxOffset
-                            ByteCount = [UInt64]$currentSpdxCapture.Length
-                            Text = [Text.Encoding]::UTF8.GetString(
-                                $currentSpdxCapture.ToArray()
-                            )
-                            Truncated = $currentSpdxTruncated
-                        })
-                        $currentSpdxCapture.Dispose()
-                        $currentSpdxCapture = $null
-                    }
-                    elseif ($currentSpdxCapture.Length -lt
-                        $script:MaximumSpdxDeclarationBytes) {
-                        $currentSpdxCapture.WriteByte($byte)
-                    }
-                    else {
-                        $currentSpdxTruncated = $true
-                    }
-                }
-                while ($spdxMatched -gt 0 -and
-                    $byte -ne $spdxNeedle[$spdxMatched]) {
-                    $spdxMatched = $spdxFailure[$spdxMatched - 1]
-                }
-                if ($byte -eq $spdxNeedle[$spdxMatched]) {
-                    $spdxMatched++
-                }
-                if ($spdxMatched -eq $spdxNeedle.Length) {
-                    if ($null -ne $currentSpdxCapture) {
-                        if ($spdxDeclarations.Count -ge $script:MaximumSpdxDeclarations) {
-                            throw "Git blob '$Blob' exceeds the SPDX declaration-count bound."
-                        }
-                        [void]$spdxDeclarations.Add([pscustomobject]@{
-                            Offset = $currentSpdxOffset
-                            ByteCount = [UInt64]$currentSpdxCapture.Length
-                            Text = [Text.Encoding]::UTF8.GetString(
-                                $currentSpdxCapture.ToArray()
-                            )
-                            Truncated = $true
-                        })
-                        $currentSpdxCapture.Dispose()
-                    }
-                    $currentSpdxOffset = [Int64](
-                        $length + [UInt64]$index + 1 - [UInt64]$spdxNeedle.Length
-                    )
-                    $currentSpdxCapture = [IO.MemoryStream]::new(
-                        $script:MaximumSpdxDeclarationBytes
-                    )
-                    $currentSpdxCapture.Write($spdxNeedle, 0, $spdxNeedle.Length)
-                    $currentSpdxTruncated = $false
-                    $spdxMatched = $spdxFailure[$spdxMatched - 1]
-                }
-            }
-            $length += [UInt64]$read
-            if ($length -gt $script:MaximumFileBytes) {
-                throw "Git blob '$Blob' exceeds the file size bound."
-            }
-        }
-        $process.WaitForExit()
-        $errorText = $errorTask.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) {
-            throw "git cat-file failed for '$Blob': $errorText"
-        }
-        if ($null -ne $currentSpdxCapture) {
+        if ($null -ne $state.CurrentSpdxCapture) {
             if ($spdxDeclarations.Count -ge $script:MaximumSpdxDeclarations) {
                 throw "Git blob '$Blob' exceeds the SPDX declaration-count bound."
             }
             [void]$spdxDeclarations.Add([pscustomobject]@{
-                Offset = $currentSpdxOffset
-                ByteCount = [UInt64]$currentSpdxCapture.Length
-                Text = [Text.Encoding]::UTF8.GetString($currentSpdxCapture.ToArray())
-                Truncated = $currentSpdxTruncated
+                Offset = $state.CurrentSpdxOffset
+                ByteCount = [UInt64]$state.CurrentSpdxCapture.Length
+                Text = [Text.Encoding]::UTF8.GetString(
+                    $state.CurrentSpdxCapture.ToArray()
+                )
+                Truncated = $state.CurrentSpdxTruncated
             })
-            $currentSpdxCapture.Dispose()
-            $currentSpdxCapture = $null
+            $state.CurrentSpdxCapture.Dispose()
+            $state.CurrentSpdxCapture = $null
         }
         [void]$digest.TransformFinalBlock((New-Object byte[] 0), 0, 0)
         return [pscustomobject]@{
-            Bytes = $length
+            Bytes = $state.Length
             Sha256 = ([BitConverter]::ToString($digest.Hash) -replace '-', '').ToLowerInvariant()
             SpdxDeclarations = @($spdxDeclarations)
         }
     }
     finally {
-        if ($started -and -not $process.HasExited) {
-            $process.Kill()
-            $process.WaitForExit()
-        }
-        if ($null -ne $currentSpdxCapture) {
-            $currentSpdxCapture.Dispose()
+        if ($null -ne $state.CurrentSpdxCapture) {
+            $state.CurrentSpdxCapture.Dispose()
         }
         $digest.Dispose()
-        $process.Dispose()
     }
 }
 
@@ -796,6 +797,7 @@ function Get-GitBlobRangeDigests {
         @{Expression = {[UInt64]$_.Offset}}, `
         @{Expression = {[string]$_.EvidenceId}})
 
+    $checkoutPath = Get-FullPath $Checkout
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = Get-ComponentClosureGitExecutable
     $startInfo.UseShellExecute = $false
@@ -803,69 +805,72 @@ function Get-GitBlobRangeDigests {
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.Arguments = (@(
-        '-C', $Checkout, 'cat-file', 'blob', $Blob
+        '-c', "safe.directory=$checkoutPath",
+        '-C', $checkoutPath, 'cat-file', 'blob', $Blob
     ) | ForEach-Object { ConvertTo-ProcessArgument $_ }) -join ' '
 
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    $started = $false
-    [UInt64]$position = 0
+    Set-IsolatedGitEnvironment $startInfo
+    $streamState = [pscustomobject]@{
+        Position = [UInt64]0
+        Active = [Collections.Generic.List[object]]::new()
+        NextState = 0
+    }
+    $onStdoutChunk = {
+        param([byte[]]$buffer, [int]$read)
+
+        $chunkStart = $streamState.Position
+        $chunkEnd = $streamState.Position + [UInt64]$read
+        while ($streamState.NextState -lt $orderedStates.Count -and
+            [UInt64]$orderedStates[$streamState.NextState].Offset -lt
+                $chunkEnd) {
+            [void]$streamState.Active.Add(
+                $orderedStates[$streamState.NextState]
+            )
+            $streamState.NextState++
+        }
+        for ($activeIndex = $streamState.Active.Count - 1;
+            $activeIndex -ge 0; $activeIndex--) {
+            $rangeState = $streamState.Active[$activeIndex]
+            if ([UInt64]$rangeState.End -le $chunkStart) {
+                $streamState.Active.RemoveAt($activeIndex)
+                continue
+            }
+            $copyStart = $chunkStart
+            if ([UInt64]$rangeState.Offset -gt $copyStart) {
+                $copyStart = [UInt64]$rangeState.Offset
+            }
+            $copyEnd = $chunkEnd
+            if ([UInt64]$rangeState.End -lt $copyEnd) {
+                $copyEnd = [UInt64]$rangeState.End
+            }
+            if ($copyEnd -gt $copyStart) {
+                $bufferOffset = [int]($copyStart - $chunkStart)
+                $copyCount = [int]($copyEnd - $copyStart)
+                [void]$rangeState.Digest.TransformBlock(
+                    $buffer,
+                    $bufferOffset,
+                    $copyCount,
+                    $buffer,
+                    $bufferOffset
+                )
+                $rangeState.Captured = [UInt64]$rangeState.Captured +
+                    [UInt64]$copyCount
+            }
+            if ([UInt64]$rangeState.End -le $chunkEnd) {
+                $streamState.Active.RemoveAt($activeIndex)
+            }
+        }
+        $streamState.Position = $chunkEnd
+    }
     try {
-        if (-not (Start-IsolatedGitProcess $process)) {
-            throw "Unable to start git cat-file for '$Blob'."
-        }
-        $started = $true
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        $buffer = New-Object byte[] 65536
-        $active = [Collections.Generic.List[object]]::new()
-        $nextState = 0
-        while (($read = $process.StandardOutput.BaseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            $chunkStart = $position
-            $chunkEnd = $position + [UInt64]$read
-            while ($nextState -lt $orderedStates.Count -and
-                [UInt64]$orderedStates[$nextState].Offset -lt $chunkEnd) {
-                [void]$active.Add($orderedStates[$nextState])
-                $nextState++
-            }
-            for ($activeIndex = $active.Count - 1; $activeIndex -ge 0; $activeIndex--) {
-                $state = $active[$activeIndex]
-                if ([UInt64]$state.End -le $chunkStart) {
-                    $active.RemoveAt($activeIndex)
-                    continue
-                }
-                $copyStart = $chunkStart
-                if ([UInt64]$state.Offset -gt $copyStart) {
-                    $copyStart = [UInt64]$state.Offset
-                }
-                $copyEnd = $chunkEnd
-                if ([UInt64]$state.End -lt $copyEnd) {
-                    $copyEnd = [UInt64]$state.End
-                }
-                if ($copyEnd -gt $copyStart) {
-                    $bufferOffset = [int]($copyStart - $chunkStart)
-                    $copyCount = [int]($copyEnd - $copyStart)
-                    [void]$state.Digest.TransformBlock(
-                        $buffer,
-                        $bufferOffset,
-                        $copyCount,
-                        $buffer,
-                        $bufferOffset
-                    )
-                    $state.Captured = [UInt64]$state.Captured + [UInt64]$copyCount
-                }
-                if ([UInt64]$state.End -le $chunkEnd) {
-                    $active.RemoveAt($activeIndex)
-                }
-            }
-            $position = $chunkEnd
-            if ($position -gt $script:MaximumFileBytes) {
-                throw "Git blob '$Blob' exceeds the file size bound."
-            }
-        }
-        $process.WaitForExit()
-        $errorText = $errorTask.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) {
-            throw "git cat-file failed for '$Blob': $errorText"
+        $result = Invoke-GswBoundedProcess -StartInfo $startInfo `
+            -Name 'component-verifier git cat-file' `
+            -TimeoutMilliseconds $script:GitTimeoutMilliseconds `
+            -MaximumStdoutBytes $script:MaximumFileBytes `
+            -MaximumStderrBytes $script:MaximumGitTextBytes `
+            -OnStdoutChunk $onStdoutChunk
+        if ($result.exit_code -ne 0) {
+            throw "git cat-file failed for the selected component blob '$Blob'."
         }
         $results = [Collections.Generic.Dictionary[string,string]]::new(
             [StringComparer]::Ordinal
@@ -883,14 +888,9 @@ function Get-GitBlobRangeDigests {
         return $results
     }
     finally {
-        if ($started -and -not $process.HasExited) {
-            $process.Kill()
-            $process.WaitForExit()
-        }
         foreach ($state in $states) {
             $state.Digest.Dispose()
         }
-        $process.Dispose()
     }
 }
 
@@ -924,6 +924,11 @@ function Get-V2DerivedLicenseExpression {
 
     if ($Expressions.Count -eq 1) {
         return @($Expressions)[0]
+    }
+    if ($Expressions.Count -eq 2 -and
+        $Expressions.Contains('LGPL-2.1-or-later') -and
+        $Expressions.Contains('MIT')) {
+        return 'LGPL-2.1-or-later AND MIT'
     }
     if ($Expressions.Count -eq 2 -and
         $Expressions.Contains('MIT') -and $Expressions.Contains('BSD-3-Clause')) {

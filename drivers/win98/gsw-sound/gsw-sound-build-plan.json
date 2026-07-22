@@ -34,7 +34,7 @@
     {"relative_path":"drivers/win98/gsw-sound/interface-inputs.lock.json","bytes":3034,"sha256":"f9703f8dbc3c3bd1756f287d59e98fe9824ba9daa3ccda3e0a905ed2d5b1ee57"},
     {"relative_path":"drivers/win98/toolchain.lock.json","bytes":883,"sha256":"e97012fb9d9b1257e59ac5ea46ac8aa1b54b62e2feb03fed70545c5769e07dff"},
     {"relative_path":"drivers/win98/mingw32-toolchain.lock.json","bytes":792,"sha256":"db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12"},
-    {"relative_path":"drivers/win98/upstream.lock.tsv","bytes":1786,"sha256":"748622ee0c91a6b622b95e7986c8ff8a766b65c6dccc9c0766575a08b735e7a0"},
+    {"relative_path":"drivers/win98/upstream.lock.tsv","bytes":1786,"sha256":"9ac835757077b5f908113c84e966d06a8edbbc57b6491fc480b081ba5f21d70d"},
     {"relative_path":"scripts/verify-win98-gsw-sound-interfaces.ps1","bytes":7353,"sha256":"491151ca7d3114652a97631487f595bd769429823b0ea01e49d81326a7514ebd"},
     {"relative_path":"scripts/verify-win98-driver-toolchain.ps1","bytes":24574,"sha256":"4a38d41118a3812eb7ccc973cd0706c2edbc92656c78f34941f8c7ca96868291"},
     {"relative_path":"scripts/strict-json.ps1","bytes":19221,"sha256":"7a0fe3421277f0ea6d09fcc998f9c4e5d7b26fcc5c1d7c67e56f2fe700116efb"},

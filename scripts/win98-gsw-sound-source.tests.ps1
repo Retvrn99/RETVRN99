@@ -436,7 +436,7 @@ Invoke-SelfTest 'Hash-locked twin-build plan covers every deterministic input an
     })
     Assert-Equal $upstreamLock.Count 1
     Assert-Equal "$($upstreamLock[0].bytes):$($upstreamLock[0].sha256)" `
-        '1786:748622ee0c91a6b622b95e7986c8ff8a766b65c6dccc9c0766575a08b735e7a0'
+        '1786:9ac835757077b5f908113c84e966d06a8edbbc57b6491fc480b081ba5f21d70d'
     foreach ($record in @($plan.source_files)) {
         $path = Join-Path $sourceRoot ([string]$record.relative_path).Replace('/', '\')
         Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing planned source '$($record.relative_path)'."

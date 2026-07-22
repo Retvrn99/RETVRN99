@@ -1,0 +1,643 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vkd3d-shader-compiler-closure.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_spdx", "schema", "schema_definition", "status", "source",
+    "source_pair", "cross_component_inputs", "toolchain", "recipe",
+    "generated_runs", "commands", "comparison", "summary",
+    "authorizations"
+  ],
+  "properties": {
+    "_spdx": {"const": "GPL-3.0-only"},
+    "schema": {"const": 1},
+    "schema_definition": {"$ref": "#/$defs/binding"},
+    "status": {"const": "compile-proven"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component", "repository", "owning_commit", "component_manifest",
+        "git_tool"
+      ],
+      "properties": {
+        "component": {"const": "vkd3d-shader"},
+        "repository": {"const": "https://gitlab.winehq.org/wine/vkd3d.git"},
+        "owning_commit": {"const": "1b0924d12c18df03912a8876ed17fd017ce9308e"},
+        "component_manifest": {"$ref": "#/$defs/manifest_binding"},
+        "git_tool": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file_id", "bytes", "sha256", "probe_id", "version"],
+          "properties": {
+            "file_id": {"const": "git-core"},
+            "bytes": {"type": "integer", "minimum": 1},
+            "sha256": {"$ref": "#/$defs/sha256"},
+            "probe_id": {"const": "git-version"},
+            "version": {"type": "string", "minLength": 1, "maxLength": 256}
+          }
+        }
+      }
+    },
+    "source_pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "checkouts", "file_count", "aggregate_bytes",
+        "aggregate_sha256", "files"
+      ],
+      "properties": {
+        "status": {"const": "canonical-lf-crlf-proven"},
+        "checkouts": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": {"$ref": "#/$defs/checkout"}
+        },
+        "file_count": {"const": 40},
+        "aggregate_bytes": {"type": "integer", "minimum": 1},
+        "aggregate_sha256": {"$ref": "#/$defs/sha256"},
+        "files": {
+          "type": "array", "minItems": 40, "maxItems": 40,
+          "items": {"$ref": "#/$defs/source_file"}
+        }
+      }
+    },
+    "cross_component_inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "component_manifest", "owning_commit", "file_count",
+        "aggregate_bytes", "aggregate_sha256", "files"
+      ],
+      "properties": {
+        "status": {"const": "ready"},
+        "component_manifest": {"$ref": "#/$defs/manifest_binding"},
+        "owning_commit": {"const": "29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f"},
+        "file_count": {"const": 2},
+        "aggregate_bytes": {"type": "integer", "minimum": 1},
+        "aggregate_sha256": {"$ref": "#/$defs/sha256"},
+        "files": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": {"$ref": "#/$defs/cross_file"}
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "lock", "roots", "files", "trees", "probes",
+        "environment", "process_limits"
+      ],
+      "properties": {
+        "status": {"const": "ready"},
+        "lock": {"$ref": "#/$defs/lock_binding"},
+        "roots": {
+          "type": "array", "minItems": 3, "maxItems": 3,
+          "items": {"$ref": "#/$defs/tool_root"}
+        },
+        "files": {
+          "type": "array", "minItems": 50, "maxItems": 50,
+          "items": {"$ref": "#/$defs/tool_file"}
+        },
+        "trees": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": {"$ref": "#/$defs/tool_tree"}
+        },
+        "probes": {
+          "type": "array", "minItems": 9, "maxItems": 9,
+          "items": {"$ref": "#/$defs/tool_probe"}
+        },
+        "environment": {"$ref": "#/$defs/environment"},
+        "process_limits": {"$ref": "#/$defs/process_limits"}
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status", "generated_output_count", "tracked_source_unit_count",
+        "generated_source_unit_count", "compile_command_count",
+        "generator_recipes", "compile_arguments",
+        "object_validation_arguments", "generated_outputs",
+        "compilation_units"
+      ],
+      "properties": {
+        "status": {"const": "exact-compile-only"},
+        "generated_output_count": {"const": 11},
+        "tracked_source_unit_count": {"const": 15},
+        "generated_source_unit_count": {"const": 4},
+        "compile_command_count": {"const": 19},
+        "generator_recipes": {
+          "type": "array", "minItems": 4, "maxItems": 4,
+          "items": {"$ref": "#/$defs/tool_recipe"}
+        },
+        "compile_arguments": {
+          "type": "array", "minItems": 30, "maxItems": 64,
+          "items": {"type": "string", "minLength": 1, "maxLength": 1024}
+        },
+        "object_validation_arguments": {
+          "const": ["-f", "-h", "-t", "{object}"]
+        },
+        "generated_outputs": {
+          "type": "array", "minItems": 11, "maxItems": 11,
+          "items": {"$ref": "#/$defs/generated_plan"}
+        },
+        "compilation_units": {
+          "type": "array", "minItems": 19, "maxItems": 19,
+          "items": {"$ref": "#/$defs/compilation_unit"}
+        }
+      }
+    },
+    "generated_runs": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": {"$ref": "#/$defs/generated_run"}
+    },
+    "commands": {
+      "type": "array", "minItems": 19, "maxItems": 19,
+      "items": {"$ref": "#/$defs/command"}
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_generated_outputs", "generated_outputs", "dependencies", "normalized_objects"],
+      "properties": {
+        "raw_generated_outputs": {"$ref": "#/$defs/comparison_row"},
+        "generated_outputs": {"$ref": "#/$defs/comparison_row"},
+        "dependencies": {"$ref": "#/$defs/dependency_comparison"},
+        "normalized_objects": {"$ref": "#/$defs/comparison_row"}
+      }
+    },
+    "summary": {"$ref": "#/$defs/summary"},
+    "authorizations": {"$ref": "#/$defs/authorizations"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "git_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "relative_path": {
+      "type": "string", "minLength": 1, "maxLength": 1024,
+      "pattern": "^(?![A-Za-z]:)(?![/\\\\])(?!.*(?:^|/)\\.\\.?(?:/|$))[^\\\\]+$"
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "manifest_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256", "status", "file_count"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "status": {"const": "ready"},
+        "file_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "lock_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "bytes", "sha256", "status"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "status": {"const": "ready"}
+      }
+    },
+    "checkout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "checkout_mode", "clean", "detached", "owning_commit", "origin"],
+      "properties": {
+        "id": {"enum": ["lf", "crlf"]},
+        "checkout_mode": {"enum": ["lf", "crlf"]},
+        "clean": {"const": true},
+        "detached": {"const": true},
+        "owning_commit": {"const": "1b0924d12c18df03912a8876ed17fd017ce9308e"},
+        "origin": {"const": "https://gitlab.winehq.org/wine/vkd3d.git"}
+      }
+    },
+    "source_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal", "relative_path", "git_blob", "bytes", "lf_count",
+        "crlf_count", "sha256", "declared_license_expression",
+        "selected_license_expression", "license_evidence_ids", "roles",
+        "canonical_pair"
+      ],
+      "properties": {
+        "ordinal": {"type": "integer", "minimum": 1, "maximum": 40},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "git_blob": {"$ref": "#/$defs/git_sha1"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 8388608},
+        "lf_count": {"type": "integer", "minimum": 1},
+        "crlf_count": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "declared_license_expression": {"$ref": "#/$defs/component_license"},
+        "selected_license_expression": {"$ref": "#/$defs/component_license"},
+        "license_evidence_ids": {
+          "type": "array", "minItems": 1, "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1, "maxLength": 128}
+        },
+        "roles": {
+          "type": "array", "minItems": 1, "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"enum": ["source-unit", "compiler-dependency", "generator-input", "build-description", "resource"]}
+        },
+        "canonical_pair": {"const": true}
+      }
+    },
+    "component_license": {
+      "enum": ["LGPL-2.1-or-later", "LGPL-2.1-or-later AND MIT", "MIT"]
+    },
+    "cross_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ordinal", "source_relative_path", "target_relative_path", "git_blob",
+        "bytes", "sha256", "license_expression"
+      ],
+      "properties": {
+        "ordinal": {"type": "integer", "minimum": 1, "maximum": 2},
+        "source_relative_path": {"$ref": "#/$defs/relative_path"},
+        "target_relative_path": {"$ref": "#/$defs/relative_path"},
+        "git_blob": {"$ref": "#/$defs/git_sha1"},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "license_expression": {"const": "MIT"}
+      }
+    },
+    "tool_root": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "verified"],
+      "properties": {
+        "id": {"enum": ["msys", "ucrt64", "git", "package_cache"]},
+        "verified": {"const": true}
+      }
+    },
+    "tool_file": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "root", "relative_path", "role", "bytes", "sha256"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "root": {"enum": ["msys", "ucrt64", "git"]},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "role": {"enum": ["executable", "runtime-library", "package-metadata", "module"]},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "tree_descriptor": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "file_count", "directory_count", "total_entries", "aggregate_bytes",
+        "maximum_file_bytes", "maximum_path_bytes", "digest_algorithm", "sha256"
+      ],
+      "properties": {
+        "file_count": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "directory_count": {"type": "integer", "minimum": 0, "maximum": 128},
+        "total_entries": {"type": "integer", "minimum": 1, "maximum": 1152},
+        "aggregate_bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "maximum_file_bytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "maximum_path_bytes": {"type": "integer", "minimum": 1, "maximum": 512},
+        "digest_algorithm": {"const": "retvrn99-file-tree-sha256-v1"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "tool_tree": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "root", "relative_path", "role", "descriptor"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "root": {"enum": ["msys", "ucrt64", "git"]},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "role": {"type": "string", "minLength": 1, "maxLength": 96},
+        "descriptor": {"$ref": "#/$defs/tree_descriptor"}
+      }
+    },
+    "tool_probe": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "id", "file_id", "expected_lines", "observed_lines", "stdout_bytes",
+        "stdout_sha256"
+      ],
+      "properties": {
+        "id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "file_id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "expected_lines": {"$ref": "#/$defs/short_lines"},
+        "observed_lines": {
+          "type": "array", "minItems": 1, "maxItems": 64,
+          "items": {"type": "string", "maxLength": 1024}
+        },
+        "stdout_bytes": {"type": "integer", "minimum": 0, "maximum": 1048576},
+        "stdout_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "short_lines": {
+      "type": "array", "minItems": 1, "maxItems": 4,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256}
+    },
+    "environment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path_policy", "perl5lib_roots", "ambient_library_paths"],
+      "properties": {
+        "path_policy": {"type": "string", "minLength": 1, "maxLength": 256},
+        "perl5lib_roots": {
+          "type": "array", "minItems": 3, "maxItems": 3,
+          "items": {"type": "string", "minLength": 1, "maxLength": 256}
+        },
+        "ambient_library_paths": {"type": "boolean"}
+      }
+    },
+    "process_limits": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "no_shell", "maximum_top_level_processes",
+        "maximum_process_tree_width", "timeout_seconds",
+        "termination_grace_seconds", "maximum_stdout_bytes",
+        "maximum_stderr_bytes", "terminate_process_tree"
+      ],
+      "properties": {
+        "no_shell": {"const": true},
+        "maximum_top_level_processes": {"const": 1},
+        "maximum_process_tree_width": {"const": 5},
+        "timeout_seconds": {"const": 30},
+        "termination_grace_seconds": {"const": 5},
+        "maximum_stdout_bytes": {"const": 1048576},
+        "maximum_stderr_bytes": {"const": 1048576},
+        "terminate_process_tree": {"const": true}
+      }
+    },
+    "tool_recipe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "tool_file_id", "provenance", "arguments", "standard_output"],
+      "properties": {
+        "id": {"enum": ["flex-c", "bison-c-header", "widl-header", "spirv-header"]},
+        "tool_file_id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "provenance": {"const": "upstream"},
+        "arguments": {
+          "type": "array", "minItems": 2, "maxItems": 16,
+          "items": {"type": "string", "minLength": 1, "maxLength": 256}
+        },
+        "standard_output": {"enum": ["capture-for-validation", "capture-as-output"]}
+      }
+    },
+    "generated_plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["ordinal", "relative_path", "kind", "recipe_id", "inputs"],
+      "properties": {
+        "ordinal": {"type": "integer", "minimum": 1, "maximum": 11},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "kind": {"enum": ["generated-c", "generated-header"]},
+        "recipe_id": {"enum": ["flex-c", "bison-c-header", "widl-header", "spirv-header", "reviewed-config-header", "reviewed-version-header"]},
+        "inputs": {
+          "type": "array", "minItems": 1, "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/relative_path"}
+        }
+      }
+    },
+    "compilation_unit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["unit_ordinal", "input_kind", "input", "sha256"],
+      "properties": {
+        "unit_ordinal": {"type": "integer", "minimum": 1, "maximum": 19},
+        "input_kind": {"enum": ["tracked", "generated"]},
+        "input": {"$ref": "#/$defs/relative_path"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "generator_command": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "ordinal", "recipe_id", "tool_file_id", "arguments", "exit_code",
+        "stdout_bytes", "stdout_sha256", "stderr_bytes", "stderr_sha256"
+      ],
+      "properties": {
+        "ordinal": {"type": "integer", "minimum": 1, "maximum": 9},
+        "recipe_id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "tool_file_id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "arguments": {
+          "type": "array", "minItems": 2, "maxItems": 16,
+          "items": {"type": "string", "minLength": 1, "maxLength": 1024}
+        },
+        "exit_code": {"const": 0},
+        "stdout_bytes": {"type": "integer", "minimum": 0, "maximum": 1048576},
+        "stdout_sha256": {"$ref": "#/$defs/sha256"},
+        "stderr_bytes": {"const": 0},
+        "stderr_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "generated_output": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "ordinal", "relative_path", "raw_bytes", "raw_sha256",
+        "raw_lf_count", "raw_crlf_count", "raw_lf_only_count",
+        "raw_cr_only_count", "raw_utf8_bom", "normalization",
+        "removed_cr_bytes", "normalization_proven", "bytes", "sha256",
+        "lf_count", "crlf_count", "lf_only_count", "cr_only_count",
+        "utf8_bom", "license_expression", "provenance"
+      ],
+      "properties": {
+        "ordinal": {"type": "integer", "minimum": 1, "maximum": 11},
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "raw_bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "raw_sha256": {"$ref": "#/$defs/sha256"},
+        "raw_lf_count": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "raw_crlf_count": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "raw_lf_only_count": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "raw_cr_only_count": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "raw_utf8_bom": {"const": false},
+        "normalization": {"enum": ["none", "crlf-to-lf"]},
+        "removed_cr_bytes": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "normalization_proven": {"const": true},
+        "bytes": {"type": "integer", "minimum": 1, "maximum": 67108864},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "lf_count": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "crlf_count": {"const": 0},
+        "lf_only_count": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "cr_only_count": {"const": 0},
+        "utf8_bom": {"const": false},
+        "license_expression": {"enum": ["LGPL-2.1-or-later", "LGPL-2.1-or-later AND (GPL-3.0-or-later WITH Bison-exception-2.2)", "MIT", "GPL-3.0-only"]},
+        "provenance": {"type": "string", "minLength": 1, "maxLength": 128}
+      }
+    },
+    "generated_run": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "source_mode", "generator_commands", "output_count", "raw_aggregate_bytes", "raw_aggregate_sha256", "aggregate_bytes", "aggregate_sha256", "outputs"],
+      "properties": {
+        "id": {"enum": ["lf", "crlf"]},
+        "source_mode": {"enum": ["lf", "crlf"]},
+        "generator_commands": {"type": "array", "minItems": 9, "maxItems": 9, "items": {"$ref": "#/$defs/generator_command"}},
+        "output_count": {"const": 11},
+        "raw_aggregate_bytes": {"type": "integer", "minimum": 1},
+        "raw_aggregate_sha256": {"$ref": "#/$defs/sha256"},
+        "aggregate_bytes": {"type": "integer", "minimum": 1},
+        "aggregate_sha256": {"$ref": "#/$defs/sha256"},
+        "outputs": {"type": "array", "minItems": 11, "maxItems": 11, "items": {"$ref": "#/$defs/generated_output"}}
+      }
+    },
+    "dependency_row": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relative_path", "occurrence_count", "bytes", "sha256"],
+      "properties": {
+        "relative_path": {"type": "string", "pattern": "^\\{(source|generated|gcc_tool|ucrt64)\\}/[^\\\\]+$", "maxLength": 1024},
+        "occurrence_count": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "bytes": {"type": "integer", "minimum": 0, "maximum": 67108864},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "dependency_file": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relative_path", "dependency_count", "unique_dependency_count", "aggregate_sha256", "files"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "dependency_count": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "unique_dependency_count": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "aggregate_sha256": {"$ref": "#/$defs/sha256"},
+        "files": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"$ref": "#/$defs/dependency_row"}}
+      }
+    },
+    "object": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relative_path", "machine", "machine_name", "bytes", "timestamp", "raw_sha256", "normalized_sha256"],
+      "properties": {
+        "relative_path": {"type": "string", "pattern": "^obj/.+\\.o$", "maxLength": 1024},
+        "machine": {"const": 34404},
+        "machine_name": {"const": "amd64"},
+        "bytes": {"type": "integer", "minimum": 20, "maximum": 67108864},
+        "timestamp": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "raw_sha256": {"$ref": "#/$defs/sha256"},
+        "normalized_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "objdump": {
+      "type": "object", "additionalProperties": false,
+      "required": ["arguments", "format", "architecture", "stdout_bytes", "stdout_sha256"],
+      "properties": {
+        "arguments": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "string", "minLength": 1, "maxLength": 1024}},
+        "format": {"type": "string", "minLength": 1, "maxLength": 64},
+        "architecture": {"type": "string", "minLength": 1, "maxLength": 64},
+        "stdout_bytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "stdout_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "command_run": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "dependency_file", "object", "objdump"],
+      "properties": {
+        "id": {"enum": ["lf", "crlf"]},
+        "dependency_file": {"$ref": "#/$defs/dependency_file"},
+        "object": {"$ref": "#/$defs/object"},
+        "objdump": {"$ref": "#/$defs/objdump"}
+      }
+    },
+    "twin": {
+      "type": "object", "additionalProperties": false,
+      "required": ["dependency_match", "normalized_object_match", "objdump_format_match"],
+      "properties": {
+        "dependency_match": {"const": true},
+        "normalized_object_match": {"const": true},
+        "objdump_format_match": {"const": true}
+      }
+    },
+    "command": {
+      "type": "object", "additionalProperties": false,
+      "required": ["unit_ordinal", "input_kind", "input", "input_sha256", "arguments", "runs", "twin"],
+      "properties": {
+        "unit_ordinal": {"type": "integer", "minimum": 1, "maximum": 19},
+        "input_kind": {"enum": ["tracked", "generated"]},
+        "input": {"$ref": "#/$defs/relative_path"},
+        "input_sha256": {"$ref": "#/$defs/sha256"},
+        "arguments": {"type": "array", "minItems": 30, "maxItems": 80, "items": {"type": "string", "minLength": 1, "maxLength": 1024}},
+        "runs": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/command_run"}},
+        "twin": {"$ref": "#/$defs/twin"}
+      }
+    },
+    "comparison_row": {
+      "type": "object", "additionalProperties": false,
+      "required": ["match", "count", "aggregate_sha256"],
+      "properties": {
+        "match": {"const": true},
+        "count": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "aggregate_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "dependency_comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["match", "occurrence_count", "unique_count", "aggregate_sha256"],
+      "properties": {
+        "match": {"const": true},
+        "occurrence_count": {"type": "integer", "minimum": 1, "maximum": 77824},
+        "unique_count": {"type": "integer", "minimum": 1, "maximum": 77824},
+        "aggregate_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "source_files", "generated_outputs", "tracked_source_units",
+        "generated_source_units", "compile_commands",
+        "twin_compile_invocations", "dependency_files",
+        "validated_amd64_coff_objects", "objdump_validations",
+        "child_processes", "temporary_output_count", "proof_root_removed",
+        "partial_evidence_removed", "linker_invocations",
+        "failed_generator_commands", "failed_compile_commands",
+        "failed_dependency_validations", "failed_object_validations"
+      ],
+      "properties": {
+        "source_files": {"const": 40},
+        "generated_outputs": {"const": 11},
+        "tracked_source_units": {"const": 15},
+        "generated_source_units": {"const": 4},
+        "compile_commands": {"const": 19},
+        "twin_compile_invocations": {"const": 38},
+        "dependency_files": {"const": 38},
+        "validated_amd64_coff_objects": {"const": 38},
+        "objdump_validations": {"const": 38},
+        "child_processes": {"type": "integer", "minimum": 1, "maximum": 1024},
+        "temporary_output_count": {"const": 0},
+        "proof_root_removed": {"const": true},
+        "partial_evidence_removed": {"const": true},
+        "linker_invocations": {"const": 0},
+        "failed_generator_commands": {"const": 0},
+        "failed_compile_commands": {"const": 0},
+        "failed_dependency_validations": {"const": 0},
+        "failed_object_validations": {"const": 0}
+      }
+    },
+    "authorizations": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "fetch", "download", "production_build", "link",
+        "persistent_artifacts", "stage", "install", "activate",
+        "guest_execution", "renderer_selection",
+        "capability_advertisement", "unreviewed_generator_execution"
+      ],
+      "properties": {
+        "fetch": {"const": false},
+        "download": {"const": false},
+        "production_build": {"const": false},
+        "link": {"const": false},
+        "persistent_artifacts": {"const": false},
+        "stage": {"const": false},
+        "install": {"const": false},
+        "activate": {"const": false},
+        "guest_execution": {"const": false},
+        "renderer_selection": {"const": false},
+        "capability_advertisement": {"const": false},
+        "unreviewed_generator_execution": {"const": false}
+      }
+    }
+  }
+}

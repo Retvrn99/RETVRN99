@@ -13,6 +13,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'strict-tsv.ps1')
+. (Join-Path $PSScriptRoot 'bounded-git-process.ps1')
+$script:GitTimeoutMilliseconds = 30000
+$script:MaximumGitOutputBytes = [UInt64]4194304
+$script:StrictGitUtf8 = [Text.UTF8Encoding]::new($false, $true)
 if ([string]::IsNullOrWhiteSpace($LockFile)) {
     $LockFile = Join-Path $PSScriptRoot '..\drivers\win98\upstream.lock.tsv'
 }
@@ -93,17 +97,69 @@ function Get-NormalizedRepository {
     return $normalized.ToLowerInvariant()
 }
 
+function Invoke-IsolatedGit {
+    param(
+        [Parameter(Mandatory = $true)][string]$Checkout,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [switch]$QuotePaths
+    )
+
+    $checkoutPath = Get-FullPath $Checkout
+    $commands = @(Get-Command git -CommandType Application -ErrorAction Stop)
+    if ($commands.Count -eq 0) {
+        throw 'git is required to verify upstream source checkouts.'
+    }
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = [IO.Path]::GetFullPath($commands[0].Source)
+    foreach ($argument in @('-c', "safe.directory=$checkoutPath") + @(
+        if ($QuotePaths) { '-c', 'core.quotePath=false' }
+    ) + @('-C', $checkoutPath) + $Arguments) {
+        [void]$info.ArgumentList.Add($argument)
+    }
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    foreach ($name in @(
+        'GIT_CEILING_DIRECTORIES', 'GIT_DIR', 'GIT_WORK_TREE',
+        'GIT_PREFIX', 'GIT_INDEX_FILE', 'GIT_CONFIG_GLOBAL',
+        'GIT_CONFIG_SYSTEM', 'GIT_CONFIG_NOSYSTEM'
+    )) {
+        [void]$info.Environment.Remove($name)
+    }
+    foreach ($name in @($info.Environment.Keys | ForEach-Object {
+        [string]$_
+    })) {
+        if ($name -cmatch '^GIT_CONFIG_(?:COUNT|KEY_[0-9]+|VALUE_[0-9]+)$') {
+            [void]$info.Environment.Remove($name)
+        }
+    }
+    $info.Environment['GIT_CONFIG_GLOBAL'] = 'NUL'
+    $info.Environment['GIT_CONFIG_NOSYSTEM'] = '1'
+
+    $result = Invoke-GswBoundedProcess -StartInfo $info `
+        -Name 'source-verifier git' `
+        -TimeoutMilliseconds $script:GitTimeoutMilliseconds `
+        -MaximumStdoutBytes $script:MaximumGitOutputBytes `
+        -MaximumStderrBytes $script:MaximumGitOutputBytes
+    if ($result.exit_code -ne 0) {
+        throw 'git failed for the selected source checkout.'
+    }
+    try {
+        return $script:StrictGitUtf8.GetString([byte[]]$result.stdout)
+    }
+    catch {
+        throw 'git output is not strict UTF-8.'
+    }
+}
+
 function Invoke-GitText {
     param(
         [Parameter(Mandatory = $true)][string]$Checkout,
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    $output = @(& git -C $Checkout @Arguments)
-    if ($LASTEXITCODE -ne 0) {
-        throw "git $($Arguments -join ' ') failed for '$Checkout'."
-    }
-    return ($output -join [Environment]::NewLine).Trim()
+    return (Invoke-IsolatedGit $Checkout $Arguments).Trim()
 }
 
 function Invoke-GitLines {
@@ -112,11 +168,13 @@ function Invoke-GitLines {
         [Parameter(Mandatory = $true)][string[]]$Arguments
     )
 
-    $output = @(& git -c core.quotePath=false -C $Checkout @Arguments)
-    if ($LASTEXITCODE -ne 0) {
-        throw "git $($Arguments -join ' ') failed for '$Checkout'."
+    $text = Invoke-IsolatedGit $Checkout $Arguments -QuotePaths
+    if ($text.Length -eq 0) {
+        return @()
     }
-    return $output
+    return @($text.TrimEnd("`r", "`n") -split "`n" | ForEach-Object {
+        $_.TrimEnd("`r")
+    })
 }
 
 function Get-ContainedGitPath {

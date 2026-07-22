@@ -93,6 +93,47 @@ try {
             Get-MesaNormalizedCoffObject $path @($script:TestRoot)
         } 'IMAGE_FILE_MACHINE_I386'
     }
+    Invoke-ObjectTest 'Explicit AMD64 COFF is accepted' {
+        $path = New-TestCoff 'amd64.o' 91 ([byte[]](1, 2, 3, 4)) `
+            ([UInt16]0x8664)
+        $object = Get-MesaNormalizedCoffObject -Path $path `
+            -PrivateRoots @($script:TestRoot) `
+            -ExpectedMachine ([UInt16]0x8664)
+        if ($object.Machine -ne 0x8664 -or $object.Timestamp -ne 91) {
+            throw 'AMD64 machine or timestamp evidence was not retained.'
+        }
+    }
+    Invoke-ObjectTest 'Wrong machine is rejected for explicit AMD64 proof' {
+        $path = New-TestCoff 'amd64-wrong-machine.o' 0 ([byte[]](1)) `
+            ([UInt16]0x014c)
+        Assert-ObjectThrows {
+            Get-MesaNormalizedCoffObject -Path $path `
+                -PrivateRoots @($script:TestRoot) `
+                -ExpectedMachine ([UInt16]0x8664)
+        } 'IMAGE_FILE_MACHINE_AMD64'
+    }
+    Invoke-ObjectTest 'Truncated AMD64 section table is rejected' {
+        [byte[]]$bytes = [byte[]]::new(20)
+        [BitConverter]::GetBytes([UInt16]0x8664).CopyTo($bytes, 0)
+        [BitConverter]::GetBytes([UInt16]1).CopyTo($bytes, 2)
+        $path = Join-Path $script:TestRoot 'amd64-truncated.o'
+        [IO.File]::WriteAllBytes($path, $bytes)
+        Assert-ObjectThrows {
+            Get-MesaNormalizedCoffObject -Path $path `
+                -PrivateRoots @($script:TestRoot) `
+                -ExpectedMachine ([UInt16]0x8664)
+        } 'section table'
+    }
+    Invoke-ObjectTest 'Private paths are rejected for explicit AMD64 proof' {
+        $private = Join-Path $script:TestRoot 'amd64-private-root'
+        $payload = [Text.Encoding]::ASCII.GetBytes($private.Replace('\', '/'))
+        $path = New-TestCoff 'amd64-private.o' 0 $payload ([UInt16]0x8664)
+        Assert-ObjectThrows {
+            Get-MesaNormalizedCoffObject -Path $path `
+                -PrivateRoots @($private) `
+                -ExpectedMachine ([UInt16]0x8664)
+        } 'private absolute path'
+    }
     Invoke-ObjectTest 'Optional headers are rejected' {
         $path = New-TestCoff 'optional.o' 0 ([byte[]](1)) `
             ([UInt16]0x014c) ([UInt16]4)

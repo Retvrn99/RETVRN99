@@ -195,12 +195,33 @@ and the compiler-dependency role, so those role counts overlap by one file.
 Every row binds exact inline or project-level license evidence through 1,502
 evidence records.
 
-`libs/vkd3d-shader` and OpenGlide9x remain blocked candidate components pending
-their exact file and license reviews. The OpenGlide9x manifest currently names
-no source prefix. Wine9x, SoftGPU, and the VMware SVGA Device Developer Kit
-mirror are reference-only. Changing a disposition or manifest status requires
-a separate review; a lock update alone does not approve source copying or
-binary distribution.
+`libs/vkd3d-shader` is pinned at
+`1b0924d12c18df03912a8876ed17fd017ce9308e`. Its ready schema-2 component
+closure binds 40 unique files: 15 source units, 12 compiler dependencies, 10
+generator inputs, three build descriptions, and one resource. The
+`include/vkd3d_d3d9types.h` row has both compiler-dependency and generator-input
+roles, so those counts overlap by one file. Its 39 exact license-evidence
+records bind 38 `LGPL-2.1-or-later` files, one MIT file, and the combined
+`LGPL-2.1-or-later AND MIT` `hlsl.h`.
+
+The schema-1 vkd3d-shader compiler closure is `compile-proven` at 2,664,488
+LF-only bytes and SHA-256
+`23c682f4a797dd1cbe9f2eaf302cd3b1d42b32b728168f52a71f52cb59467438`.
+Twin LF/CRLF checkouts canonicalize the same 40 Git blobs and consume two exact
+MIT Mesa SPIR-V headers. Each run reproduces 11 generated outputs and compiles
+15 tracked plus four generated units. The proof validates 38 AMD64 COFF
+objects and 38 objdump results, normalizing only the COFF timestamp. Both runs
+match at 4,879 dependency occurrences, 306 unique dependency identities, and
+19 normalized object pairs. Its 197 collector children use one top-level
+process at a time and an evidence-derived maximum tree width of five; temporary
+outputs and linker invocations are zero, and all authority fields remain false.
+The closure uses proof-only `-fno-lto`; production LTO and linking remain
+unproven and unauthorized.
+
+OpenGlide9x remains blocked and names no source prefix. Wine9x, SoftGPU, and the
+VMware SVGA Device Developer Kit mirror are reference-only. Changing a
+disposition or manifest status requires a separate review; a lock update alone
+does not approve source copying or binary distribution.
 
 `drivers/win98/mesa-generator-toolchain-lock.json` records a blocked-only Mesa
 generator environment. It fixes an immutable 26-package dependency graph with

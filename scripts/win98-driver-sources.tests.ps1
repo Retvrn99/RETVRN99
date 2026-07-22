@@ -5,6 +5,7 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'bounded-git-process.ps1')
 
 $script:Failures = 0
 
@@ -52,6 +53,26 @@ function Invoke-Git {
         throw "git $($Arguments -join ' ') failed: $($output -join [Environment]::NewLine)"
     }
     return ($output -join [Environment]::NewLine).Trim()
+}
+
+function New-SyntheticGitProcessInfo {
+    param([Parameter(Mandatory = $true)][string]$Command)
+
+    $encoded = [Convert]::ToBase64String(
+        [Text.Encoding]::Unicode.GetBytes($Command)
+    )
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = (Get-Process -Id $PID).Path
+    foreach ($argument in @(
+        '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded
+    )) {
+        [void]$info.ArgumentList.Add($argument)
+    }
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    return $info
 }
 
 function New-PinnedCheckout {
@@ -205,6 +226,35 @@ try {
     Invoke-SelfTest 'A source-name allowlist verifies only selected checkouts' {
         $output = @(& $verifyScript -SourceRoot $sourceRoot -LockFile $lockPath -SourceName 'vmdisp9x')
         Assert-Equal ($output -join [Environment]::NewLine) 'Verified 1 immutable Windows 98 source checkouts.'
+    }
+
+    Invoke-SelfTest 'Synthetic Git output is bounded while the child runs' {
+        $stdoutInfo = New-SyntheticGitProcessInfo `
+            '[Console]::Out.Write("x" * 8192); Start-Sleep -Seconds 20'
+        Assert-Throws {
+            Invoke-GswBoundedProcess -StartInfo $stdoutInfo `
+                -Name 'source-verifier git' -TimeoutMilliseconds 10000 `
+                -MaximumStdoutBytes 4096 -MaximumStderrBytes 4096
+        } '^source-verifier git exceeded its standard-output bound\.$'
+
+        $stderrInfo = New-SyntheticGitProcessInfo @'
+[Console]::Error.Write(('C:\Users\private\checkout ' * 1024))
+Start-Sleep -Seconds 20
+'@
+        $message = ''
+        try {
+            Invoke-GswBoundedProcess -StartInfo $stderrInfo `
+                -Name 'source-verifier git' -TimeoutMilliseconds 10000 `
+                -MaximumStdoutBytes 4096 -MaximumStderrBytes 4096 | Out-Null
+            throw 'Expected synthetic Git standard-error rejection.'
+        }
+        catch { $message = $_.Exception.Message }
+        Assert-Equal $message `
+            'source-verifier git exceeded its standard-error bound.' `
+            'Synthetic Git error was not sanitized.'
+        if ($message -match '(?i)Users|checkout|[a-z]:[\/]') {
+            throw 'Synthetic Git error exposed a private child path.'
+        }
     }
 
     Invoke-SelfTest 'Strict upstream TSV rejects ambiguous rows and headers' {

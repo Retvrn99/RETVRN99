@@ -3,6 +3,7 @@
 Set-StrictMode -Version Latest
 
 $script:MesaObjectMachineI386 = [UInt16]0x014c
+$script:MesaObjectMachineAmd64 = [UInt16]0x8664
 $script:MesaObjectHeaderBytes = 20
 $script:MesaObjectSectionHeaderBytes = 40
 $script:MesaObjectSymbolBytes = 18
@@ -151,6 +152,18 @@ function Assert-MesaObjectRange {
     }
 }
 
+function Get-MesaObjectMachineName {
+    param([UInt16]$Machine)
+
+    if ($Machine -eq $script:MesaObjectMachineI386) {
+        return 'IMAGE_FILE_MACHINE_I386'
+    }
+    if ($Machine -eq $script:MesaObjectMachineAmd64) {
+        return 'IMAGE_FILE_MACHINE_AMD64'
+    }
+    throw ('Unsupported expected COFF machine 0x{0:x4}.' -f $Machine)
+}
+
 function Test-MesaObjectPrivatePath {
     param([byte[]]$Bytes, [string[]]$PrivateRoots)
 
@@ -186,17 +199,19 @@ function Test-MesaObjectPrivatePath {
 function Get-MesaNormalizedCoffObject {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string[]]$PrivateRoots
+        [Parameter(Mandatory = $true)][string[]]$PrivateRoots,
+        [UInt16]$ExpectedMachine = $script:MesaObjectMachineI386
     )
 
+    $expectedMachineName = Get-MesaObjectMachineName $ExpectedMachine
     [byte[]]$bytes = [IO.File]::ReadAllBytes($Path)
     if ($bytes.Length -lt $script:MesaObjectHeaderBytes -or
         $bytes.Length -gt $script:MesaObjectMaximumBytes) {
         throw 'Compiler output is not a bounded COFF object.'
     }
-    if ([BitConverter]::ToUInt16($bytes, 0) -ne
-        $script:MesaObjectMachineI386) {
-        throw 'Compiler output is not IMAGE_FILE_MACHINE_I386 COFF.'
+    $machine = [BitConverter]::ToUInt16($bytes, 0)
+    if ($machine -ne $ExpectedMachine) {
+        throw "Compiler output is not $expectedMachineName COFF."
     }
     $sectionCount = [BitConverter]::ToUInt16($bytes, 2)
     if ($sectionCount -lt 1) {
@@ -273,6 +288,7 @@ function Get-MesaNormalizedCoffObject {
     [byte[]]$normalized = [byte[]]$bytes.Clone()
     for ($index = 4; $index -le 7; $index++) { $normalized[$index] = 0 }
     return [pscustomobject]@{
+        Machine = [UInt64]$machine
         Bytes = [UInt64]$normalized.Length
         Timestamp = [UInt64]$timestamp
         RawSha256 = $rawHash

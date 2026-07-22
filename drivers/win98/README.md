@@ -47,8 +47,32 @@ dependencies, 198 generator inputs, and one generator recipe. The existing
 `p_defines.h` row also carries the compiler-dependency role, so the role counts
 overlap by one file. Every selected file binds exact inline or project-level
 license evidence through 1,502 evidence records. The `libs/vkd3d-shader` and
-OpenGlide9x manifests remain blocked; OpenGlide9x currently authorizes no source
-prefixes. Wine9x is reference-only.
+OpenGlide9x components are tracked separately.
+
+`libs/vkd3d-shader` is pinned at
+`1b0924d12c18df03912a8876ed17fd017ce9308e`. Its ready schema-2 closure binds
+40 unique files: 15 source units, 12 compiler dependencies, 10 generator
+inputs, three build descriptions, and one resource. The
+`include/vkd3d_d3d9types.h` row carries both compiler-dependency and
+generator-input roles, so those role counts overlap by one file. The 39 exact
+license-evidence records bind 38 `LGPL-2.1-or-later` files, one MIT file, and
+the combined `LGPL-2.1-or-later AND MIT` `hlsl.h`. OpenGlide9x remains blocked
+and authorizes no source prefixes. Wine9x is reference-only.
+
+The schema-1 vkd3d-shader compiler closure is `compile-proven` at 2,664,488
+LF-only bytes and SHA-256
+`23c682f4a797dd1cbe9f2eaf302cd3b1d42b32b728168f52a71f52cb59467438`.
+Twin LF/CRLF checkouts canonicalize the same 40 Git blobs and consume two exact
+MIT Mesa SPIR-V headers. Each run reproduces 11 generated outputs and compiles
+15 tracked plus four generated units. The proof validates 38 AMD64 COFF
+objects and 38 objdump results, with only the COFF timestamp normalized. Both
+runs match at 4,879 dependency occurrences, 306 unique dependencies, and 19
+normalized object pairs. All 197 collector children are bounded to one
+top-level process and an evidence-derived maximum tree width of five;
+temporary outputs and linker invocations are zero. The proof-only recipe uses
+`-fno-lto`; the upstream production `-flto=auto` link path remains outside this
+closure. Production build, link, staging, installation, activation, guest
+execution, renderer selection, and capability advertisement remain false.
 
 `mesa-generator-toolchain-lock.json` records the blocked Mesa 23.1.9 generator
 environment as 26 exact MSYS2 package archives: 24 required and two reserved,

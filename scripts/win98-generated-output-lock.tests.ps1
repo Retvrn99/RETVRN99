@@ -1038,7 +1038,9 @@ try {
         Assert-Equal $files.Count 3
         foreach ($file in $files) {
             $manifest = Get-Content -Raw -LiteralPath $file.FullName | ConvertFrom-Json
-            $expectedStatus = if ($file.Name -ceq 'mesa9x-23.1.x.json') {
+            $expectedStatus = if ($file.Name -cin @(
+                    'mesa9x-23.1.x.json', 'vkd3d-shader.json'
+                )) {
                 'ready'
             }
             else {
@@ -1076,6 +1078,15 @@ try {
                         if ($actualProperties -cnotcontains $property) {
                             throw "Blocked schema-2 closure '$($file.Name)' is missing root property '$property'."
                         }
+                    }
+                    if ($file.Name -ceq 'vkd3d-shader.json' -and
+                        ($manifest.upstream_name -cne 'vkd3d-shader' -or
+                        $manifest.owning_commit -cne
+                            '1b0924d12c18df03912a8876ed17fd017ce9308e' -or
+                        @($manifest.source_prefixes).Count -ne 3 -or
+                        @($manifest.license_evidence).Count -ne 39 -or
+                        @($manifest.files).Count -ne 40)) {
+                        throw 'The ready vkd3d-shader closure identity changed.'
                     }
                 }
                 default {

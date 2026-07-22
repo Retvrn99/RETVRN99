@@ -5,6 +5,7 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'bounded-git-process.ps1')
 $script:Failures = 0
 
 function Assert-Equal {
@@ -58,6 +59,26 @@ function Invoke-Git {
         throw "git $($Arguments -join ' ') failed: $($output -join ' ')"
     }
     return ($output -join [Environment]::NewLine).Trim()
+}
+
+function New-ComponentSyntheticGitInfo {
+    param([Parameter(Mandatory = $true)][string]$Command)
+
+    $encoded = [Convert]::ToBase64String(
+        [Text.Encoding]::Unicode.GetBytes($Command)
+    )
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = (Get-Process -Id $PID).Path
+    foreach ($argument in @(
+        '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded
+    )) {
+        [void]$info.ArgumentList.Add($argument)
+    }
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    return $info
 }
 
 function Write-JsonFile {
@@ -276,6 +297,19 @@ function New-MitApacheManifest {
     return $manifest
 }
 
+function New-LgplMitManifest {
+    $lgpl = New-InlineEvidence $script:ApacheDescriptor `
+        'apache-lgpl' 'LGPL-2.1-or-later' $script:ApacheRange
+    $mit = New-InlineEvidence $script:ApacheDescriptor `
+        'apache-mit' 'MIT' $script:ApacheRange
+    $manifest = New-BaseManifest
+    $manifest.license_evidence = @($lgpl, $mit)
+    $manifest.files = @((New-FileRow $script:ApacheDescriptor `
+        'LGPL-2.1-or-later AND MIT' 'LGPL-2.1-or-later AND MIT' `
+        @('apache-lgpl', 'apache-mit')))
+    return $manifest
+}
+
 function New-AtomicManifest {
     param(
         [Parameter(Mandatory = $true)][object]$Descriptor,
@@ -430,6 +464,12 @@ try {
             'MIT AND Apache-2.0') $true
         Assert-Equal (@($v2.'$defs'.selectedLicenseExpression.enum) -ccontains `
             'MIT AND Apache-2.0') $true
+        Assert-Equal (@($v2.'$defs'.declaredLicenseExpression.enum) -ccontains `
+            'LGPL-2.1-or-later AND MIT') $true
+        Assert-Equal (@($v2.'$defs'.observedLicenseExpression.enum) -ccontains `
+            'LGPL-2.1-or-later AND MIT') $true
+        Assert-Equal (@($v2.'$defs'.selectedLicenseExpression.enum) -ccontains `
+            'LGPL-2.1-or-later AND MIT') $true
         foreach ($expression in @(
             'SGI-B-2.0',
             'LicenseRef-Mesa-U-Atomic-Public-Domain',
@@ -451,6 +491,57 @@ try {
         Assert-Equal $v2.'$defs'.licenseEvidenceBytes.minimum 1
         Assert-Equal $v2.'$defs'.licenseEvidence.properties.bytes.'$ref' `
             '#/$defs/licenseEvidenceBytes'
+    }
+
+    Invoke-SelfTest 'Synthetic Git timeout removes the owned process tree' {
+        $pwsh = (Get-Process -Id $PID).Path
+        $pidFile = Join-Path $testRoot 'component-timeout-descendant.pid'
+        $sentinel = Join-Path $testRoot 'component-timeout-survived.txt'
+        $quotedPidFile = $pidFile.Replace("'", "''")
+        $quotedSentinel = $sentinel.Replace("'", "''")
+        $descendantCommand = @"
+[IO.File]::WriteAllText('$quotedPidFile', `$PID.ToString())
+Start-Sleep -Seconds 4
+[IO.File]::WriteAllText('$quotedSentinel', 'survived')
+"@
+        $descendantEncoded = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($descendantCommand)
+        )
+        $quotedPwsh = $pwsh.Replace("'", "''")
+        $parentCommand = @"
+`$child = Start-Process -FilePath '$quotedPwsh' -ArgumentList @(
+    '-NoProfile', '-NonInteractive', '-EncodedCommand', '$descendantEncoded'
+) -WindowStyle Hidden -PassThru
+for (`$index = 0; `$index -lt 100 -and
+    -not [IO.File]::Exists('$quotedPidFile'); `$index++) {
+    Start-Sleep -Milliseconds 20
+}
+Start-Sleep -Seconds 30
+"@
+        $info = New-ComponentSyntheticGitInfo $parentCommand
+        Assert-Throws {
+            Invoke-GswBoundedProcess -StartInfo $info `
+                -Name 'component-verifier git' -TimeoutMilliseconds 1000 `
+                -MaximumStdoutBytes 4096 -MaximumStderrBytes 4096
+        } '^component-verifier git exceeded its process timeout\.$'
+        if (-not [IO.File]::Exists($pidFile)) {
+            throw 'Synthetic Git descendant did not publish its PID fixture.'
+        }
+        $descendantPid = [int][IO.File]::ReadAllText($pidFile)
+        $deadline = [DateTime]::UtcNow.AddSeconds(2)
+        do {
+            $descendant = Get-Process -Id $descendantPid `
+                -ErrorAction SilentlyContinue
+            if ($null -eq $descendant) { break }
+            Start-Sleep -Milliseconds 50
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if ($null -ne (Get-Process -Id $descendantPid `
+                -ErrorAction SilentlyContinue)) {
+            throw 'Synthetic Git descendant survived process-tree cleanup.'
+        }
+        if ([IO.File]::Exists($sentinel)) {
+            throw 'Synthetic Git descendant executed after cleanup.'
+        }
     }
 
     Invoke-SelfTest 'A complete OR disjunct can select MIT in a ready closure' {
@@ -530,6 +621,42 @@ try {
         $manifest.files[0].license_evidence_ids = @('apache-mit')
         Assert-Throws { Invoke-Manifest $manifest } `
             'declared license does not match all bound evidence'
+    }
+
+    Invoke-SelfTest 'LGPL and MIT evidence derives one canonical ready conjunction' {
+        & { Invoke-Manifest (New-LgplMitManifest) } | Out-Null
+        $manifest = New-LgplMitManifest
+        $manifest.license_evidence = @(
+            $manifest.license_evidence[1],
+            $manifest.license_evidence[0]
+        )
+        $manifest.files[0].license_evidence_ids = @(
+            'apache-mit',
+            'apache-lgpl'
+        )
+        & { Invoke-Manifest $manifest } | Out-Null
+    }
+
+    Invoke-SelfTest 'LGPL and MIT conjunction cannot omit or strip either grant' {
+        $manifest = New-LgplMitManifest
+        $manifest.license_evidence = @($manifest.license_evidence[0])
+        $manifest.files[0].license_evidence_ids = @('apache-lgpl')
+        Assert-Throws { Invoke-Manifest $manifest } `
+            'declared license does not match all bound evidence'
+
+        $manifest = New-LgplMitManifest
+        $manifest.files[0].selected_license_expression = 'LGPL-2.1-or-later'
+        Assert-Throws { Invoke-Manifest $manifest } `
+            'invalid structural license selection'
+    }
+
+    Invoke-SelfTest 'LGPL and MIT conjunction rejects noncanonical expression order' {
+        $manifest = New-LgplMitManifest
+        $manifest.files[0].declared_license_expression = `
+            'MIT AND LGPL-2.1-or-later'
+        $manifest.files[0].selected_license_expression = `
+            'MIT AND LGPL-2.1-or-later'
+        Assert-Throws { Invoke-Manifest $manifest } 'invalid metadata'
     }
 
     Invoke-SelfTest 'A WITH exception cannot be stripped by selection' {

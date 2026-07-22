@@ -1,0 +1,568 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "schema_definition": {
+    "relative_path": "vkd3d-shader-toolchain-lock.schema.json",
+    "sha256": "8cd4361a09adc07ab35ada394743db2580ffbd0ae62458cdd601679a6ca34814"
+  },
+  "name": "vkd3d-shader-host-tools-20260722",
+  "status": "ready",
+  "reason": "Exact installed host-tool and cached-package identities are locked for read-only source-generation, proof-only no-LTO twin-compilation, and object-validation evidence. Upstream may enable -flto=auto for a later production link, but this closure pins -fno-lto because linking is not authorized and LTO objects did not reproduce across owned roots. The lock does not authorize fetching, downloading, installation, production linking, staging, activation, guest execution, or graphics capability advertisement.",
+  "roots": [
+    {
+      "id": "msys",
+      "purpose": "MSYS Flex, Bison, M4, data, and runtime closure",
+      "required_live": true
+    },
+    {
+      "id": "ucrt64",
+      "purpose": "UCRT64 WIDL, GCC, assembler, objdump, and runtime closure",
+      "required_live": true
+    },
+    {
+      "id": "git",
+      "purpose": "Git for Windows Perl and JSON module closure",
+      "required_live": true
+    },
+    {
+      "id": "package_cache",
+      "purpose": "Read-only cached MSYS2 package archives",
+      "required_live": true
+    }
+  ],
+  "packages": [
+    {
+      "root": "msys",
+      "name": "bison",
+      "version": "3.8.2-5",
+      "architecture": "x86_64",
+      "archive": {
+        "present": true,
+        "relative_path": "bison-3.8.2-5-x86_64.pkg.tar.zst",
+        "bytes": 795844,
+        "sha256": "7439ca784a9909e0730a513d3aff15852c3b292ac85053fa2dd7a2a19c1ce04c"
+      }
+    },
+    {
+      "root": "msys",
+      "name": "flex",
+      "version": "2.6.4-4",
+      "architecture": "x86_64",
+      "archive": {
+        "present": true,
+        "relative_path": "flex-2.6.4-4-x86_64.pkg.tar.zst",
+        "bytes": 310795,
+        "sha256": "d70fbf25d0dea3cb8ae42670b79a8ba65a48daa140137367b5ebaf37eb48df26"
+      }
+    },
+    {
+      "root": "msys",
+      "name": "m4",
+      "version": "1.4.19-2",
+      "architecture": "x86_64",
+      "archive": {
+        "present": true,
+        "relative_path": "m4-1.4.19-2-x86_64.pkg.tar.zst",
+        "bytes": 243775,
+        "sha256": "4a1d296571afa7b8837fd5e227e16c9cb7e26c0f31f03b364e11c1ae8ee2a913"
+      }
+    },
+    {
+      "root": "msys",
+      "name": "msys2-runtime",
+      "version": "3.6.5-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "msys",
+      "name": "libiconv",
+      "version": "1.18-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "msys",
+      "name": "libintl",
+      "version": "0.22.5-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-binutils",
+      "version": "2.45.1-1",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-binutils-2.45.1-1-any.pkg.tar.zst",
+        "bytes": 6528822,
+        "sha256": "86400934ff2c2f2bc1191d0545d827116098aaefe5722271ac3f41eea59c3503"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-gcc",
+      "version": "15.2.0-8",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-gcc-15.2.0-8-any.pkg.tar.zst",
+        "bytes": 48902346,
+        "sha256": "96f3e0ffb2863f47f7471af7b57a4d4b1a7f823c85a5eea36dd1e03c6e8fc6f0"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-gcc-libs",
+      "version": "15.2.0-8",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-gcc-libs-15.2.0-8-any.pkg.tar.zst",
+        "bytes": 1075333,
+        "sha256": "7e660afc9c49d7b55aec94c289564a2b32240c41a7937cbe77912320bdf63458"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-gmp",
+      "version": "6.3.0-2",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-gmp-6.3.0-2-any.pkg.tar.zst",
+        "bytes": 592359,
+        "sha256": "e82a75968a556484a50084578238a84eb60fb93e34986fd6695c537975bd39ea"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-isl",
+      "version": "0.27-1",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-isl-0.27-1-any.pkg.tar.zst",
+        "bytes": 1488361,
+        "sha256": "f23edcbe1206429e6fdb5f1dfc3053cf08c0d5bd1d8135a948a75146d65ce394"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-mpc",
+      "version": "1.3.1-2",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-mpc-1.3.1-2-any.pkg.tar.zst",
+        "bytes": 131402,
+        "sha256": "3a464e20548ad82f18000cba25060e71ab852458d61e0546a5cd8804e9b322e5"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-mpfr",
+      "version": "4.2.2-1",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-mpfr-4.2.2-1-any.pkg.tar.zst",
+        "bytes": 554920,
+        "sha256": "4cd9f334abed608e2b6c90151a20ee6645ed0a8f9b1fd5a57b0244df2af63a0f"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-tools-git",
+      "version": "13.0.0.r354.g40ab95d18-1",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-tools-git-13.0.0.r354.g40ab95d18-1-any.pkg.tar.zst",
+        "bytes": 349098,
+        "sha256": "8a118787779fed5de109256b31103ad814553d09441692e3cff4b851035a79a1"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-libwinpthread",
+      "version": "13.0.0.r354.g40ab95d18-1",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-libwinpthread-13.0.0.r354.g40ab95d18-1-any.pkg.tar.zst",
+        "bytes": 30326,
+        "sha256": "9eb2a1b21f787580c87140695ee205348967e6ac71228517cc6c3daf00e80c5a"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-zlib",
+      "version": "1.3.1-1",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-zlib-1.3.1-1-any.pkg.tar.zst",
+        "bytes": 94303,
+        "sha256": "b0288e983af4d3f949976f4f226249eb20119f7b1bfd3d1beee943b2baca28fb"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-zstd",
+      "version": "1.5.7-1",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-zstd-1.5.7-1-any.pkg.tar.zst",
+        "bytes": 657742,
+        "sha256": "a05acb75b5f31d1dc27727662c6b60e6cd822fbb1b74261610ff3011de6fadc8"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-gettext-runtime",
+      "version": "0.26-2",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-gettext-runtime-0.26-2-any.pkg.tar.zst",
+        "bytes": 413608,
+        "sha256": "6de37d5293f0e6565545a7b1a3c91af12a3ab55942de2eacadc3d12d05a5c06c"
+      }
+    },
+    {
+      "root": "ucrt64",
+      "name": "mingw-w64-ucrt-x86_64-libiconv",
+      "version": "1.18-1",
+      "architecture": "any",
+      "archive": {
+        "present": true,
+        "relative_path": "mingw-w64-ucrt-x86_64-libiconv-1.18-1-any.pkg.tar.zst",
+        "bytes": 742765,
+        "sha256": "6b875c9ea05969cd4d802c1fc68edd158c269447e8dbf1baee02dec28603e74c"
+      }
+    },
+    {
+      "root": "git",
+      "name": "git-for-windows",
+      "version": "2.54.0.windows.1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "mingw-w64-x86_64-gettext-runtime",
+      "version": "1.0-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "mingw-w64-x86_64-libiconv",
+      "version": "1.19-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "mingw-w64-x86_64-libwinpthread",
+      "version": "14.0.0.r14.g4761eabdd-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "mingw-w64-x86_64-pcre2",
+      "version": "10.47-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "mingw-w64-x86_64-zlib",
+      "version": "1.3.2-2",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "perl",
+      "version": "5.42.2-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "perl-JSON",
+      "version": "4.11-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "msys2-runtime",
+      "version": "3.6.7-4",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "libxcrypt",
+      "version": "4.5.2-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    },
+    {
+      "root": "git",
+      "name": "gcc-libs",
+      "version": "15.2.0-1",
+      "architecture": "x86_64",
+      "archive": {"present": false, "relative_path": "", "bytes": 0, "sha256": ""}
+    }
+  ],
+  "files": [
+    {"id": "msys-flex", "root": "msys", "relative_path": "usr/bin/flex.exe", "role": "executable", "bytes": 350049, "sha256": "068c6bf3c60da00a2757a63bd009abf751236979c905e0b266411a8cd9a966c3"},
+    {"id": "msys-bison", "root": "msys", "relative_path": "usr/bin/bison.exe", "role": "executable", "bytes": 515980, "sha256": "669d6187293f8b15652c1d831d0d78b1b8b9a1e02ec16d4b2f4a2433ab907eed"},
+    {"id": "msys-m4", "root": "msys", "relative_path": "usr/bin/m4.exe", "role": "executable", "bytes": 263912, "sha256": "204cc820650b970b479b5e8329e31cfa89ef6b8d44ddf218dc1f795c3d70e074"},
+    {"id": "msys-runtime", "root": "msys", "relative_path": "usr/bin/msys-2.0.dll", "role": "runtime-library", "bytes": 3358337, "sha256": "435f94f5ba4c31f20c77c0d92eb26ee0c5c822add6bce5b5ea92711ae6c3bf65"},
+    {"id": "msys-iconv", "root": "msys", "relative_path": "usr/bin/msys-iconv-2.dll", "role": "runtime-library", "bytes": 1098126, "sha256": "5d890c42222c7b86519f7c368836cc2930f11dc975341b7ded30f26ef8770e0b"},
+    {"id": "msys-intl", "root": "msys", "relative_path": "usr/bin/msys-intl-8.dll", "role": "runtime-library", "bytes": 111181, "sha256": "50f7de0c712d867ddca2c9eb8562ca6ee2d69e120e798ec6126ad29dd1ed5402"},
+    {"id": "ucrt-gcc", "root": "ucrt64", "relative_path": "bin/gcc.exe", "role": "executable", "bytes": 3097123, "sha256": "75162f8a25d129ffbb7f4cc3261e919c2733cd1ae014b11c08af95a39cd71edf"},
+    {"id": "ucrt-cc1", "root": "ucrt64", "relative_path": "lib/gcc/x86_64-w64-mingw32/15.2.0/cc1.exe", "role": "executable", "bytes": 37900752, "sha256": "38d45d1fcb64e3b178b05adf2e3a19ab11d1997b0cb9b8b7fc275732aaeea898"},
+    {"id": "ucrt-as", "root": "ucrt64", "relative_path": "bin/as.exe", "role": "executable", "bytes": 1973997, "sha256": "e83e474a94a730361259e8fc9dc6a1404ae7d67a53ea41c9aedc1a99fbb16e1e"},
+    {"id": "ucrt-objdump", "root": "ucrt64", "relative_path": "bin/objdump.exe", "role": "executable", "bytes": 2637667, "sha256": "77429a3791b91e69aa2dcd62a33717534b2e0c284e6c63003cc701c714e8d540"},
+    {"id": "ucrt-widl", "root": "ucrt64", "relative_path": "bin/widl.exe", "role": "executable", "bytes": 675355, "sha256": "f628ea919d4712c78e0eb5ad996807c49d6882b94afc38bcb571cdcdd62e28fb"},
+    {"id": "ucrt-libwinpthread", "root": "ucrt64", "relative_path": "bin/libwinpthread-1.dll", "role": "runtime-library", "bytes": 63765, "sha256": "6372a2613b3ac725e24e8a08ac7b081886d53c01728e732f56cefc6551c8409f"},
+    {"id": "ucrt-libgcc", "root": "ucrt64", "relative_path": "bin/libgcc_s_seh-1.dll", "role": "runtime-library", "bytes": 150852, "sha256": "a955ab07e75e8773d20821fb94774267f2f5a8773641646c809024b2e298ef31"},
+    {"id": "ucrt-libgmp", "root": "ucrt64", "relative_path": "bin/libgmp-10.dll", "role": "runtime-library", "bytes": 681231, "sha256": "c2567ccf3f410c3411ba7cd4b7ba14f393a0e70a1d0c0593297df6706b5fba96"},
+    {"id": "ucrt-libisl", "root": "ucrt64", "relative_path": "bin/libisl-23.dll", "role": "runtime-library", "bytes": 2255425, "sha256": "b939a7dee35c8a3062501063b4ebb981df22617ef1cd3f2f62abde4921bf3b0c"},
+    {"id": "ucrt-libmpc", "root": "ucrt64", "relative_path": "bin/libmpc-3.dll", "role": "runtime-library", "bytes": 154960, "sha256": "bffbc9c0f57cf5c94d849cb40c7f698afb00e9e9d9683c3250546141673a983a"},
+    {"id": "ucrt-libmpfr", "root": "ucrt64", "relative_path": "bin/libmpfr-6.dll", "role": "runtime-library", "bytes": 705545, "sha256": "2868720e34ed38b7a66761165a0c827c982ad1b6298dcb1d67c338d46f1e9196"},
+    {"id": "ucrt-zlib", "root": "ucrt64", "relative_path": "bin/zlib1.dll", "role": "runtime-library", "bytes": 100279, "sha256": "1dc85208162ee57fe97e892bb5160fe9588903992995f90adc3a3a358dac6fc6"},
+    {"id": "ucrt-libzstd", "root": "ucrt64", "relative_path": "bin/libzstd.dll", "role": "runtime-library", "bytes": 1196420, "sha256": "a25427164f8775046eb8ce488d7d08842c3b33224c5817d4c0c3628b5b588129"},
+    {"id": "ucrt-libintl", "root": "ucrt64", "relative_path": "bin/libintl-8.dll", "role": "runtime-library", "bytes": 299024, "sha256": "8eb731da34fe70fbf36239ca5292f92d5f44004ed4d9d10827421454de8c27a9"},
+    {"id": "ucrt-libiconv", "root": "ucrt64", "relative_path": "bin/libiconv-2.dll", "role": "runtime-library", "bytes": 1135869, "sha256": "b37d1b4acab5310c4e4f6e2a961d146454ff740d943724a68fa3cebc85deb7cd"},
+    {"id": "git-core", "root": "git", "relative_path": "mingw64/bin/git.exe", "role": "executable", "bytes": 4422544, "sha256": "cab4c4eea1d869cf9f7be73868dc9a90ad2df1b1b673e5f8c8714a576c25ea96"},
+    {"id": "git-core-iconv", "root": "git", "relative_path": "mingw64/bin/libiconv-2.dll", "role": "runtime-library", "bytes": 1143148, "sha256": "7a282a854e01be726c6cccfe46f548c716aa45b3014818468253aaa4efbcd067"},
+    {"id": "git-core-intl", "root": "git", "relative_path": "mingw64/bin/libintl-8.dll", "role": "runtime-library", "bytes": 298731, "sha256": "0537c3dd2378218508ebe3cc416d72a99ee2d24ae1c5525e23458f32544ef861"},
+    {"id": "git-core-pcre2", "root": "git", "relative_path": "mingw64/bin/libpcre2-8-0.dll", "role": "runtime-library", "bytes": 717955, "sha256": "c135a87ed0f11eae8ffc4cb469671ff0b3f5d71fab5fb024e9b1e7241ca25b52"},
+    {"id": "git-core-winpthread", "root": "git", "relative_path": "mingw64/bin/libwinpthread-1.dll", "role": "runtime-library", "bytes": 65442, "sha256": "851f61482ad5b6aac7c6abc54bbe31d24f89e0ca683a75fcec2d47f86b2d2242"},
+    {"id": "git-core-zlib", "root": "git", "relative_path": "mingw64/bin/zlib1.dll", "role": "runtime-library", "bytes": 128488, "sha256": "93e9243a44c29200eeacaf9658efe2558581770e4b11ca4b500e18e424a6e3b5"},
+    {"id": "git-perl", "root": "git", "relative_path": "usr/bin/perl.exe", "role": "executable", "bytes": 14278, "sha256": "8679db320f05c37d004c70ee5196d0bf8e9029aea49b9abc2f5cab8e9da810c5"},
+    {"id": "git-perl-runtime", "root": "git", "relative_path": "usr/bin/msys-perl5_42.dll", "role": "runtime-library", "bytes": 3805287, "sha256": "310449a9693cff9b18c82a416390d188a7cf5f1ad2931c0da5f6528b6dcda31f"},
+    {"id": "git-msys-runtime", "root": "git", "relative_path": "usr/bin/msys-2.0.dll", "role": "runtime-library", "bytes": 3364447, "sha256": "13f0b0dc94588766ecfa1867f1a00061508ba1dc62f5b8e858ac59f01e358aa0"},
+    {"id": "git-msys-crypt", "root": "git", "relative_path": "usr/bin/msys-crypt-2.dll", "role": "runtime-library", "bytes": 219319, "sha256": "9a06bdbd7a934847bc0c50c3a19a7cf2b036a86ef9960fbe22984dd2ac18d608"},
+    {"id": "git-msys-gcc", "root": "git", "relative_path": "usr/bin/msys-gcc_s-seh-1.dll", "role": "runtime-library", "bytes": 142049, "sha256": "a9cfd10e2a4bf74f60530fc2f4f8fbe4055b50ff7ccd61b9440ef2fbe9c85aef"},
+    {"id": "git-package-versions", "root": "git", "relative_path": "etc/package-versions.txt", "role": "package-metadata", "bytes": 4133, "sha256": "1c9525b2c945a0da20c2f5a8c4643586551bbf601fa34441a694ac17f29725b6"},
+    {"id": "git-perl-util", "root": "git", "relative_path": "usr/lib/perl5/core_perl/auto/List/Util/Util.dll", "role": "module", "bytes": 56080, "sha256": "4e643e30d0ca58aecaacefbba766ade4d38540e706d578821ecb43692412edb6"},
+    {"id": "perl-carp", "root": "git", "relative_path": "usr/share/perl5/core_perl/Carp.pm", "role": "module", "bytes": 35994, "sha256": "f2e590a6925ed3574197edf157db4baf8e14cf074636839e0123b1f3b70efa75"},
+    {"id": "perl-exporter", "root": "git", "relative_path": "usr/share/perl5/core_perl/Exporter.pm", "role": "module", "bytes": 19212, "sha256": "7a42143aced58a894db85eec1619b27f35471343aaaf46c2a694d3897035c654"},
+    {"id": "perl-exporter-heavy", "root": "git", "relative_path": "usr/share/perl5/core_perl/Exporter/Heavy.pm", "role": "module", "bytes": 6457, "sha256": "8e5c0bd132d6fe6e15e92d63c0643aa49a4e205c198446423e95ba892daf6410"},
+    {"id": "perl-json", "root": "git", "relative_path": "usr/share/perl5/vendor_perl/JSON.pm", "role": "module", "bytes": 62518, "sha256": "c16aced7b5b39f1d896e56bf062deddd8993d06f9519ba2444b6f92f28aa795a"},
+    {"id": "perl-json-pp", "root": "git", "relative_path": "usr/share/perl5/core_perl/JSON/PP.pm", "role": "module", "bytes": 100523, "sha256": "118c7968259493f8e0270a5b4744b1a0223292dc0d9acd896d9be89a17beb47a"},
+    {"id": "perl-json-pp-boolean", "root": "git", "relative_path": "usr/share/perl5/core_perl/JSON/PP/Boolean.pm", "role": "module", "bytes": 852, "sha256": "208f2e406ef2b2d1090f812a6aad724b78178d7409f2b136184285e09cb2596f"},
+    {"id": "perl-list-util", "root": "git", "relative_path": "usr/lib/perl5/core_perl/List/Util.pm", "role": "module", "bytes": 26995, "sha256": "c4d8f8475535784baa120631c35c96fde3c17cf8d5a8c79541ace0b62dead116"},
+    {"id": "perl-scalar-util", "root": "git", "relative_path": "usr/lib/perl5/core_perl/Scalar/Util.pm", "role": "module", "bytes": 11196, "sha256": "f23248059c5ddb5daefb252df66c5b13bb1950550db2aefe51c42424dab046ff"},
+    {"id": "perl-xsloader", "root": "git", "relative_path": "usr/share/perl5/core_perl/XSLoader.pm", "role": "module", "bytes": 11418, "sha256": "c583718f860277e57f946acfd245b2cbad90ff3774605e80c91c5dd0ce259ca6"},
+    {"id": "perl-bytes", "root": "git", "relative_path": "usr/share/perl5/core_perl/bytes.pm", "role": "module", "bytes": 3856, "sha256": "8389c33cca7238cd41d0039e7476f95b80fb3715cafd2065fd0d0b77317b00bf"},
+    {"id": "perl-constant", "root": "git", "relative_path": "usr/share/perl5/core_perl/constant.pm", "role": "module", "bytes": 14724, "sha256": "e67cdfa533d42cbe5265bcf3c270f055620cba38a9295b5d584b7efc37a0c156"},
+    {"id": "perl-overload", "root": "git", "relative_path": "usr/share/perl5/core_perl/overload.pm", "role": "module", "bytes": 54723, "sha256": "57fc79aed75783721ad9b23429b92a768b89c3db393631e91be381edc3626733"},
+    {"id": "perl-overloading", "root": "git", "relative_path": "usr/share/perl5/core_perl/overloading.pm", "role": "module", "bytes": 1808, "sha256": "5bba56c0acdcc449ca3b73500862a5750c907d97d652978038dbc7809c4fcd07"},
+    {"id": "perl-strict", "root": "git", "relative_path": "usr/share/perl5/core_perl/strict.pm", "role": "module", "bytes": 5491, "sha256": "0872f18b118ef3a8b4a77449d43c16b98e6dbfd0c58b5ea310736d91b557d62e"},
+    {"id": "perl-warnings", "root": "git", "relative_path": "usr/share/perl5/core_perl/warnings.pm", "role": "module", "bytes": 57733, "sha256": "b13c8e18aa95dc467db6bfbd825df867dc24b253944b17d38cde79b0555de033"},
+    {"id": "perl-warnings-register", "root": "git", "relative_path": "usr/share/perl5/core_perl/warnings/register.pm", "role": "module", "bytes": 768, "sha256": "c7971403a276f78dc7fad5cde69846c39bcc2587310999160592fc7c6b9bd2e3"}
+  ],
+  "trees": [
+    {
+      "id": "bison-data",
+      "root": "msys",
+      "relative_path": "usr/share/bison",
+      "role": "bison-data",
+      "descriptor": {
+        "file_count": 29,
+        "directory_count": 3,
+        "total_entries": 32,
+        "aggregate_bytes": 812486,
+        "maximum_file_bytes": 123136,
+        "maximum_path_bytes": 22,
+        "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+        "sha256": "a6fdfdc61384d61f93f6d1e3d673104e5a5229a9ba7c92946e218617342196fd"
+      }
+    },
+    {
+      "id": "gcc-internal-headers",
+      "root": "ucrt64",
+      "relative_path": "lib/gcc/x86_64-w64-mingw32/15.2.0/include",
+      "role": "gcc-internal-headers",
+      "descriptor": {
+        "file_count": 146,
+        "directory_count": 0,
+        "total_entries": 146,
+        "aggregate_bytes": 2851827,
+        "maximum_file_bytes": 529836,
+        "maximum_path_bytes": 28,
+        "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+        "sha256": "9a0e509157954c71e4d2df55413806dc3bc93fd493f2b536cb7b03047709c37c"
+      }
+    }
+  ],
+  "tool_probes": [
+    {"id": "flex-version", "file_id": "msys-flex", "arguments": ["--version"], "expected_stream": "stdout", "expected_lines": ["flex 2.6.4"], "exit_code": 0, "timeout_ms": 5000, "maximum_output_bytes": 4096},
+    {"id": "bison-version", "file_id": "msys-bison", "arguments": ["--version"], "expected_stream": "stdout", "expected_lines": ["bison (GNU Bison) 3.8.2"], "exit_code": 0, "timeout_ms": 5000, "maximum_output_bytes": 4096},
+    {"id": "m4-version", "file_id": "msys-m4", "arguments": ["--version"], "expected_stream": "stdout", "expected_lines": ["m4 (GNU M4) 1.4.19"], "exit_code": 0, "timeout_ms": 5000, "maximum_output_bytes": 4096},
+    {"id": "widl-version", "file_id": "ucrt-widl", "arguments": ["-V"], "expected_stream": "stdout", "expected_lines": ["Wine IDL Compiler version 11.0-rc1", "Copyright 2002 Ove Kaaven"], "exit_code": 0, "timeout_ms": 5000, "maximum_output_bytes": 4096},
+    {"id": "perl-json-version", "file_id": "git-perl", "arguments": ["-MJSON", "-e", "print qq($]\\n$JSON::VERSION\\n$JSON::Backend\\n)"], "expected_stream": "stdout", "expected_lines": ["5.042002", "4.11", "JSON::Backend::PP"], "exit_code": 0, "timeout_ms": 5000, "maximum_output_bytes": 4096},
+    {"id": "git-version", "file_id": "git-core", "arguments": ["--version"], "expected_stream": "stdout", "expected_lines": ["git version 2.54.0.windows.1"], "exit_code": 0, "timeout_ms": 5000, "maximum_output_bytes": 4096},
+    {"id": "gcc-version", "file_id": "ucrt-gcc", "arguments": ["--version"], "expected_stream": "stdout", "expected_lines": ["gcc.exe (Rev8, Built by MSYS2 project) 15.2.0"], "exit_code": 0, "timeout_ms": 5000, "maximum_output_bytes": 4096},
+    {"id": "as-version", "file_id": "ucrt-as", "arguments": ["--version"], "expected_stream": "stdout", "expected_lines": ["GNU assembler (GNU Binutils) 2.45.1"], "exit_code": 0, "timeout_ms": 5000, "maximum_output_bytes": 4096},
+    {"id": "objdump-version", "file_id": "ucrt-objdump", "arguments": ["--version"], "expected_stream": "stdout", "expected_lines": ["GNU objdump (GNU Binutils) 2.45.1"], "exit_code": 0, "timeout_ms": 5000, "maximum_output_bytes": 4096}
+  ],
+  "recipes": [
+    {"id": "flex-c", "tool_file_id": "msys-flex", "provenance": "upstream", "arguments": ["-o", "{output_c}", "{input_l}"], "standard_output": "capture-for-validation"},
+    {"id": "bison-c-header", "tool_file_id": "msys-bison", "provenance": "upstream", "arguments": ["-d", "-o", "{output_c}", "{input_y}"], "standard_output": "capture-for-validation"},
+    {"id": "widl-header", "tool_file_id": "ucrt-widl", "provenance": "upstream", "arguments": ["-I", "{source_include}", "-h", "-o", "{output_h}", "{input_idl}"], "standard_output": "capture-for-validation"},
+    {"id": "spirv-header", "tool_file_id": "git-perl", "provenance": "upstream", "arguments": ["-w", "{make_spirv}", "{grammar}"], "standard_output": "capture-as-output"},
+    {
+      "id": "compile-c-object",
+      "tool_file_id": "ucrt-gcc",
+      "provenance": "closure-proof",
+      "arguments": [
+        "-Wall",
+        "-pipe",
+        "-D_WIN32_WINNT=0x0600",
+        "-std=c99",
+        "-fno-lto",
+        "-fvisibility=hidden",
+        "-Wdeclaration-after-statement",
+        "-Wempty-body",
+        "-Wenum-conversion",
+        "-Wimplicit-fallthrough",
+        "-Winit-self",
+        "-Wmissing-prototypes",
+        "-Wpointer-arith",
+        "-Wshadow",
+        "-Wshift-overflow=2",
+        "-Wtype-limits",
+        "-Wunused-but-set-parameter",
+        "-Wvla",
+        "-Wwrite-strings",
+        "-I{generated_root}/include",
+        "-I{generated_root}/include/private",
+        "-I{source_root}/include",
+        "-I{source_root}/include/private",
+        "-I{source_root}/libs/vkd3d-shader",
+        "-DLIBVKD3D_SHADER_SOURCE",
+        "-DVKD3D_DEBUG_ENV=VKD3D_SHADER_DEBUG",
+        "-ffile-prefix-map={source_root}=source",
+        "-fdebug-prefix-map={source_root}=source",
+        "-fmacro-prefix-map={source_root}=source",
+        "-ffile-prefix-map={generated_root}=generated",
+        "-fdebug-prefix-map={generated_root}=generated",
+        "-fmacro-prefix-map={generated_root}=generated",
+        "-ffile-prefix-map={temporary_root}=tmp",
+        "-fdebug-prefix-map={temporary_root}=tmp",
+        "-fmacro-prefix-map={temporary_root}=tmp",
+        "-frandom-seed={unit_sha256}",
+        "-MD",
+        "-MF",
+        "{depfile}",
+        "-MT",
+        "{object}",
+        "-c",
+        "{input_c}",
+        "-o",
+        "{object}"
+      ],
+      "standard_output": "capture-for-validation"
+    },
+    {"id": "validate-object", "tool_file_id": "ucrt-objdump", "provenance": "closure-proof", "arguments": ["-f", "-h", "-t", "{object}"], "standard_output": "capture-for-validation"}
+  ],
+  "environment": {
+    "inherit": ["SystemRoot", "WINDIR"],
+    "clear": [
+      "BISON_PKGDATADIR",
+      "BISON_SKELETON",
+      "M4",
+      "M4PATH",
+      "FLEX_SKELETON",
+      "PERL5LIB",
+      "PERLLIB",
+      "PERL_LOCAL_LIB_ROOT",
+      "PERL_MB_OPT",
+      "PERL_MM_OPT",
+      "GCC_EXEC_PREFIX",
+      "COMPILER_PATH",
+      "LIBRARY_PATH",
+      "CPATH",
+      "C_INCLUDE_PATH",
+      "CPLUS_INCLUDE_PATH",
+      "OBJC_INCLUDE_PATH",
+      "DEPENDENCIES_OUTPUT",
+      "SUNPRO_DEPENDENCIES",
+      "GCC_COMPARE_DEBUG",
+      "GCC_COMPARE_DEBUG_NOT_OVERRIDDEN",
+      "COLLECT_GCC_OPTIONS",
+      "SOURCE_DATE_EPOCH",
+      "LANG",
+      "LC_ALL",
+      "TZ",
+      "HOME",
+      "USERPROFILE",
+      "TMPDIR"
+    ],
+    "set": {
+      "LC_ALL": "C",
+      "LANG": "C",
+      "TZ": "UTC",
+      "SOURCE_DATE_EPOCH": "0",
+      "PERL_JSON_BACKEND": "JSON::PP"
+    },
+    "path_entries": ["msys:usr/bin", "ucrt64:bin", "git:mingw64/bin", "git:usr/bin", "host:System32"]
+  },
+  "process_limits": {
+    "no_shell": true,
+    "maximum_top_level_processes": 1,
+    "maximum_process_tree_width": 5,
+    "timeout_seconds": 30,
+    "termination_grace_seconds": 5,
+    "maximum_stdout_bytes": 1048576,
+    "maximum_stderr_bytes": 1048576,
+    "terminate_process_tree": true,
+    "temporary_output_root_required": true,
+    "complete_cleanup_required": true
+  },
+  "host_dependencies": {
+    "system_dlls": [
+      "ADVAPI32.dll",
+      "KERNEL32.dll",
+      "USER32.dll",
+      "WS2_32.dll",
+      "api-ms-win-crt-convert-l1-1-0.dll",
+      "api-ms-win-crt-environment-l1-1-0.dll",
+      "api-ms-win-crt-filesystem-l1-1-0.dll",
+      "api-ms-win-crt-heap-l1-1-0.dll",
+      "api-ms-win-crt-locale-l1-1-0.dll",
+      "api-ms-win-crt-math-l1-1-0.dll",
+      "api-ms-win-crt-private-l1-1-0.dll",
+      "api-ms-win-crt-runtime-l1-1-0.dll",
+      "api-ms-win-crt-stdio-l1-1-0.dll",
+      "api-ms-win-crt-string-l1-1-0.dll",
+      "api-ms-win-crt-time-l1-1-0.dll",
+      "api-ms-win-crt-utility-l1-1-0.dll",
+      "msvcrt.dll",
+      "ntdll.dll"
+    ]
+  },
+  "authorizations": {
+    "fetch": false,
+    "download": false,
+    "install_tools": false,
+    "link_production_binaries": false,
+    "stage_payloads": false,
+    "activate": false,
+    "run_guest": false,
+    "graphics_capability_advertisement": false
+  }
+}
