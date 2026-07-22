@@ -29,6 +29,7 @@ $script:MaximumSourceFileBytes = [UInt64]536870912
 $script:MaximumAggregateSourceBytes = [UInt64]2147483648
 $script:MaximumOutputFileBytes = [UInt64]67108864
 $script:MaximumAggregateOutputBytes = [UInt64]536870912
+$script:MaximumComponentClosureBytes = [UInt64]4194304
 $script:MaximumEvidenceRangeBytes = [UInt64]1048576
 $script:MaximumPathBytes = [UInt64]512
 $script:V2GitExecutable = ''
@@ -1050,8 +1051,8 @@ function Get-V2ComponentClosureIndex {
     ) 'bound component closure'
     if ($Manifest._spdx -cne 'GPL-3.0-only' -or
         (Assert-UnsignedInteger $Manifest.schema 'component closure schema') -ne 2 -or
-        $Manifest.status -cne 'blocked' -or
-        [string]::IsNullOrWhiteSpace([string]$Manifest.reason) -or
+        $Manifest.status -cne 'ready' -or
+        $Manifest.reason -isnot [string] -or $Manifest.reason.Length -ne 0 -or
         $Manifest.upstream_name -cne $Lock.component.upstream_name -or
         $Manifest.owning_commit -cne $Lock.component.owning_commit -or
         $Manifest.source_prefixes -isnot [Array] -or
@@ -1503,9 +1504,9 @@ function Invoke-V2GeneratedOutputLockVerification {
             'mesa-generated-source-reproducibility.json' -or
         $lock.provenance.component_closure.relative_path -cne
             'component-closures/mesa9x-23.1.x.json' -or
-        $lock.provenance.component_closure.bytes -ne 815285 -or
+        $lock.provenance.component_closure.bytes -ne 1363950 -or
         $lock.provenance.component_closure.sha256 -cne
-            'd93a476656ec9f18c1d257a65ae6461111c7e85ec0b704360bcc42b836dbefc5' -or
+            '11020fe9315d80f3ebb14f50266bd50e9f2f2e982c9464c8b0d3d42556fd4f2a' -or
         $lock.provenance.generator_recipe.relative_path -cne
             'generator/mesa-23.1.x-gen.mk' -or
         $lock.provenance.generator_recipe.git_blob -cne
@@ -1537,21 +1538,25 @@ function Invoke-V2GeneratedOutputLockVerification {
             Path = $planPath
             Name = 'Generated source plan'
             Descriptor = $lock.provenance.generated_source_plan
+            MaximumBytes = [UInt64]1048576
         },
         [pscustomobject]@{
             Path = $reproducibilityPath
             Name = 'Generated source reproducibility proof'
             Descriptor = $lock.provenance.generated_source_reproducibility
+            MaximumBytes = [UInt64]1048576
         },
         [pscustomobject]@{
             Path = $componentClosurePath
             Name = 'Component closure'
             Descriptor = $lock.provenance.component_closure
+            MaximumBytes = $script:MaximumComponentClosureBytes
         },
         [pscustomobject]@{
             Path = $seedPath
             Name = 'Source seed'
             Descriptor = $lock.provenance.source_seed
+            MaximumBytes = [UInt64]1048576
         }
     )) {
         if (-not (Test-Path -LiteralPath $metadataFile.Path -PathType Leaf)) {
@@ -1559,7 +1564,7 @@ function Invoke-V2GeneratedOutputLockVerification {
         }
         Assert-NoReparseAncestor $metadataFile.Path $metadataFile.Name
         $snapshot = Read-GswBoundedFileSnapshot -Path $metadataFile.Path `
-            -Name $metadataFile.Name -MaximumBytes 1048576
+            -Name $metadataFile.Name -MaximumBytes $metadataFile.MaximumBytes
         if ($snapshot.Bytes.Length -ne $metadataFile.Descriptor.bytes -or
             $snapshot.Sha256 -cne $metadataFile.Descriptor.sha256) {
             throw "$($metadataFile.Name) content mismatch."
@@ -1574,7 +1579,7 @@ function Invoke-V2GeneratedOutputLockVerification {
     $reproducibility = $reproducibilitySnapshot.Value
     $componentClosureSnapshot = Read-StrictJsonSnapshot `
         -Path $componentClosurePath -Name 'component closure' `
-        -MaximumBytes 1048576
+        -MaximumBytes $script:MaximumComponentClosureBytes
     $componentClosure = $componentClosureSnapshot.Value
     if ($plan.component.upstream_name -cne $lock.component.upstream_name -or
         $plan.component.repository -cne $lock.component.repository -or
@@ -1656,6 +1661,60 @@ function Invoke-V2GeneratedOutputLockVerification {
         $lock.validation_only_side_outputs.Count -ne 4) {
         throw 'Generated-output v2 arrays violate their exact bounds.'
     }
+
+    $allowedOutputExpressions = @(
+        'MIT', 'MIT AND (GPL-3.0-or-later WITH Bison-exception-2.2)',
+        'MIT AND BSD-3-Clause', 'MIT AND Apache-2.0'
+    )
+    foreach ($output in @($lock.outputs)) {
+        Assert-ExactProperties $output @(
+            'relative_path', 'bytes', 'sha256', 'license_expression',
+            'license_evidence_ids'
+        ) 'generated output v2'
+        Assert-SafeRelativePath $output.relative_path 'generated output v2'
+        $outputBytes = Assert-UnsignedInteger $output.bytes `
+            'generated output v2 bytes'
+        Assert-LowercaseHash $output.sha256 64 'generated output v2 sha256'
+        if ($outputBytes -gt $script:MaximumOutputFileBytes -or
+            $allowedOutputExpressions -cnotcontains $output.license_expression -or
+            $output.license_expression -cne
+                (Get-MesaV2ExpectedLicenseExpression $output.relative_path) -or
+            $output.license_evidence_ids -isnot [Array] -or
+            $output.license_evidence_ids.Count -gt 8) {
+            throw "Invalid license classification for '$($output.relative_path)'."
+        }
+        if ($output.license_evidence_ids.Count -eq 0 -and
+            $lock.status -cne 'blocked') {
+            throw "Reviewed output '$($output.relative_path)' lacks license evidence."
+        }
+    }
+
+    [string[]]$expectedSideOutputs = @(
+        'mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.h',
+        'mesa-23.1.x/src/compiler/glsl/glsl_parser.h',
+        'mesa-23.1.x/src/gallium/auxiliary/driver_trace/tr_util.h',
+        'mesa-23.1.x/src/mesa/program/program_parse.tab.h'
+    )
+    for ($index = 0; $index -lt $expectedSideOutputs.Count; $index++) {
+        $sideOutput = $lock.validation_only_side_outputs[$index]
+        Assert-SafeRelativePath $sideOutput 'validation-only side output'
+        if ($sideOutput -cne $expectedSideOutputs[$index]) {
+            throw 'Validation-only side outputs are not exactly excluded.'
+        }
+        if ($plan.selection.validation_side_outputs[$index].relative_path -cne
+            $sideOutput) {
+            throw 'Validation-only side outputs disagree with the generated source plan.'
+        }
+    }
+
+    $expectedTree = Convert-V2TreeDescriptor $lock.output_tree 'output_tree v2'
+    Assert-V2ReproducibilityProof $reproducibility $lock $expectedTree
+    if ($lock.provenance.generated_source_reproducibility.bytes -ne 4418 -or
+        $lock.provenance.generated_source_reproducibility.sha256 -cne
+            'd37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b') {
+        throw 'Generated source reproducibility proof identity mismatch.'
+    }
+
     $allowedEvidenceExpressions = @(
         'MIT', 'GPL-3.0-or-later WITH Bison-exception-2.2',
         'BSD-3-Clause', 'Apache-2.0'
@@ -1834,10 +1893,6 @@ function Invoke-V2GeneratedOutputLockVerification {
         $evidenceOrder.Add($evidence.id, $index)
     }
 
-    $allowedOutputExpressions = @(
-        'MIT', 'MIT AND (GPL-3.0-or-later WITH Bison-exception-2.2)',
-        'MIT AND BSD-3-Clause', 'MIT AND Apache-2.0'
-    )
     $outputs = @($lock.outputs)
     Assert-PortablePathSet $outputs 'generated outputs v2'
     $outputsByPath = [Collections.Generic.Dictionary[string,object]]::new(
@@ -1918,12 +1973,6 @@ function Invoke-V2GeneratedOutputLockVerification {
         }
     }
 
-    [string[]]$expectedSideOutputs = @(
-        'mesa-23.1.x/src/compiler/glsl/glcpp/glcpp-parse.h',
-        'mesa-23.1.x/src/compiler/glsl/glsl_parser.h',
-        'mesa-23.1.x/src/gallium/auxiliary/driver_trace/tr_util.h',
-        'mesa-23.1.x/src/mesa/program/program_parse.tab.h'
-    )
     for ($index = 0; $index -lt $expectedSideOutputs.Count; $index++) {
         $sideOutput = $lock.validation_only_side_outputs[$index]
         Assert-SafeRelativePath $sideOutput 'validation-only side output'
@@ -1942,25 +1991,6 @@ function Invoke-V2GeneratedOutputLockVerification {
         }
     }
 
-    Assert-ExactProperties $lock.output_tree @(
-        'file_count', 'directory_count', 'total_entries', 'aggregate_bytes',
-        'maximum_file_bytes', 'maximum_path_bytes', 'digest_algorithm', 'sha256'
-    ) 'output_tree v2'
-    $expectedTree = [pscustomobject]@{
-        FileCount = Assert-UnsignedInteger $lock.output_tree.file_count `
-            'output_tree v2 file_count'
-        DirectoryCount = Assert-UnsignedInteger $lock.output_tree.directory_count `
-            'output_tree v2 directory_count'
-        TotalEntries = Assert-UnsignedInteger $lock.output_tree.total_entries `
-            'output_tree v2 total_entries'
-        AggregateBytes = Assert-UnsignedInteger $lock.output_tree.aggregate_bytes `
-            'output_tree v2 aggregate_bytes'
-        MaximumFileBytes = Assert-UnsignedInteger $lock.output_tree.maximum_file_bytes `
-            'output_tree v2 maximum_file_bytes'
-        MaximumPathBytes = Assert-UnsignedInteger $lock.output_tree.maximum_path_bytes `
-            'output_tree v2 maximum_path_bytes'
-        Sha256 = [string]$lock.output_tree.sha256
-    }
     if ($lock.output_tree.digest_algorithm -cne 'retvrn99-file-tree-sha256-v1' -or
         $expectedTree.FileCount -ne 67 -or $expectedTree.DirectoryCount -ne 20 -or
         $expectedTree.TotalEntries -ne 87 -or
@@ -1971,13 +2001,6 @@ function Invoke-V2GeneratedOutputLockVerification {
             'dd0ae888829eabf2a0043f27100aa64c57b43ad12054270bee62f50ccc451d84' -or
         $expectedDirectories.Count -ne 20) {
         throw 'Output tree v2 does not bind the reviewed 67-file Mesa root.'
-    }
-
-    Assert-V2ReproducibilityProof $reproducibility $lock $expectedTree
-    if ($lock.provenance.generated_source_reproducibility.bytes -ne 4418 -or
-        $lock.provenance.generated_source_reproducibility.sha256 -cne
-            'd37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b') {
-        throw 'Generated source reproducibility proof identity mismatch.'
     }
 
     $firstTree = Get-GeneratedTreeDescriptor $GeneratedRootPath
@@ -2007,7 +2030,7 @@ function Invoke-V2GeneratedOutputLockVerification {
         -Name 'generated source reproducibility proof' -MaximumBytes 1048576
     $finalComponentClosure = Read-GswBoundedFileSnapshot `
         -Path $componentClosurePath -Name 'component closure' `
-        -MaximumBytes 1048576
+        -MaximumBytes $script:MaximumComponentClosureBytes
     $finalSeed = Read-GswBoundedFileSnapshot -Path $seedPath `
         -Name 'source seed' -MaximumBytes 1048576
     if ($finalLock.Sha256 -cne $LockSnapshot.Sha256 -or
@@ -2242,11 +2265,13 @@ Assert-ContainedPathHasNoReparsePoint $metadataRootPath `
 if (-not (Test-Path -LiteralPath $closurePath -PathType Leaf)) {
     throw "Component closure manifest not found: $closurePath"
 }
-if ((Get-Item -LiteralPath $closurePath).Length -gt 1048576) {
+if ((Get-Item -LiteralPath $closurePath).Length -gt
+    $script:MaximumComponentClosureBytes) {
     throw 'Component closure manifest exceeds the size bound.'
 }
 $closureSnapshot = Read-StrictJsonSnapshot -Path $closurePath `
-    -Name 'component closure' -MaximumBytes 1048576
+    -Name 'component closure' `
+    -MaximumBytes $script:MaximumComponentClosureBytes
 $closureHash = $closureSnapshot.Sha256
 if ($closureHash -cne $lock.component.closure_manifest.sha256) {
     throw 'Component closure manifest SHA-256 mismatch.'
@@ -2633,7 +2658,8 @@ $secondTree = Get-GeneratedTreeDescriptor $generatedRootPath
 Assert-DescriptorMatches $secondTree $firstTree 'Generated tree stability'
 try {
     $finalClosureSnapshot = Read-GswBoundedFileSnapshot -Path $closurePath `
-        -Name 'component closure manifest' -MaximumBytes 1048576
+        -Name 'component closure manifest' `
+        -MaximumBytes $script:MaximumComponentClosureBytes
 }
 catch {
     throw "Component closure manifest changed during verification: $($_.Exception.Message)"

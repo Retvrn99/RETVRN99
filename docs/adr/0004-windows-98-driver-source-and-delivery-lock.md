@@ -35,16 +35,18 @@ persona while a separately added inbox legacy SB16 driver is tested.
 Every entry names an HTTPS repository, a complete immutable Git commit, its
 repository-level license policy, and whether it is planned input,
 planned-component input, or reference-only material. A planned-component row
-links a schema-1 closure manifest by relative path and raw SHA-256. A ready
+links a closure manifest by relative path and raw SHA-256. A ready
 manifest binds itself to the lock row's owning commit and lists exact regular
 Git blobs, byte counts, SHA-256 digests, allowlisted file-specific license
 expressions, notice IDs, source-prefix IDs, and roles. A source prefix is either
 a named subtree or `exact-root-files`, which permits only separately enumerated
 root files. Prefixes never authorize globs or implicit tree copying. Each file
-binds to an exact notice inventory entry with the same approved license
-expression. The initial closed expression set is `MIT` and
-`LGPL-2.1-or-later`. A blocked manifest has no notices or files and authorizes
-no derivation, build, staging, or distribution.
+binds to exact license evidence with the same approved expression. The schema
+carries a closed, curated expression set; extending it requires a schema and
+verifier review. Narrow additions include `SGI-B-2.0`,
+`LicenseRef-Mesa-Vrije-Permissive`, and
+`LicenseRef-Mesa-U-Atomic-Public-Domain`. A blocked manifest has no notices or
+files and authorizes no derivation, build, staging, or distribution.
 The verifier accepts only clean local checkouts at those exact origins and
 commits, including initialized and matching submodules. It does not clone,
 fetch, or resolve a branch or tag. With no source selection it verifies the
@@ -186,11 +188,12 @@ emitted while those payloads are unavailable.
 The pinned VMDisp9x and VMHAL9x revisions have reviewed RETVRN99 adaptations,
 bounded build proofs, and a closed stageable PnP package. Mesa9x is retained at
 `29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f`, with only its `mesa-23.1.x`
-23.1.9 subtree named as a candidate component. Its schema-2 component audit now
-binds 1,036 unique files: 837 selected source units, 198 generator inputs, and
-one generator recipe. Those rows use 892 exact license-evidence records. The
-manifest remains blocked because compiler header and depfile closure, omission
-proofs, and direct-build integration are incomplete.
+23.1.9 subtree selected. Its ready schema-2 component closure binds 1,687 unique
+files: 837 selected source units, 652 compiler dependencies, 198 generator
+inputs, and one generator recipe. `p_defines.h` carries both an existing role
+and the compiler-dependency role, so those role counts overlap by one file.
+Every row binds exact inline or project-level license evidence through 1,502
+evidence records.
 
 `libs/vkd3d-shader` and OpenGlide9x remain blocked candidate components pending
 their exact file and license reviews. The OpenGlide9x manifest currently names
@@ -212,7 +215,7 @@ remain separate proofs. The verifier accepts this lock only for policy audit.
 It authorizes no build, staging, guest installation, or capability
 advertisement.
 
-Mesa production builds use the alternative allowed by the graphics source
+The Mesa compile proof uses the alternative allowed by the graphics source
 plan: reviewed, hash-locked generated outputs. The Generated Source Module
 accepts a checkout already populated by an independently run generator,
 verifies the exact Mesa commit, generator recipe, source seed, and permitted
@@ -232,8 +235,9 @@ Its 77 ordered evidence rows prove all 67 output license expressions: 58 rows
 bind ranges in generated outputs and 19 bind exact source evidence from the
 pinned Git blobs already reviewed by the Mesa component manifest. The lock is
 therefore `reviewed-generated-source`. This classification proves generated
-bytes and their license evidence only; generator-input, component, header,
-depfile, and production-build closure remain separate false claims.
+bytes and their license evidence only. Within the generated-output lock,
+generator-input, component, header, depfile, and production-build closure are
+separate claims whose status can come only from their owning artifacts.
 
 `drivers/win98/mesa-gsw` is an original source Module for the two prohibited
 implementation replacements. Its verifier binds eight permissive Mesa
@@ -251,23 +255,35 @@ rather than carrying a reduced flag copy. It compiles the Nine memory Adapter
 twice in private roots with the pinned i686 compiler, suppresses Windows crash
 dialogs for every bounded child, inspects but never executes the COFF objects,
 zeros only their timestamps, and requires byte-identical normalized results.
-The proof produces no persistent object or DLL and satisfies no production
-build-profile dependency.
+The proof produces no persistent object or DLL and authorizes no production
+build. Its reviewed source lock is a build-profile dependency, while the
+869-unit Compiler Closure owns the broader object-compilation proof.
 
-`mesa-compiler-closure.json` defines the next preparation Seam as a deliberately
-blocked Compiler Closure Module. Its first schema contains no commands,
-depfiles, headers, or execution authority. It records that clean-checkout
-discovery is non-authoritative and that the eventual twin proof must use the
-exact materialized component closure, reviewed generated and original roots,
-and locked toolchain. Upstream multi-backend recipe files, software renderers,
-the DRM SVGA winsys, LLVM definitions, and VirtualBox definitions are frozen as
-excluded inputs.
+`mesa-compiler-closure.json` is a schema-3, `compile-proven` Compiler Closure
+Module. It binds the ready component closure, reviewed generated and original
+roots, direct plan, GSW-886 CPU profile, disabled winsys sentinel, and locked
+toolchain. It records the exact 869 dispositions and two bounded runs of every
+dependency and object command. The 1,738 i386 COFF objects are inspected but
+never executed; normalization changes only `TimeDateStamp` bytes 4-7, rejects
+optional headers and private absolute paths, requires every normalized A/B pair
+to match, and binds one ordered aggregate digest. No temporary object remains.
+Upstream multi-backend recipes, software renderers, the DRM SVGA winsys, LLVM
+definitions, and VirtualBox definitions remain excluded inputs. The selected
+POSIX threads and read/write-lock sources have two exact compile-only
+`HAVE_PTHREAD` exceptions. The latter avoids selecting Vista-era SRW APIs at the
+locked Windows 98 target level. The selected generated x86 assembly has one
+exact compile-only `USE_X86_ASM` and `GLX_X86_READONLY_TEXT` exception so its
+PE/COFF-compatible path matches the pinned recipe context. These definitions
+remain absent from common arguments. The vendored winpthreads source/include
+tree is still excluded, and the closure explicitly leaves the upstream recipe
+and pthread link ABI unproven.
 
-The build profile fixes `hash-locked-generated-outputs` as its only generation
-strategy. Normalized generated-source reproducibility and the generated-output
-review are currently proven. The source/license, CPU compile proof, original
-GSW Adapter integration, direct-build, backend-exclusion, and compile-output
-gates remain false, so the profile remains blocked.
+The schema-2 build profile fixes `hash-locked-generated-outputs` as its only
+generation strategy and is `compile-proven`. All nine ordered gates bind exact
+evidence paths and SHA-256 digests. The CPU, backend-exclusion, and
+compile-output gates share the compiler-closure artifact that independently
+owns those subproofs. Production build, link, staging, guest installation, DLL
+activation, renderer selection, and capability advertisement all remain false.
 
 ## Consequences
 
@@ -280,10 +296,9 @@ gates remain false, so the profile remains blocked.
   proof.
 - A policy-audited Mesa generator lock cannot be consumed by build or delivery
   workflows.
-- Generated-source reproducibility, exact output coverage, and file-level
-  generated-output license evidence are proven. That reviewed source can
-  satisfy only its named build-profile dependency; every remaining closure
-  gate must still pass before a build is authorized.
+- Generated-source reproducibility, exact output coverage, component licensing,
+  and the clean 869-unit object proof are complete. `compile-proven` remains an
+  evidence classification, not authority to produce or deliver a DLL.
 - The full compiler extraction, not only its launcher executable, is covered by
   a deterministic integrity check.
 - A missing required checkout, dirty tree, wrong origin, toolchain hash

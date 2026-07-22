@@ -29,6 +29,7 @@ $script:MaximumSpdxDeclarations = 128
 $script:MaximumFileBytes = [UInt64]536870912
 $script:MaximumAggregateBytes = [UInt64]2147483648
 $script:MaximumPathBytes = 1024
+$script:MaximumManifestBytes = 4194304
 $script:AllowedLicenseExpressions = [Collections.Generic.HashSet[string]]::new(
     [StringComparer]::Ordinal
 )
@@ -45,8 +46,11 @@ foreach ($expression in @(
     'BSD-3-Clause',
     'BSL-1.0',
     'Apache-2.0',
+    'SGI-B-2.0',
     'LicenseRef-Mesa-SHA1-Public-Domain',
     'LicenseRef-Mesa-DbgHelp-Public-Domain',
+    'LicenseRef-Mesa-U-Atomic-Public-Domain',
+    'LicenseRef-Mesa-Vrije-Permissive',
     'LicenseRef-Mesa-Jimenez-MLAA',
     'MIT AND BSD-3-Clause',
     'MIT AND Apache-2.0',
@@ -79,8 +83,11 @@ foreach ($expression in @(
     'BSD-3-Clause',
     'BSL-1.0',
     'Apache-2.0',
+    'SGI-B-2.0',
     'LicenseRef-Mesa-SHA1-Public-Domain',
     'LicenseRef-Mesa-DbgHelp-Public-Domain',
+    'LicenseRef-Mesa-U-Atomic-Public-Domain',
+    'LicenseRef-Mesa-Vrije-Permissive',
     'LicenseRef-Mesa-Jimenez-MLAA',
     'MIT AND BSD-3-Clause',
     'MIT AND Apache-2.0',
@@ -103,8 +110,11 @@ foreach ($expression in @(
     'BSD-3-Clause',
     'BSL-1.0',
     'Apache-2.0',
+    'SGI-B-2.0',
     'LicenseRef-Mesa-SHA1-Public-Domain',
     'LicenseRef-Mesa-DbgHelp-Public-Domain',
+    'LicenseRef-Mesa-U-Atomic-Public-Domain',
+    'LicenseRef-Mesa-Vrije-Permissive',
     'MIT AND BSD-3-Clause',
     'MIT AND Apache-2.0',
     'GPL-3.0-or-later WITH Bison-exception-2.2',
@@ -387,7 +397,7 @@ function Read-StrictJson {
 
     try {
         return Read-GswStrictJsonFile -Path $Path -Name 'component closure' `
-            -MaximumBytes 1048576
+            -MaximumBytes $script:MaximumManifestBytes
     }
     catch {
         throw "Malformed component closure JSON: $($_.Exception.Message)"
@@ -1452,7 +1462,7 @@ foreach ($entry in $selectedEntries) {
     try {
         $manifestSnapshot = Read-GswStrictJsonFileSnapshot -Path $manifestPath `
             -Name "component closure manifest for '$($entry.name)'" `
-            -MaximumBytes 1048576
+            -MaximumBytes $script:MaximumManifestBytes
     }
     catch {
         throw "Malformed component closure JSON: $($_.Exception.Message)"

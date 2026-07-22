@@ -11,11 +11,7 @@ $ErrorActionPreference = 'Stop'
 
 $script:MaximumJsonBytes = [UInt64]65536
 $script:MaximumEvidenceJsonBytes = [UInt64]4194304
-$script:ExpectedSchemaSha256 = 'bc3a10912a7b4c582e25b06b7d82ccea5fcf37c4bee8b2e383b16eda2a21e692'
-$script:ExpectedGeneratedOutputLockSha256 = `
-    '8274e5dd8cc50b41e4f0e510e87e9a2d669248bd69ae988e6dbdb48ce28390e5'
-$script:ExpectedReproducibilityEvidenceSha256 = `
-    'd37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b'
+$script:ExpectedSchemaSha256 = 'de12369b6640a83880ac187478853f981e14df907ff6152c8dde024ba3e74e26'
 $script:AllowedFamilies = @(
     'mesa-core',
     'wgl',
@@ -54,16 +50,43 @@ $script:ForbiddenFeatures = @(
     'wined3d',
     'zink'
 )
-$script:DependencyIds = @(
-    'mesa-file-license-closure',
-    'mesa-generator-output-lock',
-    'mesa-generated-source-reproducibility',
-    'direct-pruned-build-recipe',
-    'gsw-886-win98-i686-v1',
-    'original-gsw-winsys',
-    'original-gsw-memory-helpers',
-    'backend-exclusion-proof',
-    'compile-output-reproducibility'
+$script:DependencyBindings = @(
+    [pscustomobject]@{
+        Id = 'mesa-file-license-closure'
+        RelativePath = 'component-closures/mesa9x-23.1.x.json'
+    },
+    [pscustomobject]@{
+        Id = 'mesa-generator-output-lock'
+        RelativePath = 'generated-output-locks/mesa-23.1.9.json'
+    },
+    [pscustomobject]@{
+        Id = 'mesa-generated-source-reproducibility'
+        RelativePath = 'mesa-generated-source-reproducibility.json'
+    },
+    [pscustomobject]@{
+        Id = 'direct-pruned-build-recipe'
+        RelativePath = 'mesa-gsw-direct-build-plan.json'
+    },
+    [pscustomobject]@{
+        Id = 'gsw-886-win98-i686-v1'
+        RelativePath = 'mesa-compiler-closure.json'
+    },
+    [pscustomobject]@{
+        Id = 'original-gsw-winsys'
+        RelativePath = 'mesa-gsw/winsys-interface-inputs.lock.json'
+    },
+    [pscustomobject]@{
+        Id = 'original-gsw-memory-helpers'
+        RelativePath = 'mesa-gsw/interface-inputs.lock.json'
+    },
+    [pscustomobject]@{
+        Id = 'backend-exclusion-proof'
+        RelativePath = 'mesa-compiler-closure.json'
+    },
+    [pscustomobject]@{
+        Id = 'compile-output-reproducibility'
+        RelativePath = 'mesa-compiler-closure.json'
+    }
 )
 
 if ([string]::IsNullOrWhiteSpace($ProfileFile)) {
@@ -353,16 +376,17 @@ function Assert-JsonBoolean {
     return [bool]$Value
 }
 
-function Assert-JsonIntegerOne {
+function Assert-JsonIntegerEquals {
     param(
         [Parameter(Mandatory = $true)][AllowNull()][object]$Value,
+        [Parameter(Mandatory = $true)][Int64]$Expected,
         [Parameter(Mandatory = $true)][string]$Name
     )
 
     if ($null -eq $Value -or
         @([byte], [uint16], [uint32], [uint64], [sbyte], [int16], [int32], [int64]) `
-            -cnotcontains $Value.GetType() -or [Int64]$Value -ne 1) {
-        throw "$Name must be the JSON integer 1."
+            -cnotcontains $Value.GetType() -or [Int64]$Value -ne $Expected) {
+        throw "$Name must be the JSON integer $Expected."
     }
 }
 
@@ -406,6 +430,21 @@ function Assert-LowercaseSha256 {
     }
 }
 
+function Assert-FalseJsonProperties {
+    param(
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string[]]$Expected,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    Assert-ExactProperties $Value $Expected $Name
+    foreach ($property in $Expected) {
+        if (Assert-JsonBoolean $Value.$property "$Name.$property") {
+            throw "$Name.$property must remain false."
+        }
+    }
+}
+
 $profilePath = Get-FullPath $ProfileFile
 $profile = Read-StrictJson $profilePath 'Mesa GSW build profile'
 Assert-ExactProperties $profile @(
@@ -414,7 +453,7 @@ Assert-ExactProperties $profile @(
     'forbidden_features', 'dependencies'
 ) 'Mesa GSW build profile'
 Assert-JsonStringEquals $profile._spdx 'GPL-3.0-only' '_spdx'
-Assert-JsonIntegerOne $profile.schema 'schema'
+Assert-JsonIntegerEquals $profile.schema 2 'schema'
 
 Assert-ExactProperties $profile.schema_definition @('relative_path', 'sha256') `
     'schema_definition'
@@ -444,10 +483,10 @@ if ((Assert-JsonBoolean $schema.additionalProperties 'schema additionalPropertie
     throw 'The Mesa GSW build-profile schema root must reject additional properties.'
 }
 
-Assert-JsonStringEquals $profile.status 'blocked' 'status'
+Assert-JsonStringEquals $profile.status 'compile-proven' 'status'
 $reason = Assert-JsonString $profile.reason 'reason'
 if ([string]::IsNullOrWhiteSpace($reason)) {
-    throw 'The blocked Mesa GSW build profile must explain the block.'
+    throw 'The compile-proven Mesa GSW build profile must explain its authority boundary.'
 }
 
 Assert-ExactProperties $profile.source @(
@@ -466,8 +505,9 @@ Assert-JsonStringEquals $profile.generation_strategy `
 Assert-ExactProperties $profile.target @(
     'id', 'kind', 'guest_os', 'architecture', 'command_ir', 'host_renderer',
     'winsys_implementation', 'memory_helper_implementation', 'artifact_class',
-    'compile_only', 'build_authorized', 'staging_authorized',
-    'guest_install_authorized', 'dll_activation_authorized', 'renderer_selection'
+    'compile_only', 'build_authorized', 'link_authorized', 'staging_authorized',
+    'guest_install_authorized', 'dll_activation_authorized', 'renderer_selection',
+    'capability_advertisement'
 ) 'target'
 Assert-JsonStringEquals $profile.target.id 'mesa-23-1-9-gsw-i686-win98se' 'target.id'
 Assert-JsonStringEquals $profile.target.kind 'direct-pruned-compile-only' 'target.kind'
@@ -485,6 +525,8 @@ Assert-JsonStringEquals $profile.target.artifact_class `
 $compileOnly = Assert-JsonBoolean $profile.target.compile_only 'target.compile_only'
 $buildAuthorized = Assert-JsonBoolean `
     $profile.target.build_authorized 'target.build_authorized'
+$linkAuthorized = Assert-JsonBoolean `
+    $profile.target.link_authorized 'target.link_authorized'
 $stagingAuthorized = Assert-JsonBoolean `
     $profile.target.staging_authorized 'target.staging_authorized'
 $guestInstallAuthorized = Assert-JsonBoolean `
@@ -493,9 +535,11 @@ $dllActivationAuthorized = Assert-JsonBoolean `
     $profile.target.dll_activation_authorized 'target.dll_activation_authorized'
 $rendererSelection = Assert-JsonBoolean `
     $profile.target.renderer_selection 'target.renderer_selection'
-if (-not $compileOnly -or $buildAuthorized -or $stagingAuthorized -or
+$capabilityAdvertisement = Assert-JsonBoolean `
+    $profile.target.capability_advertisement 'target.capability_advertisement'
+if (-not $compileOnly -or $buildAuthorized -or $linkAuthorized -or $stagingAuthorized -or
     $guestInstallAuthorized -or
-    $dllActivationAuthorized -or $rendererSelection) {
+    $dllActivationAuthorized -or $rendererSelection -or $capabilityAdvertisement) {
     throw 'The Mesa GSW target must remain compile-only and non-activating.'
 }
 
@@ -506,41 +550,119 @@ Assert-ExactStringSequence $profile.required_support_families `
 Assert-ExactStringSequence $profile.forbidden_features $script:ForbiddenFeatures `
     'forbidden_features'
 
-$dependencies = Assert-JsonArray $profile.dependencies $script:DependencyIds.Count `
+$dependencies = Assert-JsonArray $profile.dependencies $script:DependencyBindings.Count `
     'dependencies'
-for ($index = 0; $index -lt $script:DependencyIds.Count; $index++) {
+$evidenceSnapshots = @{}
+for ($index = 0; $index -lt $script:DependencyBindings.Count; $index++) {
     $dependency = $dependencies[$index]
-    Assert-ExactProperties $dependency @('id', 'proven', 'evidence_sha256') `
+    $binding = $script:DependencyBindings[$index]
+    Assert-ExactProperties $dependency @(
+        'id', 'proven', 'evidence_relative_path', 'evidence_sha256'
+    ) `
         "dependency[$index]"
-    Assert-JsonStringEquals $dependency.id $script:DependencyIds[$index] `
+    Assert-JsonStringEquals $dependency.id $binding.Id `
         "dependency[$index].id"
+    Assert-JsonStringEquals $dependency.evidence_relative_path $binding.RelativePath `
+        "dependency[$index].evidence_relative_path"
     $proven = Assert-JsonBoolean $dependency.proven "dependency[$index].proven"
-    $evidence = Assert-JsonString $dependency.evidence_sha256 `
-        "dependency[$index].evidence_sha256" 64
-    if ($index -eq 1) {
-        if (-not $proven -or
-            $evidence -cne $script:ExpectedGeneratedOutputLockSha256) {
-            throw "Dependency '$($dependency.id)' must bind the canonical reviewed evidence."
-        }
+    if (-not $proven) {
+        throw "Dependency '$($dependency.id)' must remain proven."
     }
-    elseif ($index -eq 2) {
-        if (-not $proven -or
-            $evidence -cne $script:ExpectedReproducibilityEvidenceSha256) {
-            throw "Dependency '$($dependency.id)' must bind the canonical proven evidence."
-        }
+    Assert-LowercaseSha256 $dependency.evidence_sha256 `
+        "dependency[$index].evidence_sha256"
+
+    $schemaContract = $schema.properties.dependencies.prefixItems[$index].allOf[1].properties
+    Assert-JsonStringEquals $schemaContract.id.const $binding.Id `
+        "schema dependency[$index].id"
+    if (-not (Assert-JsonBoolean $schemaContract.proven.const `
+            "schema dependency[$index].proven")) {
+        throw "Schema dependency '$($dependency.id)' must remain proven."
     }
-    elseif ($proven -or $evidence.Length -ne 0) {
-        throw "Dependency '$($dependency.id)' must remain unproven with no evidence."
+    Assert-JsonStringEquals $schemaContract.evidence_relative_path.const `
+        $binding.RelativePath "schema dependency[$index].evidence_relative_path"
+    Assert-LowercaseSha256 $schemaContract.evidence_sha256.const `
+        "schema dependency[$index].evidence_sha256"
+    if ($dependency.evidence_sha256 -cne $schemaContract.evidence_sha256.const) {
+        throw "Dependency '$($dependency.id)' does not bind the canonical evidence digest."
+    }
+
+    $evidencePath = Join-Path (Split-Path -Parent $profilePath) `
+        $dependency.evidence_relative_path
+    if (-not $evidenceSnapshots.ContainsKey($dependency.evidence_relative_path)) {
+        $evidenceSnapshots[$dependency.evidence_relative_path] = `
+            Read-GswBoundedFileSnapshot -Path $evidencePath `
+                -Name "dependency '$($dependency.id)' evidence" `
+                -MaximumBytes $script:MaximumEvidenceJsonBytes
+    }
+    if ($evidenceSnapshots[$dependency.evidence_relative_path].Sha256 -cne
+        $dependency.evidence_sha256) {
+        throw "Dependency '$($dependency.id)' evidence digest mismatch."
     }
 }
 
-$generatedOutputLockPath = Join-Path (Split-Path -Parent $profilePath) `
-    'generated-output-locks\mesa-23.1.9.json'
+$componentClosurePath = $evidenceSnapshots[
+    'component-closures/mesa9x-23.1.x.json'
+].Path
+$componentClosure = Read-GswStrictJsonFile -Path $componentClosurePath `
+    -Name 'Mesa component closure evidence' `
+    -MaximumBytes $script:MaximumEvidenceJsonBytes
+if ($componentClosure.schema -ne 2 -or $componentClosure.status -cne 'ready' -or
+    $componentClosure.reason -isnot [string] -or
+    $componentClosure.reason.Length -ne 0 -or
+    $componentClosure.files -isnot [Array] -or
+    $componentClosure.files.Count -ne 1687 -or
+    $componentClosure.license_evidence -isnot [Array] -or
+    $componentClosure.license_evidence.Count -ne 1502) {
+    throw 'Mesa component closure evidence is not the ready 1,687-file closure.'
+}
+$compilerDependencyFiles = @($componentClosure.files | Where-Object {
+    $_.roles -is [Array] -and $_.roles -ccontains 'compiler-dependency'
+})
+if ($compilerDependencyFiles.Count -ne 652) {
+    throw 'Mesa component closure evidence must bind 652 compiler-dependency files.'
+}
+$inlineEvidence = @($componentClosure.license_evidence | Where-Object {
+    $_.kind -ceq 'inline'
+})
+$documentEvidence = @($componentClosure.license_evidence | Where-Object {
+    $_.kind -ceq 'license-document'
+})
+if ($inlineEvidence.Count -ne 1499 -or $documentEvidence.Count -ne 3) {
+    throw 'Mesa component closure evidence inventory changed.'
+}
+
+$directPlanPath = $evidenceSnapshots['mesa-gsw-direct-build-plan.json'].Path
+$directPlan = Read-GswStrictJsonFile -Path $directPlanPath `
+    -Name 'Mesa direct-build plan evidence' `
+    -MaximumBytes $script:MaximumEvidenceJsonBytes
+if ($directPlan.status -cne 'metadata-only' -or
+    $directPlan.inventory.total_source_units -ne 874 -or
+    $directPlan.inventory.direct_compile_units -ne 869 -or
+    $directPlan.inventory.support_only_units -ne 5 -or
+    $directPlan.object_collisions.final_identity_collision_count -ne 0 -or
+    $directPlan.object_collisions.final_identity_collisions.Count -ne 0) {
+    throw 'Mesa direct-build plan evidence changed.'
+}
+Assert-FalseJsonProperties $directPlan.scope.authorizations @(
+    'production_build', 'link', 'stage', 'guest_install', 'dll_activation',
+    'capability_advertisement'
+) 'direct-build plan authorizations'
+
+$compilerClosurePath = $evidenceSnapshots['mesa-compiler-closure.json'].Path
+$compilerVerifier = Join-Path $PSScriptRoot 'verify-win98-mesa-compiler-closure.ps1'
+$compilerOutput = @(& $compilerVerifier -ClosureFile $compilerClosurePath)
+if ($compilerOutput.Count -ne 1 -or
+    $compilerOutput[0] -notlike '*authorizations=false.*') {
+    throw 'Mesa compiler-closure evidence verification failed.'
+}
+
+$generatedOutputLockPath = $evidenceSnapshots[
+    'generated-output-locks/mesa-23.1.9.json'
+].Path
 $generatedOutputLockSnapshot = Read-GswBoundedFileSnapshot `
     -Path $generatedOutputLockPath -Name 'Mesa generated-output lock evidence' `
     -MaximumBytes $script:MaximumEvidenceJsonBytes
-if ($generatedOutputLockSnapshot.Sha256 -cne
-    $script:ExpectedGeneratedOutputLockSha256) {
+if ($generatedOutputLockSnapshot.Sha256 -cne $dependencies[1].evidence_sha256) {
     throw 'Mesa generated-output lock evidence digest mismatch.'
 }
 $generatedOutputLock = Read-GswStrictJsonFile `
@@ -612,14 +734,14 @@ foreach ($authorization in @(
     }
 }
 
-$reproducibilityEvidencePath = Join-Path (Split-Path -Parent $profilePath) `
+$reproducibilityEvidencePath = $evidenceSnapshots[
     'mesa-generated-source-reproducibility.json'
+].Path
 $reproducibilityEvidence = Read-GswBoundedFileSnapshot `
     -Path $reproducibilityEvidencePath `
     -Name 'Mesa generated-source reproducibility evidence' `
     -MaximumBytes $script:MaximumJsonBytes
-if ($reproducibilityEvidence.Sha256 -cne
-    $script:ExpectedReproducibilityEvidenceSha256) {
+if ($reproducibilityEvidence.Sha256 -cne $dependencies[2].evidence_sha256) {
     throw 'Mesa generated-source reproducibility evidence digest mismatch.'
 }
 $reproducibilityVerifier = Join-Path $PSScriptRoot `
@@ -634,6 +756,9 @@ if ($reproducibilityOutput.Count -ne 1 -or
 }
 
 Write-Output (
-    "Verified Mesa GSW build profile '{0}' as {1}; build={2}, staging=false, activation=false." -f `
-        $profile.target.id, $profile.status, $buildAuthorized.ToString().ToLowerInvariant()
+    (
+        "Verified Mesa GSW build profile '{0}' as {1}; compile-only=true, " +
+        'production-build=false, link=false, staging=false, installation=false, ' +
+        'activation=false, capabilities=false.'
+    ) -f $profile.target.id, $profile.status
 )

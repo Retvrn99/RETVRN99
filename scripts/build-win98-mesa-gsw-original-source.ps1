@@ -209,8 +209,8 @@ function Assert-GswCompilePlan {
         'db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12' `
         'compile plan.toolchain.lock'
     Assert-GswCompileFileDescriptor $Plan.toolchain.verifier `
-        '../../../scripts/verify-win98-driver-toolchain.ps1' 24532 `
-        '5bddf76fd0c4fdc211cba6102a86f60852441e1f3c3402efb51a4c0f07bf0652' `
+        '../../../scripts/verify-win98-driver-toolchain.ps1' 24574 `
+        '4a38d41118a3812eb7ccc973cd0706c2edbc92656c78f34941f8c7ca96868291' `
         'compile plan.toolchain.verifier'
     Assert-GswCompileString $Plan.toolchain.name `
         'msys2-mingw32-gcc-15.2.0-rev13' 'compile plan.toolchain.name'
@@ -724,8 +724,8 @@ function Invoke-GswMesaOriginalCompileProof {
     $tracked += Assert-GswCompileSnapshot $toolchainLockPath 792 `
         'db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12' `
         'MinGW32 toolchain lock' $script:GswCompileMaximumMetadataBytes
-    $tracked += Assert-GswCompileSnapshot $toolchainVerifierPath 24532 `
-        '5bddf76fd0c4fdc211cba6102a86f60852441e1f3c3402efb51a4c0f07bf0652' `
+    $tracked += Assert-GswCompileSnapshot $toolchainVerifierPath 24574 `
+        '4a38d41118a3812eb7ccc973cd0706c2edbc92656c78f34941f8c7ca96868291' `
         'MinGW32 toolchain verifier' $script:GswCompileMaximumMetadataBytes
 
     $inputSnapshots = @()

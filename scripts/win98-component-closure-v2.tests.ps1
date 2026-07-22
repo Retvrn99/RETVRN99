@@ -430,6 +430,18 @@ try {
             'MIT AND Apache-2.0') $true
         Assert-Equal (@($v2.'$defs'.selectedLicenseExpression.enum) -ccontains `
             'MIT AND Apache-2.0') $true
+        foreach ($expression in @(
+            'SGI-B-2.0',
+            'LicenseRef-Mesa-U-Atomic-Public-Domain',
+            'LicenseRef-Mesa-Vrije-Permissive'
+        )) {
+            Assert-Equal (@($v2.'$defs'.declaredLicenseExpression.enum) `
+                -ccontains $expression) $true
+            Assert-Equal (@($v2.'$defs'.observedLicenseExpression.enum) `
+                -ccontains $expression) $true
+            Assert-Equal (@($v2.'$defs'.selectedLicenseExpression.enum) `
+                -ccontains $expression) $true
+        }
         Assert-Equal (@($v2.'$defs'.declaredLicenseExpression.enum) -ccontains `
             'Apache-2.0 AND MIT') $false
         Assert-Equal (@($v2.'$defs'.observedLicenseExpression.enum) -ccontains `
@@ -445,6 +457,20 @@ try {
         $output = Invoke-Manifest (New-BaseManifest)
         Assert-Equal ($output -join [Environment]::NewLine) `
             'Verified 1 ready Windows 98 component source closures.'
+    }
+
+    Invoke-SelfTest 'Curated Mesa dependency licenses are ready-compatible' {
+        foreach ($expression in @(
+            'SGI-B-2.0',
+            'LicenseRef-Mesa-U-Atomic-Public-Domain',
+            'LicenseRef-Mesa-Vrije-Permissive'
+        )) {
+            $manifest = New-AtomicManifest $script:PlainDescriptor `
+                $script:PlainRange $expression
+            $output = Invoke-Manifest $manifest
+            Assert-Equal ($output -join [Environment]::NewLine) `
+                'Verified 1 ready Windows 98 component source closures.'
+        }
     }
 
     Invoke-SelfTest 'Same-path evidence and file rows require and accept identical blob identity' {

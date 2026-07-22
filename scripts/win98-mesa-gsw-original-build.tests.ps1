@@ -287,14 +287,25 @@ Invoke-SelfTest 'Proof remains disconnected from build and delivery authority' {
         Assert-True ($plan.claims.$claim -eq $false) `
             "Compile plan claim '$claim' became true."
     }
-    Assert-True ($profile.status -ceq 'blocked') `
-        'Mesa build profile is no longer blocked.'
+    Assert-True ($profile.status -ceq 'compile-proven') `
+        'Mesa build profile is not compile-proven.'
     $dependency = @($profile.dependencies | Where-Object {
         $_.id -ceq 'compile-output-reproducibility'
     })
-    Assert-True ($dependency.Count -eq 1 -and $dependency[0].proven -eq $false -and
-        [string]::IsNullOrEmpty([string]$dependency[0].evidence_sha256)) `
-        'Compile proof changed build-profile dependency truth.'
+    Assert-True ($dependency.Count -eq 1 -and $dependency[0].proven -eq $true -and
+        $dependency[0].evidence_relative_path -ceq 'mesa-compiler-closure.json' -and
+        $dependency[0].evidence_sha256 -cmatch '^[0-9a-f]{64}$') `
+        'Compiler closure is not bound by the build profile.'
+    Assert-True ($profile.target.compile_only -eq $true) `
+        'Mesa build profile is not compile-only.'
+    foreach ($authority in @(
+        'build_authorized', 'link_authorized', 'staging_authorized',
+        'guest_install_authorized', 'dll_activation_authorized',
+        'renderer_selection', 'capability_advertisement'
+    )) {
+        Assert-True ($profile.target.$authority -eq $false) `
+            "Build-profile target authority '$authority' became true."
+    }
 }
 
 Invoke-SelfTest 'Compile surface excludes alternate graphics backends' {
@@ -469,6 +480,10 @@ Invoke-SelfTest 'Tool identity mutation fails closed' {
     $mutated = Copy-TestValue $plan
     $mutated.toolchain.compiler.sha256 = '0' * 64
     Assert-Throws { Assert-GswCompilePlan $mutated } 'toolchain.compiler.sha256'
+    $mutated = Copy-TestValue $plan
+    $mutated.toolchain.verifier.sha256 = '0' * 64
+    Assert-Throws { Assert-GswCompilePlan $mutated } `
+        'toolchain.verifier.sha256'
 }
 
 Invoke-SelfTest 'Authority mutation fails closed' {

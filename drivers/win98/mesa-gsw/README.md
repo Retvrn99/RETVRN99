@@ -74,6 +74,7 @@ that suppress crash and missing-file dialogs. The verifier inspects rather than
 executes each object, zeros only the COFF timestamp, requires byte-identical
 normalized outputs, repeats every bound-file check, and removes both objects.
 
-This proof does not link a DLL or authorize a production build, staging, guest
-installation, capability advertisement, or the build-profile dependency. The
-source-closure lock retains its original all-false claims.
+This narrow proof does not link a DLL or authorize a production build, staging,
+guest installation, or capability advertisement. The reviewed source lock and
+the separate 869-unit compiler closure now satisfy their build-profile evidence
+gates, while the source-closure lock retains its original all-false authorities.

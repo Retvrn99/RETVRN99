@@ -87,37 +87,31 @@ function Copy-JsonObject {
     return ($Value | ConvertTo-Json -Depth 16) | ConvertFrom-Json
 }
 
-function New-InvalidReadyProfile {
-    $profile = Copy-JsonObject $script:CanonicalProfile
-    $profile.status = 'ready'
-    $profile.reason = ''
-    $profile.target.build_authorized = $true
-    for ($index = 0; $index -lt $profile.dependencies.Count; $index++) {
-        $profile.dependencies[$index].proven = $true
-        $profile.dependencies[$index].evidence_sha256 = `
-            ([string](($index + 1) % 10)) * 64
-    }
-    return $profile
-}
-
 function Reset-Fixture {
-    Copy-Item -LiteralPath $script:CanonicalSchemaPath `
-        -Destination $script:FixtureSchemaPath -Force
     foreach ($name in @(
+            'mesa-gsw-build-profile.schema.json',
+            'component-closures/mesa9x-23.1.x.json',
+            'generated-output-locks/mesa-23.1.9.json',
             'mesa-generated-source-reproducibility.json',
             'mesa-generated-source-reproducibility.schema.json',
             'mesa-generated-source-plan.json',
             'mesa-generated-source-plan.schema.json',
-            'mesa-source-seed.json'
+            'mesa-source-seed.json',
+            'mesa-gsw-direct-build-plan.json',
+            'mesa-compiler-closure.json',
+            'mesa-compiler-closure.schema.json',
+            'mesa-gsw/interface-inputs.lock.json',
+            'mesa-gsw/winsys-interface-inputs.lock.json',
+            'mesa-gsw/include/gdi/gdi_sw_winsys.h',
+            'guest-cpu-profile.json',
+            'mingw32-toolchain.lock.json'
         )) {
+        $destination = Join-Path $testRoot $name
+        $destinationDirectory = Split-Path -Parent $destination
+        New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $script:CanonicalMetadataDirectory $name) `
-            -Destination (Join-Path $testRoot $name) -Force
+            -Destination $destination -Force
     }
-    $lockDirectory = Join-Path $testRoot 'generated-output-locks'
-    New-Item -ItemType Directory -Path $lockDirectory -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $script:CanonicalMetadataDirectory `
-        'generated-output-locks\mesa-23.1.9.json') `
-        -Destination (Join-Path $lockDirectory 'mesa-23.1.9.json') -Force
     Write-JsonFile $script:FixtureProfilePath `
         (Copy-JsonObject $script:CanonicalProfile)
 }
@@ -204,102 +198,132 @@ try {
         Assert-Equal $schema.properties.target.additionalProperties $false
         Assert-Equal $schema.properties.source.additionalProperties $false
         Assert-Equal $schema.'$defs'.dependency.additionalProperties $false
-        Assert-Equal $schema.properties.status.const 'blocked'
+        Assert-Equal $schema.properties.schema.const 2
+        Assert-Equal $schema.properties.status.const 'compile-proven'
         Assert-Equal $schema.properties.generation_strategy.const `
             'hash-locked-generated-outputs'
         Assert-Equal $schema.properties.target.properties.build_authorized.const $false
+        Assert-Equal $schema.properties.target.properties.link_authorized.const $false
+        Assert-Equal $schema.properties.target.properties.capability_advertisement.const `
+            $false
         Assert-Equal $schema.'$defs'.dependency.properties.proven.type 'boolean'
         Assert-Equal $schema.'$defs'.dependency.properties.evidence_sha256.pattern `
-            '^$|^[0-9a-f]{64}$'
-        Assert-Equal $schema.properties.dependencies.prefixItems[2].allOf[1].`
-            properties.proven.const $true
-        Assert-Equal $schema.properties.dependencies.prefixItems[2].allOf[1].`
-            properties.evidence_sha256.const `
-            'd37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b'
-        Assert-Equal $schema.properties.dependencies.prefixItems[1].allOf[1].`
-            properties.proven.const $true
-        Assert-Equal $schema.properties.dependencies.prefixItems[1].allOf[1].`
-            properties.evidence_sha256.const `
-            '8274e5dd8cc50b41e4f0e510e87e9a2d669248bd69ae988e6dbdb48ce28390e5'
+            '^[0-9a-f]{64}$'
+        Assert-Equal $schema.'$defs'.dependency.properties.evidence_relative_path.type `
+            'string'
+        foreach ($dependency in $schema.properties.dependencies.prefixItems) {
+            Assert-Equal $dependency.allOf[1].properties.proven.const $true
+        }
+        Assert-Equal $schema.properties.dependencies.prefixItems[0].allOf[1].`
+            properties.evidence_relative_path.const `
+            'component-closures/mesa9x-23.1.x.json'
+        Assert-Equal $schema.properties.dependencies.prefixItems[4].allOf[1].`
+            properties.evidence_relative_path.const 'mesa-compiler-closure.json'
+        Assert-Equal $schema.properties.dependencies.prefixItems[7].allOf[1].`
+            properties.evidence_relative_path.const 'mesa-compiler-closure.json'
+        Assert-Equal $schema.properties.dependencies.prefixItems[8].allOf[1].`
+            properties.evidence_relative_path.const 'mesa-compiler-closure.json'
     }
 
-    Invoke-SelfTest 'Production profile is blocked and authorizes no mutation' {
+    Invoke-SelfTest 'Compile-proven profile authorizes no production mutation' {
         $output = @(& $script:VerifyScript -ProfileFile $script:CanonicalProfilePath)
         Assert-Equal $output.Count 1
-        if ($output[0] -notlike '*as blocked; build=false, staging=false, activation=false.*') {
+        if ($output[0] -notlike `
+            '*as compile-proven; compile-only=true, production-build=false, link=false,*') {
             throw "Unexpected verifier output '$($output[0])'."
         }
         $profile = Get-Content -Raw -LiteralPath $script:CanonicalProfilePath | `
             ConvertFrom-Json
-        Assert-Equal $profile.status 'blocked'
+        Assert-Equal $profile.status 'compile-proven'
         Assert-Equal $profile.generation_strategy 'hash-locked-generated-outputs'
+        Assert-Equal $profile.target.compile_only $true
         Assert-Equal $profile.target.build_authorized $false
+        Assert-Equal $profile.target.link_authorized $false
         Assert-Equal $profile.target.staging_authorized $false
         Assert-Equal $profile.target.guest_install_authorized $false
         Assert-Equal $profile.target.dll_activation_authorized $false
         Assert-Equal $profile.target.renderer_selection $false
-        Assert-Equal $profile.dependencies[2].id `
-            'mesa-generated-source-reproducibility'
-        Assert-Equal $profile.dependencies[2].proven $true
-        Assert-Equal $profile.dependencies[2].evidence_sha256 `
-            'd37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b'
-        Assert-Equal $profile.dependencies[1].id 'mesa-generator-output-lock'
-        Assert-Equal $profile.dependencies[1].proven $true
-        Assert-Equal $profile.dependencies[1].evidence_sha256 `
-            '8274e5dd8cc50b41e4f0e510e87e9a2d669248bd69ae988e6dbdb48ce28390e5'
+        Assert-Equal $profile.target.capability_advertisement $false
+        foreach ($dependency in $profile.dependencies) {
+            Assert-Equal $dependency.proven $true
+            if ($dependency.evidence_relative_path -isnot [string] -or
+                $dependency.evidence_relative_path.Length -eq 0 -or
+                $dependency.evidence_sha256 -cnotmatch '^[0-9a-f]{64}$') {
+                throw "Dependency '$($dependency.id)' lacks exact evidence."
+            }
+        }
         if (@($profile.dependencies.id) -ccontains 'mesa-generator-toolchain-locks') {
             throw 'Production profile consumes the generator toolchain audit.'
         }
         Assert-Equal $profile.dependencies[4].id 'gsw-886-win98-i686-v1'
-        Assert-Equal $profile.dependencies[4].proven $false
+        Assert-Equal $profile.dependencies[4].evidence_relative_path `
+            'mesa-compiler-closure.json'
+        Assert-Equal $profile.dependencies[7].evidence_sha256 `
+            $profile.dependencies[4].evidence_sha256
+        Assert-Equal $profile.dependencies[8].evidence_sha256 `
+            $profile.dependencies[4].evidence_sha256
     }
 
-    Invoke-FixtureTest 'Schema v1 rejects a synthetic fully evidenced ready profile' {
-        $profile = New-InvalidReadyProfile
-        Write-JsonFile $script:FixtureProfilePath $profile
-        Assert-Throws { Invoke-Verification } "status must be 'blocked'"
-    }
+    Invoke-MutationTest 'Only compile-proven status is accepted' {
+        param($profile)
+        $profile.status = 'ready'
+    } "status must be 'compile-proven'"
 
-    Invoke-FixtureTest 'Schema v1 cannot record an unverified evidence token' {
-        $profile = Copy-JsonObject $script:CanonicalProfile
-        $profile.dependencies[0].proven = $true
-        $profile.dependencies[0].evidence_sha256 = '1' * 64
-        Write-JsonFile $script:FixtureProfilePath $profile
-        Assert-Throws { Invoke-Verification } 'must remain unproven with no evidence'
-    }
-
-    Invoke-MutationTest 'Reproducibility remains a proven dependency' {
+    Invoke-MutationTest 'Every dependency remains proven' {
         param($profile)
         $profile.dependencies[2].proven = $false
-        $profile.dependencies[2].evidence_sha256 = ''
-    } 'must bind the canonical proven evidence'
+    } 'must remain proven'
 
-    Invoke-MutationTest 'Generated-output review remains a proven dependency' {
+    Invoke-MutationTest 'Dependency evidence paths are exact' {
         param($profile)
-        $profile.dependencies[1].proven = $false
-        $profile.dependencies[1].evidence_sha256 = ''
-    } 'must bind the canonical reviewed evidence'
+        $profile.dependencies[0].evidence_relative_path = `
+            'component-closures/another.json'
+    } 'evidence_relative_path must be'
 
-    Invoke-MutationTest 'Generated-output review rejects a different digest' {
+    Invoke-MutationTest 'Dependency digests bind canonical evidence' {
         param($profile)
         $profile.dependencies[1].evidence_sha256 = '1' * 64
-    } 'must bind the canonical reviewed evidence'
+    } 'does not bind the canonical evidence digest'
 
     Invoke-FixtureTest 'Generated-output lock bytes cannot mutate after binding' {
         $path = Join-Path $testRoot 'generated-output-locks\mesa-23.1.9.json'
         [IO.File]::AppendAllText($path, "`n", [Text.UTF8Encoding]::new($false))
-        Assert-Throws { Invoke-Verification } 'lock evidence digest mismatch'
+        Assert-Throws { Invoke-Verification } 'evidence digest mismatch'
     }
-
-    Invoke-MutationTest 'Reproducibility cannot bind a different evidence digest' {
-        param($profile)
-        $profile.dependencies[2].evidence_sha256 = '1' * 64
-    } 'must bind the canonical proven evidence'
 
     Invoke-FixtureTest 'Reproducibility evidence bytes cannot mutate after binding' {
         $path = Join-Path $testRoot 'mesa-generated-source-reproducibility.json'
         [IO.File]::AppendAllText($path, "`n", [Text.UTF8Encoding]::new($false))
         Assert-Throws { Invoke-Verification } 'evidence digest mismatch'
+    }
+
+    Invoke-FixtureTest 'Component closure bytes cannot mutate after binding' {
+        $path = Join-Path $testRoot 'component-closures\mesa9x-23.1.x.json'
+        [IO.File]::AppendAllText($path, "`n", [Text.UTF8Encoding]::new($false))
+        Assert-Throws { Invoke-Verification } 'evidence digest mismatch'
+    }
+
+    Invoke-FixtureTest 'Compiler closure bytes cannot mutate after binding' {
+        $path = Join-Path $testRoot 'mesa-compiler-closure.json'
+        [IO.File]::AppendAllText($path, "`n", [Text.UTF8Encoding]::new($false))
+        Assert-Throws { Invoke-Verification } 'evidence digest mismatch'
+    }
+
+    Invoke-FixtureTest 'Direct-plan bytes cannot mutate after binding' {
+        $path = Join-Path $testRoot 'mesa-gsw-direct-build-plan.json'
+        [IO.File]::AppendAllText($path, "`n", [Text.UTF8Encoding]::new($false))
+        Assert-Throws { Invoke-Verification } 'evidence digest mismatch'
+    }
+
+    foreach ($relativePath in @(
+        'mesa-gsw/winsys-interface-inputs.lock.json',
+        'mesa-gsw/interface-inputs.lock.json'
+    )) {
+        Invoke-FixtureTest "Source lock '$relativePath' cannot mutate after binding" {
+            $path = Join-Path $testRoot $relativePath
+            [IO.File]::AppendAllText($path, "`n", [Text.UTF8Encoding]::new($false))
+            Assert-Throws { Invoke-Verification } 'evidence digest mismatch'
+        }
     }
 
     Invoke-FixtureTest 'Reproducibility evidence cannot be cross-wired to another manifest' {
@@ -318,7 +342,7 @@ try {
         $profile.dependencies[2].evidence_sha256 = `
             (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
         Write-JsonFile $script:FixtureProfilePath $profile
-        Assert-Throws { Invoke-Verification } 'must bind the canonical proven evidence'
+        Assert-Throws { Invoke-Verification } 'does not bind the canonical evidence digest'
     }
 
     Invoke-MutationTest 'Unknown root properties fail closed' {
@@ -339,13 +363,15 @@ try {
 
     Invoke-FixtureTest 'Case-folded duplicate root properties are rejected' {
         $json = [IO.File]::ReadAllText($script:FixtureProfilePath).Replace(
-            '"status":  "blocked"',
-            '"STATUS":  "blocked",' + "`n    " + '"status":  "blocked"'
+            '"status":  "compile-proven"',
+            '"STATUS":  "compile-proven",' + "`n    " +
+                '"status":  "compile-proven"'
         )
         if ($json -ceq [IO.File]::ReadAllText($script:FixtureProfilePath)) {
             $json = [IO.File]::ReadAllText($script:FixtureProfilePath).Replace(
-                '"status": "blocked"',
-                '"STATUS": "blocked",' + "`n  " + '"status": "blocked"'
+                '"status": "compile-proven"',
+                '"STATUS": "compile-proven",' + "`n  " +
+                    '"status": "compile-proven"'
             )
         }
         [IO.File]::WriteAllText(
@@ -443,8 +469,8 @@ try {
 
     Invoke-MutationTest 'The schema version must be an integer' {
         param($profile)
-        $profile.schema = '1'
-    } 'must be the JSON integer 1'
+        $profile.schema = '2'
+    } 'must be the JSON integer 2'
 
     Invoke-MutationTest 'Status must be a string' {
         param($profile)
@@ -456,10 +482,10 @@ try {
         $profile.reason = $true
     } 'must be a bounded JSON string'
 
-    Invoke-MutationTest 'A blocked reason cannot be whitespace' {
+    Invoke-MutationTest 'The compile proof authority boundary cannot be whitespace' {
         param($profile)
         $profile.reason = '   '
-    } 'must explain the block'
+    } 'must explain its authority boundary'
 
     Invoke-MutationTest 'The Mesa9x repository is immutable' {
         param($profile)
@@ -533,7 +559,7 @@ try {
         $profile.target.compile_only = $false
     } 'must remain compile-only and non-activating'
 
-    Invoke-MutationTest 'A blocked profile cannot authorize a build' {
+    Invoke-MutationTest 'The compile proof cannot authorize a production build' {
         param($profile)
         $profile.target.build_authorized = $true
     } 'must remain compile-only and non-activating'
@@ -544,10 +570,12 @@ try {
     } 'must be a JSON boolean'
 
     foreach ($field in @(
+        'link_authorized',
         'staging_authorized',
         'guest_install_authorized',
         'dll_activation_authorized',
-        'renderer_selection'
+        'renderer_selection',
+        'capability_advertisement'
     )) {
         Invoke-MutationTest "$field cannot be enabled by the compile profile" {
             param($profile)
@@ -659,43 +687,29 @@ try {
         $profile.dependencies[0].proven = 'false'
     } 'must be a JSON boolean'
 
-    Invoke-MutationTest 'Unproven dependencies cannot claim evidence' {
+    Invoke-MutationTest 'Uppercase evidence digests are rejected' {
         param($profile)
-        $profile.dependencies[0].evidence_sha256 = '1' * 64
-    } 'must remain unproven with no evidence'
+        $profile.dependencies[1].evidence_sha256 = `
+            $profile.dependencies[1].evidence_sha256.ToUpperInvariant()
+    } 'lowercase SHA-256'
 
-    Invoke-MutationTest 'Schema v1 cannot mark a dependency proven' {
+    Invoke-MutationTest 'Evidence paths cannot be empty' {
         param($profile)
-        $profile.dependencies[0].proven = $true
-    } 'must remain unproven with no evidence'
+        $profile.dependencies[0].evidence_relative_path = ''
+    } 'evidence_relative_path must be'
 
-    Invoke-MutationTest 'A digest-shaped proof cannot authorize schema v1' {
+    Invoke-MutationTest 'A dependency cannot omit its evidence path' {
         param($profile)
-        $profile.dependencies[0].proven = $true
-        $profile.dependencies[0].evidence_sha256 = 'A' * 64
-    } 'must remain unproven with no evidence'
+        $profile.dependencies[0].PSObject.Properties.Remove('evidence_relative_path')
+    } "Missing property 'evidence_relative_path'"
 
-    Invoke-FixtureTest 'Schema v1 rejects ready status with incomplete dependencies' {
-        $profile = New-InvalidReadyProfile
-        $profile.dependencies[7].proven = $false
-        $profile.dependencies[7].evidence_sha256 = ''
-        Write-JsonFile $script:FixtureProfilePath $profile
-        Assert-Throws { Invoke-Verification } "status must be 'blocked'"
-    }
-
-    Invoke-FixtureTest 'Schema v1 rejects ready status with a reason' {
-        $profile = New-InvalidReadyProfile
-        $profile.reason = 'still blocked'
-        Write-JsonFile $script:FixtureProfilePath $profile
-        Assert-Throws { Invoke-Verification } "status must be 'blocked'"
-    }
-
-    Invoke-FixtureTest 'Schema v1 rejects ready status without build authorization' {
-        $profile = New-InvalidReadyProfile
-        $profile.target.build_authorized = $false
-        Write-JsonFile $script:FixtureProfilePath $profile
-        Assert-Throws { Invoke-Verification } "status must be 'blocked'"
-    }
+    Invoke-MutationTest 'CPU proof cannot be cross-wired to the winsys lock' {
+        param($profile)
+        $profile.dependencies[4].evidence_relative_path = `
+            'mesa-gsw/winsys-interface-inputs.lock.json'
+        $profile.dependencies[4].evidence_sha256 = `
+            $profile.dependencies[5].evidence_sha256
+    } 'evidence_relative_path must be'
 }
 finally {
     Remove-TestRoot $testRoot

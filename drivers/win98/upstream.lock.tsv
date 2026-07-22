@@ -3,7 +3,7 @@
 name	source_directory	repository	commit	upstream_license	disposition	closure_manifest	closure_manifest_sha256	scope
 vmdisp9x	vmdisp9x	https://github.com/JHRobotics/vmdisp9x.git	718b3d51a1532fe1ba2e133cf76186f1a609d35e	MIT	planned			display-driver
 vmhal9x	vmhal9x	https://github.com/JHRobotics/vmhal9x.git	d0e52c21bb21656785cfde970a8e7b0b57fda5d8	MIT	planned			directdraw-and-d3d-hal
-mesa9x	mesa9x	https://github.com/JHRobotics/mesa9x.git	29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f	LicenseRef-Mixed-File-Level	planned-component	component-closures/mesa9x-23.1.x.json	d93a476656ec9f18c1d257a65ae6461111c7e85ec0b704360bcc42b836dbefc5	mesa-23-1-9-gsw-graphics
+mesa9x	mesa9x	https://github.com/JHRobotics/mesa9x.git	29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f	LicenseRef-Mixed-File-Level	planned-component	component-closures/mesa9x-23.1.x.json	11020fe9315d80f3ebb14f50266bd50e9f2f2e982c9464c8b0d3d42556fd4f2a	mesa-23-1-9-gsw-graphics
 softgpu	softgpu	https://github.com/JHRobotics/softgpu.git	be7a6421068a1d1f475b8939a24237921490c2b8	MIT	reference-only			integration-reference
 wine9x	wine9x	https://github.com/JHRobotics/Wine9x.git	8ab16c6c0930efc1f9138eddda7b3114d7f31e62	LGPL-2.1-or-later	reference-only			dx8-and-dx9-compatibility
 vkd3d-shader	vkd3d	https://gitlab.winehq.org/wine/vkd3d.git	1b0924d12c18df03912a8876ed17fd017ce9308e	LGPL-2.1-or-later	planned-component	component-closures/vkd3d-shader.json	5710157de31550a20271c45cc8802a62b08aa0cd839910995d261be1d517e5c4	libs-vkd3d-shader

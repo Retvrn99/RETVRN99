@@ -21,7 +21,7 @@
   ],
   "properties": {
     "_spdx": {"const": "GPL-3.0-only"},
-    "schema": {"const": 1},
+    "schema": {"const": 2},
     "schema_definition": {
       "type": "object",
       "additionalProperties": false,
@@ -31,7 +31,7 @@
         "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
-    "status": {"const": "blocked"},
+    "status": {"const": "compile-proven"},
     "reason": {"type": "string", "minLength": 1, "maxLength": 1024},
     "source": {
       "type": "object",
@@ -67,10 +67,12 @@
         "artifact_class",
         "compile_only",
         "build_authorized",
+        "link_authorized",
         "staging_authorized",
         "guest_install_authorized",
         "dll_activation_authorized",
-        "renderer_selection"
+        "renderer_selection",
+        "capability_advertisement"
       ],
       "properties": {
         "id": {"const": "mesa-23-1-9-gsw-i686-win98se"},
@@ -84,10 +86,12 @@
         "artifact_class": {"const": "non-package-compile-evidence"},
         "compile_only": {"const": true},
         "build_authorized": {"const": false},
+        "link_authorized": {"const": false},
         "staging_authorized": {"const": false},
         "guest_install_authorized": {"const": false},
         "dll_activation_authorized": {"const": false},
-        "renderer_selection": {"const": false}
+        "renderer_selection": {"const": false},
+        "capability_advertisement": {"const": false}
       }
     },
     "allowed_families": {
@@ -154,15 +158,15 @@
       "minItems": 9,
       "maxItems": 9,
       "prefixItems": [
-        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "mesa-file-license-closure"}, "proven": {"const": false}, "evidence_sha256": {"const": ""}}}]},
-        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "mesa-generator-output-lock"}, "proven": {"const": true}, "evidence_sha256": {"const": "8274e5dd8cc50b41e4f0e510e87e9a2d669248bd69ae988e6dbdb48ce28390e5"}}}]},
-        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "mesa-generated-source-reproducibility"}, "proven": {"const": true}, "evidence_sha256": {"const": "d37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b"}}}]},
-        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "direct-pruned-build-recipe"}, "proven": {"const": false}, "evidence_sha256": {"const": ""}}}]},
-        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "gsw-886-win98-i686-v1"}, "proven": {"const": false}, "evidence_sha256": {"const": ""}}}]},
-        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "original-gsw-winsys"}, "proven": {"const": false}, "evidence_sha256": {"const": ""}}}]},
-        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "original-gsw-memory-helpers"}, "proven": {"const": false}, "evidence_sha256": {"const": ""}}}]},
-        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "backend-exclusion-proof"}, "proven": {"const": false}, "evidence_sha256": {"const": ""}}}]},
-        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "compile-output-reproducibility"}, "proven": {"const": false}, "evidence_sha256": {"const": ""}}}]}
+        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "mesa-file-license-closure"}, "proven": {"const": true}, "evidence_relative_path": {"const": "component-closures/mesa9x-23.1.x.json"}, "evidence_sha256": {"const": "11020fe9315d80f3ebb14f50266bd50e9f2f2e982c9464c8b0d3d42556fd4f2a"}}}]},
+        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "mesa-generator-output-lock"}, "proven": {"const": true}, "evidence_relative_path": {"const": "generated-output-locks/mesa-23.1.9.json"}, "evidence_sha256": {"const": "7fd2e293557d5ad4ba3ebf88fae964014309d60efe3bc045d3414bd8a4e70549"}}}]},
+        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "mesa-generated-source-reproducibility"}, "proven": {"const": true}, "evidence_relative_path": {"const": "mesa-generated-source-reproducibility.json"}, "evidence_sha256": {"const": "d37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b"}}}]},
+        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "direct-pruned-build-recipe"}, "proven": {"const": true}, "evidence_relative_path": {"const": "mesa-gsw-direct-build-plan.json"}, "evidence_sha256": {"const": "959a2bbf3478812d9e39d929b3e733e19179b95f7ac8ba8aca9bf09dcf99a39c"}}}]},
+        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "gsw-886-win98-i686-v1"}, "proven": {"const": true}, "evidence_relative_path": {"const": "mesa-compiler-closure.json"}, "evidence_sha256": {"const": "7e328a3edcfdee017e7bdbdf71f7810723d216ef5e6394549cb1b62822087c1e"}}}]},
+        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "original-gsw-winsys"}, "proven": {"const": true}, "evidence_relative_path": {"const": "mesa-gsw/winsys-interface-inputs.lock.json"}, "evidence_sha256": {"const": "8c20b7e4d7bc1efbaef294c3455bfd97cb51606630b532d712512b79d6b7ebac"}}}]},
+        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "original-gsw-memory-helpers"}, "proven": {"const": true}, "evidence_relative_path": {"const": "mesa-gsw/interface-inputs.lock.json"}, "evidence_sha256": {"const": "8b64bed0e4b110b1526ff1bae136b38f23c8441c9a0a64d1d35ff74ebce77f22"}}}]},
+        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "backend-exclusion-proof"}, "proven": {"const": true}, "evidence_relative_path": {"const": "mesa-compiler-closure.json"}, "evidence_sha256": {"const": "7e328a3edcfdee017e7bdbdf71f7810723d216ef5e6394549cb1b62822087c1e"}}}]},
+        {"allOf": [{"$ref": "#/$defs/dependency"}, {"properties": {"id": {"const": "compile-output-reproducibility"}, "proven": {"const": true}, "evidence_relative_path": {"const": "mesa-compiler-closure.json"}, "evidence_sha256": {"const": "7e328a3edcfdee017e7bdbdf71f7810723d216ef5e6394549cb1b62822087c1e"}}}]}
       ],
       "items": false
     }
@@ -171,14 +175,12 @@
     "dependency": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "proven", "evidence_sha256"],
+      "required": ["id", "proven", "evidence_relative_path", "evidence_sha256"],
       "properties": {
         "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
         "proven": {"type": "boolean"},
-        "evidence_sha256": {
-          "type": "string",
-          "pattern": "^$|^[0-9a-f]{64}$"
-        }
+        "evidence_relative_path": {"type": "string", "minLength": 1, "maxLength": 256},
+        "evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     }
   }

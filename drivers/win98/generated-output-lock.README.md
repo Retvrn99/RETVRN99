@@ -9,9 +9,9 @@ reaches `reviewed-generated-source`.
 
 The Mesa 23.1.9 manifest is `reviewed-generated-source`. It binds the two
 normalized 67-file roots and exact file-level license evidence for every
-output. The complete generator-input, header, depfile, component, and build
-closures remain separate blocked gates. Review status never grants build,
-staging, guest-installation, or capability-advertisement authority.
+output. Generator-input, component, header, depfile, object, and build claims
+remain owned by separate artifacts. Review status never grants build, staging,
+guest-installation, or capability-advertisement authority.
 
 ## Mesa review boundary
 
@@ -19,8 +19,8 @@ The v2 Mesa record binds:
 
 - commit `29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f`;
 - the generated-source plan, `GENERATE_FILES` recipe and source seed;
-- the 815,285-byte Mesa schema-v2 component manifest with SHA-256
-  `d93a476656ec9f18c1d257a65ae6461111c7e85ec0b704360bcc42b836dbefc5`;
+- the 1,363,950-byte Mesa schema-v2 component manifest with SHA-256
+  `11020fe9315d80f3ebb14f50266bd50e9f2f2e982c9464c8b0d3d42556fd4f2a`;
 - the 4,418-byte proven LF/CRLF reproducibility artifact with SHA-256
   `d37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b`;
 - 67 regular output files, 20 directories, 87 total entries and 34,876,554

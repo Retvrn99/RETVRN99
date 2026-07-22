@@ -20,6 +20,7 @@ $script:TestDetailedFailures = [bool]$DetailedFailures
 $script:TestGitExecutable = ''
 $script:DiscoveredTests = 0
 $script:ExecutedTests = 0
+$script:MaximumComponentClosureBytes = [UInt64]4194304
 if ($TestShardIndex -ge $TestShardCount) {
     throw 'TestShardIndex must be less than TestShardCount.'
 }
@@ -747,6 +748,25 @@ function Invoke-V2Tests {
             }
         }
 
+        Invoke-SelfTest 'V2 component closure remains bounded at 4 MiB' {
+            & $resetLock
+            $closurePath = Join-Path $metadataRoot `
+                'component-closures\mesa9x-23.1.x.json'
+            $stream = [IO.File]::Open(
+                $closurePath,
+                [IO.FileMode]::Open,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None
+            )
+            try {
+                $stream.SetLength($script:MaximumComponentClosureBytes + 1)
+            }
+            finally {
+                $stream.Dispose()
+            }
+            Assert-Throws { & $verify } '4194304-byte bound'
+        }
+
         $blockedAuditName =
             'V2 reviewed source audits the exact root without authorization'
         if ($hasExternalRoots) {
@@ -1012,24 +1032,36 @@ try {
         Assert-Equal $schema.'$defs'.scope.additionalProperties $false
     }
 
-    Invoke-SelfTest 'Production component closures remain blocked by schema' {
+    Invoke-SelfTest 'Production component closure states remain exact' {
         $closureRoot = Join-Path $PSScriptRoot '..\drivers\win98\component-closures'
         $files = @(Get-ChildItem -LiteralPath $closureRoot -Filter '*.json' -File)
         Assert-Equal $files.Count 3
         foreach ($file in $files) {
             $manifest = Get-Content -Raw -LiteralPath $file.FullName | ConvertFrom-Json
-            Assert-Equal $manifest.status 'blocked'
+            $expectedStatus = if ($file.Name -ceq 'mesa9x-23.1.x.json') {
+                'ready'
+            }
+            else {
+                'blocked'
+            }
+            Assert-Equal $manifest.status $expectedStatus
             switch ([int]$manifest.schema) {
                 1 {
                     Assert-Equal @($manifest.notices).Count 0
                     Assert-Equal @($manifest.files).Count 0
                 }
                 2 {
-                    if ([string]::IsNullOrWhiteSpace([string]$manifest.reason) -or
+                    $reasonInvalid = if ($expectedStatus -ceq 'ready') {
+                        -not [string]::IsNullOrEmpty([string]$manifest.reason)
+                    }
+                    else {
+                        [string]::IsNullOrWhiteSpace([string]$manifest.reason)
+                    }
+                    if ($reasonInvalid -or
                         $manifest.source_prefixes -isnot [Array] -or
                         $manifest.license_evidence -isnot [Array] -or
                         $manifest.files -isnot [Array]) {
-                        throw "Blocked schema-2 closure '$($file.Name)' has invalid reviewed rows."
+                        throw "Schema-2 closure '$($file.Name)' has an invalid state or reviewed rows."
                     }
                     $expectedProperties = @(
                         '_spdx', 'schema', 'status', 'reason', 'upstream_name',

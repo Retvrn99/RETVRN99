@@ -1,12 +1,12 @@
 {
   "_spdx": "GPL-3.0-only",
-  "schema": 1,
+  "schema": 2,
   "schema_definition": {
     "relative_path": "mesa-gsw-build-profile.schema.json",
-    "sha256": "bc3a10912a7b4c582e25b06b7d82ccea5fcf37c4bee8b2e383b16eda2a21e692"
+    "sha256": "de12369b6640a83880ac187478853f981e14df907ff6152c8dde024ba3e74e26"
   },
-  "status": "blocked",
-  "reason": "The pruned source and license closure, guest CPU profile, original GSW adapters, direct recipe, backend exclusions, and reproducible compile outputs are not proven. The reviewed generated-output lock and generated-source reproducibility grant no build, delivery, activation, or capability authority.",
+  "status": "compile-proven",
+  "reason": "The exact Mesa source/license closure and reproducible 869-unit object compilation are proven. This evidence-only profile grants no production build, link, staging, installation, activation, renderer-selection, or capability-advertisement authority. The Phase 1 vkd3d-shader and OpenGlide closures remain open.",
   "source": {
     "upstream_name": "mesa9x",
     "repository": "https://github.com/JHRobotics/mesa9x.git",
@@ -27,10 +27,12 @@
     "artifact_class": "non-package-compile-evidence",
     "compile_only": true,
     "build_authorized": false,
+    "link_authorized": false,
     "staging_authorized": false,
     "guest_install_authorized": false,
     "dll_activation_authorized": false,
-    "renderer_selection": false
+    "renderer_selection": false,
+    "capability_advertisement": false
   },
   "allowed_families": [
     "mesa-core",
@@ -74,14 +76,14 @@
     "zink"
   ],
   "dependencies": [
-    {"id":"mesa-file-license-closure","proven":false,"evidence_sha256":""},
-    {"id":"mesa-generator-output-lock","proven":true,"evidence_sha256":"8274e5dd8cc50b41e4f0e510e87e9a2d669248bd69ae988e6dbdb48ce28390e5"},
-    {"id":"mesa-generated-source-reproducibility","proven":true,"evidence_sha256":"d37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b"},
-    {"id":"direct-pruned-build-recipe","proven":false,"evidence_sha256":""},
-    {"id":"gsw-886-win98-i686-v1","proven":false,"evidence_sha256":""},
-    {"id":"original-gsw-winsys","proven":false,"evidence_sha256":""},
-    {"id":"original-gsw-memory-helpers","proven":false,"evidence_sha256":""},
-    {"id":"backend-exclusion-proof","proven":false,"evidence_sha256":""},
-    {"id":"compile-output-reproducibility","proven":false,"evidence_sha256":""}
+    {"id":"mesa-file-license-closure","proven":true,"evidence_relative_path":"component-closures/mesa9x-23.1.x.json","evidence_sha256":"11020fe9315d80f3ebb14f50266bd50e9f2f2e982c9464c8b0d3d42556fd4f2a"},
+    {"id":"mesa-generator-output-lock","proven":true,"evidence_relative_path":"generated-output-locks/mesa-23.1.9.json","evidence_sha256":"7fd2e293557d5ad4ba3ebf88fae964014309d60efe3bc045d3414bd8a4e70549"},
+    {"id":"mesa-generated-source-reproducibility","proven":true,"evidence_relative_path":"mesa-generated-source-reproducibility.json","evidence_sha256":"d37322e969730fb71d2663c19752728802631cb9bd55b3d294824e3ac4ca2f0b"},
+    {"id":"direct-pruned-build-recipe","proven":true,"evidence_relative_path":"mesa-gsw-direct-build-plan.json","evidence_sha256":"959a2bbf3478812d9e39d929b3e733e19179b95f7ac8ba8aca9bf09dcf99a39c"},
+    {"id":"gsw-886-win98-i686-v1","proven":true,"evidence_relative_path":"mesa-compiler-closure.json","evidence_sha256":"7e328a3edcfdee017e7bdbdf71f7810723d216ef5e6394549cb1b62822087c1e"},
+    {"id":"original-gsw-winsys","proven":true,"evidence_relative_path":"mesa-gsw/winsys-interface-inputs.lock.json","evidence_sha256":"8c20b7e4d7bc1efbaef294c3455bfd97cb51606630b532d712512b79d6b7ebac"},
+    {"id":"original-gsw-memory-helpers","proven":true,"evidence_relative_path":"mesa-gsw/interface-inputs.lock.json","evidence_sha256":"8b64bed0e4b110b1526ff1bae136b38f23c8441c9a0a64d1d35ff74ebce77f22"},
+    {"id":"backend-exclusion-proof","proven":true,"evidence_relative_path":"mesa-compiler-closure.json","evidence_sha256":"7e328a3edcfdee017e7bdbdf71f7810723d216ef5e6394549cb1b62822087c1e"},
+    {"id":"compile-output-reproducibility","proven":true,"evidence_relative_path":"mesa-compiler-closure.json","evidence_sha256":"7e328a3edcfdee017e7bdbdf71f7810723d216ef5e6394549cb1b62822087c1e"}
   ]
 }

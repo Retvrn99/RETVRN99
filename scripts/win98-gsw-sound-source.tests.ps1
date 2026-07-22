@@ -431,6 +431,12 @@ Invoke-SelfTest 'Hash-locked twin-build plan covers every deterministic input an
     Assert-Equal @($plan.source_files).Count 26
     Assert-Equal @($plan.repository_files).Count 12
     Assert-Equal @($plan.outputs).Count 3
+    $upstreamLock = @($plan.repository_files | Where-Object {
+        $_.relative_path -ceq 'drivers/win98/upstream.lock.tsv'
+    })
+    Assert-Equal $upstreamLock.Count 1
+    Assert-Equal "$($upstreamLock[0].bytes):$($upstreamLock[0].sha256)" `
+        '1786:748622ee0c91a6b622b95e7986c8ff8a766b65c6dccc9c0766575a08b735e7a0'
     foreach ($record in @($plan.source_files)) {
         $path = Join-Path $sourceRoot ([string]$record.relative_path).Replace('/', '\')
         Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing planned source '$($record.relative_path)'."

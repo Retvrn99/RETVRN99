@@ -17,17 +17,20 @@ fetch:
 .\scripts\verify-win98-driver-sources.ps1 -SourceRoot D:\src\retvrn99-win98
 ```
 
-Rows marked `planned-component` link a raw-SHA-256-pinned schema-1 closure
-manifest that also names the lock row's owning commit. A ready closure must
+Rows marked `planned-component` link a raw-SHA-256-pinned closure manifest that
+also names the lock row's owning commit. A ready closure must
 enumerate each selected regular Git blob with its byte count, SHA-256,
 allowlisted file-level license expression, notice binding, source-prefix ID,
 and role. Prefixes are exact named subtrees or the explicit
 `exact-root-files` mode, which covers only separately listed root files. They
 never imply recursive copying or globs. Notices form their own exact blob
 inventory, and every source file must bind to one notice with the same approved
-license expression. The initial closed allowlist is `MIT` and
-`LGPL-2.1-or-later`; adding another expression requires a schema and verifier
-change. Blocked manifests contain no notices or files and cannot be consumed by
+license expression. The schema carries a closed, curated license-expression
+allowlist. Its narrowly scoped additions include `SGI-B-2.0`,
+`LicenseRef-Mesa-Vrije-Permissive`, and
+`LicenseRef-Mesa-U-Atomic-Public-Domain`; adding another expression requires a
+schema and verifier change.
+Blocked manifests contain no notices or files and cannot be consumed by
 derivation, build, or staging. Their linkage and schema can be checked without
 turning them into usable source:
 
@@ -37,14 +40,15 @@ turning them into usable source:
     -PolicyAudit
 ```
 
-Mesa9x is still pinned at `29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f`;
-only its `mesa-23.1.x` subtree, whose `VERSION` is 23.1.9, is a candidate
-component. Its populated schema-2 audit binds 1,036 files: 837 source units,
-198 generator inputs, and one generator recipe, with 892 exact license-evidence
-records. It remains blocked pending compiler header and depfile closure,
-omission proofs, and direct-build integration. The `libs/vkd3d-shader` and
-OpenGlide9x manifests also remain blocked; OpenGlide9x currently authorizes no
-source prefixes. Wine9x is reference-only.
+Mesa9x is pinned at `29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f`;
+only its `mesa-23.1.x` subtree, whose `VERSION` is 23.1.9, is selected. Its ready
+schema-2 closure binds 1,687 unique files: 837 source units, 652 compiler
+dependencies, 198 generator inputs, and one generator recipe. The existing
+`p_defines.h` row also carries the compiler-dependency role, so the role counts
+overlap by one file. Every selected file binds exact inline or project-level
+license evidence through 1,502 evidence records. The `libs/vkd3d-shader` and
+OpenGlide9x manifests remain blocked; OpenGlide9x currently authorizes no source
+prefixes. Wine9x is reference-only.
 
 `mesa-generator-toolchain-lock.json` records the blocked Mesa 23.1.9 generator
 environment as 26 exact MSYS2 package archives: 24 required and two reserved,
@@ -107,27 +111,36 @@ deleted before the verifier returns:
     -ToolchainRoot D:\src\retvrn99-win98\toolchains
 ```
 
-`mesa-compiler-closure.json` is the fail-closed design for the future header
-and depfile proof. Its first schema permits no compiler commands, depfiles,
-headers, twin-run evidence, or execution authority. Clean-checkout discovery
-cannot become proof: the eventual proof root must combine the exact
-materialized component closure with reviewed generated and original GSW roots
-and the locked toolchain. The upstream multi-backend recipes, software and DRM
-SVGA winsys paths, LLVM definitions, and VirtualBox definitions are explicit
-exclusions.
+`mesa-compiler-closure.json` is the schema-3 compile proof. It binds nine exact
+inputs, materializes canonical LF Git bytes from the ready component closure,
+and records the exact 869 compiler dispositions. Two bounded runs produce
+1,738 depfiles and 1,738 i386 COFF objects. The verifier normalizes only COFF
+`TimeDateStamp` bytes 4-7, rejects optional headers and private absolute paths,
+requires each normalized A/B pair to match, and binds one ordered aggregate
+object digest. All temporary objects are deleted. Upstream multi-backend
+recipes, software and DRM SVGA winsys paths, LLVM definitions, and VirtualBox
+definitions remain explicit exclusions. The POSIX threads and read/write-lock
+source dispositions have two bound compile-only `HAVE_PTHREAD` exceptions. The
+selected x86 assembly disposition has one bound compile-only `USE_X86_ASM` and
+`GLX_X86_READONLY_TEXT` exception. All three definitions remain absent from
+common arguments; the winpthreads source/include tree and every pthread link or
+ABI claim remain excluded.
 
-`mesa-gsw-build-profile.json` therefore remains blocked. Its generated-source
-reproducibility and generated-output-lock dependencies are proven; every
-source/license, CPU compile, original Adapter integration, backend-exclusion,
-and compile-output dependency remains false.
+`mesa-gsw-build-profile.json` is `compile-proven`. Each of its nine ordered
+logical gates binds an exact evidence path and SHA-256; the CPU, backend, and
+compile-output gates intentionally share the compiler-closure artifact that
+owns those subproofs. This is non-package compile evidence only. Production
+build, link, staging, guest installation, DLL activation, renderer selection,
+and capability advertisement remain false.
 
 Package staging dispatches provenance by lock disposition. Whole-source
 `planned` rows use the immutable checkout verifier, `planned-component` rows
 must pass a ready component closure, and `reference-only` rows always reject a
 package that requires them. The current five-file GSW-VGA package requires only
-VMDisp9x and VMHAL9x. Future GSW DX9 compatibility requires Mesa9x only, and
-future GSW Glide requires OpenGlide9x. Their blocked component manifests keep
-both future packages unavailable.
+VMDisp9x and VMHAL9x. Future GSW DX9 compatibility's Mesa prerequisite is ready
+and `compile-proven`, but the package remains unavailable because production
+build, link, and package authorizations remain false. Future GSW Glide
+additionally requires OpenGlide9x, whose component closure remains blocked.
 
 `toolchain.lock.json` pins the complete Open Watcom 1.9 archive and extraction.
 `mingw32-toolchain.lock.json` pins the complete MinGW32 GCC 15.2.0 extraction.

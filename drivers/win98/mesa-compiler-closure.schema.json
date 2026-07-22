@@ -5,24 +5,15 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "_spdx",
-    "schema",
-    "schema_definition",
-    "status",
-    "reason",
-    "source",
-    "inputs",
-    "direct_recipe",
-    "depfile_contract",
-    "exclusions",
-    "evidence",
-    "scope"
+    "_spdx", "schema", "schema_definition", "status", "reason", "source",
+    "inputs", "direct_recipe", "depfile_contract", "object_contract",
+    "exclusions", "evidence", "scope"
   ],
   "properties": {
     "_spdx": {"const": "GPL-3.0-only"},
-    "schema": {"const": 2},
+    "schema": {"const": 3},
     "schema_definition": {"$ref": "#/$defs/binding"},
-    "status": {"const": "evidence-only"},
+    "status": {"const": "compile-proven"},
     "reason": {"type": "string", "minLength": 1, "maxLength": 2048},
     "source": {
       "type": "object",
@@ -46,7 +37,7 @@
       "additionalProperties": false,
       "required": ["status", "inventory_units", "compile_units", "support_only_units", "compiler_command_count", "upstream_makefile_command_consumption"],
       "properties": {
-        "status": {"const": "exact-metadata-with-compiler-evidence"},
+        "status": {"const": "exact-metadata-with-compiler-object-evidence"},
         "inventory_units": {"const": 874},
         "compile_units": {"const": 869},
         "support_only_units": {"const": 5},
@@ -57,7 +48,7 @@
     "depfile_contract": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode", "missing_header_mode", "include_system_headers", "one_depfile_per_command", "twin_run_required", "path_identity", "proof_source_root", "logical_roots"],
+      "required": ["mode", "missing_header_mode", "include_system_headers", "one_depfile_per_command", "twin_run_required", "path_identity", "proof_source_root", "include_precedence", "logical_roots"],
       "properties": {
         "mode": {"const": "gcc-M-MF-MT"},
         "missing_header_mode": {"const": "reject-no-MG"},
@@ -65,21 +56,47 @@
         "one_depfile_per_command": {"const": true},
         "twin_run_required": {"const": true},
         "path_identity": {"const": "logical-root-forward-slash-ordinal-case-sensitive"},
-        "proof_source_root": {"const": "exact-materialized-1489-file-root"},
-        "logical_roots": {
-          "type": "array",
-          "const": ["source", "generated", "original", "toolchain"]
-        }
+        "proof_source_root": {"const": "exact-materialized-1489-file-canonical-lf-root"},
+        "include_precedence": {"const": "reviewed-generated-before-canonical-source"},
+        "logical_roots": {"const": ["source", "generated", "original", "toolchain"]}
+      }
+    },
+    "object_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format", "machine", "optional_header_bytes", "timestamp_offset",
+        "timestamp_bytes", "normalized_byte_offsets", "maximum_object_bytes",
+        "twin_run_required", "object_identity_collision_free",
+        "private_path_policy", "aggregate_algorithm",
+        "temporary_outputs_retained", "linker_invocations",
+        "include_precedence"
+      ],
+      "properties": {
+        "format": {"const": "coff-i386"},
+        "machine": {"const": 332},
+        "optional_header_bytes": {"const": 0},
+        "timestamp_offset": {"const": 4},
+        "timestamp_bytes": {"const": 4},
+        "normalized_byte_offsets": {"const": [4, 5, 6, 7]},
+        "maximum_object_bytes": {"const": 67108864},
+        "twin_run_required": {"const": true},
+        "object_identity_collision_free": {"const": true},
+        "private_path_policy": {"const": "reject-bound-roots-ascii-utf8-utf16le-before-hash"},
+        "aggregate_algorithm": {"const": "sha256-utf8-tab-records-v1"},
+        "temporary_outputs_retained": {"const": false},
+        "linker_invocations": {"const": 0},
+        "include_precedence": {"const": "reviewed-generated-before-canonical-source"}
       }
     },
     "exclusions": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source_path_fragments", "include_path_fragments", "define_names", "define_prefixes", "support_only_generated_sources"],
+      "required": ["source_path_fragments", "include_path_fragments", "common_define_names", "define_prefixes", "support_only_generated_sources"],
       "properties": {
         "source_path_fragments": {"type": "array", "minItems": 8, "uniqueItems": true, "items": {"type": "string"}},
         "include_path_fragments": {"type": "array", "minItems": 6, "uniqueItems": true, "items": {"type": "string"}},
-        "define_names": {"type": "array", "minItems": 7, "uniqueItems": true, "items": {"type": "string"}},
+        "common_define_names": {"const": ["GALLIUM_SOFTPIPE", "HAVE_PTHREAD", "USE_X86_ASM", "GLX_X86_READONLY_TEXT", "HAVE_LLVM", "HAVE_GALLIUM_LLVMPIPE", "GALLIUM_LLVMPIPE", "HAVE_LLVMPIPE", "DRAW_LLVM_AVAILABLE"]},
         "define_prefixes": {"const": ["VBOX_"]},
         "support_only_generated_sources": {"type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": {"type": "string"}}
       }
@@ -87,11 +104,14 @@
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["profile", "commands", "headers", "summary"],
+      "required": ["profile", "object_profile", "unit_argument_overrides", "commands", "headers", "objects", "summary"],
       "properties": {
-        "profile": {"$ref": "#/$defs/profile"},
+        "profile": {"$ref": "#/$defs/dependency_profile"},
+        "object_profile": {"$ref": "#/$defs/object_profile"},
+        "unit_argument_overrides": {"$ref": "#/$defs/unit_argument_overrides"},
         "commands": {"type": "array", "minItems": 869, "maxItems": 869, "items": {"$ref": "#/$defs/command"}},
-        "headers": {"type": "array", "minItems": 1, "maxItems": 4096, "items": {"$ref": "#/$defs/header"}},
+        "headers": {"type": "array", "minItems": 1070, "maxItems": 1070, "items": {"$ref": "#/$defs/header"}},
+        "objects": {"type": "array", "minItems": 869, "maxItems": 869, "items": {"$ref": "#/$defs/object"}},
         "summary": {"$ref": "#/$defs/summary"}
       }
     },
@@ -100,19 +120,37 @@
       "additionalProperties": false,
       "required": ["classification", "claims", "authorizations"],
       "properties": {
-        "classification": {"const": "compiler-command-header-depfile-evidence-only"},
+        "classification": {"const": "compiler-dependency-and-twin-object-proof"},
         "claims": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["direct_recipe_reviewed", "compiler_commands_complete", "depfiles_reproducible", "header_dependency_set_complete", "exact_materialized_source_root", "backend_exclusions_proven", "project_header_license_closure", "build_closure", "graphics_stack_integrated"],
+          "required": [
+            "direct_recipe_reviewed", "compiler_commands_complete",
+            "depfiles_reproducible", "header_dependency_set_complete",
+            "exact_materialized_source_root",
+            "backend_source_include_exclusions_proven",
+            "common_define_exclusions_proven",
+            "unit_compile_context_exception_bound",
+            "project_header_license_closure", "object_compilation_complete",
+            "object_compilation_reproducible", "object_identity_collision_free",
+            "upstream_recipe_reproduced", "pthread_link_abi_proven",
+            "build_closure", "graphics_stack_integrated"
+          ],
           "properties": {
             "direct_recipe_reviewed": {"const": true},
             "compiler_commands_complete": {"const": true},
             "depfiles_reproducible": {"const": true},
             "header_dependency_set_complete": {"const": true},
             "exact_materialized_source_root": {"const": true},
-            "backend_exclusions_proven": {"const": true},
-            "project_header_license_closure": {"const": false},
+            "backend_source_include_exclusions_proven": {"const": true},
+            "common_define_exclusions_proven": {"const": true},
+            "unit_compile_context_exception_bound": {"const": true},
+            "project_header_license_closure": {"const": true},
+            "object_compilation_complete": {"const": true},
+            "object_compilation_reproducible": {"const": true},
+            "object_identity_collision_free": {"const": true},
+            "upstream_recipe_reproduced": {"const": false},
+            "pthread_link_abi_proven": {"const": false},
             "build_closure": {"const": false},
             "graphics_stack_integrated": {"const": false}
           }
@@ -120,13 +158,14 @@
         "authorizations": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["production_build", "link", "stage", "guest_install", "dll_activation", "capability_advertisement"],
+          "required": ["production_build", "link", "stage", "guest_install", "dll_activation", "renderer_selection", "capability_advertisement"],
           "properties": {
             "production_build": {"const": false},
             "link": {"const": false},
             "stage": {"const": false},
             "guest_install": {"const": false},
             "dll_activation": {"const": false},
+            "renderer_selection": {"const": false},
             "capability_advertisement": {"const": false}
           }
         }
@@ -134,6 +173,7 @@
     }
   },
   "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "binding": {
       "type": "object",
       "additionalProperties": false,
@@ -141,7 +181,7 @@
       "properties": {
         "relative_path": {"type": "string", "minLength": 1, "maxLength": 256},
         "bytes": {"type": "integer", "minimum": 1},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "named_binding": {
@@ -152,22 +192,94 @@
         "id": {"type": "string", "minLength": 1, "maxLength": 64},
         "relative_path": {"type": "string", "minLength": 1, "maxLength": 256},
         "bytes": {"type": "integer", "minimum": 1},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sha256": {"$ref": "#/$defs/sha256"},
         "required_state": {"type": "string", "minLength": 1, "maxLength": 96}
       }
     },
-    "profile": {
+    "language_arguments": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "mode", "missing_header_mode", "include_system_headers", "timeout_seconds", "common_arguments", "language_arguments"],
+      "required": ["c-gnu99", "cxx-gnu++14", "assembler-with-cpp"],
+      "properties": {
+        "c-gnu99": {"const": ["-std=gnu99"]},
+        "cxx-gnu++14": {"const": ["-std=gnu++14"]},
+        "assembler-with-cpp": {"const": ["-x", "assembler-with-cpp", "-DGNU_ASSEMBLER", "-DSTDCALL_API", "-D__MINGW32__"]}
+      }
+    },
+    "unit_argument_overrides": {
+      "const": [
+        {
+          "command_id": "cmd-0002",
+          "source": "{source}/mesa-23.1.x/src/c11/impl/threads_posix.c",
+          "profiles": ["mesa-dependency-v1", "mesa-object-v1"],
+          "insertion": "after-common-before-language",
+          "arguments": ["-DHAVE_PTHREAD"],
+          "mode": "compile-context-only-no-link"
+        },
+        {
+          "command_id": "cmd-0792",
+          "source": "{source}/mesa-23.1.x/src/util/rwlock.c",
+          "profiles": ["mesa-dependency-v1", "mesa-object-v1"],
+          "insertion": "after-common-before-language",
+          "arguments": ["-DHAVE_PTHREAD"],
+          "mode": "compile-context-only-no-link"
+        },
+        {
+          "command_id": "cmd-0852",
+          "source": "{generated}/mesa-23.1.x/src/mapi/glapi/gen/glapi_x86.S",
+          "profiles": ["mesa-dependency-v1", "mesa-object-v1"],
+          "insertion": "after-common-before-language",
+          "arguments": ["-DUSE_X86_ASM", "-DGLX_X86_READONLY_TEXT"],
+          "mode": "compile-context-only-no-link"
+        }
+      ]
+    },
+    "dependency_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mode", "missing_header_mode", "include_system_headers", "timeout_seconds", "maximum_concurrent_children", "batch_size", "batch_quiescence_milliseconds", "common_arguments", "language_arguments"],
       "properties": {
         "id": {"const": "mesa-dependency-v1"},
         "mode": {"const": "gcc-M-MF-MT"},
         "missing_header_mode": {"const": "reject-no-MG"},
         "include_system_headers": {"const": true},
-        "timeout_seconds": {"const": 10},
+        "timeout_seconds": {"const": 30},
+        "maximum_concurrent_children": {"const": 1},
+        "batch_size": {"const": 25},
+        "batch_quiescence_milliseconds": {"const": 1000},
         "common_arguments": {"type": "array", "minItems": 100, "maxItems": 256, "items": {"type": "string"}},
-        "language_arguments": {"type": "object"}
+        "language_arguments": {"$ref": "#/$defs/language_arguments"}
+      }
+    },
+    "object_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "mode", "timeout_seconds", "maximum_concurrent_children", "batch_size", "batch_quiescence_milliseconds", "common_arguments", "language_arguments", "per_unit_arguments", "working_directory", "linker_invocations"],
+      "properties": {
+        "id": {"const": "mesa-object-v1"},
+        "mode": {"const": "compile-only-no-link"},
+        "timeout_seconds": {"const": 30},
+        "maximum_concurrent_children": {"const": 1},
+        "batch_size": {"const": 25},
+        "batch_quiescence_milliseconds": {"const": 1000},
+        "common_arguments": {"type": "array", "minItems": 100, "maxItems": 256, "items": {"type": "string"}},
+        "language_arguments": {"$ref": "#/$defs/language_arguments"},
+        "per_unit_arguments": {"const": [
+          "-frandom-seed=retvrn99-mesa-{command-id}-v1",
+          "-ffile-prefix-map={source}=retvrn99/source",
+          "-fmacro-prefix-map={source}=retvrn99/source",
+          "-ffile-prefix-map={generated}=retvrn99/generated",
+          "-fmacro-prefix-map={generated}=retvrn99/generated",
+          "-ffile-prefix-map={original}=retvrn99/original",
+          "-fmacro-prefix-map={original}=retvrn99/original",
+          "-ffile-prefix-map={toolchain}=retvrn99/toolchain",
+          "-fmacro-prefix-map={toolchain}=retvrn99/toolchain",
+          "-ffile-prefix-map={proof}=retvrn99/proof",
+          "-fmacro-prefix-map={proof}=retvrn99/proof",
+          "-c", "{source-file}", "-o", "{object-file}"
+        ]},
+        "working_directory": {"const": "{proof}"},
+        "linker_invocations": {"const": 0}
       }
     },
     "command": {
@@ -184,7 +296,7 @@
         "depfile": {"type": "string", "pattern": "^dep/cmd-[0-9]{4}\\.d$"},
         "profile": {"const": "mesa-dependency-v1"},
         "dependency_count": {"type": "integer", "minimum": 1, "maximum": 4096},
-        "twin_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        "twin_sha256": {"$ref": "#/$defs/sha256"}
       }
     },
     "header": {
@@ -195,14 +307,49 @@
         "root": {"enum": ["source", "generated", "original", "toolchain"]},
         "relative_path": {"type": "string", "minLength": 1, "maxLength": 768},
         "bytes": {"type": "integer", "minimum": 0, "maximum": 67108864},
-        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "license_scope": {"enum": ["upstream-file-review-required", "reviewed-generated-output-lock", "GPL-3.0-only", "locked-toolchain-distribution"]}
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "license_scope": {"enum": ["reviewed-component-closure", "reviewed-generated-output-lock", "GPL-3.0-only", "locked-toolchain-distribution"]}
+      }
+    },
+    "object_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_sha256", "timestamp", "normalized_sha256"],
+      "properties": {
+        "raw_sha256": {"$ref": "#/$defs/sha256"},
+        "timestamp": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "normalized_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "command_id", "unit_ordinal", "object", "random_seed", "bytes", "run_a", "run_b", "normalized_sha256", "twin_byte_identical"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^object-[0-9]{4}$"},
+        "command_id": {"type": "string", "pattern": "^cmd-[0-9]{4}$"},
+        "unit_ordinal": {"type": "integer", "minimum": 1, "maximum": 869},
+        "object": {"type": "string", "pattern": "^obj/.+\\.o$", "maxLength": 768},
+        "random_seed": {"type": "string", "pattern": "^retvrn99-mesa-cmd-[0-9]{4}-v1$"},
+        "bytes": {"type": "integer", "minimum": 20, "maximum": 67108864},
+        "run_a": {"$ref": "#/$defs/object_run"},
+        "run_b": {"$ref": "#/$defs/object_run"},
+        "normalized_sha256": {"$ref": "#/$defs/sha256"},
+        "twin_byte_identical": {"const": true}
       }
     },
     "summary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["command_count", "twin_depfile_count", "unique_dependency_count", "dependency_root_counts", "twin_byte_identical", "failed_command_count", "exact_source_root", "exact_source_root_file_count"],
+      "required": [
+        "command_count", "twin_depfile_count", "unique_dependency_count",
+        "dependency_root_counts", "twin_byte_identical", "failed_command_count",
+        "exact_source_root", "exact_source_root_file_count",
+        "object_compile_count", "unique_object_count",
+        "twin_objects_byte_identical", "object_identity_collision_count",
+        "failed_object_compile_count", "temporary_object_count",
+        "aggregate_object_sha256"
+      ],
       "properties": {
         "command_count": {"const": 869},
         "twin_depfile_count": {"const": 1738},
@@ -212,8 +359,8 @@
           "additionalProperties": false,
           "required": ["source", "generated", "original", "toolchain"],
           "properties": {
-            "source": {"const": 652},
-            "generated": {"const": 28},
+            "source": {"const": 651},
+            "generated": {"const": 29},
             "original": {"const": 4},
             "toolchain": {"const": 386}
           }
@@ -221,7 +368,14 @@
         "twin_byte_identical": {"const": true},
         "failed_command_count": {"const": 0},
         "exact_source_root": {"const": true},
-        "exact_source_root_file_count": {"const": 1489}
+        "exact_source_root_file_count": {"const": 1489},
+        "object_compile_count": {"const": 1738},
+        "unique_object_count": {"const": 869},
+        "twin_objects_byte_identical": {"const": true},
+        "object_identity_collision_count": {"const": 0},
+        "failed_object_compile_count": {"const": 0},
+        "temporary_object_count": {"const": 0},
+        "aggregate_object_sha256": {"$ref": "#/$defs/sha256"}
       }
     }
   }

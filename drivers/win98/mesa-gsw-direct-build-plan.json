@@ -17,14 +17,14 @@
     {
       "id": "mesa-component-closure",
       "relative_path": "component-closures/mesa9x-23.1.x.json",
-      "bytes": 815285,
-      "sha256": "d93a476656ec9f18c1d257a65ae6461111c7e85ec0b704360bcc42b836dbefc5"
+      "bytes": 1363950,
+      "sha256": "11020fe9315d80f3ebb14f50266bd50e9f2f2e982c9464c8b0d3d42556fd4f2a"
     },
     {
       "id": "mesa-generated-output-lock",
       "relative_path": "generated-output-locks/mesa-23.1.9.json",
-      "bytes": 84159,
-      "sha256": "8274e5dd8cc50b41e4f0e510e87e9a2d669248bd69ae988e6dbdb48ce28390e5"
+      "bytes": 84160,
+      "sha256": "7fd2e293557d5ad4ba3ebf88fae964014309d60efe3bc045d3414bd8a4e70549"
     },
     {
       "id": "original-gsw-memory-source",

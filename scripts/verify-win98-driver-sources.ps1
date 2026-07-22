@@ -278,7 +278,7 @@ foreach ($entry in $entries) {
         if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
             throw "Component closure manifest not found for '$($entry.name)': $manifestPath"
         }
-        if ((Get-Item -LiteralPath $manifestPath).Length -gt 1048576) {
+        if ((Get-Item -LiteralPath $manifestPath).Length -gt 4194304) {
             throw "Component closure manifest for '$($entry.name)' exceeds the size bound."
         }
         $manifestHash = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()

@@ -66,8 +66,8 @@
     },
     "verifier": {
       "relative_path": "../../../scripts/verify-win98-driver-toolchain.ps1",
-      "bytes": 24532,
-      "sha256": "5bddf76fd0c4fdc211cba6102a86f60852441e1f3c3402efb51a4c0f07bf0652"
+      "bytes": 24574,
+      "sha256": "4a38d41118a3812eb7ccc973cd0706c2edbc92656c78f34941f8c7ca96868291"
     },
     "name": "msys2-mingw32-gcc-15.2.0-rev13",
     "extracted_relative_path": "msys2-mingw32-gcc15.2.0-20260717",

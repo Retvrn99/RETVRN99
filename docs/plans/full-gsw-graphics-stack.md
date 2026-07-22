@@ -9,21 +9,440 @@ release gates. It is not evidence that a phase, capability, build, installation,
 or guest-runtime gate has passed. Each claim remains disabled until its named
 proof is complete.
 
-### Implementation progress: 2026-07-21
+### Implementation progress: 2026-07-22
 
-- Phase 1 provenance infrastructure and normalized generated-source
-  reproducibility are present, but the Phase 1 gate remains open. The exact
-  direct-build inventory contains 837 upstream source units, 35 generated
-  source units, and two original GSW source units. Of those 874 units, 869 have
-  dependency-only compiler commands and five generated files are explicitly
-  support-only.
-- The pinned i686 compiler completed 869 exact dependency-only commands twice.
-  The proof source root contains exactly 1,489 files: 837 selected upstream
-  sources plus 652 observed upstream dependencies. The resulting 1,738
-  normalized depfiles are byte-identical and close 1,070 unique source,
-  generated, original, and toolchain dependencies. This is not object
-  compilation, a production build, or artifact activation. Upstream
-  project-header license review remains open.
+- Recovery checkpoint: the removed isolated worktree was recreated at
+  `C:\tmp\retvrn99-graphics-source-closure` from local and live remote branch
+  `graphics-source-closure`, both at
+  `3428367a86a0265d8320214ba2533c407624501d`. Live `origin/main` remained
+  `df7030c089f4e6284355f1eee2206fe9d781e574`. The dirty
+  `graphics-telemetry` checkout was inspected but not changed. The Mesa
+  component closure is ready at 1,687 unique files and 652
+  `compiler-dependency` roles. Its 869-disposition schema-v3 Compiler Closure
+  and nine-gate build profile are `compile-proven`. Phase 1 remains open for
+  the separate `libs/vkd3d-shader` and OpenGlide9x file/license closures.
+- Integration checkpoint: an early build-profile mutation-suite invocation
+  overlapped the profile schema rewrite and failed 82 of 96 cases because the
+  verifier and fixtures still bound the previous schema digest. This was not a
+  completed gate attempt; the partial result was discarded, and every build,
+  link, staging, installation, activation, renderer, and capability
+  authorization remains false.
+- Input checkpoint: the LF source checkout and the independent CRLF license
+  checkout are clean at Mesa9x commit
+  `29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f`; the pinned i686 GCC and G++
+  report MSYS2 15.2.0. The two read-only generated roots each contain 67 files
+  and 34,876,554 bytes. No source fetch, download, guest run, or host-mutating
+  acceptance was performed.
+- License-gate attempt 1 failed closed before source acceptance because the
+  generated file rows used culture-sensitive ordering. The generator was
+  corrected to use ordinal ordering and reproduced the same 1,687 files, 652
+  `compiler-dependency` roles, and 1,502 evidence rows. The corrected
+  1,363,950-byte manifest has SHA-256
+  `11020fe9315d80f3ebb14f50266bd50e9f2f2e982c9464c8b0d3d42556fd4f2a`;
+  the canonical source-bound rerun remains pending at this checkpoint.
+- License-gate attempt 2 passed component parsing and then failed closed at the
+  linked-manifest input bound: the previous 1 MiB limit rejected the reviewed
+  1,363,950-byte manifest. The driver-source verifier now uses the same 4 MiB
+  component-manifest ceiling as the canonical closure verifier. No evidence
+  was promoted; a complete source-bound rerun remains pending.
+- License-gate attempt 3 passed against the clean independent CRLF checkout at
+  commit `29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f`: the canonical verifier
+  reported one ready component closure with 1,687 exact files, 652
+  `compiler-dependency` roles, and 1,502 file-level evidence rows. The
+  1,363,950-byte manifest SHA-256 is
+  `11020fe9315d80f3ebb14f50266bd50e9f2f2e982c9464c8b0d3d42556fd4f2a`.
+  The 33-case component-v2 mutation suite, JSON Schema validation, manifest
+  test, and idempotent ordinal regeneration also passed. Mesa component
+  licensing is ready; reproducible 869-unit object compilation is the next
+  open Mesa blocker.
+- Compiler source-root attempt 1 failed closed before compilation on
+  `extra/knownfolders.c`. That selected file is a CRLF Git blob, exposing that
+  the first materializer compared normalized LF worktree bytes directly with
+  the raw Git-blob descriptor. No 1,489-file root or object evidence was
+  published. The materializer must bind the raw blob first, derive canonical
+  LF bytes from it, and compare both clean checkout observations before the
+  object gate can run.
+- Compiler source-root attempt 2 again failed closed on the same raw-CRLF blob
+  because the LF-configured checkout still required every individual file to
+  contain LF bytes. The contract now validates each pair instead: at least one
+  raw observation must match the exact Git descriptor, both normalize to the
+  same LF bytes, and the two clean checkouts must demonstrate an independent
+  LF/CRLF observation. No output root or object evidence was published.
+- Compiler source-root attempt 3 validated the pair contract and then failed
+  closed while publishing a selected zero-byte file because PowerShell
+  enumerated an empty `byte[]` return as `$null`. The helper now returns an
+  explicit descriptor object, the six source-root and eleven COFF/object
+  mutation tests pass, and the temporary root was again removed before rerun.
+- Compiler source-root attempt 4 passed and materialized exactly 1,489
+  canonical-LF files from distinct clean checkouts at the pinned commit. Every
+  selected pair is anchored by at least one exact raw Git-blob observation,
+  both observations normalize identically, and independent LF/CRLF behavior is
+  present. The production 869-unit twin object gate is now the open blocker.
+- Object-gate attempt 1 stopped before its first compiler child while the
+  collector rechecked canonical `mesa9x.h` bytes against the raw CRLF component
+  descriptor. It emitted no evidence and left no object tree. Exact-source
+  collection now repeats the raw-anchor/canonical-pair check through a distinct
+  clean Git checkout, then rehashes dependency bytes against the canonical
+  descriptors before compilation.
+- Object-gate attempt 2 stopped before its first compiler child because the
+  retry incorrectly requested reusable depfiles from the intentionally empty
+  failed proof root. No evidence or object tree exists. The verified temporary
+  root will be removed and the corrected collector rerun as a fresh proof.
+- Object-gate attempt 3 compiled the first disposition twice through dependency
+  and compile-only commands, deleted both temporary objects, and then rejected
+  the valid `knownfolders.c` COFF because its section count exceeded an
+  arbitrary 96-section policy cap. The parser now accepts any nonzero 16-bit
+  section count whose complete table and referenced ranges fit the bounded
+  object; malformed range checks remain fail-closed. No evidence was emitted.
+- Object-gate attempt 4 passed both runs for `knownfolders.c` and then failed
+  closed while compiling disposition `cmd-0002`, upstream
+  `threads_posix.c`. The curated common profile intentionally omits the
+  upstream recipe's global `HAVE_PTHREAD` definition, so the selected POSIX
+  implementation saw the incompatible Win32 type branch in `c11/threads.h`.
+  No evidence was emitted, all temporary objects were deleted, and every
+  authorization remains false. The next gate attempt must bind a single-unit,
+  compile-only `HAVE_PTHREAD` header-selection override to `cmd-0002` without
+  admitting the excluded winpthreads source/include tree or granting link or
+  runtime authority.
+- Object-gate attempt 5 bound that exception as one exact evidence row applied
+  to dependency and object profiles after common arguments and before language
+  arguments. It completed both runs for 15 units, including
+  `threads_posix.c`, then failed closed at `cmd-0016`, upstream
+  `gl_nir_link_uniforms.c`. The selected `nir_builder.h` could not see generated
+  NIR opcode declarations such as `nir_ine` and `nir_fmul`. No evidence was
+  emitted and every temporary object was deleted. The next blocker is to make
+  generated NIR headers take precedence only where the reviewed generated lock
+  requires them, without admitting an unreviewed source or backend path.
+- Object-gate attempt 6 made every reviewed generated include root precede the
+  canonical source roots, completed 150 twin units, and then received an
+  undiagnosed exit code 1 from dependency run B of `cmd-0151`, upstream
+  `nir_lower_indirect_derefs.c`. No depfile or diagnostic text was produced.
+  The collector emitted no evidence and retained zero objects. Four subsequent
+  isolated commands under the collector's exact pinned environment, covering
+  `cmd-0001` and `cmd-0150` through `cmd-0152`, all returned zero and produced
+  depfiles. This identifies a transient child failure rather than accepted
+  evidence; the next attempt remains a completely fresh, no-reuse proof.
+- Object-gate attempt 7 passed the previous failure point and completed 325
+  twin units. The next `cmd-0326` object was rejected because section 2's raw
+  data range exceeded the file bounds. No evidence was emitted and zero
+  objects remain. An isolated exact compile of the same `dd_screen.c` unit
+  produced a valid 11,959-byte, four-section i386 COFF object whose `.bss`
+  section has zero raw bytes and offset. The initial transient-output diagnosis
+  was not accepted as a parser change; the next fresh gate added an explicit
+  one-child execution bound and a one-second quiescence/collection point after
+  each 25 units, without retrying or reusing any compiler result.
+- Object-gate attempt 8 repeated the same section-2 rejection immediately after
+  325 complete twin units despite that execution bound. This disproves the
+  transient diagnosis for `cmd-0326`. COFF permits an uninitialized-data
+  section to carry its logical size while `PointerToRawData` remains zero; the
+  parser now accepts that combination only when
+  `IMAGE_SCN_CNT_UNINITIALIZED_DATA` is set, while initialized sections with a
+  missing or out-of-range raw-data pointer still fail closed. No evidence was
+  emitted and zero objects remain.
+- Object-gate attempt 9 passed the corrected COFF validation and completed 791
+  twin units before `cmd-0792`, upstream `src/util/rwlock.c`, failed during
+  object run A. The pinned Windows headers did not declare
+  `InitializeSRWLock`, `AcquireSRWLockShared`, `ReleaseSRWLockShared`,
+  `AcquireSRWLockExclusive`, or `ReleaseSRWLockExclusive` in the selected
+  compile context, and warnings-as-errors rejected the resulting implicit
+  declarations. The collector emitted no evidence, deleted every temporary
+  object, and retained 1,583 diagnostic depfiles only. The exact Windows target
+  version and upstream recipe context for this unit are the next open blocker;
+  no source, link, runtime, or capability claim is promoted.
+- Attempt-9 diagnosis confirmed that the pinned Mesa9x MinGW recipe defines
+  `HAVE_PTHREAD` globally and links its separately excluded vendored pthread
+  layer. An exact isolated `cmd-0792` compile instead passed with the same
+  narrowly bound, compile-context-only definition already used by
+  `threads_posix.c`; its temporary 1,009-byte object was deleted. A diagnostic
+  preflight then compiled 77 of the 78 dispositions from `cmd-0792` through
+  `cmd-0869` and stopped at generated `cmd-0852`, `glapi_x86.S`, where the
+  assembler rejected line 100 as junk following a comma. The preflight emitted
+  no production evidence, retained zero objects, and removed its proof root.
+  The exact generated assembly syntax and pinned recipe context are now the
+  next open blocker. Pthread linking, ABI compatibility, and runtime behavior
+  remain explicitly unproven.
+- The corrective preflight binds three ordered, source-specific compile-context
+  exceptions: `HAVE_PTHREAD` only for `cmd-0002` and `cmd-0792`, and
+  `USE_X86_ASM` plus `GLX_X86_READONLY_TEXT` only for generated `cmd-0852`.
+  All three definitions remain forbidden in common profiles and every other
+  disposition. A fresh exact preflight of `cmd-0852` through `cmd-0869` then
+  compiled all 18 units with zero failures, retained zero objects, and removed
+  its diagnostic root. The 1,583 attempt-9 depfiles were also verified to have
+  zero accompanying objects or evidence and then removed with their proof root.
+  This is diagnostic preparation for a completely fresh full gate, not
+  production evidence or link/runtime proof.
+- Pre-attempt-10 validation passed all 27 compiler-closure mutations, both the
+  schema-2-to-3 and schema-3-to-3 synthetic writer/verifier/JSON Schema paths,
+  all 12 source-root role and canonicalization tests, and the Mesa component
+  manifest test. Exact LF/CRLF `cmd-0852` objects were both 131,418 bytes with
+  identical raw and normalized SHA-256
+  `fb900847ab7f8883befc5a4bdeeecea9c08be08c1dade3e151e6decf3abc352a`;
+  COFF and private-path validation passed and both objects were deleted. The
+  18,052-byte compiler schema SHA-256 is
+  `afd26827ca46257b4f42c436f11671615760908f135eb3d58b3ea6a3b68d0008`.
+  Both the production proof root and evidence path were absent before the next
+  full attempt.
+- The first strengthened target-version mutation run reported 2 failures out
+  of 29 because the two new tests supplied wildcard-like expected-message text
+  to a literal-substring assertion. Both mutations did make the verifier reject
+  dependency or object profile promotion to a post-Win98 target, while the
+  other 27 mutations passed. After correcting only those assertion strings, a
+  fresh run passed all 29 mutations plus both schema-2-to-3 and schema-3-to-3
+  synthetic writer/verifier/JSON Schema paths. Object-gate attempt 10 may now
+  start from absent proof and evidence paths.
+- Object-gate attempt 10 completed all 869 dependency and object commands in
+  both LF/CRLF runs, including `cmd-0792` and `cmd-0852`, with no compile,
+  normalized-object, COFF, collision, or private-path failure. It then failed
+  closed before evidence publication in the collector's final exact-source-root
+  reconstruction. That postcondition combined the 837 upstream source units
+  with only the 651 source-root headers observed by compilation, omitting the
+  exact zero-byte `nir_builder_opcodes.h` component role shadowed by the reviewed
+  generated header, and therefore rejected the expected 1,489-file root. The
+  collector emitted no evidence, deleted every temporary object, and retained
+  exactly 1,738 diagnostic depfiles. The shared 652-role resolver must also be
+  used by this final collector postcondition before a completely fresh gate is
+  attempted; no readiness or authorization is promoted.
+- The collector now applies the shared dependency-role resolver to its final
+  exact-source postcondition, requires the ready component's exact zero-byte
+  shadowed role, and reconstructs all 652 role paths rather than only 651
+  observed source headers. All 12 role/canonicalization tests, collector parsing,
+  and the scoped diff check passed. The attempt-10 proof root was verified to
+  contain exactly 1,738 depfiles, zero objects, and no evidence, then removed.
+  Proof and evidence paths are absent for a fresh attempt 11.
+- Object-gate attempt 11 passed. Exactly 869 dispositions completed dependency
+  and object compilation in both runs: 1,738 object compiles, 869 unique object
+  identities, zero failed compiles, zero collisions, and zero retained objects.
+  All normalized A/B hashes match, and the ordered aggregate object SHA-256 is
+  `d418c61b73a8ddf7b8939741b9e64fde1fd301a2c47a195779098dba6c0c1568`.
+  The strict 1,530,270-byte evidence file has SHA-256
+  `46b7a9c00a9894c336daf6d73cb2f07054de0a73afb2039e90410b652c847344`
+  and records exactly 1,070 dependencies: 651 source, 29 generated, four
+  original, and 386 toolchain files. Its three ordered unit overrides are
+  present, private absolute paths are absent, the recorded aggregate recomputes
+  exactly, and all 1,738 diagnostic depfiles coexist with zero `.o` files. This
+  proves the Mesa compile-only sub-gate; it does not authorize linking,
+  production artifacts, installation, activation, renderer selection, or any
+  graphics capability.
+- Compiler-closure promotion attempt 1 failed closed before replacing the
+  tracked closure on `mesa9x.h`. The ready component manifest correctly binds
+  that file's raw CRLF Git blob, while compiler evidence correctly binds the
+  canonical-LF materialized bytes. The writer still compared those unlike byte
+  representations directly. No compiler or build-profile state was promoted.
+  The writer must require exact dependency-role membership and leave raw-Git to
+  canonical-LF equivalence to the already proven source-root contract, while
+  retaining external canonical-root hash verification when that root is
+  supplied.
+- Compiler-closure promotion attempt 2 passed the revised canonical dependency
+  checks after all 14 role/normalization tests passed, then the workspace
+  sandbox denied the final tracked-file write. The existing schema-2 closure
+  remained unchanged. This is an infrastructure-only failure; the identical
+  writer must be rerun with the required workspace write permission before any
+  promotion claim is made.
+- Compiler-closure promotion attempt 3 passed with the required workspace write
+  permission. The schema-v3 `compile-proven` closure is 1,573,468 bytes with
+  SHA-256
+  `7e328a3edcfdee017e7bdbdf71f7810723d216ef5e6394549cb1b62822087c1e`.
+  It binds 869 commands, 1,070 dependencies, 869 twin object records, the
+  ordered aggregate
+  `d418c61b73a8ddf7b8939741b9e64fde1fd301a2c47a195779098dba6c0c1568`,
+  and zero true authorizations. Both metadata-only verification and full
+  verification against the canonical source root, reviewed generated root,
+  original GSW root, and locked extracted toolchain passed. The five exact raw
+  CRLF dependency descriptors are separately bound to canonical-LF descriptors;
+  the other 646 observed source dependencies match their ready component bytes
+  directly.
+- Build-profile gate attempt 1 passed. The final 8,403-byte schema SHA-256 is
+  `de12369b6640a83880ac187478853f981e14df907ff6152c8dde024ba3e74e26`,
+  and the 4,240-byte schema-2 profile SHA-256 is
+  `08d309118ad88b573410552dad851cacffbddafa4e3d856e9ffff7eb74faaa6a`.
+  The `compile-proven` profile binds all nine ordered evidence gates, including
+  the compiler-closure SHA-256 in the CPU, backend-exclusion, and compile-output
+  gates. Direct verification and all 99 profile mutation tests passed.
+  Compile-only is true; production build, link, staging, guest installation,
+  DLL activation, renderer selection, and capability advertisement all remain
+  false.
+- Post-promotion component source-bound rerun attempt 1 stopped before source
+  acceptance because Git rejected the clean
+  `C:\tmp\retvrn99-mesa9x-lf2` checkout as dubious ownership under the
+  sandbox's offline account. The tracked ready manifest and all compiler and
+  build-profile evidence remained unchanged. The identical read-only gate must
+  be rerun with host permission; this infrastructure failure does not promote
+  any link, staging, installation, activation, renderer, or capability claim.
+- Post-promotion component source-bound rerun attempt 2 passed the ownership
+  boundary with host permission and then failed closed because the `lf2`
+  checkout reports local origin `D:\src\retvrn99-win98\mesa9x`, not the
+  locked GitHub origin. No manifest or proof state changed. Another clean
+  pinned checkout must satisfy both commit and exact-origin provenance before
+  this redundant source-bound rerun can pass.
+- Windows 98 regression batch B passed seven of twelve script suites: Mesa GSW
+  winsys shell 9/9, original source 23/23, guest CPU profile 37/37, GSW3D guest
+  transport 6/6, GSW-VGA PnP lifecycle 8/8, GSW-VGA pipeline 3/3, and GSW GDI
+  routing 4/4. Five suites failed closed: one of 19 original-build mutations
+  reached an earlier compile-plan/toolchain descriptor mismatch instead of its
+  expected final-metadata message; GSW-Sound source retained the previous
+  `upstream.lock.tsv` hash; and the GSW3D smoke, GSW2D bench, and GSW-VGA binary
+  boundary suites require unavailable payload and toolchain roots. No payload
+  was built or staged. The two stale metadata expectations must be updated and
+  rerun; the three parameterized binary suites remain explicitly not executed
+  against a payload.
+- Windows 98 regression batch C passed seven of eight script suites: driver
+  toolchain, driver sources, derived sources, component-derived sources,
+  component closure v1 and v2, and the staging-script mutation suite. The
+  end-of-line reproducibility harness was not exercised because its mandatory
+  source, toolchain, and proof roots were not supplied; it failed closed at
+  parameter binding and created no proof output. This is an unexecuted
+  parameterized proof, not production staging or activation evidence.
+- Post-promotion component source-bound rerun attempt 3 passed against the
+  clean locked-origin checkout at `D:\src\retvrn99-win98\mesa9x`, commit
+  `29b9adb44bc5ea54dc53c02b5e4b49292c6cc04f`. The exact 1,687-file,
+  652-dependency-role manifest regenerated idempotently and source-bound
+  verification passed; the two local LF proof clones remain correctly rejected
+  for their noncanonical origin metadata.
+- The two actionable batch-B metadata regressions were repaired and rerun. All
+  19 original GSW build mutations now pass after rebinding the current
+  24,574-byte toolchain verifier with SHA-256
+  `4a38d41118a3812eb7ccc973cd0706c2edbc92656c78f34941f8c7ca96868291`,
+  including a new verifier-digest negative case. All nine GSW-Sound source
+  contracts pass after rebinding the current upstream lock, toolchain verifier,
+  and strict-JSON helper, including an explicit upstream-lock assertion. These
+  are metadata and mutation-test repairs only; no binary payload was produced.
+- The three generic script suites also passed: Win16 date normalization,
+  workload-gate policy, and strict-input boundaries. The first whole-tree Odin
+  command, `odin test . -all-packages`, failed before compilation because this
+  repository root contains no `.odin` files. No test executable was created.
+  The all-packages rerun must target the repository's actual aggregate Odin
+  package root while retaining a temporary output outside the worktree.
+- Windows 98 regression batch A passed eight of nine script suites: source seed
+  30/30, object proof 14/14, direct build plan 6/6, generator toolchain 39/39,
+  generated sources 13/13, generated-source reproducibility 32/32, the default
+  component manifest contract, and compiler source root 14/14. The generated
+  output-lock suite passed 58 cases, failed nine, and skipped five root-bound
+  cases. Every failure was intercepted by a stale 1 MiB component-manifest
+  ceiling before reaching the intended v2 mutation assertion. The ceiling must
+  match the accepted 4 MiB component contract, then the complete suite must be
+  rerun with both reviewed generated roots.
+- Whole-tree Odin attempt 2 targeted `src -all-packages` and reached the link
+  step, then the sandboxed linker failed with `LNK1104` while opening the named
+  `C:\tmp\retvrn99-graphics-source-closure-odin-tests.exe` output. No test
+  executable was created. The identical all-packages test requires host write
+  permission for that single temporary path before any Odin result is claimed.
+- Whole-tree Odin attempt 3 ran with host permission and executed 1,317 tests:
+  1,276 passed and 41 failed. Every failure was in the process-backed FAT32
+  adapter or a caller of it because the required temporary
+  `RETVRN99-FAT32.exe` helper was not adjacent to the temporary test runner;
+  failures reported `Helper_Missing`, and no graphics or Mesa Odin test failed.
+  The established temporary helper-plus-runner layout must be reproduced and
+  the full `src -all-packages` suite rerun before handoff. This is test
+  infrastructure only, not installation or staging authority.
+- Whole-tree Odin attempt 4 stopped before creating its proof directory because
+  the wrapper used unsupported `New-Item -LiteralPath` syntax. No helper,
+  runner, or test result was produced. The exact validated temporary directory
+  and command are unchanged apart from correcting that PowerShell parameter.
+- Whole-tree Odin attempt 5 built the temporary helper and removed all
+  `Helper_Missing` failures, but the default 32-thread runner timed out in PIT
+  calibration and the WHPX watchdog, then hit a segmentation fault in a
+  SeaBIOS reset test and did not drain. Only the identified temporary test,
+  Odin-parent, and helper processes were stopped. The repository's process-test
+  harness explicitly serializes shared timing, lock, and memory assertions with
+  `ODIN_TEST_THREADS=1`; the fresh whole-tree rerun must use that established
+  bound rather than accepting the unstable parallel result.
+- Whole-tree Odin attempt 6 passed. With the debug FAT32 helper adjacent to the
+  runner and `ODIN_TEST_THREADS=1`, all 1,317 `src -all-packages` tests passed
+  in 3 minutes 6.724 seconds. The helper and runner were temporary test outputs
+  under `C:\tmp`; they grant no production-build, staging, installation, or
+  activation authority and are removed after this recorded result.
+- The generated-output-lock regression was corrected with a dedicated 4 MiB
+  component-closure bound at both initial and final stability checks, while all
+  unrelated metadata/evidence limits remain unchanged. V2 now requires the
+  promoted `ready` component with an empty reason and performs structural
+  mutations before external-byte audits; an unmutated proof still requires and
+  rechecks all Git and generated evidence. The rootless suite passed 68 cases,
+  skipped the five explicitly root-bound cases, failed zero, and now rejects a
+  component larger than 4 MiB. The final 73-case run against both reviewed
+  generated trees remains pending.
+- Generated-output-lock root-bound attempt 1 passed 68 of 73 cases. Five Git
+  evidence cases failed before their intended assertions because the host-run
+  suite used the sandbox-owned `mesa-generation-lf` checkout and Git rejected
+  its ownership. Both generated roots remained read-only and no fixture escaped
+  the temporary test tree. The identical suite must use the clean pinned
+  host-owned Mesa checkout as its Git evidence root.
+- Generated-output-lock root-bound attempt 2 passed all 73 cases against the
+  clean host-owned Mesa checkout and both reviewed LF/CRLF generated roots.
+  This includes exact source evidence, identical normalized trees, stale/hash/
+  ordering/license/authorization mutations, final stability seams, reparse and
+  collision defenses, and the 4 MiB-plus-one component bound. No outputs were
+  generated or retained by this verification run.
+- The generated-source reproducibility suite passed all 33 cases against both
+  reviewed production roots, including exact normalized-tree equality, paired
+  and distinct root constraints, digest/recipe/seed mutations, scratch-path
+  rejection, and every explicit false authorization and unproven claim.
+- Final full compiler-closure recheck attempt 1 failed before byte validation
+  because `ToolchainRoot` was supplied as the containing `toolchains` directory
+  rather than the lock's extracted
+  `msys2-mingw32-gcc15.2.0-20260717` root; the first lookup therefore reported
+  `toolchain/include/_bsd_types.h` absent. No closure or input changed. The
+  identical verifier must be rerun with the exact extracted root.
+- Final full compiler-closure recheck attempt 2 passed against the 1,489-file
+  canonical source root, reviewed generated root, original GSW sources, and the
+  exact extracted toolchain. It reverified 869 commands, 1,738 twin depfiles,
+  869 twin normalized i386 COFF objects, ordered aggregate
+  `d418c61b73a8ddf7b8939741b9e64fde1fd301a2c47a195779098dba6c0c1568`,
+  and zero true authorizations.
+- Final metadata validation passed strict JSON and JSON Schema checks for the
+  ready component closure, schema-v3 compiler closure, and schema-v2 build
+  profile. Metadata-only compiler verification repeated the 869/1,738/869
+  counts and ordered aggregate, and build-profile verification reported
+  `compile-only=true` with production build, link, staging, installation,
+  activation, renderer/capability authority all false.
+- Final script-matrix accounting passed all 31 suites that do not require a
+  prohibited production payload/build proof. Four artifact-dependent harnesses
+  failed closed at mandatory parameter binding: driver EOL reproducibility
+  would build and link the full driver plan, while GSW3D smoke, GSW2D bench, and
+  GSW-VGA binary-boundary tests require an existing payload and toolchain root.
+  None was supplied or created because production build, link, and staging
+  authority remains false. The successful matrix includes the 33-case
+  component-v2 suite, 30 compiler-closure mutations, 14 source-root cases, 14
+  object-proof cases, 73 generated-output-lock cases, 33 generated-source
+  reproducibility cases, 99 build-profile mutations, and the original GSW
+  source/build and winsys suites.
+- Final hygiene checks parsed all 23 changed PowerShell scripts and all ten
+  changed JSON files strictly, passed `git diff --check`, and found zero changed
+  binaries, objects, archives, ISOs, images, `.scratch` contents, AI artifacts,
+  missing SPDX script headers, or forbidden backend inputs. The pre-commit
+  scope contains 33 modified text files plus seven new PowerShell scripts, all
+  under `docs`, `drivers/win98`, or `scripts`; production authorization fields
+  remain false throughout tracked evidence.
+- Handoff cleanup verified the production proof tree contained exactly 1,738
+  depfiles and zero objects or other files, rechecked the temporary evidence as
+  1,530,270 bytes with SHA-256
+  `46b7a9c00a9894c336daf6d73cb2f07054de0a73afb2039e90410b652c847344`,
+  then removed both the proof tree and evidence file. The temporary Odin helper,
+  debug symbols, and test runner are also absent. The 1,489-file canonical
+  source root remains object-free as a reproducibility input; no binary or
+  generated proof artifact is part of the change.
+- Pre-publication handoff recheck on 2026-07-22 found branch
+  `graphics-source-closure` and live `origin/graphics-source-closure` still at
+  base HEAD `3428367a86a0265d8320214ba2533c407624501d`; live `origin/main` remains
+  `df7030c089f4e6284355f1eee2206fe9d781e574`. The separate
+  `graphics-telemetry` worktree remains untouched. The next open Phase 1
+  blocker is the independent `libs/vkd3d-shader` and OpenGlide9x file/license
+  closure, not Mesa compilation.
+- Publication attempt 1 stopped before staging because the sandbox could not
+  create the isolated worktree's index lock under the protected main repository
+  metadata. All 40 audited paths remained unstaged and unchanged. The same
+  exact path list requires host permission for branch-only commit publication;
+  no merge or `main` update is authorized.
+- Phase 1 remains open for the separate `libs/vkd3d-shader` and OpenGlide9x
+  file/license closures. The exact direct-build inventory contains 837
+  upstream, 35 generated, and two original GSW source units: 869 compile
+  dispositions and five support-only generated files. The Mesa schema-2
+  component closure is ready with 1,687 files and 652 `compiler-dependency`
+  roles. Its 1,489-file canonical source root fed two successful runs of all
+  869 dispositions, observing 1,070 dependencies and producing 1,738 validated
+  i386 COFF objects with zero failures, collisions, or retained objects. The
+  schema-v3 Compiler Closure and all-nine-gate build profile are
+  `compile-proven`; link, production, staging, installation, activation,
+  renderer, and capability authorizations remain false.
 - An original capability-disabled GSW `svga_winsys_screen` shell now populates
   all 32 screen callbacks and all 17 context callbacks. It reports a pre-WS8
   hardware version, exposes no capabilities, rejects resource and fence-FD
@@ -201,9 +620,12 @@ Gate: every frame's cost can be attributed to a named stage, and the existing
 Gate: two clean LF/CRLF builds produce identical normalized outputs and pass
 the complete source/license closure.
 
-Progress: normalized LF/CRLF generated outputs and exact dependency-only twin
-runs are proven. The complete project-header license closure and clean object
-build are not proven, so this gate remains open.
+Progress: Mesa's normalized LF/CRLF generated outputs, ready
+1,687-file/652-role source-license closure, and 869-unit twin object proof are
+complete. Its schema-v3 Compiler Closure and nine-gate build profile are
+`compile-proven`. Phase 1 remains open for the separate `libs/vkd3d-shader` and
+OpenGlide9x file/license closures; every link, delivery, activation, renderer,
+and capability authorization remains false.
 
 ### Phase 2: Deepen presentation and remove the resolution bottleneck
 
