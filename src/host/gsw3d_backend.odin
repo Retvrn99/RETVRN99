@@ -66,13 +66,15 @@ Gsw3d_Proof_Context :: struct {
 }
 
 Gsw3d_Proof_Resource :: struct {
-	live:        bool,
-	id:          u32,
-	kind:        Gsw3d_Proof_Resource_Kind,
-	surface:     Gsw3d_Proof_Surface,
-	bytes:       [GSW3D_PROOF_VERTEX_BYTES]u8,
-	initialized: u64,
-	rendered:    bool,
+	live:                 bool,
+	id:                   u32,
+	kind:                 Gsw3d_Proof_Resource_Kind,
+	surface:              Gsw3d_Proof_Surface,
+	bytes:                [GSW3D_PROOF_VERTEX_BYTES]u8,
+	initialized:          u64,
+	rendered:             bool,
+	last_draw_token:      u64,
+	last_draw_generation: u64,
 }
 
 Gsw3d_Proof_Executor :: struct {
@@ -289,6 +291,8 @@ gsw3d_proof_render :: proc(
 	if !drawn {return false}
 	work.backend_token = token
 	target.rendered = true
+	target.last_draw_token = token
+	target.last_draw_generation = work.generation
 	return true
 }
 

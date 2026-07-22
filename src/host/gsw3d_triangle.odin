@@ -2,6 +2,7 @@
 package host
 
 import "core:mem"
+import "core:time"
 import sdl3 "vendor:sdl3"
 
 GSW3D_TRIANGLE_VERTEX_COUNT :: 3
@@ -33,10 +34,28 @@ Gsw3d_Triangle_Completion :: struct {
 	generation: u64,
 }
 
+// The tick is the host observation of a successful fence submission.
+Gsw3d_Triangle_Fence_Stamp :: struct {
+	tick:       time.Tick,
+	token:      u64,
+	generation: u64,
+}
+
+// The observed tick is when the host proves retirement, not a device timestamp.
+Gsw3d_Triangle_Completion_Stamp :: struct {
+	submit_tick:   time.Tick,
+	observed_tick: time.Tick,
+	token:         u64,
+	generation:    u64,
+	duration_ns:   u64,
+	discarded:     bool,
+}
+
 Gsw3d_Triangle_Flight :: struct {
-	completion: Gsw3d_Triangle_Completion,
-	fence:      ^sdl3.GPUFence,
-	discarded:  bool,
+	completion:   Gsw3d_Triangle_Completion,
+	submitted_at: time.Tick,
+	fence:        ^sdl3.GPUFence,
+	discarded:    bool,
 }
 
 Gsw3d_Triangle_Query_Fence_Proc :: proc(ctx: rawptr, fence: ^sdl3.GPUFence) -> bool
@@ -51,10 +70,19 @@ Gsw3d_Triangle_Fence_Ops :: struct {
 }
 
 Gsw3d_Triangle_Metrics :: struct {
-	submissions:    u64,
-	completions:    u64,
-	capacity_waits: u64,
-	max_in_flight:  u32,
+	submission_calls:        u64,
+	submission_failures:     u64,
+	submission_ns:           u64,
+	latest_submission_ns:    u64,
+	submissions:             u64,
+	completions:             u64,
+	completion_ns:           u64,
+	capacity_waits:          u64,
+	capacity_wait_ns:        u64,
+	latest_capacity_wait_ns: u64,
+	max_in_flight:           u32,
+	latest_submission:       Gsw3d_Triangle_Fence_Stamp,
+	latest_completion:       Gsw3d_Triangle_Completion_Stamp,
 }
 
 Gsw3d_Triangle_Renderer :: struct {
@@ -71,6 +99,20 @@ Gsw3d_Triangle_Renderer :: struct {
 	fence_ops:       Gsw3d_Triangle_Fence_Ops,
 	metrics:         Gsw3d_Triangle_Metrics,
 	live:            bool,
+}
+
+@(private = "package")
+gsw3d_triangle_note_submission :: proc(
+	renderer: ^Gsw3d_Triangle_Renderer,
+	started, completed: time.Tick,
+	succeeded: bool,
+) {
+	if renderer == nil {return}
+	duration_ns := u64(max(time.Duration(0), time.tick_diff(started, completed)))
+	renderer.metrics.submission_calls += 1
+	renderer.metrics.submission_ns += duration_ns
+	renderer.metrics.latest_submission_ns = duration_ns
+	if !succeeded {renderer.metrics.submission_failures += 1}
 }
 
 #assert(
@@ -142,10 +184,11 @@ gsw3d_triangle_next_token :: proc(renderer: ^Gsw3d_Triangle_Renderer) -> u64 {
 }
 
 @(private = "package")
-gsw3d_triangle_track_fence :: proc(
+gsw3d_triangle_track_fence_at :: proc(
 	renderer: ^Gsw3d_Triangle_Renderer,
 	fence: ^sdl3.GPUFence,
 	generation: u64,
+	submitted_at: time.Tick,
 ) -> (
 	token: u64,
 	ok: bool,
@@ -155,19 +198,74 @@ gsw3d_triangle_track_fence :: proc(
 	   generation == 0 ||
 	   renderer.flight_count < 0 ||
 	   renderer.flight_count >= GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT {return 0, false}
+	submit_tick := submitted_at
+	if submit_tick == (time.Tick{}) {submit_tick = time.tick_now()}
 	token = gsw3d_triangle_next_token(renderer)
 	tail := (renderer.flight_head + renderer.flight_count) % GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT
 	renderer.flights[tail] = {
 		completion = {token = token, generation = generation},
+		submitted_at = submit_tick,
 		fence = fence,
 	}
 	renderer.flight_count += 1
 	renderer.metrics.submissions += 1
+	renderer.metrics.latest_submission = {
+		tick       = submit_tick,
+		token      = token,
+		generation = generation,
+	}
 	renderer.metrics.max_in_flight = max(
 		renderer.metrics.max_in_flight,
 		u32(renderer.flight_count),
 	)
 	return token, true
+}
+
+@(private = "package")
+gsw3d_triangle_track_fence :: proc(
+	renderer: ^Gsw3d_Triangle_Renderer,
+	fence: ^sdl3.GPUFence,
+	generation: u64,
+) -> (
+	token: u64,
+	ok: bool,
+) {
+	return gsw3d_triangle_track_fence_at(renderer, fence, generation, time.tick_now())
+}
+
+@(private = "file")
+gsw3d_triangle_retire_head_at :: proc(
+	renderer: ^Gsw3d_Triangle_Renderer,
+	completed_at: time.Tick,
+) -> (
+	completion: Gsw3d_Triangle_Completion,
+	publish: bool,
+	ok: bool,
+) {
+	if renderer == nil ||
+	   renderer.flight_count <= 0 ||
+	   renderer.flight_count > GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT ||
+	   !gsw3d_triangle_fence_ops_valid(renderer.fence_ops) {return {}, false, false}
+	retirement_tick := completed_at
+	if retirement_tick == (time.Tick{}) {retirement_tick = time.tick_now()}
+	flight := renderer.flights[renderer.flight_head]
+	if flight.fence == nil {return {}, false, false}
+	renderer.fence_ops.release(renderer.fence_ops.ctx, flight.fence)
+	renderer.flights[renderer.flight_head] = {}
+	renderer.flight_head = (renderer.flight_head + 1) % GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT
+	renderer.flight_count -= 1
+	duration_ns := u64(max(time.Duration(0), time.tick_diff(flight.submitted_at, retirement_tick)))
+	renderer.metrics.completions += 1
+	renderer.metrics.completion_ns += duration_ns
+	renderer.metrics.latest_completion = {
+		submit_tick   = flight.submitted_at,
+		observed_tick = retirement_tick,
+		token         = flight.completion.token,
+		generation    = flight.completion.generation,
+		duration_ns   = duration_ns,
+		discarded     = flight.discarded,
+	}
+	return flight.completion, !flight.discarded, true
 }
 
 @(private = "file")
@@ -178,23 +276,14 @@ gsw3d_triangle_retire_head :: proc(
 	publish: bool,
 	ok: bool,
 ) {
-	if renderer == nil ||
-	   renderer.flight_count <= 0 ||
-	   renderer.flight_count > GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT ||
-	   !gsw3d_triangle_fence_ops_valid(renderer.fence_ops) {return {}, false, false}
-	flight := renderer.flights[renderer.flight_head]
-	if flight.fence == nil {return {}, false, false}
-	renderer.fence_ops.release(renderer.fence_ops.ctx, flight.fence)
-	renderer.flights[renderer.flight_head] = {}
-	renderer.flight_head = (renderer.flight_head + 1) % GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT
-	renderer.flight_count -= 1
-	renderer.metrics.completions += 1
-	return flight.completion, !flight.discarded, true
+	return gsw3d_triangle_retire_head_at(renderer, time.tick_now())
 }
 
-gsw3d_triangle_poll :: proc(
+@(private = "package")
+gsw3d_triangle_poll_at :: proc(
 	renderer: ^Gsw3d_Triangle_Renderer,
 	completed: []Gsw3d_Triangle_Completion,
+	observed_at: time.Tick,
 ) -> (
 	count: int,
 	ok: bool,
@@ -207,7 +296,7 @@ gsw3d_triangle_poll :: proc(
 		flight := &renderer.flights[renderer.flight_head]
 		if flight.fence == nil {return count, false}
 		if !renderer.fence_ops.query(renderer.fence_ops.ctx, flight.fence) {break}
-		completion, publish, retired := gsw3d_triangle_retire_head(renderer)
+		completion, publish, retired := gsw3d_triangle_retire_head_at(renderer, observed_at)
 		if !retired {return count, false}
 		if publish {
 			completed[count] = completion
@@ -215,6 +304,16 @@ gsw3d_triangle_poll :: proc(
 		}
 	}
 	return count, true
+}
+
+gsw3d_triangle_poll :: proc(
+	renderer: ^Gsw3d_Triangle_Renderer,
+	completed: []Gsw3d_Triangle_Completion,
+) -> (
+	count: int,
+	ok: bool,
+) {
+	return gsw3d_triangle_poll_at(renderer, completed, {})
 }
 
 gsw3d_triangle_wait_oldest :: proc(
@@ -231,9 +330,15 @@ gsw3d_triangle_wait_oldest :: proc(
 	flight := renderer.flights[renderer.flight_head]
 	if flight.fence == nil {return {}, false, false}
 	fences := [1]^sdl3.GPUFence{flight.fence}
+	wait_started := time.tick_now()
 	renderer.metrics.capacity_waits += 1
-	if !renderer.fence_ops.wait(renderer.fence_ops.ctx, fences[:]) {return {}, false, false}
-	return gsw3d_triangle_retire_head(renderer)
+	waited := renderer.fence_ops.wait(renderer.fence_ops.ctx, fences[:])
+	wait_completed := time.tick_now()
+	wait_ns := u64(max(time.Duration(0), time.tick_diff(wait_started, wait_completed)))
+	renderer.metrics.capacity_wait_ns += wait_ns
+	renderer.metrics.latest_capacity_wait_ns = wait_ns
+	if !waited {return {}, false, false}
+	return gsw3d_triangle_retire_head_at(renderer, wait_completed)
 }
 
 gsw3d_triangle_discard_other_generations :: proc(
@@ -480,10 +585,15 @@ gsw3d_triangle_render_async :: proc(
 	sdl3.EndGPURenderPass(render_pass)
 
 	submitted = true
+	submission_started := time.tick_now()
 	fence := sdl3.SubmitGPUCommandBufferAndAcquireFence(command_buffer)
-	if fence == nil {return 0, false}
+	submitted_at := time.tick_now()
+	gsw3d_triangle_note_submission(renderer, submission_started, submitted_at, fence != nil)
+	if fence == nil {
+		return 0, false
+	}
 	tracked: bool
-	token, tracked = gsw3d_triangle_track_fence(renderer, fence, generation)
+	token, tracked = gsw3d_triangle_track_fence_at(renderer, fence, generation, submitted_at)
 	if !tracked {
 		sdl3.ReleaseGPUFence(renderer.gpu, fence)
 		return 0, false

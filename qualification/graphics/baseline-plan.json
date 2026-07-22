@@ -1,0 +1,140 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "id": "retvrn99-graphics-phase0-winquake-baseline-v1",
+  "policy": {
+    "read_only_plan": true,
+    "verifier_must_not_mutate": true,
+    "media_payloads_are_external": true,
+    "guest_install_requires_fresh_authorization": true,
+    "guest_run_requires_fresh_authorization": true,
+    "host_mutation_requires_fresh_authorization": true,
+    "authorized_by_this_plan": false
+  },
+  "machine": {
+    "guest_ram_mib": 256,
+    "framebuffer_mib": 32
+  },
+  "workload": {
+    "media_lock": "media.lock.json",
+    "media_ids": [
+      "quake-shareware-1.06",
+      "winquake-1.00"
+    ],
+    "executable_media_id": "winquake-1.00",
+    "matrix_kind": "cross-product",
+    "presentation_scope": "guest-application",
+    "repetitions": 3,
+    "modes": [
+      {
+        "width": 320,
+        "height": 200
+      },
+      {
+        "width": 320,
+        "height": 240
+      },
+      {
+        "width": 640,
+        "height": 480
+      },
+      {
+        "width": 800,
+        "height": 600
+      }
+    ],
+    "presentation_modes": [
+      "windowed",
+      "fullscreen"
+    ],
+    "lifecycle_actions": [
+      "windowed-fullscreen-mode-churn",
+      "process-exit",
+      "relaunch",
+      "shutdown"
+    ]
+  },
+  "telemetry": {
+    "aggregate": {
+      "period_seconds": 1,
+      "bounded": true,
+      "max_windows": 3600
+    },
+    "trace": {
+      "enabled_by_default": false,
+      "opt_in": true,
+      "bounded": true,
+      "capacity_frames": 256
+    },
+    "stages": [
+      "vm-execution",
+      "gsw-vga-write",
+      "dirty-tracking",
+      "descriptor-copy",
+      "pixel-conversion",
+      "texture-upload",
+      "tracked-sdl-render-present",
+      "direct-sdl-gpu-submission",
+      "direct-physical-fence-completion",
+      "queue",
+      "compose",
+      "present",
+      "end-to-end"
+    ],
+    "counters": [
+      "vm-execution-ns",
+      "gsw-mmio-write-bytes",
+      "vga-io-write-bytes",
+      "dirty-bytes-upper-bound",
+      "descriptor-copy-bytes",
+      "descriptor-copy-ns",
+      "converted-pixels",
+      "pixel-conversion-ns",
+      "texture-upload-bytes",
+      "texture-upload-ns",
+      "tracked-sdl-render-present-calls",
+      "tracked-sdl-render-present-ns",
+      "direct-sdl-gpu-submission-calls",
+      "direct-sdl-gpu-submission-failures",
+      "direct-sdl-gpu-submission-ns",
+      "direct-physical-fence-submissions",
+      "direct-physical-fence-completions",
+      "direct-physical-fence-completion-ns",
+      "queue-depth-current",
+      "queue-depth-sampled-peak",
+      "queue-depth-lifetime-high-water",
+      "coalesced-frames",
+      "texture-recreates",
+      "input-latency-ns",
+      "max-input-latency-ns",
+      "audio-underrun-events",
+      "audio-underrun-frames",
+      "frame-end-to-end-ns",
+      "max-frame-end-to-end-ns"
+    ],
+    "terminal_results": [
+      "presented",
+      "superseded",
+      "coalesced",
+      "capture-failed",
+      "render-failed",
+      "upload-failed",
+      "compose-failed",
+      "present-failed",
+      "gpu-work",
+      "reset"
+    ]
+  },
+  "evidence": {
+    "root": ".scratch/graphics-qualification/baseline",
+    "must_be_git_ignored": true,
+    "commit_allowed": false
+  },
+  "gates": [
+    "fresh-guest-authorization",
+    "full-mode-presentation-matrix",
+    "three-lifecycle-repetitions",
+    "frame-cost-attribution",
+    "bounded-telemetry"
+  ]
+}

@@ -169,9 +169,10 @@ host_cpu_frame_metadata_publish :: proc(h: ^Host, aspect_width, aspect_height: i
 	h.has_frame = true
 }
 
-host_render_guest :: proc(h: ^Host, machine_running: bool) {
-	sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
-	sdl3.RenderClear(h.ren)
+host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
+	if h == nil {return false}
+	ok := sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
+	ok = sdl3.RenderClear(h.ren) && ok
 	output_width, output_height := WIN_W, WIN_H
 	w, hh: c.int
 	if sdl3.GetRenderOutputSize(h.ren, &w, &hh) {
@@ -181,7 +182,7 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) {
 	if !machine_running {
 		host_clear_frame(h)
 		host_render_stopped_screen(h, output_width, output_height)
-		return
+		return ok
 	}
 	texture, source, has_source, gpu_present := host_active_texture(h)
 	if texture != nil && h.has_frame {
@@ -201,9 +202,10 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) {
 		shader_active := host_shader_begin(h, source_width, source_height)
 		source_ptr: Maybe(^sdl3.FRect)
 		if has_source {source_ptr = &source}
-		sdl3.RenderTexture(h.ren, texture, source_ptr, &dst)
+		ok = sdl3.RenderTexture(h.ren, texture, source_ptr, &dst) && ok
 		if shader_active {host_shader_end(h)}
 	}
+	return ok
 }
 
 host_clear_frame :: proc(h: ^Host) {
@@ -231,5 +233,5 @@ render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	h.aspect_width = 4
 	h.aspect_height = 3
 	h.has_frame = true
-	host_render_guest(h, true)
+	_ = host_render_guest(h, true)
 }

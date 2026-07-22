@@ -7,12 +7,13 @@ import "core:path/filepath"
 PROFILE_DIRECTORY :: ".retvrn99"
 
 Paths :: struct {
-	root:          string,
-	default_image: string,
-	settings:      string,
-	cmos:          string,
-	install:       string,
-	install_state: string,
+	root:                string,
+	default_image:       string,
+	settings:            string,
+	cmos:                string,
+	install:             string,
+	install_state:       string,
+	graphics_postmortem: string,
 }
 
 paths_from_root :: proc(root: string, allocator := context.allocator) -> (Paths, os.Error) {
@@ -55,6 +56,12 @@ paths_from_root :: proc(root: string, allocator := context.allocator) -> (Paths,
 		return {}, os.Error(cerr)
 	}
 	paths.install_state = path
+	path, cerr = filepath.join({paths.root, "graphics-postmortem.json"}, allocator)
+	if cerr != nil {
+		paths_destroy(&paths, allocator)
+		return {}, os.Error(cerr)
+	}
+	paths.graphics_postmortem = path
 	return paths, nil
 }
 
@@ -86,5 +93,6 @@ paths_destroy :: proc(paths: ^Paths, allocator := context.allocator) {
 	delete(paths.cmos, allocator)
 	delete(paths.install, allocator)
 	delete(paths.install_state, allocator)
+	delete(paths.graphics_postmortem, allocator)
 	paths^ = {}
 }

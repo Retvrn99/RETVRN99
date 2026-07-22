@@ -2,6 +2,7 @@
 package vga
 
 import "base:runtime"
+import "core:time"
 
 Scanout_State :: struct {
 	crtc:                      [32]u8,
@@ -15,6 +16,8 @@ Scanout_State :: struct {
 	video_subsystem_enable:    u8,
 	cga:                       Cga_State,
 	dispi:                     [12]u16,
+	bank_read:                 u16,
+	bank_write:                u16,
 	timing:                    Video_Timing,
 	latched_start:             u16,
 	pending_start:             u16,
@@ -25,13 +28,15 @@ Scanout_State :: struct {
 }
 
 Scanout_Descriptor :: struct {
-	allocator:    runtime.Allocator,
-	state:        Scanout_State,
-	vram:         []u8,
-	frame_pixels: []u32,
-	frame:        Display_Frame,
-	generation:   u64,
-	bytes_copied: int,
+	allocator:          runtime.Allocator,
+	state:              Scanout_State,
+	mode_observability: Vga_Mode_Observability,
+	vram:               []u8,
+	frame_pixels:       []u32,
+	frame:              Display_Frame,
+	generation:         u64,
+	bytes_copied:       int,
+	copy_duration_ns:   u64,
 }
 
 @(private = "file")
@@ -64,6 +69,8 @@ scanout_state_capture :: proc(state: ^Scanout_State, source: ^Vga) {
 		video_subsystem_enable    = source.video_subsystem_enable,
 		cga                       = source.cga,
 		dispi                     = source.dispi,
+		bank_read                 = source.bank_read,
+		bank_write                = source.bank_write,
 		timing                    = source.timing,
 		latched_start             = source.latched_start,
 		pending_start             = source.pending_start,
@@ -99,6 +106,8 @@ scanout_state_to_vga :: proc(
 		video_subsystem_enable = state.video_subsystem_enable,
 		cga = state.cga,
 		dispi = state.dispi,
+		bank_read = state.bank_read,
+		bank_write = state.bank_write,
 		timing = state.timing,
 		latched_start = state.latched_start,
 		pending_start = state.pending_start,
@@ -118,8 +127,11 @@ scanout_descriptor_capture :: proc(descriptor: ^Scanout_Descriptor, source: ^Vga
 		descriptor.vram = make([]u8, VRAM_SIZE, descriptor.allocator)
 	}
 	bytes := scanout_required_vram(source)
+	copy_started := time.tick_now()
 	copy(descriptor.vram[:bytes], source.vram[:bytes])
+	descriptor.copy_duration_ns = u64(max(time.Duration(0), time.tick_since(copy_started)))
 	scanout_state_capture(&descriptor.state, source)
+	descriptor.mode_observability = vga_mode_observability(source)
 	descriptor.frame = {}
 	descriptor.generation = source.content_generation
 	descriptor.bytes_copied = bytes

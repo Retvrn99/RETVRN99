@@ -65,6 +65,8 @@ Shared :: struct {
 	mu:                               sync.Mutex,
 	snap:                             vga.Text_Snapshot,
 	frames:                           Frame_Mailbox,
+	graphics_postmortem:              Graphics_Postmortem,
+	graphics_trace_enabled:           bool,
 	log_lines:                        [dynamic]string,
 	cmds:                             [dynamic]Command,
 	running:                          bool,
@@ -141,6 +143,7 @@ run_main :: proc() -> int {
 	seconds_explicit := false
 	start_requested := false
 	gsw3d_proof := false
+	graphics_trace := false
 	acceptance_options, acceptance_diagnostic := acceptance.options_parse(os.args[1:])
 	if acceptance_diagnostic != .None {
 		fmt.eprintfln("acceptance option error: %v", acceptance_diagnostic)
@@ -151,6 +154,7 @@ run_main :: proc() -> int {
 		if a == "--console" {console = true}
 		if a == "--start" {start_requested = true}
 		if a == "--gsw3d-proof" {gsw3d_proof = true}
+		if a == "--graphics-trace" {graphics_trace = true}
 		if a == "--no-disk" {attach = false}
 		if strings.has_prefix(a, "--auto-close:") {
 			auto_close, _ = strconv.parse_int(a[len("--auto-close:"):])
@@ -180,6 +184,10 @@ run_main :: proc() -> int {
 	}
 	if console && gsw3d_proof {
 		fmt.eprintln("--gsw3d-proof is available only in the GUI host")
+		return 1
+	}
+	if console && graphics_trace {
+		fmt.eprintln("--graphics-trace is available only in the GUI host")
 		return 1
 	}
 
@@ -313,6 +321,7 @@ run_main :: proc() -> int {
 		acceptance_options.firmware_log_all,
 		start_requested,
 		gsw3d_proof,
+		graphics_trace,
 	)
 }
 
@@ -328,6 +337,7 @@ gui_main :: proc(
 	firmware_log_all: bool,
 	start_requested: bool,
 	gsw3d_proof: bool,
+	graphics_trace: bool,
 ) -> (
 	result: int,
 ) {
@@ -376,6 +386,12 @@ gui_main :: proc(
 		delete(ctx.machine_session_id)
 		delete(ctx.hard_drive_path)
 		profile.install_state_destroy(&ctx.install_state)
+		postmortem_enabled := graphics_postmortem_status(&shared.graphics_postmortem).enabled
+		postmortem_diagnostic := graphics_postmortem_destroy(&shared.graphics_postmortem)
+		if postmortem_enabled && postmortem_diagnostic != .None {
+			fmt.eprintfln("graphics postmortem save failed: %v", postmortem_diagnostic)
+			if result == 0 {result = 1}
+		}
 		frame_mailbox_destroy(&shared.frames)
 		command_queue_destroy(shared)
 		vm_log_destroy(shared)
@@ -385,12 +401,26 @@ gui_main :: proc(
 		if !guard_storage_retained {free(ctx)}
 	}
 	shared.running = true
+	shared.graphics_trace_enabled = graphics_trace
+	frame_mailbox_graphics_telemetry_init(&shared.frames, graphics_trace)
 	ctx.shared = shared
 	ctx.allow_hard_drive = attach
 	ctx.attach = attach
 	ctx.cpu_mode = active_settings.cpu_mode
 	ctx.paths = paths^
 	ctx.machine_session_id = strings.clone(fmt.tprintf("gui-%d-%d", os.get_pid(), time.tick_now()))
+	if postmortem_diagnostic := graphics_postmortem_init(
+		&shared.graphics_postmortem,
+		{
+			enabled = graphics_trace,
+			path = paths.graphics_postmortem,
+			session = ctx.machine_session_id,
+			device = "PCI\\VEN_FFFE&DEV_0002",
+		},
+	); postmortem_diagnostic != .None {
+		fmt.eprintfln("graphics postmortem initialization failed: %v", postmortem_diagnostic)
+		return 1
+	}
 	ctx.cmos = cmos
 	ctx.has_cmos = has_cmos
 	ctx.firmware_log_all = firmware_log_all
@@ -436,6 +466,11 @@ gui_main :: proc(
 		ctx.gsw3d_host = &h
 		fmt.println("video: developer-only exact GSW3D triangle profile enabled")
 	}
+	_ = frame_mailbox_graphics_telemetry_note_host_gpu(
+		&shared.frames,
+		host.host_gsw3d_observability_snapshot(&h),
+		time.tick_now(),
+	)
 	preferred_locale, _ := host.host_preferred_locale()
 	defer host.host_locale_destroy(&preferred_locale)
 	lifecycle_watch := Lifecycle_Watch {
@@ -573,6 +608,8 @@ gui_main :: proc(
 	keyboard: host.Host_Keyboard
 	start := time.tick_now()
 	menu_animation_tick := start
+	last_graphics_vm_checkpoint: time.Tick
+	graphics_aggregate_logs: u64
 
 	for {
 		sync.lock(&shared.mu)
@@ -1008,14 +1045,210 @@ gui_main :: proc(
 		st.menu_reveal = host.menu_reveal_step(st.menu_reveal, menu_target, menu_animation_seconds)
 		h.menu_reveal = st.menu_reveal
 
+		graphics_epoch: Graphics_Frame_Epoch
+		graphics_epoch_pending := false
+		graphics_epoch_reset := false
+		postmortem_state: Graphics_Postmortem_State
+		postmortem_state_valid := false
 		if frame_slot := frame_mailbox_acquire(&shared.frames); frame_slot != nil {
-			if frame := vga.scanout_descriptor_render(&frame_slot.scanout); frame != nil {
-				_ = host.host_upload_frame(&h, frame)
+			if graphics_trace {
+				postmortem_state = graphics_postmortem_measured_state(
+					frame_slot.producer_sample.session_generation,
+					frame_slot.producer_sample.machine.gsw3d.device_generation,
+					host.host_gsw3d_observability_snapshot(&h).device_generation,
+					frame_slot.epoch.sequence,
+					.Render,
+				)
+				postmortem_state_valid = true
+			}
+			if graphics_trace && frame_slot.producer_sample.valid {
+				now := time.tick_now()
+				if last_graphics_vm_checkpoint == (time.Tick{}) ||
+				   time.tick_diff(last_graphics_vm_checkpoint, now) >= time.Second {
+					vm_text := graphics_producer_sample_text(frame_slot.producer_sample)
+					_ = graphics_postmortem_publish_vm(
+						&shared.graphics_postmortem,
+						vm_text,
+						frame_slot.epoch.sequence,
+						.Measured,
+					)
+					delete(vm_text)
+					last_graphics_vm_checkpoint = now
+				}
+			}
+			if postmortem_state_valid {
+				_ = graphics_postmortem_publish_state(
+					&shared.graphics_postmortem,
+					postmortem_state,
+				)
+			}
+			graphics_frame_epoch_render_begin(&frame_slot.epoch, time.tick_now())
+			frame := vga.scanout_descriptor_render(&frame_slot.scanout)
+			graphics_frame_epoch_render_complete(&frame_slot.epoch, frame, time.tick_now())
+			if frame == nil {
+				_ = frame_mailbox_graphics_epoch_complete_and_record(
+					&shared.frames,
+					&frame_slot.epoch,
+					.Render_Failed,
+					time.tick_now(),
+				)
+				if postmortem_state_valid {
+					postmortem_state.host_stage = .Failed
+					_ = graphics_postmortem_publish_state(
+						&shared.graphics_postmortem,
+						postmortem_state,
+					)
+				}
+			} else {
+				texture_recreated :=
+					h.tex == nil || h.tex_width != frame.width || h.tex_height != frame.height
+				if postmortem_state_valid {
+					postmortem_state.host_stage = .Upload
+					_ = graphics_postmortem_publish_state(
+						&shared.graphics_postmortem,
+						postmortem_state,
+					)
+				}
+				graphics_frame_epoch_upload_begin(&frame_slot.epoch, time.tick_now())
+				uploaded := host.host_upload_frame(&h, frame)
+				graphics_frame_epoch_upload_complete(
+					&frame_slot.epoch,
+					uploaded,
+					texture_recreated,
+					time.tick_now(),
+				)
+				if uploaded {
+					graphics_epoch = frame_slot.epoch
+					graphics_epoch_pending = true
+				} else {
+					_ = frame_mailbox_graphics_epoch_complete_and_record(
+						&shared.frames,
+						&frame_slot.epoch,
+						.Upload_Failed,
+						time.tick_now(),
+					)
+					if postmortem_state_valid {
+						postmortem_state.host_stage = .Failed
+						_ = graphics_postmortem_publish_state(
+							&shared.graphics_postmortem,
+							postmortem_state,
+						)
+					}
+				}
 			}
 			frame_mailbox_release(&shared.frames, frame_slot)
 		}
-		_ = host.host_gsw3d_proof_drain(&h)
-		host.host_render_guest(&h, st.machine_running)
+		gpu_drain_started := time.tick_now()
+		gpu_drain := host.host_gsw3d_proof_drain(&h)
+		gpu_drain_ended := time.tick_now()
+		frame_mailbox_graphics_telemetry_note_gpu_drain(
+			&shared.frames,
+			gpu_drain_started,
+			gpu_drain_ended,
+			gpu_drain.executed,
+			gpu_drain.failed,
+			gpu_drain.budget_used,
+		)
+		host_gpu_snapshot := host.host_gsw3d_observability_snapshot(&h)
+		host_gpu_interval := frame_mailbox_graphics_telemetry_note_host_gpu(
+			&shared.frames,
+			host_gpu_snapshot,
+			gpu_drain_ended,
+		)
+		selection := graphics_presentation_select(
+			&shared.frames,
+			graphics_epoch,
+			graphics_epoch_pending,
+			{
+				started = gpu_drain_started,
+				ended = gpu_drain_ended,
+				executed = gpu_drain.executed,
+				failed = gpu_drain.failed,
+				budget = gpu_drain.budget_used,
+				host_gpu = host_gpu_interval,
+			},
+		)
+		graphics_epoch = selection.active_epoch
+		graphics_epoch_pending = selection.active
+		if graphics_trace && graphics_epoch_pending && graphics_epoch.source == .Gsw3d {
+			postmortem_state = graphics_postmortem_measured_state(
+				storage_activity_session,
+				graphics_epoch.producer.device_generation,
+				host_gpu_snapshot.device_generation,
+				graphics_epoch.sequence,
+				.Gpu_Drain,
+			)
+			postmortem_state_valid = true
+			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state)
+		} else if graphics_epoch_pending && postmortem_state_valid {
+			postmortem_state = graphics_postmortem_measured_state(
+				postmortem_state.session_generation,
+				postmortem_state.guest_device_generation,
+				host_gpu_snapshot.device_generation,
+				graphics_epoch.sequence,
+				.Gpu_Drain,
+			)
+			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state)
+		}
+		if graphics_trace && selection.has_terminal {
+			terminal := selection.terminal_epoch
+			terminal_stage := Graphics_Postmortem_Host_Stage.Complete
+			if terminal.result == .Reset || terminal.gpu_failures > 0 {
+				terminal_stage = .Failed
+			}
+			terminal_state := graphics_postmortem_measured_state(
+				storage_activity_session,
+				terminal.producer.device_generation,
+				host_gpu_snapshot.device_generation,
+				terminal.sequence,
+				terminal_stage,
+			)
+			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, terminal_state)
+		}
+		if graphics_epoch_pending &&
+		   (!st.machine_running ||
+				   !frame_mailbox_graphics_epoch_current(&shared.frames, &graphics_epoch)) {
+			graphics_epoch_reset = true
+			if postmortem_state_valid {
+				postmortem_state.host_stage = .Failed
+				_ = graphics_postmortem_publish_state(
+					&shared.graphics_postmortem,
+					postmortem_state,
+				)
+			}
+		}
+		compose_started := time.tick_now()
+		if graphics_epoch_pending && postmortem_state_valid {
+			postmortem_state.host_stage = .Compose
+			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state)
+		}
+		compose_ok := host.host_render_guest(&h, st.machine_running)
+		compose_ended := time.tick_now()
+		frame_mailbox_graphics_telemetry_note_compose(
+			&shared.frames,
+			compose_started,
+			compose_ended,
+		)
+		if graphics_epoch_pending {
+			graphics_frame_epoch_compose(&graphics_epoch, compose_started, compose_ended)
+			if !compose_ok {
+				intended := graphics_epoch_reset ? Graphics_Frame_Result.Reset : .Compose_Failed
+				_ = frame_mailbox_graphics_epoch_complete_and_record(
+					&shared.frames,
+					&graphics_epoch,
+					intended,
+					time.tick_now(),
+				)
+				graphics_epoch_pending = false
+				if postmortem_state_valid {
+					postmortem_state.host_stage = .Failed
+					_ = graphics_postmortem_publish_state(
+						&shared.graphics_postmortem,
+						postmortem_state,
+					)
+				}
+			}
+		}
 
 		imgui_impl_sdlrenderer3.NewFrame()
 		imgui_impl_sdl3.NewFrame()
@@ -1412,9 +1645,79 @@ gui_main :: proc(
 			guided_install_destroy(&guided_install)
 		case .None:
 		}
+		if graphics_epoch_pending &&
+		   (!st.machine_running ||
+				   !frame_mailbox_graphics_epoch_current(&shared.frames, &graphics_epoch)) {
+			graphics_epoch_reset = true
+			if postmortem_state_valid {
+				postmortem_state.host_stage = .Failed
+				_ = graphics_postmortem_publish_state(
+					&shared.graphics_postmortem,
+					postmortem_state,
+				)
+			}
+		}
 		imgui.Render()
 		imgui_impl_sdlrenderer3.RenderDrawData(imgui.GetDrawData(), h.ren)
-		sdl3.RenderPresent(h.ren)
+		graphics_present_started := time.tick_now()
+		if graphics_epoch_pending {
+			if postmortem_state_valid {
+				postmortem_state.host_stage = .Present
+				_ = graphics_postmortem_publish_state(
+					&shared.graphics_postmortem,
+					postmortem_state,
+				)
+			}
+			graphics_frame_epoch_present_begin(&graphics_epoch, graphics_present_started)
+		}
+		present_ok := sdl3.RenderPresent(h.ren)
+		graphics_presented := time.tick_now()
+		frame_mailbox_graphics_telemetry_note_present(
+			&shared.frames,
+			graphics_present_started,
+			graphics_presented,
+		)
+		if graphics_epoch_pending {
+			result := present_ok ? Graphics_Frame_Result.Presented : .Present_Failed
+			if graphics_epoch_reset || !st.machine_running {
+				result = .Reset
+			}
+			result = frame_mailbox_graphics_epoch_complete_and_record(
+				&shared.frames,
+				&graphics_epoch,
+				result,
+				graphics_presented,
+			)
+			if postmortem_state_valid {
+				postmortem_state.host_stage = result == .Presented ? .Complete : .Failed
+				_ = graphics_postmortem_publish_state(
+					&shared.graphics_postmortem,
+					postmortem_state,
+				)
+			}
+		}
+		if !present_ok && graphics_trace {
+			fmt.eprintfln("graphics presentation failed: %s", sdl3.GetError())
+		}
+		if graphics_trace {
+			if graphics_window, ready := frame_mailbox_graphics_telemetry_take_window(
+				&shared.frames,
+				graphics_presented,
+			); ready {
+				text := graphics_telemetry_window_text(graphics_window)
+				if graphics_telemetry_aggregate_log_admit(&graphics_aggregate_logs) {
+					fmt.println(text)
+				}
+				_ = graphics_postmortem_publish_window(
+					&shared.graphics_postmortem,
+					text,
+					graphics_window.latest_epoch,
+					.Derived,
+					.Measured,
+				)
+				delete(text)
+			}
+		}
 		if !h.vsync {time.sleep(8 * time.Millisecond)} 	// no vsync: pace manually
 
 		free_all(context.temp_allocator)
@@ -1445,6 +1748,14 @@ gui_main :: proc(
 	guided_install_destroy(&guided_install)
 
 	thread.destroy(vm_thr)
+	if graphics_trace {
+		trace := frame_mailbox_graphics_trace_text(&shared.frames)
+		if trace != "" {
+			fmt.println("graphics trace:")
+			fmt.print(trace)
+		}
+		delete(trace)
+	}
 
 	imgui_impl_sdlrenderer3.Shutdown()
 	imgui_impl_sdl3.Shutdown()

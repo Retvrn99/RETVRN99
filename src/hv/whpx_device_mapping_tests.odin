@@ -143,14 +143,17 @@ whpx_tracked_device_mapping_reports_and_clears_guest_writes :: proc(t: ^testing.
 	base: u64 = 0xE000_0000
 	backing, mapped := map_device_memory_tracked(&vm, base, 0x2000)
 	if !testing.expect(t, mapped) {return}
-	dirty, query_ok := query_device_memory_dirty(&vm, backing)
+	dirty, pages, query_ok := query_device_memory_dirty_pages(&vm, backing)
 	testing.expect(t, query_ok && !dirty)
+	testing.expect_value(t, pages, u64(0))
 	if !whpx_device_mapping_test_write(t, &vm, base + 0x1003, 0x5A) {return}
-	dirty, query_ok = query_device_memory_dirty(&vm, backing)
+	dirty, pages, query_ok = query_device_memory_dirty_pages(&vm, backing)
 	testing.expect(t, query_ok && dirty)
+	testing.expect_value(t, pages, u64(1))
 	testing.expect_value(t, backing[0x1003], u8(0x5A))
-	dirty, query_ok = query_device_memory_dirty(&vm, backing)
+	dirty, pages, query_ok = query_device_memory_dirty_pages(&vm, backing)
 	testing.expect(t, query_ok && !dirty)
+	testing.expect_value(t, pages, u64(0))
 }
 
 @(test)
@@ -171,8 +174,9 @@ whpx_device_alias_maps_banked_subrange_and_tracks_writes :: proc(t: ^testing.T) 
 	backing[0x2000] = 0x72
 
 	testing.expect(t, set_device_memory_alias(&vm, backing, aperture, 0x1000, 0x1000, true))
-	dirty, query_ok := query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	dirty, pages, query_ok := query_device_memory_alias_dirty_pages(&vm, aperture, 0x1000)
 	testing.expect(t, query_ok && !dirty)
+	testing.expect_value(t, pages, u64(0))
 	fallbacks := vm.mmio_fallbacks
 	if !whpx_device_mapping_test_indexed_store(t, &vm, aperture, 0xA1B2_C3D4) {return}
 	testing.expect_value(t, vm.mmio_fallbacks, fallbacks)
@@ -182,10 +186,12 @@ whpx_device_alias_maps_banked_subrange_and_tracks_writes :: proc(t: ^testing.T) 
 	}
 	if !whpx_device_mapping_test_write(t, &vm, aperture + 3, 0x5A) {return}
 	testing.expect_value(t, backing[0x1003], u8(0x5A))
-	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	dirty, pages, query_ok = query_device_memory_alias_dirty_pages(&vm, aperture, 0x1000)
 	testing.expect(t, query_ok && dirty)
-	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	testing.expect_value(t, pages, u64(1))
+	dirty, pages, query_ok = query_device_memory_alias_dirty_pages(&vm, aperture, 0x1000)
 	testing.expect(t, query_ok && !dirty)
+	testing.expect_value(t, pages, u64(0))
 
 	// A dirty alias is sampled before its source bank changes.
 	if !whpx_device_mapping_test_write(t, &vm, aperture + 4, 0xA5) {return}
@@ -194,18 +200,21 @@ whpx_device_alias_maps_banked_subrange_and_tracks_writes :: proc(t: ^testing.T) 
 		testing.expect_value(t, value, u8(0x72))
 	}
 	testing.expect_value(t, backing[0x1004], u8(0xA5))
-	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	dirty, pages, query_ok = query_device_memory_alias_dirty_pages(&vm, aperture, 0x1000)
 	testing.expect(t, query_ok && dirty)
+	testing.expect_value(t, pages, u64(1))
 
 	if !whpx_device_mapping_test_write(t, &vm, aperture + 5, 0xC3) {return}
 	testing.expect(t, set_device_memory_alias(&vm, backing, aperture, 0x2000, 0x1000, false))
 	if value, ok := whpx_device_mapping_test_read(t, &vm, aperture); ok {
 		testing.expect_value(t, value, u8(0xFF))
 	}
-	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	dirty, pages, query_ok = query_device_memory_alias_dirty_pages(&vm, aperture, 0x1000)
 	testing.expect(t, query_ok && dirty)
-	dirty, query_ok = query_device_memory_alias_dirty(&vm, aperture, 0x1000)
+	testing.expect_value(t, pages, u64(1))
+	dirty, pages, query_ok = query_device_memory_alias_dirty_pages(&vm, aperture, 0x1000)
 	testing.expect(t, query_ok && !dirty)
+	testing.expect_value(t, pages, u64(0))
 	testing.expect_value(t, backing[0x2005], u8(0xC3))
 	testing.expect(t, !vm.device_aliases[0].mapped)
 }

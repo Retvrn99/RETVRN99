@@ -129,6 +129,10 @@ Machine :: struct {
 	runtime_diagnostic:                  Runtime_Diagnostic_State,
 	hardware_trace:                      ^Hardware_Trace,
 	scanout_copies:                      u64,
+	legacy_aperture_read_bytes:          u64,
+	legacy_aperture_write_bytes:         u64,
+	lfb_dirty_page_observations:         u64,
+	bank_alias_dirty_page_observations:  u64,
 	cpu_halted:                          bool,
 	dbg_out:                             [dynamic]u8, // firmware debug ports 0x402 and 0x500
 	mmio_seen:                           [Mmio_Zone]bool, // log tolerated zones only once
@@ -1717,6 +1721,17 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 	}
 	if decoded_gpa >= video.LEGACY_APERTURE_BASE &&
 	   decoded_gpa + u64(len(data)) <= video.LEGACY_APERTURE_END {
+		if write {
+			m.legacy_aperture_write_bytes = machine_graphics_saturating_add(
+				m.legacy_aperture_write_bytes,
+				u64(len(data)),
+			)
+		} else {
+			m.legacy_aperture_read_bytes = machine_graphics_saturating_add(
+				m.legacy_aperture_read_bytes,
+				u64(len(data)),
+			)
+		}
 		_ = video.vga_aperture_access(&m.vga, decoded_gpa, write, data, m.active_ns)
 		machine_rearm_wake(m)
 		return
@@ -2436,8 +2451,11 @@ machine_vga_sync :: proc(m: ^Machine) {
 @(private = "file")
 machine_publish_vbe_writes :: proc(m: ^Machine) -> bool {
 	if m == nil || m.vm.part == nil {return true}
-	lfb_dirty, lfb_ok := hv.query_device_memory_dirty(&m.vm, video.vga_vram(&m.vga))
-	bank_dirty, bank_ok := hv.query_device_memory_alias_dirty(
+	lfb_dirty, lfb_pages, lfb_ok := hv.query_device_memory_dirty_pages(
+		&m.vm,
+		video.vga_vram(&m.vga),
+	)
+	bank_dirty, bank_pages, bank_ok := hv.query_device_memory_alias_dirty_pages(
 		&m.vm,
 		video.LEGACY_APERTURE_BASE,
 		video.DISPI_BANK_SIZE,
@@ -2446,6 +2464,14 @@ machine_publish_vbe_writes :: proc(m: ^Machine) -> bool {
 		bus_freeze(&m.bus, "WHPX VGA dirty-page query failed")
 		return false
 	}
+	m.lfb_dirty_page_observations = machine_graphics_saturating_add(
+		m.lfb_dirty_page_observations,
+		lfb_pages,
+	)
+	m.bank_alias_dirty_page_observations = machine_graphics_saturating_add(
+		m.bank_alias_dirty_page_observations,
+		bank_pages,
+	)
 	_ = video.vga_publish_external_vbe_writes(&m.vga, lfb_dirty || bank_dirty)
 	return true
 }

@@ -73,14 +73,17 @@ Gsw_Pixel_Format :: enum u32 {
 }
 
 Gsw_Vga_Metrics :: struct {
-	commands:        u64,
-	malformed:       u64,
-	presents:        u64,
-	fills:           u64,
-	copies:          u64,
-	palette_updates: u64,
-	blits:           u64,
-	software_pixels: u64,
+	mmio_write_count:           u64,
+	mmio_write_bytes:           u64,
+	commands:                   u64,
+	malformed:                  u64,
+	presents:                   u64,
+	fills:                      u64,
+	copies:                     u64,
+	palette_updates:            u64,
+	blits:                      u64,
+	software_pixels:            u64,
+	fenced_command_completions: u64,
 }
 
 Gsw_Vga :: struct {
@@ -604,6 +607,7 @@ gsw_vga_process :: proc(g: ^Gsw_Vga, ram: []u8, signal_fence_irq := true) {
 		g.ring_head = (g.ring_head + length) & (g.ring_size - 1)
 		if fence != 0 {
 			g.completed_fence = fence
+			g.metrics.fenced_command_completions += 1
 			if signal_fence_irq {
 				g.irq_status |= GSW_VGA_IRQ_2D
 				gsw_vga_sync_irq(g)
@@ -669,6 +673,8 @@ gsw_vga_mmio_read :: proc(g: ^Gsw_Vga, offset: u32, data: []u8) {
 }
 
 gsw_vga_mmio_write :: proc(g: ^Gsw_Vga, offset: u32, data: []u8, ram: []u8) {
+	g.metrics.mmio_write_count += 1
+	g.metrics.mmio_write_bytes += u64(len(data))
 	if len(data) != 4 || offset & 3 != 0 {gsw_vga_fail(g); return}
 	value := gsw_rd32(data, 0)
 	if handled := gsw3d_register_write(&g.three_d, offset, value, ram); handled {

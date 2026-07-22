@@ -912,6 +912,8 @@ test_machine_vga_legacy_aperture_batches_mmio_transaction :: proc(t: ^testing.T)
 	data := [4]u8{0x41, 0x42, 0x43, 0x44}
 
 	machine_mmio(m, 0xA0010, true, data[:])
+	testing.expect_value(t, m.legacy_aperture_write_bytes, u64(4))
+	testing.expect_value(t, m.legacy_aperture_read_bytes, u64(0))
 	testing.expect_value(t, m.vga.content_generation, initial_content + 1)
 	for p in 0 ..< 4 {
 		testing.expect_value(t, video.vga_vram(&m.vga)[0x10 + p], data[p])
@@ -919,6 +921,8 @@ test_machine_vga_legacy_aperture_batches_mmio_transaction :: proc(t: ^testing.T)
 
 	readback: [4]u8
 	machine_mmio(m, 0xA0010, false, readback[:])
+	testing.expect_value(t, m.legacy_aperture_write_bytes, u64(4))
+	testing.expect_value(t, m.legacy_aperture_read_bytes, u64(4))
 	testing.expect_value(t, readback, data)
 	testing.expect_value(t, m.vga.content_generation, initial_content + 1)
 }

@@ -402,8 +402,15 @@ dispi_write_register :: proc(v: ^Vga, index, value: u16) -> bool {
 		available := dispi_effective_bpp(v.dispi[DISPI_INDEX_BPP]) == 4 ? VRAM_SIZE / 4 : VRAM_SIZE
 		if int(bank) * dispi_bank_granularity(v) + DISPI_BANK_SIZE > available {return false}
 		direction := value & DISPI_BANK_RW
+		old_read, old_write := v.bank_read, v.bank_write
 		if direction == 0 || direction & DISPI_BANK_RD != 0 {v.bank_read = bank}
 		if direction == 0 || direction & DISPI_BANK_WR != 0 {v.bank_write = bank}
+		v.bank_program_count += 1
+		read_changed := old_read != v.bank_read
+		write_changed := old_write != v.bank_write
+		if read_changed {v.bank_read_change_count += 1}
+		if write_changed {v.bank_write_change_count += 1}
+		if read_changed || write_changed {v.bank_change_count += 1}
 		v.dispi[index] = bank
 		return true
 	case DISPI_INDEX_DDC:

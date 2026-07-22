@@ -30,6 +30,22 @@ gsw_test_header :: proc(
 }
 
 @(test)
+gsw_vga_test_raw_mmio_write_metrics_include_rejected_accesses :: proc(t: ^testing.T) {
+	g: Gsw_Vga
+	gsw_vga_init(&g, nil)
+	defer gsw_vga_destroy(&g)
+	valid: [4]u8
+	invalid: [3]u8
+
+	gsw_vga_mmio_write(&g, GSW_VGA_REG_STATUS, valid[:], nil)
+	gsw_vga_mmio_write(&g, GSW_VGA_REG_STATUS, invalid[:], nil)
+
+	testing.expect_value(t, g.metrics.mmio_write_count, u64(2))
+	testing.expect_value(t, g.metrics.mmio_write_bytes, u64(7))
+	testing.expect_value(t, g.metrics.malformed, u64(1))
+}
+
+@(test)
 gsw_vga_test_v2_surface_offset_present :: proc(t: ^testing.T) {
 	v: Vga
 	framebuffer := test_vga_init(t, &v)
@@ -109,7 +125,9 @@ gsw_vga_test_v2_present_flips_between_surface_offsets :: proc(t: ^testing.T) {
 }
 
 @(test)
-gsw_vga_test_mode_and_present_reject_unrepresentable_surfaces_without_scanout :: proc(t: ^testing.T) {
+gsw_vga_test_mode_and_present_reject_unrepresentable_surfaces_without_scanout :: proc(
+	t: ^testing.T,
+) {
 	framebuffer: [4096]u8
 	ram: [1024]u8
 
@@ -339,6 +357,7 @@ gsw_vga_test_fill_copy_present_and_fence_irq :: proc(t: ^testing.T) {
 	testing.expect_value(t, g.present_generation, u64(1))
 	testing.expect_value(t, g.metrics.commands, u64(3))
 	testing.expect_value(t, g.metrics.software_pixels, u64(16))
+	testing.expect_value(t, g.metrics.fenced_command_completions, u64(3))
 }
 
 @(test)
@@ -367,6 +386,7 @@ gsw_vga_test_unfenced_command_preserves_completed_fence_and_irq :: proc(t: ^test
 	testing.expect_value(t, g.completed_fence, u64(7))
 	testing.expect(t, g.irq_status & GSW_VGA_IRQ_2D != 0)
 	testing.expect_value(t, g.metrics.commands, u64(2))
+	testing.expect_value(t, g.metrics.fenced_command_completions, u64(1))
 }
 
 @(test)

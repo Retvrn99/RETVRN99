@@ -2,6 +2,7 @@
 package host
 
 import "core:testing"
+import "core:time"
 
 @(test)
 host_input_test_adjacent_motion_coalesces_only_with_matching_state :: proc(t: ^testing.T) {
@@ -108,9 +109,9 @@ host_input_test_mouse_release_updates_full_edge_queue_authoritatively :: proc(t:
 		testing.expect(t, host_input_push_wheel(&q, i32(i + 1), 0))
 	}
 	for i in 0 ..< HOST_KEY_IDS {
-		event := Host_Input_Event{
-			kind = .Key,
-			key_n = 1,
+		event := Host_Input_Event {
+			kind            = .Key,
+			key_n           = 1,
 			durable_release = true,
 		}
 		event.key[0] = u8(i)
@@ -192,5 +193,33 @@ host_input_test_print_screen_and_pause_sequences :: proc(t: ^testing.T) {
 	testing.expect_value(t, make.key, [HOST_INPUT_KEY_BYTES]u8{0xE0, 0x2A, 0xE0, 0x37, 0, 0})
 	testing.expect_value(t, brk.key, [HOST_INPUT_KEY_BYTES]u8{0xE0, 0xB7, 0xE0, 0xAA, 0, 0})
 	testing.expect_value(t, pause.key_n, u8(6))
-	testing.expect_value(t, pause.key, [HOST_INPUT_KEY_BYTES]u8{0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5})
+	testing.expect_value(
+		t,
+		pause.key,
+		[HOST_INPUT_KEY_BYTES]u8{0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5},
+	)
+}
+
+@(test)
+host_input_test_residence_is_monotonic_and_coalescing_keeps_oldest_tick :: proc(t: ^testing.T) {
+	q: Host_Input_Queue
+	first := Host_Input_Event {
+		kind    = .Mouse_Motion,
+		dx      = 3,
+		buttons = MOUSE_LEFT,
+	}
+	second := Host_Input_Event {
+		kind    = .Mouse_Motion,
+		dx      = 4,
+		buttons = MOUSE_LEFT,
+	}
+	testing.expect(t, host_input_push_at(&q, first, time.Tick{100}))
+	testing.expect(t, host_input_push_at(&q, second, time.Tick{250}))
+	testing.expect_value(t, q.count, 1)
+	event, ok := host_input_pop(&q)
+	if !testing.expect(t, ok) {return}
+	testing.expect_value(t, event.dx, i32(7))
+	testing.expect_value(t, event.queued_at, time.Tick{100})
+	testing.expect_value(t, host_input_residence_ns(&event, time.Tick{400}), u64(300))
+	testing.expect_value(t, host_input_residence_ns(&event, time.Tick{50}), u64(0))
 }

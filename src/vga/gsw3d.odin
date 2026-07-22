@@ -192,45 +192,83 @@ Gsw3d_Metrics :: struct {
 	resets:             u64,
 }
 
+Gsw3d_Admission_Rejection :: enum {
+	None,
+	Poisoned,
+	Queue_Limit,
+	Present_Limit,
+	Owned_Bytes_Limit,
+}
+
+Gsw3d_Admission_Rejection_Counters :: struct {
+	total:             u64,
+	poisoned:          u64,
+	queue_limit:       u64,
+	present_limit:     u64,
+	owned_bytes_limit: u64,
+}
+
+Gsw3d_Queue_Snapshot :: struct {
+	metrics:                     Gsw3d_Metrics,
+	queue_depth_current:         int,
+	queue_depth_high_water:      int,
+	queued_presents_current:     int,
+	queued_presents_high_water:  int,
+	submitted_presents:          u64,
+	owned_work_bytes_current:    u64,
+	owned_work_bytes_high_water: u64,
+	active:                      bool,
+	completion_queue_depth:      int,
+	completed_fence:             u64,
+	device_generation:           u64,
+	queue_retries:               u64,
+	admission_rejections:        Gsw3d_Admission_Rejection_Counters,
+}
+
 Gsw3d :: struct {
-	allocator:                  runtime.Allocator,
-	ring_gpa:                   u64,
-	ring_size:                  u32,
-	ring_head:                  u32,
-	ring_tail:                  u32,
-	status:                     u32,
-	error:                      Gsw3d_Error,
-	completed_fence:            u64,
-	regions:                    [GSW3D_MAX_REGIONS]Gsw3d_Region,
-	contexts:                   [GSW3D_MAX_CONTEXTS]Gsw3d_Context,
-	resources:                  [GSW3D_MAX_RESOURCES]Gsw3d_Resource,
-	backend:                    Gsw3d_Backend,
-	metrics:                    Gsw3d_Metrics,
-	mu:                         sync.Mutex,
-	work_ready:                 sync.Cond,
-	idle:                       sync.Cond,
-	worker:                     ^thread.Thread,
-	queue:                      [GSW3D_MAX_QUEUED_WORK]^Gsw3d_Work,
-	queue_head:                 int,
-	queue_tail:                 int,
-	queue_count:                int,
-	queued_presents:            int,
-	owned_work_bytes:           u64,
-	active:                     bool,
-	stopping:                   bool,
-	poisoned:                   bool,
-	generation:                 u64,
-	reset_pending:              bool,
-	reset_completed:            bool,
-	pending_fence:              u64,
-	pending_completion:         bool,
-	pending_error:              Gsw3d_Error,
-	completions:                [GSW3D_COMPLETION_FIFO_CAPACITY]Gsw3d_Completion_Record,
-	completion_head:            int,
-	completion_tail:            int,
-	completion_count:           int,
-	completion_sequence:        u64,
-	completion_failure_pending: bool,
+	allocator:                   runtime.Allocator,
+	ring_gpa:                    u64,
+	ring_size:                   u32,
+	ring_head:                   u32,
+	ring_tail:                   u32,
+	status:                      u32,
+	error:                       Gsw3d_Error,
+	completed_fence:             u64,
+	regions:                     [GSW3D_MAX_REGIONS]Gsw3d_Region,
+	contexts:                    [GSW3D_MAX_CONTEXTS]Gsw3d_Context,
+	resources:                   [GSW3D_MAX_RESOURCES]Gsw3d_Resource,
+	backend:                     Gsw3d_Backend,
+	metrics:                     Gsw3d_Metrics,
+	mu:                          sync.Mutex,
+	work_ready:                  sync.Cond,
+	idle:                        sync.Cond,
+	worker:                      ^thread.Thread,
+	queue:                       [GSW3D_MAX_QUEUED_WORK]^Gsw3d_Work,
+	queue_head:                  int,
+	queue_tail:                  int,
+	queue_count:                 int,
+	queue_depth_high_water:      int,
+	queued_presents:             int,
+	queued_presents_high_water:  int,
+	owned_work_bytes:            u64,
+	owned_work_bytes_high_water: u64,
+	queue_retries:               u64,
+	admission_rejections:        Gsw3d_Admission_Rejection_Counters,
+	active:                      bool,
+	stopping:                    bool,
+	poisoned:                    bool,
+	generation:                  u64,
+	reset_pending:               bool,
+	reset_completed:             bool,
+	pending_fence:               u64,
+	pending_completion:          bool,
+	pending_error:               Gsw3d_Error,
+	completions:                 [GSW3D_COMPLETION_FIFO_CAPACITY]Gsw3d_Completion_Record,
+	completion_head:             int,
+	completion_tail:             int,
+	completion_count:            int,
+	completion_sequence:         u64,
+	completion_failure_pending:  bool,
 }
 
 @(private = "file")
@@ -252,6 +290,53 @@ gsw3d_init :: proc(d: ^Gsw3d) {
 gsw3d_work_owned_bytes :: proc(work: ^Gsw3d_Work) -> u64 {
 	if work == nil {return 0}
 	return u64(len(work.batch)) + u64(len(work.upload))
+}
+
+@(private = "package")
+gsw3d_note_queue_high_water_locked :: proc(d: ^Gsw3d) {
+	if d == nil {return}
+	d.queue_depth_high_water = max(d.queue_depth_high_water, d.queue_count)
+	d.queued_presents_high_water = max(d.queued_presents_high_water, d.queued_presents)
+	d.owned_work_bytes_high_water = max(d.owned_work_bytes_high_water, d.owned_work_bytes)
+}
+
+@(private = "file")
+gsw3d_note_admission_rejection_locked :: proc(d: ^Gsw3d, reason: Gsw3d_Admission_Rejection) {
+	if d == nil || reason == .None {return}
+	d.admission_rejections.total += 1
+	switch reason {
+	case .Poisoned:
+		d.admission_rejections.poisoned += 1
+	case .Queue_Limit:
+		d.admission_rejections.queue_limit += 1
+	case .Present_Limit:
+		d.admission_rejections.present_limit += 1
+	case .Owned_Bytes_Limit:
+		d.admission_rejections.owned_bytes_limit += 1
+	case .None:
+	}
+}
+
+gsw3d_queue_snapshot :: proc(d: ^Gsw3d) -> Gsw3d_Queue_Snapshot {
+	if d == nil {return {}}
+	sync.lock(&d.mu)
+	defer sync.unlock(&d.mu)
+	return {
+		metrics = d.metrics,
+		queue_depth_current = d.queue_count,
+		queue_depth_high_water = d.queue_depth_high_water,
+		queued_presents_current = d.queued_presents,
+		queued_presents_high_water = d.queued_presents_high_water,
+		submitted_presents = d.metrics.presents,
+		owned_work_bytes_current = d.owned_work_bytes,
+		owned_work_bytes_high_water = d.owned_work_bytes_high_water,
+		active = d.active,
+		completion_queue_depth = d.completion_count,
+		completed_fence = d.completed_fence,
+		device_generation = d.generation,
+		queue_retries = d.queue_retries,
+		admission_rejections = d.admission_rejections,
+	}
 }
 
 @(private = "file")
@@ -453,6 +538,7 @@ gsw3d_reset :: proc(d: ^Gsw3d) {
 	d.pending_completion = false
 	d.pending_error = .None
 	d.pending_fence = 0
+	d.completed_fence = 0
 	d.reset_completed = false
 	d.reset_pending = reset_work != nil
 	if reset_work != nil {
@@ -467,6 +553,7 @@ gsw3d_reset :: proc(d: ^Gsw3d) {
 			d.queue[d.queue_tail] = reset_work
 			d.queue_tail = (d.queue_tail + 1) % GSW3D_MAX_QUEUED_WORK
 			d.queue_count += 1
+			gsw3d_note_queue_high_water_locked(d)
 			queued = true
 		}
 		sync.unlock(&d.mu)
@@ -481,7 +568,6 @@ gsw3d_reset :: proc(d: ^Gsw3d) {
 	for &resource in d.resources {resource = {}}
 	d.ring_head = d.ring_tail
 	d.error = .None
-	d.completed_fence = 0
 	d.status = d.worker != nil ? GSW3D_STATUS_RESET | GSW3D_STATUS_BUSY : 0
 	d.metrics.resets += 1
 }
@@ -778,17 +864,23 @@ gsw3d_apply_resource_lifetimes :: proc(
 	return offset == len(batch)
 }
 
-@(private = "file")
+@(private = "package")
 gsw3d_queue_owned :: proc(d: ^Gsw3d, work: ^Gsw3d_Work) -> bool {
 	sync.lock(&d.mu)
 	owned_bytes := gsw3d_work_owned_bytes(work)
-	full :=
-		d.poisoned ||
-		d.queue_count == GSW3D_MAX_QUEUED_WORK ||
-		work.kind == .Direct_Present && d.queued_presents >= GSW3D_MAX_QUEUED_PRESENTS ||
-		d.owned_work_bytes > GSW3D_MAX_QUEUED_OWNED_BYTES ||
-		owned_bytes > GSW3D_MAX_QUEUED_OWNED_BYTES - d.owned_work_bytes
-	if full {
+	rejection := Gsw3d_Admission_Rejection.None
+	if d.poisoned {
+		rejection = .Poisoned
+	} else if d.queue_count >= GSW3D_MAX_QUEUED_WORK {
+		rejection = .Queue_Limit
+	} else if work.kind == .Direct_Present && d.queued_presents >= GSW3D_MAX_QUEUED_PRESENTS {
+		rejection = .Present_Limit
+	} else if d.owned_work_bytes > GSW3D_MAX_QUEUED_OWNED_BYTES ||
+	   owned_bytes > GSW3D_MAX_QUEUED_OWNED_BYTES - d.owned_work_bytes {
+		rejection = .Owned_Bytes_Limit
+	}
+	if rejection != .None {
+		gsw3d_note_admission_rejection_locked(d, rejection)
 		sync.unlock(&d.mu)
 		return false
 	}
@@ -796,8 +888,12 @@ gsw3d_queue_owned :: proc(d: ^Gsw3d, work: ^Gsw3d_Work) -> bool {
 	d.queue[d.queue_tail] = work
 	d.queue_tail = (d.queue_tail + 1) % GSW3D_MAX_QUEUED_WORK
 	d.queue_count += 1
-	if work.kind == .Direct_Present {d.queued_presents += 1}
+	if work.kind == .Direct_Present {
+		d.queued_presents += 1
+		d.metrics.presents += 1
+	}
 	d.owned_work_bytes += owned_bytes
+	gsw3d_note_queue_high_water_locked(d)
 	sync.unlock(&d.mu)
 	sync.cond_signal(&d.work_ready)
 	return true
@@ -1023,7 +1119,6 @@ gsw3d_execute_descriptor :: proc(d: ^Gsw3d, descriptor, ram: []u8) -> Gsw3d_Exec
 			return .Invalid
 		}
 		if !gsw3d_queue_owned(d, work) {gsw3d_work_free(d, work); return .Retry}
-		d.metrics.presents += 1
 	case:
 		return .Invalid
 	}
@@ -1075,6 +1170,7 @@ gsw3d_process :: proc(d: ^Gsw3d, ram: []u8) {
 			return
 		case .Retry:
 			sync.lock(&d.mu)
+			d.queue_retries += 1
 			poisoned = d.poisoned
 			sync.unlock(&d.mu)
 			if poisoned {

@@ -22,6 +22,11 @@ test_profile_paths_from_home :: proc(t: ^testing.T) {
 		testing.expect_value(t, paths.cmos, `test-home\.retvrn99\cmos.bin`)
 		testing.expect_value(t, paths.install, `test-home\.retvrn99\install`)
 		testing.expect_value(t, paths.install_state, `test-home\.retvrn99\install-state.json`)
+		testing.expect_value(
+			t,
+			paths.graphics_postmortem,
+			`test-home\.retvrn99\graphics-postmortem.json`,
+		)
 	} else {
 		testing.expect_value(t, paths.root, "test-home/.retvrn99")
 		testing.expect_value(t, paths.default_image, "test-home/.retvrn99/c_drive.img")
@@ -29,6 +34,11 @@ test_profile_paths_from_home :: proc(t: ^testing.T) {
 		testing.expect_value(t, paths.cmos, "test-home/.retvrn99/cmos.bin")
 		testing.expect_value(t, paths.install, "test-home/.retvrn99/install")
 		testing.expect_value(t, paths.install_state, "test-home/.retvrn99/install-state.json")
+		testing.expect_value(
+			t,
+			paths.graphics_postmortem,
+			"test-home/.retvrn99/graphics-postmortem.json",
+		)
 	}
 }
 

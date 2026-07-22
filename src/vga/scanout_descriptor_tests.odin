@@ -17,6 +17,10 @@ scanout_descriptor_test_captures_active_vram_and_renders_later :: proc(t: ^testi
 	defer scanout_descriptor_destroy(&descriptor)
 	testing.expect(t, scanout_descriptor_capture(&descriptor, &v))
 	testing.expect_value(t, descriptor.generation, v.content_generation)
+	testing.expect_value(t, descriptor.state.bank_read, v.bank_read)
+	testing.expect_value(t, descriptor.state.bank_write, v.bank_write)
+	testing.expect_value(t, descriptor.mode_observability.scanout_generation, v.content_generation)
+	testing.expect_value(t, descriptor.mode_observability.kind, Display_Kind.Xrgb_8888)
 	testing.expect(t, descriptor.bytes_copied < VRAM_SIZE)
 	v.vram[0], v.vram[1], v.vram[2] = 0, 0, 0
 	frame := scanout_descriptor_render(&descriptor)

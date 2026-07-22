@@ -69,29 +69,31 @@ Memory_Reservation_Kind :: enum {
 }
 
 Device_Mapping :: struct {
-	gpa:              u64,
-	host:             rawptr,
-	size:             int,
-	track_dirty:      bool,
-	dirty_pending:    bool,
-	dirty_bitmap:     []u64,
-	mapped:           bool,
-	requested_gpa:    u64,
-	requested_mapped: bool,
-	request_pending:  bool,
+	gpa:                 u64,
+	host:                rawptr,
+	size:                int,
+	track_dirty:         bool,
+	dirty_pending:       bool,
+	dirty_pending_pages: u64,
+	dirty_bitmap:        []u64,
+	mapped:              bool,
+	requested_gpa:       u64,
+	requested_mapped:    bool,
+	request_pending:     bool,
 }
 
 Device_Alias :: struct {
-	gpa:              u64,
-	size:             u64,
-	mapping_index:    int,
-	backing_offset:   u64,
-	dirty_pending:    bool,
-	dirty_bitmap:     []u64,
-	mapped:           bool,
-	requested_offset: u64,
-	requested_mapped: bool,
-	request_pending:  bool,
+	gpa:                 u64,
+	size:                u64,
+	mapping_index:       int,
+	backing_offset:      u64,
+	dirty_pending:       bool,
+	dirty_pending_pages: u64,
+	dirty_bitmap:        []u64,
+	mapped:              bool,
+	requested_offset:    u64,
+	requested_mapped:    bool,
+	request_pending:     bool,
 }
 
 Io_Origin :: struct {
@@ -153,6 +155,9 @@ Vm :: struct {
 	mmio_string_chunks:          u64,
 	mmio_string_elements:        u64,
 	run_calls:                   u64,
+	physical_exit_count:         u64,
+	physical_exit_reasons:       [WHPX_PHYSICAL_EXIT_REASON_COUNT]u64,
+	mmio_fallback_by_kind:       [WHPX_MMIO_KIND_COUNT]Whpx_Mmio_Fallback_Counters,
 	run_cancellations:           u64,
 	device_alias_maps:           u64,
 	device_alias_unmaps:         u64,
@@ -310,8 +315,30 @@ query_device_memory_dirty :: proc(vm: ^Vm, backing: []u8) -> (dirty: bool, ok: b
 	return whpx_query_device_memory_dirty(vm, backing)
 }
 
+query_device_memory_dirty_pages :: proc(
+	vm: ^Vm,
+	backing: []u8,
+) -> (
+	dirty: bool,
+	pages: u64,
+	ok: bool,
+) {
+	return whpx_query_device_memory_dirty_pages(vm, backing)
+}
+
 query_device_memory_alias_dirty :: proc(vm: ^Vm, gpa, size: u64) -> (dirty: bool, ok: bool) {
 	return whpx_query_device_memory_alias_dirty(vm, gpa, size)
+}
+
+query_device_memory_alias_dirty_pages :: proc(
+	vm: ^Vm,
+	gpa, size: u64,
+) -> (
+	dirty: bool,
+	pages: u64,
+	ok: bool,
+) {
+	return whpx_query_device_memory_alias_dirty_pages(vm, gpa, size)
 }
 
 // Requests a page-aligned device mapping state change. The backing allocation

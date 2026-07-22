@@ -60,7 +60,10 @@ vga_in :: proc(v: ^Vga, port: u16) -> u8 {
 }
 
 vga_io_write :: proc(v: ^Vga, port: u16, size: u8, value: u32) {
-	if v == nil || !v.pci_io_enabled {return}
+	if v == nil {return}
+	v.io_write_count += 1
+	v.io_write_bytes += u64(max(size, 1))
+	if !v.pci_io_enabled {return}
 	if port == DISPI_PORT_INDEX || port == DISPI_PORT_DATA {
 		if dispi_io_write(v, port, size, value) {vga_note_content_change(v)}
 		return

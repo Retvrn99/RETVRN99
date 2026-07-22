@@ -379,6 +379,19 @@ whpx_device_mapping_index :: proc(vm: ^Vm, backing: []u8) -> int {
 }
 
 @(private = "file")
+whpx_dirty_bitmap_pages :: proc(bitmap: []u64) -> u64 {
+	pages: u64
+	for word in bitmap {
+		bits := word
+		for bits != 0 {
+			bits &= bits - 1
+			pages += 1
+		}
+	}
+	return pages
+}
+
+@(private = "file")
 whpx_capture_device_memory_dirty :: proc(vm: ^Vm, mapping: ^Device_Mapping) -> bool {
 	if vm == nil || mapping == nil || !mapping.track_dirty || !mapping.mapped {return true}
 	if len(mapping.dirty_bitmap) == 0 {return false}
@@ -394,25 +407,38 @@ whpx_capture_device_memory_dirty :: proc(vm: ^Vm, mapping: ^Device_Mapping) -> b
 	   0 {
 		return false
 	}
-	for word in mapping.dirty_bitmap {
-		if word != 0 {
-			mapping.dirty_pending = true
-			break
-		}
+	pages := whpx_dirty_bitmap_pages(mapping.dirty_bitmap)
+	if pages > 0 {
+		mapping.dirty_pending = true
+		mapping.dirty_pending_pages += pages
 	}
 	return true
 }
 
 whpx_query_device_memory_dirty :: proc(vm: ^Vm, backing: []u8) -> (dirty: bool, ok: bool) {
-	if vm == nil || vm.part == nil {return false, false}
+	dirty, _, ok = whpx_query_device_memory_dirty_pages(vm, backing)
+	return
+}
+
+whpx_query_device_memory_dirty_pages :: proc(
+	vm: ^Vm,
+	backing: []u8,
+) -> (
+	dirty: bool,
+	pages: u64,
+	ok: bool,
+) {
+	if vm == nil || vm.part == nil {return false, 0, false}
 	index := whpx_device_mapping_index(vm, backing)
-	if index < 0 {return false, false}
+	if index < 0 {return false, 0, false}
 	mapping := &vm.device_mappings[index]
-	if !mapping.track_dirty {return false, false}
-	if !whpx_capture_device_memory_dirty(vm, mapping) {return false, false}
+	if !mapping.track_dirty {return false, 0, false}
+	if !whpx_capture_device_memory_dirty(vm, mapping) {return false, 0, false}
 	dirty = mapping.dirty_pending
+	pages = mapping.dirty_pending_pages
 	mapping.dirty_pending = false
-	return dirty, true
+	mapping.dirty_pending_pages = 0
+	return dirty, pages, true
 }
 
 @(private = "file")
@@ -445,26 +471,39 @@ whpx_capture_device_alias_dirty :: proc(vm: ^Vm, alias: ^Device_Alias) -> bool {
 		vm.device_alias_query_failures += 1
 		return false
 	}
-	for word in alias.dirty_bitmap {
-		if word != 0 {
-			alias.dirty_pending = true
-			break
-		}
+	pages := whpx_dirty_bitmap_pages(alias.dirty_bitmap)
+	if pages > 0 {
+		alias.dirty_pending = true
+		alias.dirty_pending_pages += pages
 	}
 	return true
 }
 
 whpx_query_device_memory_alias_dirty :: proc(vm: ^Vm, gpa, size: u64) -> (dirty: bool, ok: bool) {
-	if vm == nil || vm.part == nil {return false, false}
+	dirty, _, ok = whpx_query_device_memory_alias_dirty_pages(vm, gpa, size)
+	return
+}
+
+whpx_query_device_memory_alias_dirty_pages :: proc(
+	vm: ^Vm,
+	gpa, size: u64,
+) -> (
+	dirty: bool,
+	pages: u64,
+	ok: bool,
+) {
+	if vm == nil || vm.part == nil {return false, 0, false}
 	index := whpx_device_alias_index(vm, gpa, size)
-	if index < 0 {return false, false}
+	if index < 0 {return false, 0, false}
 	alias := &vm.device_aliases[index]
 	mapping := &vm.device_mappings[alias.mapping_index]
-	if !mapping.track_dirty {return false, false}
-	if !whpx_capture_device_alias_dirty(vm, alias) {return false, false}
+	if !mapping.track_dirty {return false, 0, false}
+	if !whpx_capture_device_alias_dirty(vm, alias) {return false, 0, false}
 	dirty = alias.dirty_pending
+	pages = alias.dirty_pending_pages
 	alias.dirty_pending = false
-	return dirty, true
+	alias.dirty_pending_pages = 0
+	return dirty, pages, true
 }
 
 @(private = "file")
@@ -904,6 +943,7 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 				detail = fmt.tprintf("WHvRunVirtualProcessor hr=0x%08x", u32(hr)),
 			}
 		}
+		whpx_note_physical_exit(vm, exit_ctx.ExitReason)
 		if vm.irq_queued {
 			interruption_pending := exit_ctx.VpContext.ExecutionState & (u16(1) << 6) != 0
 			if interruption_pending {

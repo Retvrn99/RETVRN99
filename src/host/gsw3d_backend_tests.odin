@@ -573,6 +573,17 @@ host_gsw3d_proof_test_dynamic_extent_is_consistent_across_frame :: proc(t: ^test
 	}
 	if !testing.expect(t, gsw3d_proof_execute_work(&executor, &render)) {return}
 	testing.expect_value(t, render.backend_token, u64(73))
+	target: ^Gsw3d_Proof_Resource
+	for &resource in executor.resources {
+		if resource.live && resource.id == GSW3D_PROOF_TARGET_ID {
+			target = &resource
+			break
+		}
+	}
+	if testing.expect(t, target != nil) {
+		testing.expect_value(t, target.last_draw_token, u64(73))
+		testing.expect_value(t, target.last_draw_generation, u64(1))
+	}
 	testing.expect_value(t, state.draw.surface_id, GSW3D_PROOF_TARGET_ID)
 	testing.expect_value(t, state.draw.width, WIDTH)
 	testing.expect_value(t, state.draw.height, HEIGHT)

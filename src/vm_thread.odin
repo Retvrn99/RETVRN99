@@ -108,6 +108,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 	last_snap := time.tick_now()
 	last_install_completion_check := last_snap
 	storage_activity_session: u64
+	graphics_vm_execution: Graphics_Vm_Execution_Sample
 
 	loop: for {
 		// commands from the UI
@@ -325,7 +326,10 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 							cmd.path,
 							"The disc image is unsupported or unreadable",
 						)
-						vm_log(s, fmt.tprintf("CD-ROM: unsupported or unreadable image %s", cmd.path))
+						vm_log(
+							s,
+							fmt.tprintf("CD-ROM: unsupported or unreadable image %s", cmd.path),
+						)
 						delete(cmd.path)
 						continue
 					}
@@ -346,7 +350,12 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					publish_cdrom_state(s, true, c.cdrom_path, "", "", true)
 					vm_log(s, fmt.tprintf("CD-ROM: mounted %s", c.cdrom_path))
 				} else {
-					publish_media_failure(s, .Cdrom, cmd.path, "The disc image is unsupported or unreadable")
+					publish_media_failure(
+						s,
+						.Cdrom,
+						cmd.path,
+						"The disc image is unsupported or unreadable",
+					)
 					vm_log(s, fmt.tprintf("CD-ROM: unsupported or unreadable image %s", cmd.path))
 				}
 				delete(cmd.path)
@@ -613,7 +622,18 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			sync.lock(&s.mu)
 			input_count := host.host_input_drain(&s.input, input_events[:])
 			sync.unlock(&s.mu)
-			for event in input_events[:input_count] {
+			input_drained_at := time.tick_now()
+			input_residence_ns, max_input_residence_ns: u64
+			oldest_input_queued_at: time.Tick
+			for &event in input_events[:input_count] {
+				residence_ns := host.host_input_residence_ns(&event, input_drained_at)
+				input_residence_ns += residence_ns
+				max_input_residence_ns = max(max_input_residence_ns, residence_ns)
+				if event.queued_at != (time.Tick{}) &&
+				   (oldest_input_queued_at == (time.Tick{}) ||
+						   time.tick_diff(event.queued_at, oldest_input_queued_at) > 0) {
+					oldest_input_queued_at = event.queued_at
+				}
 				switch event.kind {
 				case .Key:
 					for i in 0 ..< int(event.key_n) {machine.machine_key(m, event.key[i])}
@@ -623,10 +643,28 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					machine.machine_mouse_wheel(m, event.wheel, event.buttons)
 				}
 			}
+			frame_mailbox_graphics_telemetry_note_input(
+				&s.frames,
+				u64(input_count),
+				input_residence_ns,
+				max_input_residence_ns,
+				input_drained_at,
+				oldest_input_queued_at,
+			)
 		}
 
 		if machine_live && !frozen && !host.pause_active(&pause_state) {
+			step_started := time.tick_now()
 			alive := machine.step(m)
+			step_ended := time.tick_now()
+			graphics_vm_execution.step_calls = graphics_counter_add(
+				graphics_vm_execution.step_calls,
+				1,
+			)
+			graphics_vm_execution.step_wall_ns = graphics_counter_add(
+				graphics_vm_execution.step_wall_ns,
+				u64(max(time.Duration(0), time.tick_diff(step_started, step_ended))),
+			)
 			if diagnostic, available := machine.machine_take_runtime_diagnostic(m); available {
 				fmt.printfln("%s", diagnostic)
 				vm_log(s, diagnostic)
@@ -768,7 +806,12 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				}
 			}
 		} else {
+			wait_started := time.tick_now()
 			time.sleep(10 * time.Millisecond)
+			graphics_vm_execution.inactive_wait_ns = graphics_counter_add(
+				graphics_vm_execution.inactive_wait_ns,
+				u64(max(time.Duration(0), time.tick_since(wait_started))),
+			)
 		}
 
 		now := time.tick_now()
@@ -795,7 +838,15 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 		if machine_live && time.tick_diff(last_snap, now) >= SNAP_PERIOD {
 			last_snap = now
 			snap := machine.machine_text_snapshot(m)
-			if frame_mailbox_publish(&s.frames, m) {
+			postmortem: ^Graphics_Postmortem
+			if s.graphics_trace_enabled {postmortem = &s.graphics_postmortem}
+			if frame_mailbox_publish_observed(
+				&s.frames,
+				m,
+				storage_activity_session,
+				graphics_vm_execution,
+				postmortem,
+			) {
 				machine.machine_note_scanout_copy(m)
 			}
 			sync.lock(&s.mu)

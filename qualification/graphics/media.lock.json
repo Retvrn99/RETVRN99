@@ -1,0 +1,99 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 1,
+  "policy": {
+    "payloads_are_external": true,
+    "redistribution_allowed": false,
+    "guest_install_requires_explicit_authorization": true
+  },
+  "media": [
+    {
+      "id": "quake-shareware-1.06",
+      "title": "Quake shareware 1.06",
+      "relative_path": "quake106.zip",
+      "bytes": 9094045,
+      "sha256": "ec6c9d34b1ae0252ac0066045b6611a7919c2a0d78a3a66d9387a8f597553239",
+      "source_url": "https://www.gamers.org/pub/idgames/idstuff/quake/quake106.zip"
+    },
+    {
+      "id": "winquake-1.00",
+      "title": "WinQuake 1.00",
+      "relative_path": "wq100.zip",
+      "bytes": 344416,
+      "sha256": "5c8809247c65d627608a71bed3b1ca9ecabe06843051ba2c75b6753dba698944",
+      "source_url": "https://www.gamers.org/pub/idgames/idstuff/quake/wq100.zip"
+    },
+    {
+      "id": "glquake-1.1.1.4",
+      "title": "GLQuake 1.1.1.4",
+      "relative_path": "glq1114.exe",
+      "bytes": 402432,
+      "sha256": "a0396e30d68b0df469080466b0ec26baf8e69e4e73c0fbdcee21680f432321b8",
+      "source_url": "https://thegate.gamers.org/pub/idgames2/planetquake/planetstarsiege/ultra/patches/glq1114.exe"
+    },
+    {
+      "id": "quake-ii-demo-3.14",
+      "title": "Quake II demo 3.14",
+      "relative_path": "q2-314-demo-x86.exe",
+      "bytes": 39015499,
+      "sha256": "7ace5a43983f10d6bdc9d9b6e17a1032ba6223118d389bd170df89b945a04a1e",
+      "source_url": "https://deponie.yamagi.org/quake2/idstuff/q2-314-demo-x86.exe"
+    },
+    {
+      "id": "quake-iii-arena-demo",
+      "title": "Quake III Arena demo",
+      "relative_path": "Q3ADemo.exe",
+      "bytes": 48907862,
+      "sha256": "6af96cb1b5c97535c9923d8855ca85ec21b21b65b48738b2c5e674e17c65835d",
+      "source_url": "https://archive.org/download/QuakeIiiArenaDemo/Q3ADemo.exe"
+    },
+    {
+      "id": "unreal-tournament-demo-348",
+      "title": "Unreal Tournament demo 348",
+      "relative_path": "UTDEMO348.EXE",
+      "bytes": 55647232,
+      "sha256": "59e65276c67af7859935d79001b93934928b3e1c3a8cc300807cdfa95208f708",
+      "source_url": "https://archive.org/download/unreal-tournament-demo-version-348/UTDEMO348.EXE"
+    },
+    {
+      "id": "half-life-uplink",
+      "title": "Half-Life Uplink",
+      "relative_path": "hluplink.exe",
+      "bytes": 50872079,
+      "sha256": "9f236e9785980c127d46870a828ba4dac756308767ebd498b85bd7edff3305a8",
+      "source_url": "https://archive.org/download/hluplink/hluplink.exe"
+    },
+    {
+      "id": "3dmark99-max",
+      "title": "3DMark99 MAX",
+      "relative_path": "3dmark99.exe",
+      "bytes": 18517151,
+      "sha256": "bee1ee6fa8737f2c3b991f992ea0712db3312cefafba271efd6a48ea846aa674",
+      "source_url": "https://benchmarks.ul.com/downloads/3dmark99.exe"
+    },
+    {
+      "id": "3dmark2000",
+      "title": "3DMark2000",
+      "relative_path": "3dmark2000.exe",
+      "bytes": 19950524,
+      "sha256": "ddf2dd07f85b3b12803325840a77e78b254e758cdf0a86284ed2fa2b5dfef1e7",
+      "source_url": "https://benchmarks.ul.com/downloads/3dmark2000.exe"
+    },
+    {
+      "id": "3dmark2001-se-build-330",
+      "title": "3DMark2001 SE Build 330",
+      "relative_path": "3dmark2001.exe",
+      "bytes": 41780867,
+      "sha256": "e34dfd32ef8fe8018a6f41f33fc3ab6dba45f2e90881688ac75a18b97dcd8813",
+      "source_url": "https://benchmarks.ul.com/downloads/3dmark2001.exe"
+    },
+    {
+      "id": "3dmark03",
+      "title": "3DMark03",
+      "relative_path": "3dmark03.exe",
+      "bytes": 190661344,
+      "sha256": "86d7f73747944c553e47e6ab5a74138e8bbca07fab8216ae70a61ac7f9a1c468",
+      "source_url": "https://benchmarks.ul.com/downloads/3dmark03.exe"
+    }
+  ]
+}

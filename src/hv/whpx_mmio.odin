@@ -28,9 +28,11 @@ whpx_mmio_instruction_bytes :: proc(
 
 @(private = "file")
 whpx_mmio_isolated_internal_failure :: proc(status: u32) -> bool {
-	return status & WHPX_EMULATOR_INTERNAL_FAILURE != 0 &&
+	return(
+		status & WHPX_EMULATOR_INTERNAL_FAILURE != 0 &&
 		status & WHPX_EMULATOR_CALLBACK_FAILURES == 0 &&
-		status & WHPX_EMULATOR_NON_FALLBACK_STATUS == 0
+		status & WHPX_EMULATOR_NON_FALLBACK_STATUS == 0 \
+	)
 }
 
 @(private = "file")
@@ -48,11 +50,11 @@ whpx_mmio_diagnostic :: proc(
 	direction := mmio.AccessInfo & 1 != 0 ? "write" : "read"
 	return fmt.tprintf(
 		"MMIO emulation rip=0x%x gva=0x%x gpa=0x%x direction=%s width=%d " +
-			"hr=0x%08x status=0x%08x ilen=%d cs={sel=0x%04x base=0x%x attr=0x%04x} " +
-			"ds={sel=0x%04x base=0x%x attr=0x%04x} es={sel=0x%04x base=0x%x attr=0x%04x} " +
-			"ss={sel=0x%04x base=0x%x attr=0x%04x} " +
-			"eax=0x%08x ecx=0x%08x edx=0x%08x ebx=0x%08x " +
-			"esp=0x%08x ebp=0x%08x esi=0x%08x edi=0x%08x ins=%02x reject=%s",
+		"hr=0x%08x status=0x%08x ilen=%d cs={sel=0x%04x base=0x%x attr=0x%04x} " +
+		"ds={sel=0x%04x base=0x%x attr=0x%04x} es={sel=0x%04x base=0x%x attr=0x%04x} " +
+		"ss={sel=0x%04x base=0x%x attr=0x%04x} " +
+		"eax=0x%08x ecx=0x%08x edx=0x%08x ebx=0x%08x " +
+		"esp=0x%08x ebp=0x%08x esi=0x%08x edi=0x%08x ins=%02x reject=%s",
 		vp.Rip,
 		mmio.Gva,
 		mmio.Gpa,
@@ -104,19 +106,25 @@ whpx_emulate_mmio :: proc(
 		bytes,
 		vp.Cs.Attributes & 0x4000 != 0,
 	)
-	if hr >= 0 && whpx_mmio_isolated_internal_failure(status.AsUINT32) && decoded_ok {
-		ok, execute_detail := whpx_execute_mmio_fallback(vm, vp, mmio, decoded)
-		if ok {
-			vm.mmio_fallbacks += 1
-			if decoded.kind == .Scalar_Load ||
-			   decoded.kind == .Scalar_Store_Register ||
-			   decoded.kind == .Scalar_Store_Immediate ||
-			   decoded.kind == .Winquake_Store_Loop {
-				vm.mmio_scalar_fallbacks += 1
+	if hr >= 0 && whpx_mmio_isolated_internal_failure(status.AsUINT32) {
+		kind := decoded_ok ? decoded.kind : Whpx_Mmio_Kind.Invalid
+		whpx_note_mmio_fallback(vm, kind, .Attempt)
+		if decoded_ok {
+			ok, execute_detail := whpx_execute_mmio_fallback(vm, vp, mmio, decoded)
+			if ok {
+				whpx_note_mmio_fallback(vm, kind, .Success)
+				vm.mmio_fallbacks += 1
+				if decoded.kind == .Scalar_Load ||
+				   decoded.kind == .Scalar_Store_Register ||
+				   decoded.kind == .Scalar_Store_Immediate ||
+				   decoded.kind == .Winquake_Store_Loop {
+					vm.mmio_scalar_fallbacks += 1
+				}
+				return true, ""
 			}
-			return true, ""
+			reason = execute_detail
 		}
-		reason = execute_detail
+		whpx_note_mmio_fallback(vm, kind, .Failure)
 	} else if hr < 0 {
 		reason = "WHvEmulatorTryMmioEmulation failed"
 	} else if !whpx_mmio_isolated_internal_failure(status.AsUINT32) {
