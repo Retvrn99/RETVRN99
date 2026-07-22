@@ -31,14 +31,14 @@ sb16_matrix_read_word :: proc(ctx: rawptr, channel: int) -> (u16, bool) {
 @(test)
 test_sb16_native_pcm_playback_command_matrix :: proc(t: ^testing.T) {
 	cases := [?]struct {
-		dma16:         bool,
-		stereo:       bool,
-		signed:       bool,
-		byte_left:    u8,
-		byte_right:   u8,
-		word_left:    u16,
-		word_right:   u16,
-		expected:      Audio_Frame,
+		dma16:      bool,
+		stereo:     bool,
+		signed:     bool,
+		byte_left:  u8,
+		byte_right: u8,
+		word_left:  u16,
+		word_right: u16,
+		expected:   Audio_Frame,
 	} {
 		{false, false, false, 0x00, 0x00, 0, 0, {-32_768, -32_768}},
 		{false, false, true, 0x80, 0x00, 0, 0, {-32_768, -32_768}},
@@ -94,9 +94,9 @@ test_sb16_native_pcm_playback_command_matrix :: proc(t: ^testing.T) {
 @(test)
 test_sb16_legacy_pcm_single_auto_init_high_speed_and_sbpro_stereo_commands :: proc(t: ^testing.T) {
 	cases := [?]struct {
-		command:       u8,
-		auto_init:     bool,
-		uses_count:    bool,
+		command:      u8,
+		auto_init:    bool,
+		uses_count:   bool,
 		sbpro_stereo: bool,
 	} {
 		{0x14, false, true, false},
@@ -127,7 +127,7 @@ test_sb16_legacy_pcm_single_auto_init_high_speed_and_sbpro_stereo_commands :: pr
 			frame,
 			test_case.sbpro_stereo ? Audio_Frame{-32_768, 32_512} : Audio_Frame{-32_768, -32_768},
 		)
-		testing.expect_value(t, dma.byte_at, test_case.sbpro_stereo ? 2 : 1)
+		testing.expect_value(t, dma.byte_at, int(test_case.sbpro_stereo ? 2 : 1))
 		dma16, pending := sb16_take_irq(&sb)
 		testing.expect(t, pending)
 		testing.expect(t, !dma16)
@@ -175,8 +175,8 @@ test_sb16_odd_stereo_blocks_publish_partial_frame_without_crossing_block :: proc
 			)
 			testing.expect(t, last_produced)
 			testing.expect_value(t, last, Audio_Frame{16_384, 0})
-			testing.expect_value(t, dma.byte_at, dma16 ? 0 : 3)
-			testing.expect_value(t, dma.word_at, dma16 ? 3 : 0)
+			testing.expect_value(t, dma.byte_at, int(dma16 ? 0 : 3))
+			testing.expect_value(t, dma.word_at, int(dma16 ? 3 : 0))
 			irq_dma16, pending := sb16_take_irq(&sb)
 			testing.expect(t, pending)
 			testing.expect_value(t, irq_dma16, dma16)
@@ -201,24 +201,14 @@ test_sb16_pause_resume_and_auto_init_exit_for_both_dma_widths :: proc(t: ^testin
 		sb16_test_command(&sb, command, 0x10, 0x00, 0x00)
 
 		sb16_test_command(&sb, dma16 ? u8(0xD5) : u8(0xD0))
-		_, produced := sb16_render_sample(
-			&sb,
-			&dma,
-			sb16_test_read_byte,
-			sb16_test_read_word,
-		)
+		_, produced := sb16_render_sample(&sb, &dma, sb16_test_read_byte, sb16_test_read_word)
 		testing.expect(t, !produced)
 		testing.expect(t, sb.paused)
 		testing.expect_value(t, dma.byte_at, 0)
 		testing.expect_value(t, dma.word_at, 0)
 
 		sb16_test_command(&sb, dma16 ? u8(0xD6) : u8(0xD4))
-		_, produced = sb16_render_sample(
-			&sb,
-			&dma,
-			sb16_test_read_byte,
-			sb16_test_read_word,
-		)
+		_, produced = sb16_render_sample(&sb, &dma, sb16_test_read_byte, sb16_test_read_word)
 		testing.expect(t, produced)
 		testing.expect(t, sb.playing && !sb.paused)
 		_, pending := sb16_take_irq(&sb)
@@ -226,12 +216,7 @@ test_sb16_pause_resume_and_auto_init_exit_for_both_dma_widths :: proc(t: ^testin
 
 		sb16_test_command(&sb, dma16 ? u8(0xD9) : u8(0xDA))
 		testing.expect(t, !sb.auto_init)
-		_, produced = sb16_render_sample(
-			&sb,
-			&dma,
-			sb16_test_read_byte,
-			sb16_test_read_word,
-		)
+		_, produced = sb16_render_sample(&sb, &dma, sb16_test_read_byte, sb16_test_read_word)
 		testing.expect(t, produced)
 		testing.expect(t, !sb.playing)
 		_, pending = sb16_take_irq(&sb)
@@ -240,7 +225,9 @@ test_sb16_pause_resume_and_auto_init_exit_for_both_dma_widths :: proc(t: ^testin
 }
 
 @(test)
-test_sb16_stereo_starvation_preserves_available_left_and_does_not_consume_right :: proc(t: ^testing.T) {
+test_sb16_stereo_starvation_preserves_available_left_and_does_not_consume_right :: proc(
+	t: ^testing.T,
+) {
 	for dma16_index in 0 ..< 2 {
 		dma16 := dma16_index == 1
 		sb: Sb16
@@ -265,8 +252,8 @@ test_sb16_stereo_starvation_preserves_available_left_and_does_not_consume_right 
 		testing.expect(t, sb.pending_left_valid)
 		testing.expect_value(t, sb.pending_left, i16(16_384))
 		testing.expect_value(t, sb.block_remaining, u32(1))
-		testing.expect_value(t, dma.byte_at, dma16 ? 0 : 1)
-		testing.expect_value(t, dma.word_at, dma16 ? 1 : 0)
+		testing.expect_value(t, dma.byte_at, int(dma16 ? 0 : 1))
+		testing.expect_value(t, dma.word_at, int(dma16 ? 1 : 0))
 
 		frame, produced = sb16_render_sample(
 			&sb,
@@ -277,8 +264,8 @@ test_sb16_stereo_starvation_preserves_available_left_and_does_not_consume_right 
 		testing.expect(t, produced)
 		testing.expect_value(t, frame, Audio_Frame{})
 		testing.expect_value(t, sb.block_remaining, u32(1))
-		testing.expect_value(t, dma.byte_at, dma16 ? 0 : 1)
-		testing.expect_value(t, dma.word_at, dma16 ? 1 : 0)
+		testing.expect_value(t, dma.byte_at, int(dma16 ? 0 : 1))
+		testing.expect_value(t, dma.word_at, int(dma16 ? 1 : 0))
 		_, pending := sb16_take_irq(&sb)
 		testing.expect(t, !pending)
 
@@ -292,8 +279,8 @@ test_sb16_stereo_starvation_preserves_available_left_and_does_not_consume_right 
 		)
 		testing.expect(t, produced)
 		testing.expect_value(t, frame, Audio_Frame{16_384, -16_384})
-		testing.expect_value(t, dma.byte_at, dma16 ? 0 : 2)
-		testing.expect_value(t, dma.word_at, dma16 ? 2 : 0)
+		testing.expect_value(t, dma.byte_at, int(dma16 ? 0 : 2))
+		testing.expect_value(t, dma.word_at, int(dma16 ? 2 : 0))
 		_, pending = sb16_take_irq(&sb)
 		testing.expect(t, pending)
 	}
@@ -328,12 +315,12 @@ test_sb16_direct_dac_timed_silence_and_separate_irq_acknowledgements :: proc(t: 
 @(test)
 test_sb16_creative_adpcm_single_and_auto_init_command_families :: proc(t: ^testing.T) {
 	single_cases := [?]struct {
-		command:          u8,
-		mode:             Sb16_Adpcm_Mode,
+		command:         u8,
+		mode:            Sb16_Adpcm_Mode,
 		wants_reference: bool,
-		encoded:          u8,
-		sample_count:     int,
-		first_sample:     i16,
+		encoded:         u8,
+		sample_count:    int,
+		first_sample:    i16,
 	} {
 		{0x74, .Bits_4, false, 0x50, 2, 1_280},
 		{0x75, .Bits_4, true, 0x50, 2, -15_104},
@@ -363,7 +350,7 @@ test_sb16_creative_adpcm_single_and_auto_init_command_families :: proc(t: ^testi
 			testing.expect_value(t, frame.left, frame.right)
 			if sample_index == 0 {testing.expect_value(t, frame.left, test_case.first_sample)}
 		}
-		testing.expect_value(t, dma.byte_at, test_case.wants_reference ? 2 : 1)
+		testing.expect_value(t, dma.byte_at, int(test_case.wants_reference ? 2 : 1))
 		testing.expect(t, !sb.playing)
 		testing.expect(t, !sb16_adpcm_active(&sb.adpcm))
 		dma16, pending := sb16_take_irq(&sb)
@@ -376,11 +363,7 @@ test_sb16_creative_adpcm_single_and_auto_init_command_families :: proc(t: ^testi
 		mode:         Sb16_Adpcm_Mode,
 		encoded:      u8,
 		sample_count: int,
-	} {
-		{0x7D, .Bits_4, 0x50, 2},
-		{0x7F, .Bits_26, 0xA4, 3},
-		{0x1F, .Bits_2, 0x40, 4},
-	}
+	}{{0x7D, .Bits_4, 0x50, 2}, {0x7F, .Bits_26, 0xA4, 3}, {0x1F, .Bits_2, 0x40, 4}}
 	for test_case in auto_cases {
 		sb: Sb16
 		sb16_init(&sb)
