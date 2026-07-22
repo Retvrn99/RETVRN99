@@ -432,6 +432,15 @@ proof is complete.
   metadata. All 40 audited paths remained unstaged and unchanged. The same
   exact path list requires host permission for branch-only commit publication;
   no merge or `main` update is authorized.
+- Publication attempt 2 staged the exact 40 audited text paths and committed
+  them as `49d0bcea7c5aedd436b36bc41aa70cb97cfc0265` on
+  `graphics-source-closure` with author and committer `vorvek` and no co-author
+  trailer. The commit was pushed, live `origin/graphics-source-closure` matched
+  that implementation HEAD, live `origin/main` remained
+  `df7030c089f4e6284355f1eee2206fe9d781e574`, and the worktree was clean before
+  this handoff-ledger update. No merge, link, staging of production payloads,
+  installation, activation, renderer selection, or capability advertisement
+  occurred.
 - Phase 1 remains open for the separate `libs/vkd3d-shader` and OpenGlide9x
   file/license closures. The exact direct-build inventory contains 837
   upstream, 35 generated, and two original GSW source units: 869 compile
