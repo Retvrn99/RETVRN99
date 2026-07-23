@@ -30,6 +30,7 @@ host_presentation_test_legacy :: proc(
 	resolved := key
 	if resolved.surface_extent.width == 0 {resolved = host_presentation_test_mode_key()}
 	return {
+		damage_kind = .Pixel_Memory,
 		header = {
 			sequence = sequence,
 			lifecycle_generation = lifecycle,
@@ -60,6 +61,7 @@ host_presentation_test_resident :: proc(
 	resolved := key
 	if resolved.surface_extent.width == 0 {resolved = host_presentation_test_mode_key()}
 	return {
+		clip_mode = .Fullscreen,
 		header = {
 			sequence = sequence,
 			lifecycle_generation = lifecycle,
@@ -170,6 +172,10 @@ host_presentation_test_apply_gsw :: proc(h: ^Host, admission: Host_Presentation_
 	}
 	h.presentation_state.gsw = admission.gsw
 	h.presentation_state.gsw_source_mode_generation = admission.source_mode_generation
+	if admission.gsw.header.source_kind == .Gsw_Snapshot {
+		h.presentation_state.gsw_snapshot = admission.gsw
+		h.presentation_state.gsw_snapshot_source_mode_generation = admission.source_mode_generation
+	}
 	h.presentation_state.last_vga_sequence = admission.source_sequence
 	h.has_frame = true
 }
@@ -193,6 +199,45 @@ host_presentation_test_staged :: proc(
 		lifecycle_generation = header.lifecycle_generation,
 		admission_sequence = header.sequence,
 	}
+}
+
+@(test)
+host_presentation_test_in_place_legacy_commit_preserves_texture :: proc(t: ^testing.T) {
+	h: Host
+	if !host_presentation_test_seed_legacy(t, &h) {return}
+	texture := transmute(^sdl3.Texture)(uintptr(71))
+	h.tex = texture
+	h.tex_width = 640
+	h.tex_height = 480
+	h.presentation_state.legacy_resource_generation = 4
+	next := host_presentation_test_legacy(11)
+	next.header.dirty = {}
+	_ = contract.rect_set_append(&next.header.dirty, {1, 2, 3, 4})
+	admission := host_presentation_admit_legacy(&h, next)
+	if !testing.expect(t, admission.valid) {return}
+	h.presentation_state.texture_stage_generation = 9
+	staged := Host_Presentation_Staged_Texture {
+		valid                = true,
+		kind                 = .Legacy,
+		texture              = texture,
+		width                = 640,
+		height               = 480,
+		stage_generation     = 9,
+		lifecycle_generation = admission.legacy.header.lifecycle_generation,
+		admission_sequence   = admission.legacy.header.sequence,
+		in_place             = true,
+		mutated              = true,
+		resource_generation  = 4,
+		upload_bytes         = 48,
+		upload_regions       = 1,
+	}
+	testing.expect(t, host_presentation_commit_legacy_staged(&h, &admission, staged))
+	testing.expect_value(t, h.tex, texture)
+	testing.expect_value(
+		t,
+		h.presentation_state.legacy.header.sequence,
+		admission.legacy.header.sequence,
+	)
 }
 
 host_presentation_test_invalidation :: proc(
@@ -226,6 +271,9 @@ host_presentation_test_seed_legacy :: proc(t: ^testing.T, h: ^Host) -> bool {
 
 host_presentation_test_seed_resident :: proc(t: ^testing.T, h: ^Host) -> bool {
 	if !host_presentation_test_seed_legacy(t, h) {return false}
+	h.tex = transmute(^sdl3.Texture)(uintptr(90))
+	h.tex_width = 640
+	h.tex_height = 480
 	present := host_presentation_test_local_resident(h, 20)
 	admission := host_presentation_admit_gsw(h, present)
 	if !testing.expect(t, admission.valid) {return false}
@@ -509,6 +557,43 @@ host_presentation_test_gsw2d_hidden_legacy_requires_last_good_geometry :: proc(t
 }
 
 @(test)
+host_presentation_test_gsw2d_hidden_legacy_bootstraps_current_geometry :: proc(t: ^testing.T) {
+	h: Host
+	if !host_presentation_test_seed_legacy(t, &h) {return}
+	key := host_presentation_test_mode_key(800, 600)
+	snapshot := host_presentation_test_snapshot(20, 1, key)
+	admission := host_presentation_admit_gsw(&h, snapshot, 800 * 600 * 4)
+	if !testing.expect(t, admission.valid) {return}
+	host_presentation_test_apply_gsw(&h, admission)
+	active := h.presentation_state.selector.active
+
+	bootstrap := host_presentation_test_legacy(21, 1, key)
+	bootstrap.header.mode_generation = 2
+	bootstrap.header.surface.generation = 2
+	admission = host_presentation_admit_legacy(&h, bootstrap)
+	if !testing.expect(t, admission.valid) {return}
+	testing.expect_value(t, admission.result.action, contract.Selector_Action.Refresh_Legacy)
+	testing.expect_value(t, admission.selector.active, active)
+
+	wrong_active := h
+	wrong_active.presentation_state.selector.active.sequence = contract.generation_next(
+		wrong_active.presentation_state.selector.active.sequence,
+	)
+	drops := wrong_active.presentation_metrics.stale_generation_drops
+	bad := host_presentation_admit_legacy(&wrong_active, bootstrap)
+	testing.expect(t, !bad.valid)
+	testing.expect_value(t, wrong_active.presentation_metrics.stale_generation_drops, drops + 1)
+
+	stale := bootstrap
+	stale.header.sequence = 22
+	stale.header.mode_generation = 1
+	drops = h.presentation_metrics.stale_generation_drops
+	bad = host_presentation_admit_legacy(&h, stale)
+	testing.expect(t, !bad.valid)
+	testing.expect_value(t, h.presentation_metrics.stale_generation_drops, drops + 1)
+}
+
+@(test)
 host_presentation_test_new_legacy_geometry_reclaims_active_gsw :: proc(t: ^testing.T) {
 	h: Host
 	if !host_presentation_test_seed_resident(t, &h) {return}
@@ -588,6 +673,23 @@ host_presentation_test_exact_invalidation_restores_last_good :: proc(t: ^testing
 	testing.expect_value(t, h.gpu_present, Host_Gpu_Present{})
 	testing.expect(t, h.has_frame)
 	testing.expect_value(t, h.presentation_metrics.last_good_restorations, before + 1)
+}
+
+@(test)
+host_presentation_test_missing_legacy_texture_clears_resident_invalidation :: proc(t: ^testing.T) {
+	h: Host
+	if !host_presentation_test_seed_resident(t, &h) {return}
+	h.tex = nil
+	h.tex_width = 0
+	h.tex_height = 0
+	invalidation := host_presentation_test_invalidation(&h, .Gsw3d, .Surface_Destroyed)
+	testing.expect(t, host_presentation_invalidation_matches_active(&h, invalidation))
+
+	action := host_presentation_apply_invalidation(&h, invalidation)
+	testing.expect_value(t, action, contract.Selector_Action.Clear)
+	testing.expect_value(t, h.presentation_state.selector.active.kind, contract.Active_Kind.None)
+	testing.expect(t, !h.presentation_state.selector.has_last_good_legacy)
+	testing.expect(t, !h.has_frame)
 }
 
 @(test)
@@ -798,6 +900,9 @@ host_presentation_test_cross_mode_teardown_restores_legacy_desktop :: proc(t: ^t
 host_presentation_test_gsw2d_source_format_change_retains_desktop_restore :: proc(t: ^testing.T) {
 	h: Host
 	if !host_presentation_test_seed_legacy(t, &h) {return}
+	h.tex = transmute(^sdl3.Texture)(uintptr(91))
+	h.tex_width = 640
+	h.tex_height = 480
 	first := host_presentation_test_snapshot(20)
 	first_admission := host_presentation_admit_gsw(&h, first, 640 * 480 * 4)
 	if !testing.expect(t, first_admission.valid) {return}
@@ -851,8 +956,9 @@ host_presentation_test_stop_clears_selection_and_rejects_more_work :: proc(t: ^t
 host_presentation_test_physical_work_is_recorded_before_selection_commit :: proc(t: ^testing.T) {
 	h: Host
 	frame := vga.Display_Frame {
-		width  = 4,
-		height = 2,
+		width          = 4,
+		height         = 2,
+		updated_pixels = 8,
 	}
 	host_presentation_record_descriptor_copy(&h, 16)
 	host_presentation_record_conversion(&h, &frame)
@@ -982,8 +1088,9 @@ host_presentation_test_legacy_success_counters_follow_committed_physical_work ::
 		stage_generation = 1,
 	}
 	frame := vga.Display_Frame {
-		width  = 4,
-		height = 2,
+		width          = 4,
+		height         = 2,
+		updated_pixels = 8,
 	}
 	host_presentation_record_descriptor_copy(&h, 16)
 	host_presentation_record_conversion(&h, &frame)
@@ -1015,8 +1122,9 @@ host_presentation_test_legacy_success_counters_follow_committed_physical_work ::
 		stage_generation = 2,
 	}
 	frame = {
-		width  = 8,
-		height = 4,
+		width          = 8,
+		height         = 4,
+		updated_pixels = 32,
 	}
 	host_presentation_record_descriptor_copy(&h, 32)
 	host_presentation_record_conversion(&h, &frame)
@@ -1156,7 +1264,7 @@ host_presentation_test_staged_gsw_snapshot_swaps_transactionally :: proc(t: ^tes
 		stage_generation = 11,
 	}
 	present := host_presentation_test_snapshot(20)
-	admission := host_presentation_admit_gsw(&h, present, 640 * 480 * 4)
+	admission := host_presentation_admit_gsw(&h, present, 640 * 480 * 4, .Capacity_Exceeded)
 	if !testing.expect(t, admission.valid) {return}
 	staged := host_presentation_test_staged(&admission, new_texture, 11)
 
@@ -1170,6 +1278,7 @@ host_presentation_test_staged_gsw_snapshot_swaps_transactionally :: proc(t: ^tes
 	)
 	testing.expect_value(t, h.presentation_metrics.gsw_snapshot_full_updates, u64(1))
 	testing.expect_value(t, h.presentation_metrics.gsw_snapshot_partial_updates, u64(0))
+	testing.expect_value(t, h.presentation_metrics.source_full_capacity, u64(1))
 
 	stale_texture := transmute(^sdl3.Texture)(uintptr(8))
 	h.presentation_state.gsw_staging = {
@@ -1192,6 +1301,200 @@ host_presentation_test_staged_gsw_snapshot_swaps_transactionally :: proc(t: ^tes
 	testing.expect_value(t, h.presentation_state.gsw_staging.texture, stale_texture)
 	testing.expect_value(t, h.presentation_state.selector, selector)
 	testing.expect_value(t, h.presentation_state.gsw, committed)
+}
+
+@(test)
+host_presentation_test_gsw_fallback_reason_requires_a_full_snapshot :: proc(t: ^testing.T) {
+	h: Host
+	if !host_presentation_test_seed_legacy(t, &h) {return}
+	present := host_presentation_test_snapshot(20)
+	present.header.dirty = {}
+	_ = contract.rect_set_append(&present.header.dirty, {1, 1, 2, 2})
+	invalid := h.presentation_metrics.invalid_rejections
+	admission := host_presentation_admit_gsw(&h, present, 640 * 480 * 4, .Ambiguous_Mapping)
+	testing.expect(t, !admission.valid)
+	testing.expect_value(t, h.presentation_metrics.invalid_rejections, invalid + 1)
+}
+
+@(test)
+host_presentation_test_windowed_resident_requires_an_exact_desktop_texture :: proc(t: ^testing.T) {
+	h: Host
+	if !host_presentation_test_seed_legacy(t, &h) {return}
+	present := host_presentation_test_local_resident(&h, 20)
+	present.clip_mode = .Windowed
+	present.clips = {}
+	_ = contract.rect_set_append(&present.clips, {4, 4, 20, 20})
+	invalid := h.presentation_metrics.invalid_rejections
+	testing.expect(t, !host_presentation_admit_gsw(&h, present).valid)
+	testing.expect_value(t, h.presentation_metrics.invalid_rejections, invalid + 1)
+
+	h.tex = transmute(^sdl3.Texture)(uintptr(92))
+	h.tex_width = 640
+	h.tex_height = 480
+	admission := host_presentation_admit_gsw(&h, present)
+	testing.expect(t, admission.valid)
+	testing.expect_value(t, admission.kind, Host_Presentation_Kind.Gsw_Resident)
+}
+
+@(test)
+host_presentation_test_rejects_malformed_raw_clips_before_normalization :: proc(t: ^testing.T) {
+	h: Host
+	if !host_presentation_test_seed_legacy(t, &h) {return}
+	present := host_presentation_test_local_resident(&h, 20)
+	present.clip_mode = .Windowed
+	invalid := h.presentation_metrics.invalid_rejections
+	sequence := h.presentation_state.sequence
+
+	present.clips.count = 1
+	present.clips.rects[0] = {1, 1, 0, 2}
+	testing.expect(t, !host_presentation_admit_gsw(&h, present).valid)
+
+	present.clips = {}
+	present.clips.count = 1
+	present.clips.rects[0] = {max(u32), 1, 2, 2}
+	testing.expect(t, !host_presentation_admit_gsw(&h, present).valid)
+
+	present.clips = {}
+	present.clips.count = 1
+	present.clips.rects[0] = {640, 1, 1, 1}
+	testing.expect(t, !host_presentation_admit_gsw(&h, present).valid)
+
+	present.clips = {}
+	present.clips.count = 1
+	present.clips.rects[0] = {1, 1, 2, 2}
+	present.clips.rects[1] = {4, 4, 2, 2}
+	testing.expect(t, !host_presentation_admit_gsw(&h, present).valid)
+
+	testing.expect_value(t, h.presentation_metrics.invalid_rejections, invalid + 4)
+	testing.expect_value(t, h.presentation_state.sequence, sequence)
+}
+
+@(test)
+host_presentation_test_mode_away_and_back_rejects_unselected_gsw_desktop :: proc(t: ^testing.T) {
+	h: Host
+	if !testing.expect(t, host_presentation_start(&h, 1)) {return}
+	snapshot := host_presentation_test_snapshot(10)
+	snapshot_admission := host_presentation_admit_gsw(&h, snapshot, 640 * 480 * 4)
+	if !testing.expect(t, snapshot_admission.valid) {return}
+	host_presentation_test_apply_gsw(&h, snapshot_admission)
+	h.presentation_state.gsw_texture = transmute(^sdl3.Texture)(uintptr(93))
+	h.presentation_state.gsw_texture_width = 640
+	h.presentation_state.gsw_texture_height = 480
+
+	resident := host_presentation_test_local_resident(&h, 20)
+	resident.clip_mode = .Windowed
+	_ = contract.rect_set_append(&resident.clips, {4, 4, 20, 20})
+	testing.expect(t, host_presentation_gsw_desktop_available(&h, resident.header))
+	selected_snapshot := h.presentation_state.selector.last_good_gsw
+	h.presentation_state.selector.last_good_gsw.header.sequence = contract.generation_next(
+		selected_snapshot.header.sequence,
+	)
+	testing.expect(t, !host_presentation_gsw_desktop_available(&h, resident.header))
+	h.presentation_state.selector.last_good_gsw = selected_snapshot
+
+	away_key := host_presentation_test_mode_key(800, 600)
+	away := host_presentation_test_legacy(21, 1, away_key)
+	away.header.mode_generation = contract.generation_next(snapshot.header.mode_generation)
+	away_admission := host_presentation_admit_legacy(&h, away)
+	if !testing.expect(t, away_admission.valid) {return}
+	host_presentation_test_apply_legacy(&h, away_admission)
+	testing.expect(t, !h.presentation_state.selector.has_last_good_gsw)
+	testing.expect(t, h.presentation_state.gsw_snapshot.header.sequence != 0)
+	testing.expect(t, h.presentation_state.gsw_texture != nil)
+
+	back := host_presentation_test_local_resident(&h, 30)
+	back.clip_mode = .Windowed
+	_ = contract.rect_set_append(&back.clips, {4, 4, 20, 20})
+	testing.expect(t, !host_presentation_gsw_desktop_available(&h, back.header))
+	invalid := h.presentation_metrics.invalid_rejections
+	testing.expect(t, !host_presentation_admit_gsw(&h, back).valid)
+	testing.expect_value(t, h.presentation_metrics.invalid_rejections, invalid + 1)
+}
+
+@(test)
+host_presentation_test_hidden_gsw_refresh_preserves_resident_and_restores_desktop :: proc(
+	t: ^testing.T,
+) {
+	h: Host
+	if !host_presentation_test_seed_legacy(t, &h) {return}
+	snapshot := host_presentation_test_snapshot(20)
+	snapshot.header.completion = {}
+	snapshot_admission := host_presentation_admit_gsw(&h, snapshot, 640 * 480 * 4)
+	if !testing.expect(t, snapshot_admission.valid) {return}
+	desktop_texture := transmute(^sdl3.Texture)(uintptr(91))
+	h.presentation_state.gsw_staging = {
+		texture          = desktop_texture,
+		width            = 640,
+		height           = 480,
+		stage_generation = 31,
+	}
+	desktop_staged := host_presentation_test_staged(&snapshot_admission, desktop_texture, 31)
+	if !testing.expect(
+		t,
+		host_presentation_commit_gsw_snapshot_staged(&h, &snapshot_admission, desktop_staged),
+	) {return}
+
+	resident := host_presentation_test_local_resident(&h, 30)
+	resident.clip_mode = .Windowed
+	resident.clips = {}
+	_ = contract.rect_set_append(&resident.clips, {0, 0, 20, 20})
+	resident_admission := host_presentation_admit_gsw(&h, resident)
+	if !testing.expect(t, resident_admission.valid) {return}
+	host_presentation_test_install_surface(&h, resident_admission.gsw)
+	if !testing.expect(
+		t,
+		host_presentation_commit_resident(
+			&h,
+			&resident_admission,
+			host_presentation_test_physical(resident_admission.gsw),
+		),
+	) {return}
+	selected := h.gpu_present
+	active := h.presentation_state.selector.active
+
+	update := host_presentation_test_snapshot(21)
+	update.header.completion = {}
+	update.header.dirty = {}
+	_ = contract.rect_set_append(&update.header.dirty, {4, 4, 4, 4})
+	refresh := host_presentation_admit_gsw(&h, update, 640 * 480 * 4)
+	if !testing.expect(t, refresh.valid) {return}
+	testing.expect(t, refresh.background_only)
+	testing.expect_value(t, refresh.result.action, contract.Selector_Action.Refresh_Gsw)
+	testing.expect_value(t, refresh.overlay_invalidated_regions, u64(1))
+	h.presentation_state.texture_stage_generation = 32
+	staged := Host_Presentation_Staged_Texture {
+		valid                = true,
+		kind                 = .Gsw_Snapshot,
+		texture              = desktop_texture,
+		width                = 640,
+		height               = 480,
+		stage_generation     = 32,
+		lifecycle_generation = refresh.gsw.header.lifecycle_generation,
+		admission_sequence   = refresh.gsw.header.sequence,
+		in_place             = true,
+		mutated              = true,
+		resource_generation  = h.presentation_state.gsw_resource_generation,
+	}
+	if !testing.expect(t, host_presentation_commit_gsw_snapshot_staged(&h, &refresh, staged)) {
+		return
+	}
+	testing.expect_value(t, h.presentation_state.selector.active, active)
+	testing.expect_value(t, h.gpu_present, selected)
+	testing.expect_value(t, h.presentation_state.gsw.clips.count, u32(4))
+	testing.expect_value(t, h.presentation_metrics.overlay_invalidated_regions, u64(1))
+
+	action := host_presentation_apply_invalidation(
+		&h,
+		host_presentation_test_invalidation(&h, .Gsw3d, .Surface_Destroyed),
+	)
+	testing.expect_value(t, action, contract.Selector_Action.Restore_Gsw)
+	testing.expect_value(
+		t,
+		h.presentation_state.selector.active.source_kind,
+		contract.Source_Kind.Gsw_Snapshot,
+	)
+	testing.expect_value(t, h.presentation_state.gsw_texture, desktop_texture)
+	testing.expect_value(t, h.gpu_present, Host_Gpu_Present{})
 }
 
 @(test)
@@ -1305,6 +1608,61 @@ host_presentation_test_gsw_snapshot_stage_token_cannot_replay_after_restart :: p
 	if !testing.expect(t, current.valid) {return}
 	testing.expect(t, !host_presentation_commit_gsw_snapshot_staged(&h, &current, old_token))
 	testing.expect_value(t, h.presentation_state.gsw_texture, selected)
+}
+
+@(test)
+host_presentation_test_stage_token_cannot_replay_when_lifecycle_value_is_reused :: proc(
+	t: ^testing.T,
+) {
+	h: Host
+	if !testing.expect(t, host_presentation_start(&h, 1)) {return}
+	old := host_presentation_admit_legacy(&h, host_presentation_test_legacy(1))
+	if !testing.expect(t, old.valid) {return}
+	staged_texture := transmute(^sdl3.Texture)(uintptr(58))
+	h.presentation_state.legacy_staging = {
+		texture          = staged_texture,
+		width            = 640,
+		height           = 480,
+		stage_generation = 24,
+	}
+	old_token := host_presentation_test_staged(&old, staged_texture, 24)
+
+	host_presentation_stop(&h)
+	if !testing.expect(t, host_presentation_start(&h, 1)) {return}
+	testing.expect_value(t, h.presentation_state.legacy_staging.texture, staged_texture)
+	testing.expect_value(t, h.presentation_state.legacy_staging.stage_generation, u64(0))
+	current := host_presentation_admit_legacy(&h, host_presentation_test_legacy(1))
+	if !testing.expect(t, current.valid) {return}
+	testing.expect(t, !host_presentation_commit_legacy_staged(&h, &current, old_token))
+	testing.expect(t, h.tex == nil)
+}
+
+@(test)
+host_presentation_test_destroy_clears_visible_state_and_is_idempotent :: proc(t: ^testing.T) {
+	h: Host
+	h.presentation_state.accepting = true
+	h.presentation_state.lifecycle = 9
+	h.presentation_state.texture_stage_generation = 12
+	h.presentation_state.legacy_shadow = new(Host_Presentation_Resource_Shadow)
+	h.presentation_state.legacy_shadow.pixels = make([]u32, 4)
+	h.presentation_state.gsw_shadow = new(Host_Presentation_Resource_Shadow)
+	h.presentation_state.gsw_shadow.pixels = make([]u32, 4)
+	h.gpu_present = {
+		surface_id    = 23,
+		canvas_width  = 640,
+		canvas_height = 480,
+	}
+	h.has_frame = true
+
+	host_presentation_destroy(&h)
+	testing.expect_value(t, h.presentation_state, Host_Presentation_State{})
+	testing.expect_value(t, h.gpu_present, Host_Gpu_Present{})
+	testing.expect(t, !h.has_frame)
+
+	host_presentation_destroy(&h)
+	testing.expect_value(t, h.presentation_state, Host_Presentation_State{})
+	testing.expect_value(t, h.gpu_present, Host_Gpu_Present{})
+	testing.expect(t, !h.has_frame)
 }
 
 @(test)

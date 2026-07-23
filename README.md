@@ -91,6 +91,11 @@ and channel-order anchors. The 640x480 path also crosses the SDL compositor.
 This developer gate is the only GSW3D texture readback path; normal presentation
 remains host-resident.
 
+For repeatable GUI guest input without host keyboard or mouse focus, build the
+[test input control](docs/test-control.md) in a disposable directory. It is
+absent from the ordinary runtime activation path and feeds the same bounded
+queue used by SDL.
+
 The default profile is `%USERPROFILE%\.retvrn99`. To keep a machine separate,
 pass another profile directory:
 

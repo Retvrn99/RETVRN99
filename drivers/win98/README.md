@@ -199,11 +199,14 @@ Preparation applies any ordered, hash-pinned patches and complete tree-pinned
 overlays after source materialization, verifies the exact combined output-tree
 descriptor, and publishes only after final source and tree checks.
 
-`build-plan.json` schema 3 links the source plan, upstream lock, and both
-toolchain locks by SHA-256. It runs the pinned tools with literal arguments,
-restores inherited mixed-case environment variables, normalizes only the
-Win16 version-date fields declared for `gswmini.drv`, validates every output,
-and atomically publishes the completed two-recipe build.
+`build-plan.json` schema 3 is currently blocked because the VMHAL DirectDraw
+surface-allocation callback changed and fresh deterministic DLL hashes have not
+been authorized and reviewed. In its ready form, the plan links the source
+plan, upstream lock, and both toolchain locks by SHA-256. It runs the pinned
+tools with literal arguments, restores inherited mixed-case environment
+variables, normalizes only the Win16 version-date fields declared for
+`gswmini.drv`, validates every output, and atomically publishes the completed
+two-recipe build. The command below refuses to build while the plan is blocked.
 
 ```powershell
 .\scripts\build-win98-driver-sources.ps1 `
@@ -212,7 +215,8 @@ and atomically publishes the completed two-recipe build.
     -OutputRoot D:\src\retvrn99-win98\proof\gsw-vga-a
 ```
 
-The final package payloads are:
+The last verified pre-change package payloads, retained only for provenance
+until the plan is rebound, are:
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|

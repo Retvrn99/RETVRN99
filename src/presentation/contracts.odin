@@ -61,6 +61,12 @@ Pixel_Format :: enum u8 {
 	Rgba_8888,
 }
 
+Clip_Mode :: enum u8 {
+	Invalid,
+	Fullscreen,
+	Windowed,
+}
+
 Surface_Identity :: struct {
 	id:         u64,
 	generation: u64, // Advances when an allocation is created, replaced, or destroyed.
@@ -94,11 +100,14 @@ Header :: struct {
 }
 
 Legacy_Frame_Update :: struct {
-	header: Header,
+	header:      Header,
+	damage_kind: Damage_Kind,
+	full_reason: Damage_Full_Reason,
 }
 
 Gsw_Present :: struct {
 	header:        Header,
+	clip_mode:     Clip_Mode,
 	clips:         Rect_Set,
 	source_offset: u64,
 	source_pitch:  u32,
@@ -171,6 +180,9 @@ Diagnostic_Code :: enum u16 {
 	Dirty_Rect_Overflow,
 	Dirty_Rect_Out_Of_Bounds,
 	Dirty_Rect_Duplicate,
+	Dirty_Rect_Unsorted,
+	Dirty_Rect_Overlap,
+	Dirty_Rect_Mergeable,
 	Dirty_Unused_Tail_Nonzero,
 	Clip_Count_Overflow,
 	Clip_Rect_Zero,
@@ -178,6 +190,9 @@ Diagnostic_Code :: enum u16 {
 	Clip_Rect_Out_Of_Bounds,
 	Clip_Rect_Duplicate,
 	Clip_Unused_Tail_Nonzero,
+	Invalid_Clip_Mode,
+	Fullscreen_Clips_Not_Empty,
+	Fullscreen_Destination_Not_Canvas,
 	Unsupported_Interval,
 	Invalid_Source_Ownership,
 	Invalid_Display_Owner,
@@ -189,6 +204,9 @@ Diagnostic_Code :: enum u16 {
 	Source_Layout_Out_Of_Bounds,
 	Unexpected_Source_Layout,
 	Invalid_Invalidation,
+	Invalid_Damage_Kind,
+	Invalid_Damage_Full_Reason,
+	Palette_Damage_Not_Full,
 }
 
 Diagnostic :: struct {
@@ -247,6 +265,8 @@ Selector :: struct {
 	active:               Active_Identity,
 	has_last_good_legacy: bool,
 	last_good_legacy:     Legacy_Frame_Update,
+	has_last_good_gsw:    bool,
+	last_good_gsw:        Gsw_Present,
 }
 
 Selector_Action :: enum u8 {
@@ -254,9 +274,11 @@ Selector_Action :: enum u8 {
 	Present_Legacy,
 	Present_Gsw,
 	Refresh_Legacy,
+	Refresh_Gsw,
 	Drop_Stale,
 	Reject_Invalid,
 	Restore_Legacy,
+	Restore_Gsw,
 	Clear,
 }
 
@@ -522,6 +544,65 @@ validate_rect_set :: proc(
 }
 
 @(private = "file")
+dirty_rect_sort_less :: proc(a, b: Rect) -> bool {
+	if a.y != b.y {return a.y < b.y}
+	if a.x != b.x {return a.x < b.x}
+	if a.height != b.height {return a.height < b.height}
+	return a.width < b.width
+}
+
+@(private = "file")
+dirty_rects_overlap :: proc(a, b: Rect) -> bool {
+	return(
+		a.x < b.x + b.width &&
+		b.x < a.x + a.width &&
+		a.y < b.y + b.height &&
+		b.y < a.y + a.height \
+	)
+}
+
+@(private = "file")
+dirty_rects_mergeable :: proc(a, b: Rect) -> bool {
+	if a.y == b.y && a.height == b.height {
+		return a.x + a.width == b.x || b.x + b.width == a.x
+	}
+	if a.x == b.x && a.width == b.width {
+		return a.y + a.height == b.y || b.y + b.height == a.y
+	}
+	return false
+}
+
+@(private = "file")
+validate_dirty_rect_set :: proc(set: Rect_Set, extent: Extent) -> Diagnostic {
+	diagnostic := validate_rect_set(
+		set,
+		extent,
+		false,
+		.Dirty_Count_Overflow,
+		.Dirty_Rect_Zero,
+		.Dirty_Rect_Overflow,
+		.Dirty_Rect_Out_Of_Bounds,
+		.Dirty_Rect_Duplicate,
+		.Dirty_Unused_Tail_Nonzero,
+	)
+	if !diagnostic_valid(diagnostic) {return diagnostic}
+	for i in 0 ..< int(set.count) {
+		if i > 0 && dirty_rect_sort_less(set.rects[i], set.rects[i - 1]) {
+			return diagnostic_make(.Dirty_Rect_Unsorted, u32(i))
+		}
+		for j in 0 ..< i {
+			if dirty_rects_overlap(set.rects[i], set.rects[j]) {
+				return diagnostic_make(.Dirty_Rect_Overlap, u32(i))
+			}
+			if dirty_rects_mergeable(set.rects[i], set.rects[j]) {
+				return diagnostic_make(.Dirty_Rect_Mergeable, u32(i))
+			}
+		}
+	}
+	return diagnostic_make(.Valid)
+}
+
+@(private = "file")
 source_ownership_valid :: proc(source_kind: Source_Kind, ownership: Ownership) -> bool {
 	#partial switch source_kind {
 	case .Legacy_Snapshot:
@@ -620,17 +701,7 @@ validate_common :: proc(header: Header, current: Validation_Context, gsw: bool) 
 		.Destination_Rect_Out_Of_Bounds,
 	)
 	if !diagnostic_valid(diagnostic) {return diagnostic}
-	diagnostic = validate_rect_set(
-		header.dirty,
-		header.surface_extent,
-		false,
-		.Dirty_Count_Overflow,
-		.Dirty_Rect_Zero,
-		.Dirty_Rect_Overflow,
-		.Dirty_Rect_Out_Of_Bounds,
-		.Dirty_Rect_Duplicate,
-		.Dirty_Unused_Tail_Nonzero,
-	)
+	diagnostic = validate_dirty_rect_set(header.dirty, header.surface_extent)
 	if !diagnostic_valid(diagnostic) {return diagnostic}
 	interval_mask := presentation_interval_mask(header.interval)
 	if interval_mask == 0 || current.interval_mask & interval_mask == 0 {
@@ -647,7 +718,34 @@ validate_common :: proc(header: Header, current: Validation_Context, gsw: bool) 
 }
 
 validate_legacy :: proc(update: Legacy_Frame_Update, current: Validation_Context) -> Diagnostic {
-	return validate_common(update.header, current, false)
+	diagnostic := validate_common(update.header, current, false)
+	if !diagnostic_valid(diagnostic) {return diagnostic}
+	#partial switch update.damage_kind {
+	case .Pixel_Memory, .Palette_Only, .Pixel_And_Palette:
+	case:
+		return diagnostic_make(.Invalid_Damage_Kind)
+	}
+	#partial switch update.full_reason {
+	case .None,
+	     .Initial_Surface,
+	     .Mode_Boundary,
+	     .Ambiguous_Mapping,
+	     .Capacity_Exceeded,
+	     .External_Tracking:
+	case:
+		return diagnostic_make(.Invalid_Damage_Full_Reason)
+	}
+	if update.full_reason != .None &&
+	   (update.header.dirty.count != 1 ||
+			   !rect_equal(update.header.dirty.rects[0], update.header.source)) {
+		return diagnostic_make(.Invalid_Damage_Full_Reason)
+	}
+	if damage_kind_has_palette(update.damage_kind) &&
+	   (update.header.dirty.count != 1 ||
+			   !rect_equal(update.header.dirty.rects[0], update.header.source)) {
+		return diagnostic_make(.Palette_Damage_Not_Full)
+	}
+	return diagnostic_make(.Valid)
 }
 
 @(private = "file")
@@ -700,6 +798,20 @@ validate_snapshot_layout :: proc(present: Gsw_Present, current: Validation_Conte
 validate_gsw :: proc(present: Gsw_Present, current: Validation_Context) -> Diagnostic {
 	diagnostic := validate_common(present.header, current, true)
 	if !diagnostic_valid(diagnostic) {return diagnostic}
+	#partial switch present.clip_mode {
+	case .Fullscreen:
+		if present.clips.count != 0 {return diagnostic_make(.Fullscreen_Clips_Not_Empty)}
+		if !rect_equal(
+			present.header.destination,
+			{
+				width = present.header.canvas_extent.width,
+				height = present.header.canvas_extent.height,
+			},
+		) {return diagnostic_make(.Fullscreen_Destination_Not_Canvas)}
+	case .Windowed:
+	case:
+		return diagnostic_make(.Invalid_Clip_Mode)
+	}
 	diagnostic = validate_rect_set(
 		present.clips,
 		present.header.canvas_extent,
@@ -798,12 +910,17 @@ header_equal :: proc(a, b: Header) -> bool {
 }
 
 legacy_frame_update_equal :: proc(a, b: Legacy_Frame_Update) -> bool {
-	return header_equal(a.header, b.header)
+	return(
+		header_equal(a.header, b.header) &&
+		a.damage_kind == b.damage_kind &&
+		a.full_reason == b.full_reason \
+	)
 }
 
 gsw_present_equal :: proc(a, b: Gsw_Present) -> bool {
 	return(
 		header_equal(a.header, b.header) &&
+		a.clip_mode == b.clip_mode &&
 		rect_set_equal(a.clips, b.clips) &&
 		a.source_offset == b.source_offset &&
 		a.source_pitch == b.source_pitch \
@@ -875,6 +992,31 @@ legacy_surface_transition_valid :: proc(previous, update: Legacy_Frame_Update) -
 	return generation_order(current_surface.generation, previous_surface.generation) == .Newer
 }
 
+gsw_snapshot_surface_transition_valid :: proc(previous, update: Gsw_Present) -> bool {
+	if previous.header.source_kind != .Gsw_Snapshot || update.header.source_kind != .Gsw_Snapshot {
+		return false
+	}
+	previous_surface := previous.header.surface
+	current_surface := update.header.surface
+	if previous_surface.id == 0 ||
+	   previous_surface.generation == 0 ||
+	   current_surface.id == 0 ||
+	   current_surface.generation == 0 {return false}
+	geometry_equal := mode_key_equal(previous.header.mode_key, update.header.mode_key)
+	identity_equal :=
+		previous.header.lifecycle_generation == update.header.lifecycle_generation &&
+		previous.header.identity_namespace == update.header.identity_namespace &&
+		previous.header.device_generation == update.header.device_generation &&
+		previous.header.format == update.header.format
+	if current_surface.generation == previous_surface.generation {
+		return current_surface.id == previous_surface.id && identity_equal && geometry_equal
+	}
+	return(
+		identity_equal &&
+		generation_order(current_surface.generation, previous_surface.generation) == .Newer \
+	)
+}
+
 selector_submit_legacy :: proc(
 	selector: ^Selector,
 	update: Legacy_Frame_Update,
@@ -944,6 +1086,8 @@ selector_submit_legacy :: proc(
 				next.active = {}
 				next.has_last_good_legacy = false
 				next.last_good_legacy = {}
+				next.has_last_good_gsw = false
+				next.last_good_gsw = {}
 			}
 		}
 	}
@@ -961,6 +1105,7 @@ selector_submit_gsw :: proc(
 	selector: ^Selector,
 	present: Gsw_Present,
 	current: Validation_Context,
+	preserve_active_resident: bool = false,
 ) -> Selector_Result {
 	if selector == nil {return selector_result(nil, .Reject_Invalid)}
 	diagnostic := validate_gsw(present, current)
@@ -980,6 +1125,22 @@ selector_submit_gsw :: proc(
 	}
 	if next.sequence != 0 && generation_order(header.sequence, next.sequence) != .Newer {
 		return selector_result(selector, .Drop_Stale)
+	}
+	if preserve_active_resident &&
+	   owner == .Gsw2d &&
+	   next.active.kind == .Gsw &&
+	   next.active.source_kind == .Gsw_Resident &&
+	   next.active.identity_namespace == .Gsw3d &&
+	   mode_key_equal(mode_key, next.mode_key) {
+		if next.has_last_good_gsw &&
+		   !gsw_snapshot_surface_transition_valid(next.last_good_gsw, present) {
+			return selector_result(selector, .Drop_Stale, diagnostic_make(.Stale_Surface_Identity))
+		}
+		next.sequence = header.sequence
+		next.last_good_gsw = present
+		next.has_last_good_gsw = true
+		selector^ = next
+		return selector_result(selector, .Refresh_Gsw)
 	}
 	if !fresh {
 		if next.mode_generation == 0 {
@@ -1016,6 +1177,10 @@ selector_submit_gsw :: proc(
 	next.display_owner = owner
 	next.mode_key = mode_key
 	next.active = active_from_header(header, .Gsw)
+	if owner == .Gsw2d {
+		next.last_good_gsw = present
+		next.has_last_good_gsw = true
+	}
 	selector^ = next
 	return selector_result(selector, .Present_Gsw)
 }
@@ -1044,8 +1209,33 @@ selector_invalidate_gsw :: proc(
 	if next.sequence == 0 {next.sequence = active.sequence}
 	next.sequence = generation_next(next.sequence)
 	next.mode_generation = generation_next(next.mode_generation)
-	if next.has_last_good_legacy &&
-	   next.last_good_legacy.header.lifecycle_generation == next.lifecycle_generation {
+	legacy_valid :=
+		next.has_last_good_legacy &&
+		next.last_good_legacy.header.lifecycle_generation == next.lifecycle_generation
+	gsw_valid :=
+		next.has_last_good_gsw &&
+		next.last_good_gsw.header.lifecycle_generation == next.lifecycle_generation &&
+		next.last_good_gsw.header.source_kind == .Gsw_Snapshot
+	restore_gsw :=
+		gsw_valid &&
+		(!legacy_valid ||
+				generation_order(
+					next.last_good_gsw.header.sequence,
+					next.last_good_legacy.header.sequence,
+				) ==
+					.Newer)
+	if restore_gsw {
+		restored := next.last_good_gsw
+		restored.header.sequence = next.sequence
+		restored.header.mode_generation = next.mode_generation
+		next.last_good_gsw = restored
+		next.display_owner = .Gsw2d
+		next.mode_key = output_mode_key(restored.header)
+		next.active = active_from_header(restored.header, .Gsw)
+		selector^ = next
+		return selector_result(selector, .Restore_Gsw)
+	}
+	if legacy_valid {
 		restored := next.last_good_legacy
 		restored.header.sequence = next.sequence
 		restored.header.mode_generation = next.mode_generation

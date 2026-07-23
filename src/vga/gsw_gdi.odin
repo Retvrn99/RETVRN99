@@ -298,5 +298,15 @@ gsw_vga_execute_gdi_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 	}
 	g.metrics.blits += 1
 	g.metrics.software_pixels += u64(width) * u64(height)
+	_ = gsw_presentation_note_raw_damage(
+		g,
+		destination_base,
+		destination_pitch,
+		destination_x,
+		destination_y,
+		width,
+		height,
+		format,
+	)
 	return true
 }

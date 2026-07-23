@@ -91,6 +91,8 @@ Display_Frame :: struct {
 	guest_activity_generation: u64,
 	pixels:                    []u32,
 	text:                      Text_Snapshot,
+	dirty:                     contract.Rect_Set,
+	updated_pixels:            u64,
 }
 
 Legacy_Irq_Proc :: proc(ctx: rawptr, asserted: bool)
@@ -143,6 +145,9 @@ Vga :: struct {
 	legacy_presentation_mode_key:           contract.Mode_Key,
 	legacy_presentation_surface_generation: u64,
 	legacy_presentation_surface_key:        contract.Mode_Key,
+	legacy_damage:                          Vga_Damage_State,
+	legacy_damage_batch_count:              u32,
+	legacy_damage_batches:                  [VGA_DAMAGE_MAX_BATCHES]Vga_Damage_Batch,
 	full_frame_renders:                     u64,
 	raster_pixels_rendered:                 u64,
 	crtc:                                   [32]u8,
@@ -301,12 +306,16 @@ vga_reset :: proc(v: ^Vga) {
 	v.pending_start = 0
 	v.vertical_interrupt_pending = false
 	v.timing = {}
+	v.legacy_damage = {}
+	v.legacy_damage_batch_count = 0
+	v.legacy_damage_batches = {}
 	v.content_generation = 1
 	v.guest_activity_generation = 1
 	v.presentation_sequence = 1
 	v.legacy_presentation_sequence = 1
 	vga_recalculate_timing(v)
 	_ = vga_legacy_presentation_mode_generation(v, true)
+	vga_damage_record_full(v, .Pixel_Memory, .Initial_Surface)
 	vga_refresh_legacy_irq(v)
 }
 
@@ -328,13 +337,33 @@ vga_presentation_sequence :: proc(v: ^Vga) -> u64 {
 
 vga_note_content_change :: proc(v: ^Vga) {
 	if v == nil {return}
+	vga_damage_record_full(v, .Pixel_Memory, .Ambiguous_Mapping)
+	vga_note_recorded_change(v, true)
+}
+
+@(private = "package")
+vga_note_recorded_change :: proc(v: ^Vga, guest_activity: bool) {
+	if v == nil {return}
 	v.legacy_presentation_sequence = vga_advance_presentation_sequence(v)
 	_ = vga_legacy_presentation_mode_generation(v)
 	v.content_generation += 1
 	if v.content_generation == 0 {v.content_generation = 1}
-	v.guest_activity_generation += 1
-	if v.guest_activity_generation == 0 {v.guest_activity_generation = 1}
+	if guest_activity {
+		v.guest_activity_generation += 1
+		if v.guest_activity_generation == 0 {v.guest_activity_generation = 1}
+	}
 	if !v.raster_fallback {v.frame_valid = false}
+}
+
+@(private = "package")
+vga_note_memory_change :: proc(v: ^Vga) {
+	vga_note_recorded_change(v, true)
+}
+
+@(private = "package")
+vga_note_palette_change :: proc(v: ^Vga) {
+	if v == nil || !vga_damage_record_palette(v) {return}
+	vga_note_recorded_change(v, true)
 }
 
 vga_set_legacy_irq :: proc(v: ^Vga, ctx: rawptr, irq: Legacy_Irq_Proc) {
@@ -354,11 +383,10 @@ vga_legacy_irq_line :: proc(v: ^Vga) -> bool {
 
 vga_note_animation_change :: proc(v: ^Vga) {
 	if v == nil {return}
-	v.legacy_presentation_sequence = vga_advance_presentation_sequence(v)
-	_ = vga_legacy_presentation_mode_generation(v)
-	v.content_generation += 1
-	if v.content_generation == 0 {v.content_generation = 1}
-	if !v.raster_fallback {v.frame_valid = false}
+	kind, _, _ := display_geometry(v)
+	if kind != .Text || !video_output_enabled(v) {return}
+	vga_damage_record_full(v, .Pixel_Memory, .Ambiguous_Mapping)
+	vga_note_recorded_change(v, false)
 }
 
 @(private = "package")

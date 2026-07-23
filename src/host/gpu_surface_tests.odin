@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
+import contract "../presentation"
 import "core:testing"
 import sdl3 "vendor:sdl3"
 
@@ -103,6 +104,57 @@ host_gpu_surface_test_destination_maps_inside_guest_view :: proc(t: ^testing.T) 
 	}
 	destination := host_gpu_present_destination(sdl3.FRect{100, 50, 1280, 960}, present)
 	testing.expect_value(t, destination, sdl3.FRect{420, 290, 640, 480})
+}
+
+@(test)
+host_gpu_surface_test_retained_gsw_restore_is_a_valid_lifecycle_transition :: proc(t: ^testing.T) {
+	testing.expect(
+		t,
+		host_gpu_surface_invalidation_allows_lifecycle(contract.Selector_Action.Restore_Gsw),
+	)
+	h: Host
+	if !host_presentation_test_seed_legacy(t, &h) {return}
+	snapshot := host_presentation_test_snapshot(20)
+	snapshot.header.completion = {}
+	snapshot_admission := host_presentation_admit_gsw(&h, snapshot, 640 * 480 * 4)
+	if !testing.expect(t, snapshot_admission.valid) {return}
+	desktop_texture := transmute(^sdl3.Texture)(uintptr(91))
+	h.presentation_state.gsw_staging = {
+		texture          = desktop_texture,
+		width            = 640,
+		height           = 480,
+		stage_generation = 31,
+	}
+	desktop_staged := host_presentation_test_staged(&snapshot_admission, desktop_texture, 31)
+	if !testing.expect(
+		t,
+		host_presentation_commit_gsw_snapshot_staged(&h, &snapshot_admission, desktop_staged),
+	) {return}
+
+	resident := host_presentation_test_local_resident(&h, 30)
+	resident_admission := host_presentation_admit_gsw(&h, resident)
+	if !testing.expect(t, resident_admission.valid) {return}
+	host_presentation_test_install_surface(&h, resident_admission.gsw)
+	if !testing.expect(
+		t,
+		host_presentation_commit_resident(
+			&h,
+			&resident_admission,
+			host_presentation_test_physical(resident_admission.gsw),
+		),
+	) {return}
+	surface_id := u32(resident.header.surface.id)
+	h.gpu_surfaces[0].render_texture = nil
+	h.gpu_surfaces[0].gpu_texture = nil
+
+	testing.expect(t, host_gpu_surface_destroy(&h, surface_id))
+	testing.expect(t, !h.gpu_surfaces[0].live)
+	testing.expect_value(
+		t,
+		h.presentation_state.selector.active.source_kind,
+		contract.Source_Kind.Gsw_Snapshot,
+	)
+	testing.expect_value(t, h.presentation_state.gsw_texture, desktop_texture)
 }
 
 @(test)

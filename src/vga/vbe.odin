@@ -82,6 +82,18 @@ vga_publish_external_vbe_writes :: proc(v: ^Vga, dirty: bool) -> bool {
 	return true
 }
 
+vga_publish_external_backing_writes :: proc(v: ^Vga, dirty: bool) -> bool {
+	if v == nil || !dirty {return false}
+	vga_note_memory_change(v)
+	return true
+}
+
+vga_publish_external_backing_writes_paired :: proc(v: ^Vga, g: ^Gsw_Vga, dirty: bool) -> bool {
+	gsw_dirty := gsw_presentation_publish_external_backing_writes(g, dirty)
+	legacy_dirty := vga_publish_external_backing_writes(v, dirty)
+	return gsw_dirty || legacy_dirty
+}
+
 vga_vbe_pitch :: proc(v: ^Vga) -> int {
 	width := int(v.dispi[DISPI_INDEX_VIRT_WIDTH])
 	if width == 0 {width = int(v.dispi[DISPI_INDEX_XRES])}

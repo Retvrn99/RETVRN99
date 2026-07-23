@@ -32,8 +32,59 @@ vga_aperture_access :: proc(
 	data: []u8,
 	timestamp_ns: u64,
 ) -> bool {
+	return vga_aperture_access_paired(v, nil, gpa, write, data, timestamp_ns)
+}
+
+@(private = "file")
+vga_planar_backing_range :: proc(v: ^Vga, raw: int, wrap_legacy: bool) -> (u32, u32, bool) {
+	if v == nil || raw < 0 {return 0, 0, false}
+	offset := raw
+	if v.seq[4] & 0x08 != 0 {
+		offset = raw >> 2
+		plane := raw & 3
+		index := offset * 4 + plane
+		if index < 0 || index >= len(v.vram) {return 0, 0, false}
+		return u32(index), 1, true
+	}
+	if v.seq[4] & 0x04 == 0 && v.gfx[6] & 0x02 != 0 {offset = raw >> 1}
+	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
+	index := offset * 4
+	if index < 0 || index >= len(v.vram) {return 0, 0, false}
+	return u32(index), u32(min(4, len(v.vram) - index)), true
+}
+
+@(private = "file")
+vga_aperture_write_backing_range :: proc(v: ^Vga, gpa: u64) -> (u32, u32, bool) {
+	if v == nil {return 0, 0, false}
+	if gpa >= v.framebuffer_base && gpa - v.framebuffer_base < u64(VRAM_SIZE) {
+		return u32(gpa - v.framebuffer_base), 1, true
+	}
+	if !legacy_video_memory_enabled(v) {return 0, 0, false}
+	if vga_vbe_enabled(v) && gpa >= 0xA0000 && gpa < 0xB0000 {
+		offset := int(v.bank_write) * dispi_bank_granularity(v) + int(gpa - 0xA0000)
+		if v.dispi[DISPI_INDEX_BPP] == 4 {
+			return vga_planar_backing_range(v, offset, false)
+		}
+		if offset < 0 || offset >= len(v.vram) {return 0, 0, false}
+		return u32(offset), 1, true
+	}
+	raw, mapped := legacy_aperture_offset(v, gpa)
+	if !mapped {return 0, 0, false}
+	return vga_planar_backing_range(v, raw, true)
+}
+
+vga_aperture_access_paired :: proc(
+	v: ^Vga,
+	g: ^Gsw_Vga,
+	gpa: u64,
+	write: bool,
+	data: []u8,
+	timestamp_ns: u64,
+) -> bool {
 	if !vga_mmio_range_contains(v, gpa, len(data)) || v.vram == nil {return false}
-	wrote := false
+	serial := v.legacy_damage.write_serial
+	changed_start := u32(VRAM_SIZE)
+	changed_end: u32
 	raster_started := false
 	for i in 0 ..< len(data) {
 		address := gpa + u64(i)
@@ -42,14 +93,31 @@ vga_aperture_access :: proc(
 				vga_begin_raster_change(v, timestamp_ns)
 				raster_started = true
 			}
-			if vga_memory_write_byte(v, address, data[i]) {wrote = true}
+			start, length, mapped := vga_aperture_write_backing_range(v, address)
+			before := v.legacy_damage.write_serial
+			_ = vga_memory_write_byte(v, address, data[i])
+			if mapped && before != v.legacy_damage.write_serial {
+				changed_start = min(changed_start, start)
+				changed_end = max(changed_end, start + length)
+			}
 		} else if value, ok := vga_memory_read_byte(v, address); ok {
 			data[i] = value
 		} else {
 			data[i] = 0xFF
 		}
 	}
-	if wrote {vga_note_content_change(v)}
+	if serial != v.legacy_damage.write_serial {
+		if changed_start < changed_end &&
+		   gsw_presentation_external_backing_range_overlaps(
+			   g,
+			   v,
+			   changed_start,
+			   changed_end - changed_start,
+		   ) {
+			_ = gsw_presentation_publish_external_backing_writes(g, true)
+		}
+		vga_note_memory_change(v)
+	}
 	return true
 }
 
@@ -66,15 +134,14 @@ vga_mmio_read :: proc(v: ^Vga, gpa: u64, size: u8) -> (u32, bool) {
 
 vga_mmio_write :: proc(v: ^Vga, gpa: u64, size: u8, value: u32) -> bool {
 	if !vga_mmio_contains(v, gpa, size) || v.vram == nil {return false}
-	wrote := false
+	serial := v.legacy_damage.write_serial
 	for i in 0 ..< int(max(size, 1)) {
 		if !vga_memory_write_byte(v, gpa + u64(i), u8(value >> uint(i * 8))) {
-			if wrote {vga_note_content_change(v)}
+			if serial != v.legacy_damage.write_serial {vga_note_memory_change(v)}
 			return false
 		}
-		wrote = true
 	}
-	if wrote {vga_note_content_change(v)}
+	if serial != v.legacy_damage.write_serial {vga_note_memory_change(v)}
 	return true
 }
 
@@ -98,14 +165,13 @@ vga_memory_read_byte :: proc(v: ^Vga, gpa: u64) -> (u8, bool) {
 @(private = "package")
 vga_memory_write_byte :: proc(v: ^Vga, gpa: u64, value: u8) -> bool {
 	if gpa >= v.framebuffer_base && gpa - v.framebuffer_base < u64(VRAM_SIZE) {
-		v.vram[int(gpa - v.framebuffer_base)] = value
-		return true
+		return vga_store_backing_byte(v, int(gpa - v.framebuffer_base), value)
 	}
 	if !legacy_video_memory_enabled(v) {return false}
 	if vga_vbe_enabled(v) && gpa >= 0xA0000 && gpa < 0xB0000 {
 		offset := int(v.bank_write) * dispi_bank_granularity(v) + int(gpa - 0xA0000)
 		if v.dispi[DISPI_INDEX_BPP] == 4 {planar_write(v, offset, value, false); return true}
-		if offset >= 0 && offset < len(v.vram) {v.vram[offset] = value; return true}
+		if offset >= 0 && offset < len(v.vram) {return vga_store_backing_byte(v, offset, value)}
 		return false
 	}
 	raw, ok := legacy_aperture_offset(v, gpa)
@@ -140,7 +206,7 @@ plane_byte :: proc(v: ^Vga, plane, offset: int) -> u8 {
 @(private = "package")
 set_plane_byte :: proc(v: ^Vga, plane, offset: int, value: u8) {
 	index := offset * 4 + plane
-	if index >= 0 && index < len(v.vram) {v.vram[index] = value}
+	if index >= 0 && index < len(v.vram) {_ = vga_store_backing_byte(v, index, value)}
 }
 
 @(private = "file")

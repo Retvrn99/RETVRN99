@@ -99,6 +99,7 @@ Gsw3d_Triangle_Renderer :: struct {
 	fence_ops:        Gsw3d_Triangle_Fence_Ops,
 	metrics:          Gsw3d_Triangle_Metrics,
 	readback_counter: ^u64,
+	readback_bytes:   ^u64,
 	live:             bool,
 }
 

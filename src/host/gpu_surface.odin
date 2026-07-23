@@ -177,6 +177,10 @@ host_gpu_surface_render_target :: proc(
 	return surface.gpu_texture, format, surface.descriptor.width, surface.descriptor.height, true
 }
 
+host_gpu_surface_invalidation_allows_lifecycle :: proc(action: contract.Selector_Action) -> bool {
+	return action == .Restore_Legacy || action == .Restore_Gsw || action == .Clear
+}
+
 host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descriptor) -> bool {
 	if h == nil || h.gpu == nil || h.ren == nil {
 		return false
@@ -276,7 +280,7 @@ host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descripto
 	   h.presentation_state.gsw.header.surface.id == u64(descriptor.id) &&
 	   h.presentation_state.gsw.header.surface.generation == previous.generation {
 		action := host_presentation_invalidate_active(h, .Gsw3d, .Surface_Destroyed)
-		if action != .Restore_Legacy && action != .Clear {
+		if !host_gpu_surface_invalidation_allows_lifecycle(action) {
 			sdl3.DestroyTexture(render_texture)
 			sdl3.ReleaseGPUTexture(h.gpu, gpu_texture)
 			return false
@@ -314,7 +318,7 @@ host_gpu_surface_destroy :: proc(h: ^Host, id: u32) -> bool {
 	   h.presentation_state.gsw.header.surface.id == u64(id) &&
 	   h.presentation_state.gsw.header.surface.generation == surface.generation {
 		action := host_presentation_invalidate_active(h, .Gsw3d, .Surface_Destroyed)
-		if action != .Restore_Legacy && action != .Clear {return false}
+		if !host_gpu_surface_invalidation_allows_lifecycle(action) {return false}
 	}
 	if h.gpu_present.surface_id == id && h.presentation_state.selector.active.kind == .None {
 		h.gpu_present = {}

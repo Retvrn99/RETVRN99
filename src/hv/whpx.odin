@@ -392,6 +392,34 @@ whpx_dirty_bitmap_pages :: proc(bitmap: []u64) -> u64 {
 }
 
 @(private = "file")
+whpx_dirty_page_add :: proc(set: ^Dirty_Page_Set, page: u64) -> bool {
+	if set == nil || page >= DEVICE_DIRTY_MAX_PAGES {return false}
+	word := int(page / 64)
+	mask := u64(1) << uint(page & 63)
+	if set.words[word] & mask == 0 {
+		set.words[word] |= mask
+		if set.count < max(u32) {set.count += 1}
+	}
+	return true
+}
+
+@(private = "file")
+whpx_dirty_page_merge_bitmap :: proc(set: ^Dirty_Page_Set, bitmap: []u64, base_page: u64) -> bool {
+	if set == nil {return false}
+	for word, word_index in bitmap {
+		bits := word
+		for bits != 0 {
+			bit := 0
+			probe := bits
+			for probe & 1 == 0 {probe >>= 1; bit += 1}
+			if !whpx_dirty_page_add(set, base_page + u64(word_index * 64 + bit)) {return false}
+			bits &= bits - 1
+		}
+	}
+	return true
+}
+
+@(private = "file")
 whpx_capture_device_memory_dirty :: proc(vm: ^Vm, mapping: ^Device_Mapping) -> bool {
 	if vm == nil || mapping == nil || !mapping.track_dirty || !mapping.mapped {return true}
 	if len(mapping.dirty_bitmap) == 0 {return false}
@@ -409,6 +437,9 @@ whpx_capture_device_memory_dirty :: proc(vm: ^Vm, mapping: ^Device_Mapping) -> b
 	}
 	pages := whpx_dirty_bitmap_pages(mapping.dirty_bitmap)
 	if pages > 0 {
+		if !whpx_dirty_page_merge_bitmap(&mapping.dirty_pages, mapping.dirty_bitmap, 0) {
+			return false
+		}
 		mapping.dirty_pending = true
 		mapping.dirty_pending_pages += pages
 	}
@@ -428,17 +459,29 @@ whpx_query_device_memory_dirty_pages :: proc(
 	pages: u64,
 	ok: bool,
 ) {
-	if vm == nil || vm.part == nil {return false, 0, false}
+	set: Dirty_Page_Set
+	if !whpx_query_device_memory_dirty_page_set(vm, backing, &set) {return false, 0, false}
+	return set.count != 0, u64(set.count), true
+}
+
+whpx_query_device_memory_dirty_page_set :: proc(
+	vm: ^Vm,
+	backing: []u8,
+	pages: ^Dirty_Page_Set,
+) -> bool {
+	if pages == nil {return false}
+	pages^ = {}
+	if vm == nil || vm.part == nil {return false}
 	index := whpx_device_mapping_index(vm, backing)
-	if index < 0 {return false, 0, false}
+	if index < 0 {return false}
 	mapping := &vm.device_mappings[index]
-	if !mapping.track_dirty {return false, 0, false}
-	if !whpx_capture_device_memory_dirty(vm, mapping) {return false, 0, false}
-	dirty = mapping.dirty_pending
-	pages = mapping.dirty_pending_pages
+	if !mapping.track_dirty {return false}
+	if !whpx_capture_device_memory_dirty(vm, mapping) {return false}
+	pages^ = mapping.dirty_pages
+	mapping.dirty_pages = {}
 	mapping.dirty_pending = false
 	mapping.dirty_pending_pages = 0
-	return dirty, pages, true
+	return true
 }
 
 @(private = "file")
@@ -473,6 +516,11 @@ whpx_capture_device_alias_dirty :: proc(vm: ^Vm, alias: ^Device_Alias) -> bool {
 	}
 	pages := whpx_dirty_bitmap_pages(alias.dirty_bitmap)
 	if pages > 0 {
+		if !whpx_dirty_page_merge_bitmap(
+			&alias.dirty_pages,
+			alias.dirty_bitmap,
+			alias.backing_offset >> DEVICE_DIRTY_PAGE_SHIFT,
+		) {return false}
 		alias.dirty_pending = true
 		alias.dirty_pending_pages += pages
 	}
@@ -492,18 +540,32 @@ whpx_query_device_memory_alias_dirty_pages :: proc(
 	pages: u64,
 	ok: bool,
 ) {
-	if vm == nil || vm.part == nil {return false, 0, false}
+	set: Dirty_Page_Set
+	if !whpx_query_device_memory_alias_dirty_page_set(vm, gpa, size, &set) {
+		return false, 0, false
+	}
+	return set.count != 0, u64(set.count), true
+}
+
+whpx_query_device_memory_alias_dirty_page_set :: proc(
+	vm: ^Vm,
+	gpa, size: u64,
+	pages: ^Dirty_Page_Set,
+) -> bool {
+	if pages == nil {return false}
+	pages^ = {}
+	if vm == nil || vm.part == nil {return false}
 	index := whpx_device_alias_index(vm, gpa, size)
-	if index < 0 {return false, 0, false}
+	if index < 0 {return false}
 	alias := &vm.device_aliases[index]
 	mapping := &vm.device_mappings[alias.mapping_index]
-	if !mapping.track_dirty {return false, 0, false}
-	if !whpx_capture_device_alias_dirty(vm, alias) {return false, 0, false}
-	dirty = alias.dirty_pending
-	pages = alias.dirty_pending_pages
+	if !mapping.track_dirty {return false}
+	if !whpx_capture_device_alias_dirty(vm, alias) {return false}
+	pages^ = alias.dirty_pages
+	alias.dirty_pages = {}
 	alias.dirty_pending = false
 	alias.dirty_pending_pages = 0
-	return dirty, pages, true
+	return true
 }
 
 @(private = "file")

@@ -378,6 +378,7 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		}
 		g.metrics.fills += 1
 		g.metrics.software_pixels += u64(width) * u64(height)
+		_ = gsw_presentation_note_raw_damage(g, offset, pitch, 0, 0, width, height, format)
 	case .Copy:
 		if len(command) != 44 {return false}
 		source := gsw_rd32(command, 16)
@@ -386,7 +387,8 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		destination_pitch := gsw_rd32(command, 28)
 		width := gsw_rd32(command, 32)
 		height := gsw_rd32(command, 36)
-		bytes := gsw_format_bytes(Gsw_Pixel_Format(gsw_rd32(command, 40)))
+		format := Gsw_Pixel_Format(gsw_rd32(command, 40))
+		bytes := gsw_format_bytes(format)
 		row_bytes := u64(width) * u64(bytes)
 		_, source_ok := gsw_surface_rect(
 			len(g.framebuffer),
@@ -425,6 +427,16 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		}
 		g.metrics.copies += 1
 		g.metrics.software_pixels += u64(width) * u64(height)
+		_ = gsw_presentation_note_raw_damage(
+			g,
+			destination,
+			destination_pitch,
+			0,
+			0,
+			width,
+			height,
+			format,
+		)
 	case .Set_Palette:
 		if len(command) < 24 {return false}
 		start := gsw_rd32(command, 16)
@@ -435,14 +447,22 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		   len(command) != 24 + int(count) * 4 {
 			return false
 		}
+		changed := false
 		for i in 0 ..< int(count) {
 			color := gsw_rd32(command, 24 + i * 4)
 			index := (int(start) + i) * 3
-			g.palette.entries[index + 0] = u8(color >> 16)
-			g.palette.entries[index + 1] = u8(color >> 8)
-			g.palette.entries[index + 2] = u8(color)
+			red, green, blue := u8(color >> 16), u8(color >> 8), u8(color)
+			changed =
+				changed ||
+				g.palette.entries[index + 0] != red ||
+				g.palette.entries[index + 1] != green ||
+				g.palette.entries[index + 2] != blue
+			g.palette.entries[index + 0] = red
+			g.palette.entries[index + 1] = green
+			g.palette.entries[index + 2] = blue
 		}
 		g.metrics.palette_updates += u64(count)
+		if changed {_ = gsw_presentation_note_palette_damage(g)}
 	case .Blt:
 		if version != GSW_VGA_COMMAND_VERSION_2 || !gsw_vga_execute_blt(g, command) {return false}
 	case .Register_Surface:
@@ -483,6 +503,7 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		}
 		g.metrics.fills += 1
 		g.metrics.software_pixels += u64(width) * u64(height)
+		_ = gsw_presentation_note_surface_damage(g, surface, x, y, width, height)
 	case .Surface_Blt:
 		if version != GSW_VGA_COMMAND_VERSION_3 ||
 		   !gsw_vga_execute_surface_blt(g, command) {return false}
@@ -502,6 +523,7 @@ gsw_vga_execute :: proc(g: ^Gsw_Vga, command: []u8, version: u16) -> bool {
 		width, height := gsw_rd32(command, 28), gsw_rd32(command, 32)
 		_, valid := gsw_registered_surface_rect(g, surface, x, y, width, height)
 		if !valid {return false}
+		_ = gsw_presentation_note_surface_damage(g, surface, x, y, width, height)
 	case .Gdi_Blt:
 		if version != GSW_VGA_COMMAND_VERSION_4 || !gsw_vga_execute_gdi_blt(g, command) {
 			return false

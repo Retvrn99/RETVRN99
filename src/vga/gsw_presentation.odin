@@ -9,6 +9,7 @@ import "core:time"
 GSW_IMPLICIT_SURFACE_ID :: u64(1) << 63
 GSW_PRESENT_MAX_WIDTH :: u32(2560)
 GSW_PRESENT_MAX_HEIGHT :: u32(1600)
+GSW_PRESENT_DAMAGE_MAX_BATCHES :: 4
 
 Gsw_Presentation_Surface_Key :: struct {
 	offset: u32,
@@ -16,6 +17,11 @@ Gsw_Presentation_Surface_Key :: struct {
 	height: u32,
 	pitch:  u32,
 	format: Gsw_Pixel_Format,
+}
+
+Gsw_Presentation_Damage_Batch :: struct {
+	sequence: u64,
+	damage:   presentation.Damage_Record,
 }
 
 Gsw_Presentation_Producer_State :: struct {
@@ -32,6 +38,9 @@ Gsw_Presentation_Producer_State :: struct {
 	active_valid:           bool,
 	invalidation:           presentation.Gsw_Invalidation,
 	invalidation_valid:     bool,
+	damage:                 presentation.Damage_Record,
+	damage_batch_count:     u32,
+	damage_batches:         [GSW_PRESENT_DAMAGE_MAX_BATCHES]Gsw_Presentation_Damage_Batch,
 }
 
 Gsw_Presentation_Snapshot :: struct {
@@ -40,19 +49,25 @@ Gsw_Presentation_Snapshot :: struct {
 	active_valid:       bool,
 	invalidation:       presentation.Gsw_Invalidation,
 	invalidation_valid: bool,
+	damage:             presentation.Damage_Record,
 }
 
 Gsw_Presentation_Descriptor :: struct {
-	allocator:          runtime.Allocator,
-	state_generation:   u64,
-	present:            presentation.Gsw_Present,
-	present_valid:      bool,
-	invalidation:       presentation.Gsw_Invalidation,
-	invalidation_valid: bool,
-	palette:            Gsw_Palette_State,
-	source:             []u8,
-	bytes_copied:       int,
-	copy_duration_ns:   u64,
+	allocator:           runtime.Allocator,
+	state_generation:    u64,
+	present:             presentation.Gsw_Present,
+	present_valid:       bool,
+	invalidation:        presentation.Gsw_Invalidation,
+	invalidation_valid:  bool,
+	palette:             Gsw_Palette_State,
+	source:              []u8,
+	preconverted_pixels: []u32,
+	preconverted:        bool,
+	converted_pixels:    u64,
+	bytes_copied:        int,
+	copy_duration_ns:    u64,
+	damage_kind:         presentation.Damage_Kind,
+	full_reason:         presentation.Damage_Full_Reason,
 }
 
 @(private = "package")
@@ -200,6 +215,7 @@ gsw_presentation_build :: proc(
 		}
 	}
 	record := presentation.Gsw_Present {
+		clip_mode = .Fullscreen,
 		header = {
 			sequence = gsw_presentation_sequence_candidate(g),
 			lifecycle_generation = g.presentation_state.lifecycle_generation,
@@ -256,6 +272,11 @@ gsw_presentation_commit :: proc(
 	g.presentation_state.mode_clock = committed_mode_clock
 	g.presentation_state.active = committed
 	g.presentation_state.active_valid = true
+	gsw_presentation_damage_clear(&g.presentation_state)
+	g.presentation_state.damage = {
+		kind  = .Pixel_Memory,
+		rects = committed.header.dirty,
+	}
 	g.presentation_state.invalidation = {}
 	g.presentation_state.invalidation_valid = false
 	g.width = committed.header.surface_extent.width
@@ -384,6 +405,7 @@ gsw_presentation_invalidate_active :: proc(
 		g.presentation_state.state_generation,
 	)
 	g.presentation_state.active_valid = false
+	gsw_presentation_damage_clear(&g.presentation_state)
 	g.presentation_state.invalidation = invalidation
 	g.presentation_state.invalidation_valid = true
 	gsw_presentation_release_display_owner(g)
@@ -459,6 +481,7 @@ gsw_presentation_device_reset :: proc(g: ^Gsw_Vga) {
 		g.presentation_state.active_valid = false
 		g.presentation_state.invalidation = {}
 		g.presentation_state.invalidation_valid = false
+		gsw_presentation_damage_clear(&g.presentation_state)
 	}
 }
 
@@ -470,12 +493,24 @@ gsw_presentation_process_exit :: proc(g: ^Gsw_Vga) {
 
 gsw_vga_presentation_snapshot :: proc(g: ^Gsw_Vga) -> Gsw_Presentation_Snapshot {
 	if g == nil {return {}}
+	if g.presentation_state.active_valid {
+		_ = gsw_presentation_damage_seal(g, g.presentation_state.active.header.sequence)
+	}
+	active := g.presentation_state.active
+	damage := gsw_presentation_damage_accumulated(
+		&g.presentation_state,
+		active.header.surface_extent,
+	)
+	active.header.dirty = damage.rects
 	return {
 		state_generation = g.presentation_state.state_generation,
-		active = g.presentation_state.active,
-		active_valid = g.presentation_state.active_valid,
+		active = active,
+		active_valid = g.presentation_state.active_valid &&
+		damage.kind != .Invalid &&
+		damage.rects.count != 0,
 		invalidation = g.presentation_state.invalidation,
 		invalidation_valid = g.presentation_state.invalidation_valid,
+		damage = damage,
 	}
 }
 
@@ -489,6 +524,32 @@ gsw_presentation_descriptor_resize :: proc(
 		if descriptor.source != nil {delete(descriptor.source, descriptor.allocator)}
 		descriptor.source = make([]u8, byte_count, descriptor.allocator)
 	}
+}
+
+@(private = "file")
+gsw_presentation_descriptor_resize_preconverted :: proc(
+	descriptor: ^Gsw_Presentation_Descriptor,
+	pixel_count: int,
+) {
+	if descriptor.allocator.procedure == nil {descriptor.allocator = context.allocator}
+	if len(descriptor.preconverted_pixels) != pixel_count {
+		if descriptor.preconverted_pixels != nil {
+			delete(descriptor.preconverted_pixels, descriptor.allocator)
+		}
+		descriptor.preconverted_pixels = make([]u32, pixel_count, descriptor.allocator)
+	}
+}
+
+@(private = "package")
+gsw_presentation_palette_pixel :: proc(palette: ^Gsw_Palette_State, index: u8) -> u32 {
+	if palette == nil {return 0}
+	base := int(index) * 3
+	return(
+		0xFF00_0000 |
+		u32(palette.entries[base]) << 16 |
+		u32(palette.entries[base + 1]) << 8 |
+		u32(palette.entries[base + 2]) \
+	)
 }
 
 gsw_presentation_descriptor_capture :: proc(
@@ -553,23 +614,53 @@ gsw_presentation_descriptor_capture :: proc(
 			return false
 		}
 		gsw_presentation_descriptor_resize(descriptor, byte_count)
-		copy_started := time.tick_now()
-		for row in 0 ..< int(record.header.source.height) {
-			source_start := int(original_offset) + row * int(snapshot.active.source_pitch)
-			destination_start := row * row_bytes
-			copy(
-				descriptor.source[destination_start:destination_start + row_bytes],
-				source.framebuffer[source_start:source_start + row_bytes],
-			)
+		descriptor.bytes_copied = 0
+		descriptor.copy_duration_ns = 0
+		descriptor.preconverted = false
+		descriptor.converted_pixels = 0
+		if snapshot.damage.kind == .Palette_Only {
+			if record.header.format != .Indexed_8 {return false}
+			pixel_count := int(record.header.source.width) * int(record.header.source.height)
+			gsw_presentation_descriptor_resize_preconverted(descriptor, pixel_count)
+			for y in 0 ..< int(record.header.source.height) {
+				for x in 0 ..< int(record.header.source.width) {
+					source_index :=
+						int(original_offset) + y * int(snapshot.active.source_pitch) + x
+					descriptor.preconverted_pixels[y * int(record.header.source.width) + x] =
+						gsw_presentation_palette_pixel(&palette, source.framebuffer[source_index])
+				}
+			}
+			descriptor.preconverted = true
+			descriptor.converted_pixels = u64(pixel_count)
+		} else {
+			copy_started := time.tick_now()
+			for rect_index in 0 ..< int(record.header.dirty.count) {
+				rect := record.header.dirty.rects[rect_index]
+				rect_bytes := int(rect.width) * int(bytes_per_pixel)
+				for row in 0 ..< int(rect.height) {
+					source_start :=
+						int(original_offset) +
+						(int(rect.y) + row) * int(snapshot.active.source_pitch) +
+						int(rect.x) * int(bytes_per_pixel)
+					destination_start :=
+						(int(rect.y) + row) * row_bytes + int(rect.x) * int(bytes_per_pixel)
+					copy(
+						descriptor.source[destination_start:destination_start + rect_bytes],
+						source.framebuffer[source_start:source_start + rect_bytes],
+					)
+					descriptor.bytes_copied += rect_bytes
+				}
+			}
+			descriptor.copy_duration_ns = u64(max(time.Duration(0), time.tick_since(copy_started)))
 		}
-		descriptor.copy_duration_ns = u64(max(time.Duration(0), time.tick_since(copy_started)))
-		descriptor.bytes_copied = byte_count
 		descriptor.state_generation = snapshot.state_generation
 		descriptor.present = record
 		descriptor.present_valid = true
 		descriptor.invalidation = {}
 		descriptor.invalidation_valid = false
 		descriptor.palette = palette
+		descriptor.damage_kind = snapshot.damage.kind
+		descriptor.full_reason = snapshot.damage.full_reason
 		if commit_mode_clock {mode_clock^ = mode_clock_candidate}
 		return true
 	}
@@ -612,6 +703,10 @@ gsw_presentation_descriptor_capture :: proc(
 		descriptor.invalidation = invalidation
 		descriptor.invalidation_valid = true
 		descriptor.palette = {}
+		descriptor.preconverted = false
+		descriptor.converted_pixels = 0
+		descriptor.damage_kind = .Invalid
+		descriptor.full_reason = .None
 		if commit_mode_clock {mode_clock^ = mode_clock_candidate}
 		return true
 	}
@@ -624,6 +719,10 @@ gsw_presentation_descriptor_capture :: proc(
 	descriptor.invalidation = {}
 	descriptor.invalidation_valid = false
 	descriptor.palette = {}
+	descriptor.preconverted = false
+	descriptor.converted_pixels = 0
+	descriptor.damage_kind = .Invalid
+	descriptor.full_reason = .None
 	return true
 }
 
@@ -632,5 +731,8 @@ gsw_presentation_descriptor_destroy :: proc(descriptor: ^Gsw_Presentation_Descri
 	allocator := descriptor.allocator
 	if allocator.procedure == nil {allocator = context.allocator}
 	if descriptor.source != nil {delete(descriptor.source, allocator)}
+	if descriptor.preconverted_pixels != nil {
+		delete(descriptor.preconverted_pixels, allocator)
+	}
 	descriptor^ = {}
 }

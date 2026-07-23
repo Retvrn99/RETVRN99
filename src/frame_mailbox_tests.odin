@@ -28,6 +28,154 @@ frame_mailbox_test_publish_generation :: proc(mailbox: ^Frame_Mailbox, generatio
 }
 
 @(test)
+frame_mailbox_test_legacy_ack_is_lifecycle_bound_and_single_use :: proc(t: ^testing.T) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	lifecycle := frame_mailbox_lifecycle_generation(&mailbox)
+	update := contract.Legacy_Frame_Update {
+		header = {
+			sequence = 7,
+			lifecycle_generation = lifecycle,
+			mode_generation = 3,
+			surface = {id = 1, generation = 5},
+		},
+	}
+	testing.expect(t, frame_mailbox_note_legacy_applied(&mailbox, update))
+	testing.expect(t, frame_mailbox_legacy_was_committed(&mailbox, update))
+	mutated := update
+	mutated.full_reason = .External_Tracking
+	testing.expect(t, !frame_mailbox_legacy_was_committed(&mailbox, mutated))
+	ack, valid := frame_mailbox_take_legacy_ack(&mailbox)
+	testing.expect(t, valid)
+	testing.expect_value(t, ack.sequence, update.header.sequence)
+	testing.expect_value(t, ack.mode_generation, update.header.mode_generation)
+	testing.expect_value(t, ack.surface_generation, update.header.surface.generation)
+	_, valid = frame_mailbox_take_legacy_ack(&mailbox)
+	testing.expect(t, !valid)
+	testing.expect(t, frame_mailbox_note_legacy_applied(&mailbox, update))
+	frame_mailbox_reset(&mailbox)
+	testing.expect(t, !frame_mailbox_legacy_was_committed(&mailbox, update))
+	_, valid = frame_mailbox_take_legacy_ack(&mailbox)
+	testing.expect(t, !valid)
+	testing.expect(t, !frame_mailbox_note_legacy_applied(&mailbox, update))
+}
+
+@(test)
+frame_mailbox_test_gsw_ack_is_lifecycle_bound_and_single_use :: proc(t: ^testing.T) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	lifecycle := frame_mailbox_lifecycle_generation(&mailbox)
+	present := contract.Gsw_Present {
+		header = {
+			sequence = 9,
+			lifecycle_generation = lifecycle,
+			device_generation = 4,
+			surface = {id = 7, generation = 3},
+		},
+	}
+	testing.expect(t, frame_mailbox_note_gsw_applied(&mailbox, present))
+	testing.expect(t, frame_mailbox_gsw_was_committed(&mailbox, present))
+	mutated := present
+	mutated.source_pitch = 4
+	testing.expect(t, !frame_mailbox_gsw_was_committed(&mailbox, mutated))
+	ack, valid := frame_mailbox_take_gsw_ack(&mailbox)
+	testing.expect(t, valid)
+	testing.expect_value(t, ack.sequence, present.header.sequence)
+	testing.expect_value(t, ack.device_generation, present.header.device_generation)
+	testing.expect_value(t, ack.surface_id, present.header.surface.id)
+	testing.expect_value(t, ack.surface_generation, present.header.surface.generation)
+	_, valid = frame_mailbox_take_gsw_ack(&mailbox)
+	testing.expect(t, !valid)
+	testing.expect(t, frame_mailbox_note_gsw_applied(&mailbox, present))
+	frame_mailbox_reset(&mailbox)
+	testing.expect(t, !frame_mailbox_gsw_was_committed(&mailbox, present))
+	_, valid = frame_mailbox_take_gsw_ack(&mailbox)
+	testing.expect(t, !valid)
+	testing.expect(t, !frame_mailbox_note_gsw_applied(&mailbox, present))
+}
+
+@(test)
+frame_mailbox_test_legacy_failure_retries_identical_generation_without_clobber :: proc(
+	t: ^testing.T,
+) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	lifecycle := frame_mailbox_lifecycle_generation(&mailbox)
+	first, reserved := frame_mailbox_begin(&mailbox, 7)
+	if !testing.expect(t, reserved) {return}
+	first.scanout.generation = 7
+	first.scanout.legacy_update.header = {
+		sequence             = 7,
+		lifecycle_generation = lifecycle,
+	}
+	if !testing.expect(t, frame_mailbox_commit(&mailbox, first, true)) {return}
+	failed := frame_mailbox_acquire(&mailbox)
+	if !testing.expect(t, failed == first) {return}
+	testing.expect(t, frame_mailbox_retry_latest(&mailbox, failed))
+
+	retry, retry_reserved := frame_mailbox_begin(&mailbox, 7)
+	if !testing.expect(t, retry_reserved) {return}
+	retry.scanout.generation = 7
+	retry.scanout.legacy_update.header = first.scanout.legacy_update.header
+	if !testing.expect(t, frame_mailbox_commit(&mailbox, retry, true)) {return}
+	testing.expect(t, !frame_mailbox_retry_latest(&mailbox, failed))
+	frame_mailbox_release(&mailbox, failed)
+	republished := frame_mailbox_acquire(&mailbox)
+	if !testing.expect(t, republished == retry) {return}
+	frame_mailbox_release(&mailbox, republished)
+}
+
+@(test)
+frame_mailbox_test_gsw_failure_retries_identical_generation_without_clobber :: proc(
+	t: ^testing.T,
+) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	lifecycle := frame_mailbox_lifecycle_generation(&mailbox)
+	first, reserved := frame_mailbox_begin(&mailbox, 9)
+	if !testing.expect(t, reserved) {return}
+	first.scanout.generation = 9
+	first.scanout.gsw_presentation.present_valid = true
+	first.scanout.gsw_presentation.present.header = {
+		sequence             = 9,
+		lifecycle_generation = lifecycle,
+	}
+	if !testing.expect(t, frame_mailbox_commit(&mailbox, first, true)) {return}
+	failed := frame_mailbox_acquire(&mailbox)
+	if !testing.expect(t, failed == first) {return}
+	testing.expect(t, frame_mailbox_retry_latest(&mailbox, failed))
+
+	retry, retry_reserved := frame_mailbox_begin(&mailbox, 9)
+	if !testing.expect(t, retry_reserved) {return}
+	retry.scanout.generation = 9
+	retry.scanout.gsw_presentation.present_valid = true
+	retry.scanout.gsw_presentation.present.header = first.scanout.gsw_presentation.present.header
+	if !testing.expect(t, frame_mailbox_commit(&mailbox, retry, true)) {return}
+	testing.expect(t, !frame_mailbox_retry_latest(&mailbox, failed))
+	frame_mailbox_release(&mailbox, failed)
+	republished := frame_mailbox_acquire(&mailbox)
+	if !testing.expect(t, republished == retry) {return}
+	frame_mailbox_release(&mailbox, republished)
+}
+
+@(test)
+frame_mailbox_test_retry_cannot_clear_new_lifecycle_publication :: proc(t: ^testing.T) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	if !testing.expect(t, frame_mailbox_test_publish_generation(&mailbox, 4)) {return}
+	stale := frame_mailbox_acquire(&mailbox)
+	if !testing.expect(t, stale != nil) {return}
+	frame_mailbox_reset(&mailbox)
+	if !testing.expect(t, frame_mailbox_test_publish_generation(&mailbox, 1)) {return}
+	testing.expect(t, !frame_mailbox_retry_latest(&mailbox, stale))
+	current := frame_mailbox_acquire(&mailbox)
+	if !testing.expect(t, current != nil) {return}
+	testing.expect_value(t, current.scanout.generation, u64(1))
+	frame_mailbox_release(&mailbox, stale)
+	frame_mailbox_release(&mailbox, current)
+}
+
+@(test)
 frame_mailbox_test_capture_failure_retains_completed_legacy_copy :: proc(t: ^testing.T) {
 	m := new(machine.Machine)
 	defer free(m)
@@ -42,6 +190,7 @@ frame_mailbox_test_capture_failure_retains_completed_legacy_copy :: proc(t: ^tes
 	mode_generation := m.vga.presentation_mode_clock.generation
 	if mode_generation == 0 {mode_generation = 1}
 	m.gsw_vga.presentation_state.active = {
+		clip_mode = .Fullscreen,
 		header = {
 			sequence = contract.generation_next(vga.vga_presentation_sequence(&m.vga)),
 			lifecycle_generation = 1,
@@ -68,6 +217,10 @@ frame_mailbox_test_capture_failure_retains_completed_legacy_copy :: proc(t: ^tes
 		source_pitch = 8,
 	}
 	m.gsw_vga.presentation_state.active_valid = true
+	m.gsw_vga.presentation_state.damage = {
+		kind  = .Pixel_Memory,
+		rects = dirty,
+	}
 
 	mailbox: Frame_Mailbox
 	defer frame_mailbox_destroy(&mailbox)

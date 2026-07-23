@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package vga
 
+import contract "../presentation"
+
 import "core:testing"
 
 test_planar_mode :: proc(v: ^Vga) {
@@ -38,6 +40,23 @@ vga_test_aperture_maps :: proc(t: ^testing.T) {
 	testing.expect(t, vga_mmio_contains(&v, 0xA0000, 4))
 	testing.expect(t, vga_mmio_contains(&v, VBE_LFB_BASE, 4))
 	testing.expect(t, !vga_mmio_contains(&v, VBE_LFB_END - 1, 4))
+}
+
+@(test)
+vga_test_partial_mmio_write_notifies_prior_mutation :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	test_planar_mode(&v)
+	v.gfx[6] = 1 << 2
+	sequence := v.legacy_presentation_sequence
+	content := v.content_generation
+
+	testing.expect(t, !vga_mmio_write(&v, 0xAFFFF, 2, 0x005A))
+	testing.expect_value(t, plane_byte(&v, 0, LEGACY_PLANE_SIZE - 1), u8(0x5A))
+	testing.expect_value(t, v.legacy_presentation_sequence, sequence + 1)
+	testing.expect_value(t, v.content_generation, content + 1)
 }
 
 @(test)
@@ -188,6 +207,204 @@ vga_test_aperture_slice_access_is_one_visible_transaction :: proc(t: ^testing.T)
 	testing.expect(t, vga_aperture_access(&v, 0xA0010, false, readback[:], 500_000))
 	testing.expect_value(t, readback, data)
 	testing.expect_value(t, v.content_generation, initial_content + 1)
+}
+
+@(private = "file")
+vga_test_paired_aperture_present :: proc(t: ^testing.T, v: ^Vga, g: ^Gsw_Vga) -> bool {
+	if !test_set_vbe_mode(v, 4, 2, 32) {return false}
+	gsw_vga_attach_scanout(g, v)
+	if !gsw_surface_register(g, 3, 0, 32, 4, 2, 16, .Xrgb_8888, GSW_SURFACE_PRESENTABLE) {
+		return false
+	}
+	surface, found := gsw_surface_get(g, 3)
+	if !found || !gsw_presentation_submit_surface(g, surface, 1) {return false}
+	active := g.presentation_state.active.header
+	return gsw_presentation_acknowledge(
+		g,
+		active.sequence,
+		active.device_generation,
+		active.surface.id,
+		active.surface.generation,
+	)
+}
+
+@(test)
+vga_test_paired_aperture_write_publishes_gsw_before_legacy :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	g: Gsw_Vga
+	gsw_vga_init(&g, backing)
+	defer gsw_vga_destroy(&g)
+	if !testing.expect(t, vga_test_paired_aperture_present(t, &v, &g)) {return}
+	sequence := vga_presentation_sequence(&v)
+	data := [4]u8{0x11, 0x22, 0x33, 0x44}
+
+	testing.expect(t, vga_aperture_access_paired(&v, &g, 0xA0004, true, data[:], 500_000))
+	snapshot := gsw_vga_presentation_snapshot(&g)
+	legacy := vga_legacy_frame_update(&v)
+	testing.expect(t, snapshot.active_valid)
+	testing.expect_value(t, snapshot.active.header.sequence, sequence + 1)
+	testing.expect_value(t, legacy.header.sequence, sequence + 2)
+	testing.expect_value(
+		t,
+		contract.generation_order(snapshot.active.header.sequence, legacy.header.sequence),
+		contract.Generation_Order.Older,
+	)
+	testing.expect_value(t, snapshot.damage.kind, contract.Damage_Kind.Pixel_Memory)
+	testing.expect_value(
+		t,
+		snapshot.damage.full_reason,
+		contract.Damage_Full_Reason.External_Tracking,
+	)
+	testing.expect_value(t, snapshot.damage.rects, contract.rect_set_full({4, 2}))
+}
+
+@(test)
+vga_test_paired_aperture_without_active_gsw_publishes_legacy_only :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	if !testing.expect(t, test_set_vbe_mode(&v, 4, 2, 32)) {return}
+	g: Gsw_Vga
+	gsw_vga_init(&g, backing)
+	defer gsw_vga_destroy(&g)
+	gsw_vga_attach_scanout(&g, &v)
+	gsw_sequence := g.presentation_state.sequence
+	sequence := vga_presentation_sequence(&v)
+	data := [1]u8{0x51}
+
+	testing.expect(t, vga_aperture_access_paired(&v, &g, 0xA0000, true, data[:], 500_000))
+	testing.expect_value(t, g.presentation_state.sequence, gsw_sequence)
+	testing.expect(t, !g.presentation_state.active_valid)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 1)
+	testing.expect(t, vga_legacy_frame_update(&v).header.sequence != 0)
+}
+
+@(test)
+vga_test_paired_aperture_read_and_unchanged_write_do_not_refresh_gsw :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	g: Gsw_Vga
+	gsw_vga_init(&g, backing)
+	defer gsw_vga_destroy(&g)
+	if !testing.expect(t, vga_test_paired_aperture_present(t, &v, &g)) {return}
+	sequence := vga_presentation_sequence(&v)
+	active_sequence := g.presentation_state.active.header.sequence
+	readback: [1]u8
+
+	testing.expect(t, vga_aperture_access_paired(&v, &g, 0xA0000, false, readback[:], 500_000))
+	testing.expect(t, vga_aperture_access_paired(&v, &g, 0xA0000, true, readback[:], 500_000))
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence)
+	testing.expect_value(t, g.presentation_state.active.header.sequence, active_sequence)
+	testing.expect_value(t, g.presentation_state.damage, contract.Damage_Record{})
+}
+
+@(test)
+vga_test_paired_aperture_stale_surface_does_not_refresh_gsw :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	g: Gsw_Vga
+	gsw_vga_init(&g, backing)
+	defer gsw_vga_destroy(&g)
+	if !testing.expect(t, vga_test_paired_aperture_present(t, &v, &g)) {return}
+	surface, found := gsw_surface_get(&g, 3)
+	if !testing.expect(t, found) {return}
+	surface.generation = contract.generation_next(surface.generation)
+	active_sequence := g.presentation_state.active.header.sequence
+	sequence := vga_presentation_sequence(&v)
+	data := [1]u8{0x61}
+
+	testing.expect(t, vga_aperture_access_paired(&v, &g, 0xA0000, true, data[:], 500_000))
+	testing.expect_value(t, g.presentation_state.active.header.sequence, active_sequence)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 1)
+}
+
+@(test)
+vga_test_paired_aperture_destroyed_surface_does_not_refresh_gsw :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	g: Gsw_Vga
+	gsw_vga_init(&g, backing)
+	defer gsw_vga_destroy(&g)
+	if !testing.expect(t, vga_test_paired_aperture_present(t, &v, &g)) {return}
+	testing.expect(t, gsw_surface_unregister(&g, 3))
+	gsw_sequence := g.presentation_state.sequence
+	sequence := vga_presentation_sequence(&v)
+	data := [1]u8{0x71}
+
+	testing.expect(t, vga_aperture_access_paired(&v, &g, 0xA0000, true, data[:], 500_000))
+	testing.expect(t, !g.presentation_state.active_valid)
+	testing.expect_value(t, g.presentation_state.sequence, gsw_sequence)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 1)
+}
+
+@(test)
+vga_test_paired_aperture_non_aliasing_backing_does_not_refresh_gsw :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	separate := make([]u8, VRAM_SIZE)
+	defer delete(separate)
+	g: Gsw_Vga
+	gsw_vga_init(&g, separate)
+	defer gsw_vga_destroy(&g)
+	if !testing.expect(t, vga_test_paired_aperture_present(t, &v, &g)) {return}
+	active_sequence := g.presentation_state.active.header.sequence
+	sequence := vga_presentation_sequence(&v)
+	data := [1]u8{0x81}
+
+	testing.expect(t, vga_aperture_access_paired(&v, &g, 0xA0000, true, data[:], 500_000))
+	testing.expect_value(t, g.presentation_state.active.header.sequence, active_sequence)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 1)
+}
+
+@(test)
+vga_test_paired_aperture_non_overlapping_surface_does_not_refresh_gsw :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	if !testing.expect(t, test_set_vbe_mode(&v, 4, 2, 32)) {return}
+	g: Gsw_Vga
+	gsw_vga_init(&g, backing)
+	defer gsw_vga_destroy(&g)
+	gsw_vga_attach_scanout(&g, &v)
+	testing.expect(
+		t,
+		gsw_surface_register(&g, 3, 64, 32, 4, 2, 16, .Xrgb_8888, GSW_SURFACE_PRESENTABLE),
+	)
+	surface, found := gsw_surface_get(&g, 3)
+	if !testing.expect(t, found && gsw_presentation_submit_surface(&g, surface, 1)) {return}
+	active := g.presentation_state.active.header
+	if !testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			active.sequence,
+			active.device_generation,
+			active.surface.id,
+			active.surface.generation,
+		),
+	) {
+		return
+	}
+	active_sequence := g.presentation_state.active.header.sequence
+	sequence := vga_presentation_sequence(&v)
+	data := [1]u8{0x91}
+
+	testing.expect(t, vga_aperture_access_paired(&v, &g, 0xA0000, true, data[:], 500_000))
+	testing.expect_value(t, g.presentation_state.active.header.sequence, active_sequence)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 1)
 }
 
 @(test)

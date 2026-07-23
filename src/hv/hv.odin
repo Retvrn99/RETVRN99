@@ -68,6 +68,21 @@ Memory_Reservation_Kind :: enum {
 	Open_Bus,
 }
 
+DEVICE_DIRTY_PAGE_SHIFT :: 12
+DEVICE_DIRTY_PAGE_SIZE :: u64(1 << DEVICE_DIRTY_PAGE_SHIFT)
+DEVICE_DIRTY_MAX_PAGES :: 8192
+DEVICE_DIRTY_WORDS :: DEVICE_DIRTY_MAX_PAGES / 64
+
+Dirty_Page_Set :: struct {
+	count: u32,
+	words: [DEVICE_DIRTY_WORDS]u64,
+}
+
+dirty_page_set_contains :: proc(set: ^Dirty_Page_Set, page: u32) -> bool {
+	if set == nil || page >= DEVICE_DIRTY_MAX_PAGES {return false}
+	return set.words[page / 64] & (u64(1) << uint(page & 63)) != 0
+}
+
 Device_Mapping :: struct {
 	gpa:                 u64,
 	host:                rawptr,
@@ -76,6 +91,7 @@ Device_Mapping :: struct {
 	dirty_pending:       bool,
 	dirty_pending_pages: u64,
 	dirty_bitmap:        []u64,
+	dirty_pages:         Dirty_Page_Set,
 	mapped:              bool,
 	requested_gpa:       u64,
 	requested_mapped:    bool,
@@ -90,6 +106,7 @@ Device_Alias :: struct {
 	dirty_pending:       bool,
 	dirty_pending_pages: u64,
 	dirty_bitmap:        []u64,
+	dirty_pages:         Dirty_Page_Set,
 	mapped:              bool,
 	requested_offset:    u64,
 	requested_mapped:    bool,
@@ -326,6 +343,14 @@ query_device_memory_dirty_pages :: proc(
 	return whpx_query_device_memory_dirty_pages(vm, backing)
 }
 
+query_device_memory_dirty_page_set :: proc(
+	vm: ^Vm,
+	backing: []u8,
+	pages: ^Dirty_Page_Set,
+) -> bool {
+	return whpx_query_device_memory_dirty_page_set(vm, backing, pages)
+}
+
 query_device_memory_alias_dirty :: proc(vm: ^Vm, gpa, size: u64) -> (dirty: bool, ok: bool) {
 	return whpx_query_device_memory_alias_dirty(vm, gpa, size)
 }
@@ -339,6 +364,14 @@ query_device_memory_alias_dirty_pages :: proc(
 	ok: bool,
 ) {
 	return whpx_query_device_memory_alias_dirty_pages(vm, gpa, size)
+}
+
+query_device_memory_alias_dirty_page_set :: proc(
+	vm: ^Vm,
+	gpa, size: u64,
+	pages: ^Dirty_Page_Set,
+) -> bool {
+	return whpx_query_device_memory_alias_dirty_page_set(vm, gpa, size, pages)
 }
 
 // Requests a page-aligned device mapping state change. The backing allocation

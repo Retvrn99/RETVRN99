@@ -579,6 +579,77 @@ gsw_vga_test_mode_palette_and_present_have_separate_legacy_effects :: proc(t: ^t
 }
 
 @(test)
+gsw_vga_test_identical_indexed_palette_resubmission_is_presentation_noop :: proc(t: ^testing.T) {
+	v: Vga
+	framebuffer := test_vga_init(t, &v)
+	defer delete(framebuffer)
+	defer vga_destroy(&v)
+	ram := make([]u8, 1024)
+	defer delete(ram)
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	gsw_vga_attach_scanout(&g, &v)
+	g.ring_gpa = 128
+	g.ring_size = 256
+
+	mode := ram[128:160]
+	gsw_test_header(mode, .Set_Mode, 0)
+	gsw_test_wr32(mode, 16, 2)
+	gsw_test_wr32(mode, 20, 1)
+	gsw_test_wr32(mode, 24, 2)
+	gsw_test_wr32(mode, 28, u32(Gsw_Pixel_Format.Indexed_8))
+	palette := ram[160:188]
+	gsw_test_header(palette, .Set_Palette, 0)
+	gsw_test_wr32(palette, 16, 1)
+	gsw_test_wr32(palette, 20, 1)
+	gsw_test_wr32(palette, 24, 0x0012_3456)
+	present := ram[188:204]
+	gsw_test_header(present, .Present, 1)
+	repeat := ram[204:232]
+	gsw_test_header(repeat, .Set_Palette, 0)
+	gsw_test_wr32(repeat, 16, 1)
+	gsw_test_wr32(repeat, 20, 1)
+	gsw_test_wr32(repeat, 24, 0x0012_3456)
+
+	g.ring_tail = 76
+	gsw_vga_process(&g, ram)
+	snapshot := gsw_vga_presentation_snapshot(&g)
+	testing.expect(t, snapshot.active_valid)
+	header := snapshot.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			header.sequence,
+			header.device_generation,
+			header.surface.id,
+			header.surface.generation,
+		),
+	)
+	testing.expect_value(t, g.presentation_state.damage_batch_count, u32(0))
+	testing.expect_value(t, g.presentation_state.active.header.dirty.count, u32(0))
+	sequence := vga_presentation_sequence(&v)
+	producer_sequence := g.presentation_state.sequence
+	state_generation := g.presentation_state.state_generation
+	damage := g.presentation_state.damage
+	dirty := g.presentation_state.active.header.dirty
+	palette_updates := g.metrics.palette_updates
+
+	g.ring_tail = 104
+	gsw_vga_process(&g, ram)
+
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence)
+	testing.expect_value(t, g.presentation_state.sequence, producer_sequence)
+	testing.expect_value(t, g.presentation_state.active.header.sequence, header.sequence)
+	testing.expect_value(t, g.presentation_state.state_generation, state_generation)
+	testing.expect_value(t, g.presentation_state.damage, damage)
+	testing.expect_value(t, g.presentation_state.damage_batch_count, u32(0))
+	testing.expect_value(t, g.presentation_state.active.header.dirty, dirty)
+	testing.expect_value(t, g.metrics.palette_updates, palette_updates + 1)
+}
+
+@(test)
 gsw_vga_test_palette_does_not_inherit_legacy_dac_width :: proc(t: ^testing.T) {
 	v: Vga
 	framebuffer := test_vga_init(t, &v)

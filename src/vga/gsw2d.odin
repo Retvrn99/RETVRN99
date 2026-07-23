@@ -168,6 +168,18 @@ gsw_vga_execute_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 	}
 	g.metrics.blits += 1
 	g.metrics.software_pixels += u64(destination_width) * u64(destination_height)
+	if u8(rop_value) != 0xAA {
+		_ = gsw_presentation_note_raw_damage(
+			g,
+			destination_base,
+			destination_pitch,
+			destination_x,
+			destination_y,
+			destination_width,
+			destination_height,
+			destination_format,
+		)
+	}
 	return true
 }
 
@@ -250,5 +262,13 @@ gsw_vga_execute_surface_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 	}
 	g.metrics.blits += 1
 	g.metrics.software_pixels += destination_pixels_count
+	_ = gsw_presentation_note_surface_damage(
+		g,
+		destination_surface,
+		destination_x,
+		destination_y,
+		destination_width,
+		destination_height,
+	)
 	return true
 }

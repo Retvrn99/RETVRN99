@@ -6,12 +6,12 @@ import sdl3 "vendor:sdl3"
 
 // Held-key tracking follows IzarraVM commit d930de57acccbc6a70cda8cc5a603173bf23cd1c.
 HOST_INPUT_CAPACITY :: 4096
-HOST_INPUT_KEY_BYTES :: 6
+HOST_INPUT_KEY_BYTES :: 8
 HOST_KEY_IDS :: 512
 HOST_INPUT_RELEASE_RESERVE :: HOST_KEY_IDS + 1
 HOST_INPUT_NORMAL_CAPACITY :: HOST_INPUT_CAPACITY - HOST_INPUT_RELEASE_RESERVE
 
-Host_Input_Kind :: enum {
+Host_Input_Kind :: enum u8 {
 	Key,
 	Mouse_Motion,
 	Mouse_Buttons,
@@ -19,15 +19,16 @@ Host_Input_Kind :: enum {
 }
 
 Host_Input_Event :: struct {
-	kind:            Host_Input_Kind,
-	sequence:        u64,
-	queued_at:       time.Tick,
-	key:             [HOST_INPUT_KEY_BYTES]u8,
-	key_n:           u8,
-	dx, dy:          i32,
-	wheel:           i32,
-	buttons:         u8,
-	durable_release: bool,
+	sequence:           u64,
+	queued_at:          time.Tick,
+	control_generation: u64,
+	dx, dy:             i32,
+	wheel:              i32,
+	kind:               Host_Input_Kind,
+	key:                [HOST_INPUT_KEY_BYTES]u8,
+	key_n:              u8,
+	buttons:            u8,
+	durable_release:    bool,
 }
 
 Host_Input_Queue :: struct {
@@ -116,7 +117,9 @@ host_input_push_at :: proc(q: ^Host_Input_Queue, event: Host_Input_Event, now: t
 	}
 	if e.kind == .Mouse_Motion && q.count > 0 {
 		last := &q.events[host_input_last_index(q)]
-		if last.kind == .Mouse_Motion && last.buttons == e.buttons {
+		if last.kind == .Mouse_Motion &&
+		   last.buttons == e.buttons &&
+		   last.control_generation == e.control_generation {
 			last.dx = host_input_saturating_add(last.dx, e.dx)
 			last.dy = host_input_saturating_add(last.dy, e.dy)
 			return true
@@ -135,16 +138,42 @@ host_input_push :: proc(q: ^Host_Input_Queue, event: Host_Input_Event) -> bool {
 	return host_input_push_at(q, event, time.tick_now())
 }
 
+host_input_push_control :: proc(q: ^Host_Input_Queue, event: Host_Input_Event) -> bool {
+	if q == nil || event.control_generation == 0 || q.count >= HOST_INPUT_NORMAL_CAPACITY {
+		return false
+	}
+	e := event
+	e.durable_release = false
+	if e.queued_at == (time.Tick{}) {e.queued_at = time.tick_now()}
+	e.sequence = q.next_sequence
+	q.next_sequence += 1
+	tail := (q.head + q.count) % HOST_INPUT_CAPACITY
+	q.events[tail] = e
+	q.count += 1
+	return true
+}
+
 host_input_residence_ns :: proc(event: ^Host_Input_Event, now: time.Tick) -> u64 {
 	if event == nil || event.queued_at == (time.Tick{}) {return 0}
 	return u64(max(time.Duration(0), time.tick_diff(event.queued_at, now)))
 }
 
-host_input_push_motion :: proc(q: ^Host_Input_Queue, dx, dy: i32, buttons: u8) -> bool {
+host_input_push_motion :: proc(
+	q: ^Host_Input_Queue,
+	dx, dy: i32,
+	buttons: u8,
+	control_generation: u64 = 0,
+) -> bool {
 	if dx == 0 && dy == 0 {return true}
 	return host_input_push(
 		q,
-		Host_Input_Event{kind = .Mouse_Motion, dx = dx, dy = dy, buttons = buttons},
+		Host_Input_Event {
+			kind = .Mouse_Motion,
+			dx = dx,
+			dy = dy,
+			buttons = buttons,
+			control_generation = control_generation,
+		},
 	)
 }
 
@@ -152,6 +181,7 @@ host_input_push_buttons :: proc(
 	q: ^Host_Input_Queue,
 	buttons: u8,
 	durable_release: bool = false,
+	control_generation: u64 = 0,
 ) -> bool {
 	return host_input_push(
 		q,
@@ -159,16 +189,39 @@ host_input_push_buttons :: proc(
 			kind = .Mouse_Buttons,
 			buttons = buttons,
 			durable_release = durable_release,
+			control_generation = control_generation,
 		},
 	)
 }
 
-host_input_push_wheel :: proc(q: ^Host_Input_Queue, wheel: i32, buttons: u8) -> bool {
+host_input_push_wheel :: proc(
+	q: ^Host_Input_Queue,
+	wheel: i32,
+	buttons: u8,
+	control_generation: u64 = 0,
+) -> bool {
 	if wheel == 0 {return true}
 	return host_input_push(
 		q,
-		Host_Input_Event{kind = .Mouse_Wheel, wheel = wheel, buttons = buttons},
+		Host_Input_Event {
+			kind = .Mouse_Wheel,
+			wheel = wheel,
+			buttons = buttons,
+			control_generation = control_generation,
+		},
 	)
+}
+
+host_input_push_key_sequence :: proc(
+	q: ^Host_Input_Queue,
+	bytes: []u8,
+	control_generation: u64,
+) -> bool {
+	if q == nil || len(bytes) == 0 || len(bytes) > HOST_INPUT_KEY_BYTES {return false}
+	event := Host_Input_Event{kind = .Key, key_n = u8(len(bytes))}
+	copy(event.key[:], bytes)
+	event.control_generation = control_generation
+	return host_input_push_control(q, event)
 }
 
 host_input_pop :: proc(q: ^Host_Input_Queue) -> (Host_Input_Event, bool) {
@@ -259,12 +312,15 @@ host_input_release_held_keys :: proc(q: ^Host_Input_Queue, k: ^Host_Keyboard) ->
 }
 
 host_input_discard_after_stop :: proc(q: ^Host_Input_Queue, k: ^Host_Keyboard) {
-	if q != nil {
-		q.head = 0
-		q.count = 0
-	}
+	host_input_discard(q)
 	if k != nil {
 		k.held = {}
 		k.held_count = 0
 	}
+}
+
+host_input_discard :: proc(q: ^Host_Input_Queue) {
+	if q == nil {return}
+	q.head = 0
+	q.count = 0
 }

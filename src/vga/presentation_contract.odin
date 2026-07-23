@@ -79,9 +79,12 @@ vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
 	   !contract.mode_key_equal(mode_key, vga_presentation_mode_key(extent.width, extent.height)) {
 		return {}
 	}
-	dirty: contract.Rect_Set
-	_ = contract.rect_set_append(&dirty, full)
+	_ = vga_damage_seal_pending(v, v.legacy_presentation_sequence)
+	damage := vga_damage_snapshot(v)
+	if damage.kind == .Invalid || damage.rects.count == 0 {return {}}
 	return {
+		damage_kind = damage.kind,
+		full_reason = damage.full_reason,
 		header = {
 			sequence = v.legacy_presentation_sequence,
 			mode_generation = mode_generation,
@@ -92,7 +95,7 @@ vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
 			canvas_extent = extent,
 			source = full,
 			destination = full,
-			dirty = dirty,
+			dirty = damage.rects,
 			interval = 0,
 			source_kind = .Legacy_Snapshot,
 			ownership = .Mailbox_Descriptor,

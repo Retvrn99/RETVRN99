@@ -30,13 +30,14 @@ graphics_telemetry_test_legacy_refresh_then_gsw_attempt_preserves_physical_work 
 	}
 	graphics_frame_epoch_render_begin(&epoch, .Legacy_Scanout, time.Tick{10})
 	frame := vga.Display_Frame {
-		kind   = .Xrgb_8888,
-		width  = 640,
-		height = 480,
+		kind           = .Xrgb_8888,
+		width          = 640,
+		height         = 480,
+		updated_pixels = 640 * 480,
 	}
 	graphics_frame_epoch_render_complete(&epoch, &frame, time.Tick{20})
 	graphics_frame_epoch_upload_begin(&epoch, time.Tick{21})
-	graphics_frame_epoch_upload_complete(&epoch, true, true, time.Tick{30})
+	graphics_frame_epoch_upload_complete(&epoch, 640 * 480 * 4, true, time.Tick{30})
 
 	graphics_frame_epoch_render_begin(&epoch, .Gsw2d, time.Tick{40})
 
@@ -56,13 +57,14 @@ graphics_telemetry_test_legacy_refresh_then_gsw_attempt_preserves_physical_work 
 	testing.expect(t, epoch.producer.valid)
 
 	gsw_frame := vga.Display_Frame {
-		kind   = .Rgb_565,
-		width  = 320,
-		height = 240,
+		kind           = .Rgb_565,
+		width          = 320,
+		height         = 240,
+		updated_pixels = 320 * 240,
 	}
 	graphics_frame_epoch_render_complete(&epoch, &gsw_frame, time.Tick{50})
 	graphics_frame_epoch_upload_begin(&epoch, time.Tick{51})
-	graphics_frame_epoch_upload_complete(&epoch, true, false, time.Tick{60})
+	graphics_frame_epoch_upload_complete(&epoch, 320 * 240 * 4, false, time.Tick{60})
 
 	testing.expect_value(t, epoch.source, Graphics_Frame_Source.Gsw2d)
 	testing.expect_value(t, epoch.kind, vga.Display_Kind.Rgb_565)
@@ -88,23 +90,25 @@ graphics_telemetry_test_two_attempt_window_accumulates_work_without_queue_inflat
 	graphics_frame_epoch_capture_begin(&epoch, time.Tick{10})
 	graphics_frame_epoch_capture_complete(&epoch, 64, time.Tick{20})
 	legacy := vga.Display_Frame {
-		kind   = .Xrgb_8888,
-		width  = 4,
-		height = 2,
+		kind           = .Xrgb_8888,
+		width          = 4,
+		height         = 2,
+		updated_pixels = 4 * 2,
 	}
 	graphics_frame_epoch_render_begin(&epoch, .Legacy_Scanout, time.Tick{30})
 	graphics_frame_epoch_render_complete(&epoch, &legacy, time.Tick{40})
 	graphics_frame_epoch_upload_begin(&epoch, time.Tick{41})
-	graphics_frame_epoch_upload_complete(&epoch, true, true, time.Tick{51})
+	graphics_frame_epoch_upload_complete(&epoch, 4 * 2 * 4, true, time.Tick{51})
 	gsw := vga.Display_Frame {
-		kind   = .Rgb_565,
-		width  = 2,
-		height = 2,
+		kind           = .Rgb_565,
+		width          = 2,
+		height         = 2,
+		updated_pixels = 2 * 2,
 	}
 	graphics_frame_epoch_render_begin(&epoch, .Gsw2d, time.Tick{100})
 	graphics_frame_epoch_render_complete(&epoch, &gsw, time.Tick{120})
 	graphics_frame_epoch_upload_begin(&epoch, time.Tick{121})
-	graphics_frame_epoch_upload_complete(&epoch, true, false, time.Tick{151})
+	graphics_frame_epoch_upload_complete(&epoch, 2 * 2 * 4, false, time.Tick{151})
 	graphics_frame_epoch_complete(&epoch, .Superseded, time.Tick{160})
 	graphics_telemetry_record(&telemetry, epoch)
 
@@ -306,13 +310,14 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	graphics_frame_epoch_capture_complete(&epoch, 1024, time.Tick{200})
 	graphics_frame_epoch_render_begin(&epoch, .Legacy_Scanout, time.Tick{300})
 	frame := vga.Display_Frame {
-		kind   = .Rgb_565,
-		width  = 640,
-		height = 480,
+		kind           = .Rgb_565,
+		width          = 640,
+		height         = 480,
+		updated_pixels = 640 * 480,
 	}
 	graphics_frame_epoch_render_complete(&epoch, &frame, time.Tick{500})
 	graphics_frame_epoch_upload_begin(&epoch, time.Tick{500})
-	graphics_frame_epoch_upload_complete(&epoch, true, true, time.Tick{700})
+	graphics_frame_epoch_upload_complete(&epoch, 640 * 480 * 4, true, time.Tick{700})
 	graphics_frame_epoch_gpu_drain(&epoch, time.Tick{700}, time.Tick{800}, 2, 1, 64)
 	graphics_telemetry_note_gpu_drain(&telemetry, time.Tick{700}, time.Tick{800}, 2, 1, 64)
 	graphics_telemetry_note_compose(&telemetry, time.Tick{800}, time.Tick{900})

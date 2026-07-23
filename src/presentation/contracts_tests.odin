@@ -26,6 +26,7 @@ test_legacy_update :: proc(
 ) -> Legacy_Frame_Update {
 	key := test_mode_key()
 	return {
+		damage_kind = .Pixel_Memory,
 		header = {
 			sequence = sequence,
 			lifecycle_generation = lifecycle_generation,
@@ -52,6 +53,7 @@ test_gsw_snapshot :: proc(
 ) -> Gsw_Present {
 	key := test_mode_key()
 	return {
+		clip_mode = .Windowed,
 		header = {
 			sequence = sequence,
 			lifecycle_generation = lifecycle_generation,
@@ -217,8 +219,37 @@ contracts_test_enforces_rect_capacity_duplicates_and_zero_tails :: proc(t: ^test
 	legacy = test_legacy_update()
 	legacy.header.dirty.count = MAX_RECTS
 	for i in 0 ..< MAX_RECTS {
-		legacy.header.dirty.rects[i] = {u32(i), 0, 1, 1}
+		legacy.header.dirty.rects[i] = {u32(i * 2), 0, 1, 1}
 	}
+	testing.expect(t, diagnostic_valid(validate_legacy(legacy, test_context(legacy.header))))
+}
+
+@(test)
+contracts_test_requires_canonical_dirty_rect_sets :: proc(t: ^testing.T) {
+	legacy := test_legacy_update()
+	legacy.header.dirty = {}
+	_ = rect_set_append(&legacy.header.dirty, {0, 0, 4, 4})
+	_ = rect_set_append(&legacy.header.dirty, {2, 0, 4, 4})
+	test_expect_code(t, validate_legacy(legacy, test_context(legacy.header)), .Dirty_Rect_Overlap)
+
+	legacy.header.dirty = {}
+	_ = rect_set_append(&legacy.header.dirty, {0, 0, 4, 4})
+	_ = rect_set_append(&legacy.header.dirty, {4, 0, 4, 4})
+	test_expect_code(
+		t,
+		validate_legacy(legacy, test_context(legacy.header)),
+		.Dirty_Rect_Mergeable,
+	)
+
+	legacy.header.dirty = {}
+	_ = rect_set_append(&legacy.header.dirty, {6, 0, 4, 4})
+	_ = rect_set_append(&legacy.header.dirty, {0, 0, 4, 4})
+	test_expect_code(t, validate_legacy(legacy, test_context(legacy.header)), .Dirty_Rect_Unsorted)
+
+	legacy.header.dirty = {}
+	_ = rect_set_append(&legacy.header.dirty, {0, 0, 4, 4})
+	_ = rect_set_append(&legacy.header.dirty, {6, 0, 4, 4})
+	_ = rect_set_append(&legacy.header.dirty, {0, 6, 4, 4})
 	testing.expect(t, diagnostic_valid(validate_legacy(legacy, test_context(legacy.header))))
 }
 
@@ -820,6 +851,105 @@ contracts_test_cross_namespace_invalidation_cannot_match_numeric_identity :: pro
 	testing.expect_value(t, result.action, Selector_Action.Reject_Invalid)
 	testing.expect_value(t, result.diagnostic.code, Diagnostic_Code.Unexpected_Identity_Namespace)
 	testing.expect_value(t, selector, before)
+}
+
+@(test)
+contracts_test_clip_modes_distinguish_fullscreen_and_empty_window :: proc(t: ^testing.T) {
+	present := test_gsw_resident()
+	present.clip_mode = .Fullscreen
+	present.clips = {}
+	testing.expect(t, diagnostic_valid(validate_gsw(present, test_context(present.header))))
+
+	present.clips = test_full_rects()
+	test_expect_code(
+		t,
+		validate_gsw(present, test_context(present.header)),
+		.Fullscreen_Clips_Not_Empty,
+	)
+	present.clips = {}
+	present.header.destination.width -= 1
+	present.header.mode_key.destination = present.header.destination
+	test_expect_code(
+		t,
+		validate_gsw(present, test_context(present.header)),
+		.Fullscreen_Destination_Not_Canvas,
+	)
+
+	present = test_gsw_resident()
+	present.clip_mode = .Windowed
+	present.clips = {}
+	testing.expect(t, diagnostic_valid(validate_gsw(present, test_context(present.header))))
+	present.clip_mode = .Invalid
+	test_expect_code(t, validate_gsw(present, test_context(present.header)), .Invalid_Clip_Mode)
+}
+
+@(test)
+contracts_test_clip_normalization_is_deterministic_and_bounded :: proc(t: ^testing.T) {
+	present := test_gsw_resident()
+	present.clip_mode = .Windowed
+	present.clips = {}
+	_ = rect_set_append(&present.clips, {0, 0, 10, 10})
+	_ = rect_set_append(&present.clips, {5, 0, 10, 10})
+	_ = rect_set_append(&present.clips, {15, 0, 5, 10})
+	testing.expect_value(t, gsw_present_normalize_clips(&present), Rect_Set_Result.Exact)
+	testing.expect_value(t, present.clips.count, u32(1))
+	testing.expect_value(t, present.clips.rects[0], Rect{0, 0, 20, 10})
+
+	present.clips = {}
+	for y in 0 ..< 16 {
+		for x in 0 ..< 16 {
+			testing.expect(t, rect_set_append(&present.clips, {u32(x * 2), u32(y * 2), 1, 1}))
+		}
+	}
+	testing.expect_value(t, present.clips.count, u32(MAX_RECTS))
+	testing.expect_value(t, gsw_present_normalize_clips(&present), Rect_Set_Result.Exact)
+	testing.expect_value(t, present.clips.count, u32(MAX_RECTS))
+}
+
+@(test)
+contracts_test_hidden_gsw_refresh_preserves_resident_and_restores_newest_desktop :: proc(
+	t: ^testing.T,
+) {
+	selector: Selector
+	legacy := test_legacy_update(1, 1)
+	testing.expect_value(
+		t,
+		selector_submit_legacy(&selector, legacy, test_context(legacy.header)).action,
+		Selector_Action.Present_Legacy,
+	)
+	snapshot := test_gsw_snapshot(2, 2)
+	snapshot.header.completion = {}
+	testing.expect_value(
+		t,
+		selector_submit_gsw(&selector, snapshot, test_context(snapshot.header, 640 * 480 * 4 + 128)).action,
+		Selector_Action.Present_Gsw,
+	)
+	resident := test_gsw_resident(3, 3)
+	testing.expect_value(
+		t,
+		selector_submit_gsw(&selector, resident, test_context(resident.header)).action,
+		Selector_Action.Present_Gsw,
+	)
+	active := selector.active
+	refresh := snapshot
+	refresh.header.sequence = 4
+	result := selector_submit_gsw(
+		&selector,
+		refresh,
+		test_context(refresh.header, 640 * 480 * 4 + 128),
+		true,
+	)
+	testing.expect_value(t, result.action, Selector_Action.Refresh_Gsw)
+	testing.expect_value(t, selector.active, active)
+
+	result = selector_invalidate_gsw(
+		&selector,
+		test_invalidation(resident, .Surface_Destroyed),
+		test_context(resident.header),
+	)
+	testing.expect_value(t, result.action, Selector_Action.Restore_Gsw)
+	testing.expect_value(t, selector.active.source_kind, Source_Kind.Gsw_Snapshot)
+	testing.expect_value(t, selector.display_owner, Display_Owner.Gsw2d)
 }
 
 @(test)

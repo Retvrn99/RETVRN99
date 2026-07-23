@@ -62,6 +62,10 @@ input_script_test_rejects_invalid_commands :: proc(t: ^testing.T) {
 		{text = "wait -1", diagnostic = .Invalid_Number},
 		{text = "after-reset 2\nafter-reset 1", diagnostic = .Invalid_Reset_Order},
 		{text = "mouse 1 2 8", diagnostic = .Invalid_Number},
+		{text = "mouse 2147483648 0 0", diagnostic = .Invalid_Number},
+		{text = "mouse 0 -2147483649 0", diagnostic = .Invalid_Number},
+		{text = "wheel 2147483648 0", diagnostic = .Invalid_Number},
+		{text = "wheel -2147483649 0", diagnostic = .Invalid_Number},
 		{text = "wait-frame nope", diagnostic = .Invalid_Number},
 		{text = "wait-stable -1", diagnostic = .Invalid_Number},
 		{text = "wait-change nope", diagnostic = .Invalid_Number},
@@ -216,17 +220,22 @@ input_script_test_parses_ctrl_escape :: proc(t: ^testing.T) {
 
 @(test)
 input_script_test_parses_command_line_punctuation :: proc(t: ^testing.T) {
-	script, diagnostic := input_script_parse("key period\nkey comma\nkey space\nkey underscore-es\n")
+	script, diagnostic := input_script_parse(
+		"key period\nkey comma\nkey space\nkey grave\nkey slash\nkey f12\nkey underscore-es\n",
+	)
 	defer input_script_destroy(&script)
 	testing.expect_value(t, diagnostic, Input_Script_Diagnostic.None)
-	testing.expect_value(t, len(script.actions), 4)
-	if len(script.actions) != 4 {return}
+	testing.expect_value(t, len(script.actions), 7)
+	if len(script.actions) != 7 {return}
 	testing.expect_value(t, script.actions[0].key[0], u8(0x34))
 	testing.expect_value(t, script.actions[1].key[0], u8(0x33))
 	testing.expect_value(t, script.actions[2].key[0], u8(0x39))
+	testing.expect_value(t, script.actions[3].key[0], u8(0x29))
+	testing.expect_value(t, script.actions[4].key[0], u8(0x35))
+	testing.expect_value(t, script.actions[5].key[0], u8(0x58))
 	testing.expect_value(
 		t,
-		script.actions[3].key,
+		script.actions[6].key,
 		[INPUT_SCRIPT_KEY_BYTES]u8{0x2a, 0x35, 0xb5, 0xaa, 0, 0, 0, 0},
 	)
 }

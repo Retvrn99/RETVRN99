@@ -81,10 +81,12 @@ gsw3d_readback_test_canonicalizes_rgba_and_rejects_bad_layout :: proc(t: ^testin
 @(test)
 gsw3d_readback_test_gpu_readback_rejects_tracked_frames :: proc(t: ^testing.T) {
 	readbacks: u64
+	readback_bytes: u64
 	renderer := Gsw3d_Triangle_Renderer {
 		gpu              = transmute(^sdl3.GPUDevice)(uintptr(1)),
 		flight_count     = 1,
 		readback_counter = &readbacks,
+		readback_bytes   = &readback_bytes,
 		live             = true,
 	}
 	target := transmute(^sdl3.GPUTexture)(uintptr(1))
@@ -93,7 +95,33 @@ gsw3d_readback_test_gpu_readback_rejects_tracked_frames :: proc(t: ^testing.T) {
 		t,
 		!gsw3d_debug_readback_rgba_sync(&renderer, target, .R8G8B8A8_UNORM, 1, 1, destination[:]),
 	)
+	testing.expect_value(t, readbacks, u64(0))
+	testing.expect_value(t, readback_bytes, u64(0))
+}
+
+@(test)
+gsw3d_readback_test_success_metrics_bind_tight_bytes_and_saturate :: proc(t: ^testing.T) {
+	readbacks: u64
+	readback_bytes: u64
+	renderer := Gsw3d_Triangle_Renderer {
+		readback_counter = &readbacks,
+		readback_bytes   = &readback_bytes,
+	}
+	gsw3d_debug_readback_note_success(&renderer, 65, 2)
 	testing.expect_value(t, readbacks, u64(1))
+	testing.expect_value(t, readback_bytes, u64(520))
+
+	readbacks = max(u64)
+	readback_bytes = max(u64) - 3
+	gsw3d_debug_readback_note_success(&renderer, 1, 1)
+	testing.expect_value(t, readbacks, max(u64))
+	testing.expect_value(t, readback_bytes, max(u64))
+
+	overflow_bytes: u64
+	renderer.readback_counter = nil
+	renderer.readback_bytes = &overflow_bytes
+	gsw3d_debug_readback_note_success(&renderer, max(u32), max(u32))
+	testing.expect_value(t, overflow_bytes, max(u64))
 }
 
 @(test)

@@ -87,6 +87,19 @@ gsw3d_debug_canonicalize_rgba :: proc(
 	return true
 }
 
+@(private = "package")
+gsw3d_debug_readback_note_success :: proc(renderer: ^Gsw3d_Triangle_Renderer, width, height: u32) {
+	if renderer == nil || width == 0 || height == 0 {return}
+	pixels := u64(width) * u64(height)
+	bytes := pixels > max(u64) / 4 ? max(u64) : pixels * 4
+	if renderer.readback_counter != nil {
+		host_presentation_metric_add(renderer.readback_counter, 1)
+	}
+	if renderer.readback_bytes != nil {
+		host_presentation_metric_add(renderer.readback_bytes, bytes)
+	}
+}
+
 gsw3d_debug_readback_rgba_sync :: proc(
 	renderer: ^Gsw3d_Triangle_Renderer,
 	target: ^sdl3.GPUTexture,
@@ -94,14 +107,12 @@ gsw3d_debug_readback_rgba_sync :: proc(
 	width, height: u32,
 	destination: []u8,
 ) -> bool {
-	if renderer != nil && renderer.readback_counter != nil {
-		host_presentation_metric_add(renderer.readback_counter, 1)
-	}
 	if renderer == nil ||
 	   !renderer.live ||
 	   renderer.gpu == nil ||
 	   renderer.flight_count != 0 ||
 	   target == nil ||
+	   !sdl3.IsMainThread() ||
 	   !gsw3d_triangle_target_valid(format, width, height) {return false}
 	layout, valid := gsw3d_debug_readback_layout(width, height)
 	if !valid || len(destination) != int(width) * int(height) * 4 {return false}
@@ -141,7 +152,11 @@ gsw3d_debug_readback_rgba_sync :: proc(
 	if mapped == nil {return false}
 	defer sdl3.UnmapGPUTransferBuffer(renderer.gpu, download)
 	source := ([^]u8)(mapped)[:int(layout.byte_size)]
-	return gsw3d_debug_canonicalize_rgba(destination, source, layout, format, width, height)
+	if !gsw3d_debug_canonicalize_rgba(destination, source, layout, format, width, height) {
+		return false
+	}
+	gsw3d_debug_readback_note_success(renderer, width, height)
+	return true
 }
 
 gsw3d_proof_readback_signature :: proc(

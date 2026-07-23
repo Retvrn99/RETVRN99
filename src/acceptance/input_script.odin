@@ -173,7 +173,15 @@ input_script_parse :: proc(text: string) -> (Input_Script, Input_Script_Diagnost
 			dx, dx_ok := strconv.parse_int(fields[1], 10)
 			dy, dy_ok := strconv.parse_int(fields[2], 10)
 			buttons, buttons_ok := strconv.parse_int(fields[3], 10)
-			if !dx_ok || !dy_ok || !buttons_ok || buttons < 0 || buttons > 7 {
+			if !dx_ok ||
+			   !dy_ok ||
+			   !buttons_ok ||
+			   dx < int(min(i32)) ||
+			   dx > int(max(i32)) ||
+			   dy < int(min(i32)) ||
+			   dy > int(max(i32)) ||
+			   buttons < 0 ||
+			   buttons > 7 {
 				input_script_destroy(&script); return {}, .Invalid_Number
 			}
 			append(
@@ -206,7 +214,12 @@ input_script_parse :: proc(text: string) -> (Input_Script, Input_Script_Diagnost
 			if len(fields) != 3 {input_script_destroy(&script); return {}, .Invalid_Syntax}
 			wheel, wheel_ok := strconv.parse_int(fields[1], 10)
 			buttons, buttons_ok := strconv.parse_int(fields[2], 10)
-			if !wheel_ok || !buttons_ok || buttons < 0 || buttons > 7 {
+			if !wheel_ok ||
+			   !buttons_ok ||
+			   wheel < int(min(i32)) ||
+			   wheel > int(max(i32)) ||
+			   buttons < 0 ||
+			   buttons > 7 {
 				input_script_destroy(&script); return {}, .Invalid_Number
 			}
 			append(
@@ -596,12 +609,56 @@ input_script_key :: proc(name: string) -> ([INPUT_SCRIPT_KEY_BYTES]u8, u8, bool)
 		code = 0x1c
 	case "space":
 		code = 0x39
+	case "minus":
+		code = 0x0c
+	case "equals":
+		code = 0x0d
+	case "left-bracket":
+		code = 0x1a
+	case "right-bracket":
+		code = 0x1b
+	case "semicolon":
+		code = 0x27
+	case "apostrophe":
+		code = 0x28
+	case "grave", "backtick":
+		code = 0x29
+	case "backslash":
+		code = 0x2b
 	case "comma":
 		code = 0x33
 	case "period", "dot":
 		code = 0x34
+	case "slash":
+		code = 0x35
+	case "f1":
+		code = 0x3b
+	case "f2":
+		code = 0x3c
+	case "f3":
+		code = 0x3d
+	case "f4":
+		code = 0x3e
+	case "f5":
+		code = 0x3f
+	case "f6":
+		code = 0x40
+	case "f7":
+		code = 0x41
+	case "f8":
+		code = 0x42
+	case "f9":
+		code = 0x43
+	case "f10":
+		code = 0x44
+	case "f11":
+		code = 0x57
+	case "f12":
+		code = 0x58
 	case "up":
 		code, extended = 0x48, true
+	case "home":
+		code, extended = 0x47, true
 	case "pageup":
 		code, extended = 0x49, true
 	case "left":

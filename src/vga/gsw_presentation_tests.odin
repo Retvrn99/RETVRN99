@@ -5,6 +5,423 @@ import contract "../presentation"
 
 import "core:testing"
 
+@(test)
+gsw_presentation_test_external_backing_writes_refresh_full_active_surface :: proc(t: ^testing.T) {
+	v: Vga
+	framebuffer := test_vga_init(t, &v)
+	defer delete(framebuffer)
+	defer vga_destroy(&v)
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	gsw_vga_attach_scanout(&g, &v)
+	testing.expect(t, !gsw_presentation_publish_external_backing_writes(&g, true))
+	testing.expect(
+		t,
+		gsw_surface_register(&g, 3, 0, 32, 4, 2, 16, .Xrgb_8888, GSW_SURFACE_PRESENTABLE),
+	)
+	surface, found := gsw_surface_get(&g, 3)
+	if !testing.expect(t, found) {return}
+	testing.expect(t, gsw_presentation_submit_surface(&g, surface, 1))
+	initial := g.presentation_state.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			initial.sequence,
+			initial.device_generation,
+			initial.surface.id,
+			initial.surface.generation,
+		),
+	)
+	sequence := vga_presentation_sequence(&v)
+	testing.expect(t, !vga_publish_external_backing_writes_paired(&v, &g, false))
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence)
+	framebuffer[20], framebuffer[21], framebuffer[22] = 0x11, 0x22, 0x33
+	testing.expect(t, vga_publish_external_backing_writes_paired(&v, &g, true))
+	snapshot := gsw_vga_presentation_snapshot(&g)
+	testing.expect(t, snapshot.active_valid)
+	testing.expect_value(t, snapshot.active.header.sequence, sequence + 1)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 2)
+	testing.expect_value(
+		t,
+		contract.generation_order(snapshot.active.header.sequence, vga_presentation_sequence(&v)),
+		contract.Generation_Order.Older,
+	)
+	testing.expect_value(t, snapshot.damage.kind, contract.Damage_Kind.Pixel_Memory)
+	testing.expect_value(
+		t,
+		snapshot.damage.full_reason,
+		contract.Damage_Full_Reason.External_Tracking,
+	)
+	testing.expect_value(t, snapshot.damage.rects, contract.rect_set_full({4, 2}))
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	testing.expect(
+		t,
+		gsw_presentation_descriptor_capture(&descriptor.gsw_presentation, &g, 1, nil),
+	)
+	testing.expect_value(t, descriptor.gsw_presentation.bytes_copied, 32)
+	testing.expect_value(
+		t,
+		descriptor.gsw_presentation.full_reason,
+		contract.Damage_Full_Reason.External_Tracking,
+	)
+	frame := scanout_descriptor_render_gsw(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect_value(t, frame.updated_pixels, u64(8))
+	testing.expect_value(t, frame.pixels[5], u32(0xFF332211))
+}
+
+@(test)
+gsw_presentation_test_surface_damage_captures_and_converts_exact_rect :: proc(t: ^testing.T) {
+	framebuffer := make([]u8, 64)
+	defer delete(framebuffer)
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	testing.expect(
+		t,
+		gsw_surface_register(&g, 3, 0, 32, 4, 2, 16, .Xrgb_8888, GSW_SURFACE_PRESENTABLE),
+	)
+	surface, found := gsw_surface_get(&g, 3)
+	if !testing.expect(t, found) {return}
+	testing.expect(t, gsw_presentation_submit_surface(&g, surface, 1))
+	initial := g.presentation_state.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			initial.sequence,
+			initial.device_generation,
+			initial.surface.id,
+			initial.surface.generation,
+		),
+	)
+	framebuffer[20], framebuffer[21], framebuffer[22] = 0x11, 0x22, 0x33
+	testing.expect(t, gsw_presentation_note_surface_damage(&g, surface, 1, 1, 1, 1))
+	snapshot := gsw_vga_presentation_snapshot(&g)
+	testing.expect(t, snapshot.active_valid)
+	testing.expect_value(t, snapshot.active.header.dirty.count, u32(1))
+	testing.expect_value(t, snapshot.active.header.dirty.rects[0], contract.Rect{1, 1, 1, 1})
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	testing.expect(
+		t,
+		gsw_presentation_descriptor_capture(&descriptor.gsw_presentation, &g, 1, nil),
+	)
+	testing.expect_value(t, descriptor.gsw_presentation.bytes_copied, 4)
+	for i in 0 ..< len(framebuffer) {framebuffer[i] = 0}
+	frame := scanout_descriptor_render_gsw(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect_value(t, frame.updated_pixels, u64(1))
+	testing.expect_value(t, frame.pixels[5], u32(0xFF332211))
+	testing.expect_value(t, frame.pixels[0], u32(0))
+}
+
+@(test)
+gsw_presentation_test_palette_only_preconverts_without_framebuffer_copy :: proc(t: ^testing.T) {
+	framebuffer := make([]u8, 8)
+	defer delete(framebuffer)
+	framebuffer[0], framebuffer[1] = 1, 2
+	framebuffer[2], framebuffer[3] = 1, 2
+	framebuffer[4], framebuffer[5] = 2, 1
+	framebuffer[6], framebuffer[7] = 2, 1
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	testing.expect(
+		t,
+		gsw_surface_register(&g, 3, 0, 8, 4, 2, 4, .Indexed_8, GSW_SURFACE_PRESENTABLE),
+	)
+	surface, found := gsw_surface_get(&g, 3)
+	if !testing.expect(t, found) {return}
+	testing.expect(t, gsw_presentation_submit_surface(&g, surface, 1))
+	initial := g.presentation_state.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			initial.sequence,
+			initial.device_generation,
+			initial.surface.id,
+			initial.surface.generation,
+		),
+	)
+	g.palette.entries[3], g.palette.entries[4], g.palette.entries[5] = 0xFF, 0, 0
+	g.palette.entries[6], g.palette.entries[7], g.palette.entries[8] = 0, 0xFF, 0
+	testing.expect(t, gsw_presentation_note_palette_damage(&g))
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	testing.expect(
+		t,
+		gsw_presentation_descriptor_capture(&descriptor.gsw_presentation, &g, 1, nil),
+	)
+	testing.expect_value(t, descriptor.gsw_presentation.bytes_copied, 0)
+	testing.expect(t, descriptor.gsw_presentation.preconverted)
+	testing.expect_value(t, descriptor.gsw_presentation.converted_pixels, u64(8))
+	for &value in framebuffer {value = 0}
+	g.palette = {}
+	frame := scanout_descriptor_render_gsw(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect_value(t, frame.updated_pixels, u64(8))
+	testing.expect_value(t, frame.pixels[0], u32(0xFFFF0000))
+	testing.expect_value(t, frame.pixels[1], u32(0xFF00FF00))
+	testing.expect_value(t, frame.pixels[4], u32(0xFF00FF00))
+	testing.expect_value(t, frame.pixels[7], u32(0xFFFF0000))
+}
+
+@(test)
+gsw_presentation_test_compatible_damage_accumulates_until_exact_ack :: proc(t: ^testing.T) {
+	framebuffer := make([]u8, 64)
+	defer delete(framebuffer)
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	testing.expect(
+		t,
+		gsw_surface_register(&g, 3, 0, 32, 4, 2, 16, .Xrgb_8888, GSW_SURFACE_PRESENTABLE),
+	)
+	surface, found := gsw_surface_get(&g, 3)
+	if !testing.expect(t, found) {return}
+	testing.expect(t, gsw_presentation_submit_surface(&g, surface, 1))
+	initial := g.presentation_state.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			initial.sequence,
+			initial.device_generation,
+			initial.surface.id,
+			initial.surface.generation,
+		),
+	)
+
+	testing.expect(t, gsw_presentation_note_surface_damage(&g, surface, 0, 0, 1, 1))
+	first := g.presentation_state.active.header
+	testing.expect(t, gsw_presentation_note_surface_damage(&g, surface, 3, 1, 1, 1))
+	newest := g.presentation_state.active.header
+	testing.expect_value(t, newest.dirty.count, u32(2))
+	testing.expect_value(t, newest.dirty.rects[0], contract.Rect{0, 0, 1, 1})
+	testing.expect_value(t, newest.dirty.rects[1], contract.Rect{3, 1, 1, 1})
+	testing.expect(
+		t,
+		!gsw_presentation_acknowledge(
+			&g,
+			first.sequence,
+			first.device_generation,
+			first.surface.id,
+			first.surface.generation,
+		),
+	)
+	testing.expect_value(t, g.presentation_state.damage.rects.count, u32(2))
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			newest.sequence,
+			newest.device_generation,
+			newest.surface.id,
+			newest.surface.generation,
+		),
+	)
+	testing.expect_value(t, g.presentation_state.damage, contract.Damage_Record{})
+}
+
+@(test)
+gsw_presentation_test_acknowledgement_preserves_damage_after_capture :: proc(t: ^testing.T) {
+	framebuffer := make([]u8, 64)
+	defer delete(framebuffer)
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	testing.expect(
+		t,
+		gsw_surface_register(&g, 3, 0, 32, 4, 2, 16, .Xrgb_8888, GSW_SURFACE_PRESENTABLE),
+	)
+	surface, found := gsw_surface_get(&g, 3)
+	if !testing.expect(t, found) {return}
+	testing.expect(t, gsw_presentation_submit_surface(&g, surface, 1))
+	initial := g.presentation_state.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			initial.sequence,
+			initial.device_generation,
+			initial.surface.id,
+			initial.surface.generation,
+		),
+	)
+
+	testing.expect(t, gsw_presentation_note_surface_damage(&g, surface, 0, 0, 1, 1))
+	captured := gsw_vga_presentation_snapshot(&g)
+	testing.expect_value(t, captured.damage.rects.count, u32(1))
+	testing.expect_value(t, captured.damage.rects.rects[0], contract.Rect{0, 0, 1, 1})
+	testing.expect(t, gsw_presentation_note_surface_damage(&g, surface, 3, 1, 1, 1))
+	testing.expect(
+		t,
+		g.presentation_state.active.header.sequence != captured.active.header.sequence,
+	)
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			captured.active.header.sequence,
+			captured.active.header.device_generation,
+			captured.active.header.surface.id,
+			captured.active.header.surface.generation,
+		),
+	)
+	remaining := gsw_vga_presentation_snapshot(&g)
+	testing.expect(t, remaining.active_valid)
+	testing.expect_value(t, remaining.damage.rects.count, u32(1))
+	testing.expect_value(t, remaining.damage.rects.rects[0], contract.Rect{3, 1, 1, 1})
+}
+
+@(test)
+gsw_presentation_test_oldest_ack_at_batch_capacity_preserves_pending_damage :: proc(
+	t: ^testing.T,
+) {
+	framebuffer := make([]u8, 96)
+	defer delete(framebuffer)
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	testing.expect(
+		t,
+		gsw_surface_register(&g, 3, 0, 96, 6, 1, 24, .Xrgb_8888, GSW_SURFACE_PRESENTABLE),
+	)
+	surface, found := gsw_surface_get(&g, 3)
+	if !testing.expect(t, found) {return}
+	testing.expect(t, gsw_presentation_submit_surface(&g, surface, 1))
+	initial := g.presentation_state.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			initial.sequence,
+			initial.device_generation,
+			initial.surface.id,
+			initial.surface.generation,
+		),
+	)
+
+	oldest: Gsw_Presentation_Snapshot
+	for x in 0 ..< GSW_PRESENT_DAMAGE_MAX_BATCHES {
+		testing.expect(t, gsw_presentation_note_surface_damage(&g, surface, u32(x), 0, 1, 1))
+		captured := gsw_vga_presentation_snapshot(&g)
+		if x == 0 {oldest = captured}
+	}
+	testing.expect_value(
+		t,
+		g.presentation_state.damage_batch_count,
+		u32(GSW_PRESENT_DAMAGE_MAX_BATCHES),
+	)
+	testing.expect(t, gsw_presentation_note_surface_damage(&g, surface, 4, 0, 1, 1))
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			oldest.active.header.sequence,
+			oldest.active.header.device_generation,
+			oldest.active.header.surface.id,
+			oldest.active.header.surface.generation,
+		),
+	)
+	remaining := gsw_vga_presentation_snapshot(&g)
+	testing.expect_value(t, remaining.damage.rects.count, u32(1))
+	testing.expect_value(t, remaining.damage.rects.rects[0], contract.Rect{1, 0, 4, 1})
+}
+
+@(test)
+gsw_presentation_test_raw_pitch_overlap_maps_only_visible_rows :: proc(t: ^testing.T) {
+	framebuffer := make([]u8, 256)
+	defer delete(framebuffer)
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	testing.expect(t, gsw_presentation_submit_raw(&g, 64, 4, 2, 20, .Xrgb_8888, 0))
+	initial := g.presentation_state.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			initial.sequence,
+			initial.device_generation,
+			initial.surface.id,
+			initial.surface.generation,
+		),
+	)
+	testing.expect(t, gsw_presentation_note_raw_damage(&g, 64, 20, 2, 1, 2, 1, .Xrgb_8888))
+	damage := g.presentation_state.damage
+	testing.expect_value(t, damage.full_reason, contract.Damage_Full_Reason.None)
+	testing.expect_value(t, damage.rects.count, u32(1))
+	testing.expect_value(t, damage.rects.rects[0], contract.Rect{2, 1, 2, 1})
+	sequence := g.presentation_state.active.header.sequence
+	testing.expect(t, !gsw_presentation_note_raw_damage(&g, 0, 16, 0, 0, 1, 1, .Xrgb_8888))
+	testing.expect_value(t, g.presentation_state.active.header.sequence, sequence)
+}
+
+@(test)
+gsw_presentation_test_raw_damage_row_spans_sweep_across_visible_rows :: proc(t: ^testing.T) {
+	framebuffer := make([]u8, 512)
+	defer delete(framebuffer)
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	testing.expect(t, gsw_presentation_submit_raw(&g, 64, 2, 3, 12, .Xrgb_8888, 0))
+	initial := g.presentation_state.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			initial.sequence,
+			initial.device_generation,
+			initial.surface.id,
+			initial.surface.generation,
+		),
+	)
+
+	testing.expect(t, gsw_presentation_note_raw_damage(&g, 64, 32, 0, 0, 8, 1, .Xrgb_8888))
+	damage := g.presentation_state.damage
+	testing.expect_value(t, damage.full_reason, contract.Damage_Full_Reason.None)
+	testing.expect_value(t, damage.rects.count, u32(1))
+	testing.expect_value(t, damage.rects.rects[0], contract.Rect{0, 0, 2, 3})
+}
+
+@(test)
+gsw_presentation_test_raw_damage_visible_row_sweeps_across_row_spans :: proc(t: ^testing.T) {
+	framebuffer := make([]u8, 512)
+	defer delete(framebuffer)
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
+	testing.expect(t, gsw_presentation_submit_raw(&g, 64, 8, 1, 32, .Xrgb_8888, 0))
+	initial := g.presentation_state.active.header
+	testing.expect(
+		t,
+		gsw_presentation_acknowledge(
+			&g,
+			initial.sequence,
+			initial.device_generation,
+			initial.surface.id,
+			initial.surface.generation,
+		),
+	)
+
+	testing.expect(t, gsw_presentation_note_raw_damage(&g, 64, 12, 0, 0, 2, 3, .Xrgb_8888))
+	damage := g.presentation_state.damage
+	testing.expect_value(t, damage.full_reason, contract.Damage_Full_Reason.None)
+	testing.expect_value(t, damage.rects.count, u32(3))
+	testing.expect_value(t, damage.rects.rects[0], contract.Rect{0, 0, 2, 1})
+	testing.expect_value(t, damage.rects.rects[1], contract.Rect{3, 0, 2, 1})
+	testing.expect_value(t, damage.rects.rects[2], contract.Rect{6, 0, 2, 1})
+}
+
 Gsw_Test_Legacy_State :: struct {
 	pci_io_enabled:                         bool,
 	pci_memory_enabled:                     bool,

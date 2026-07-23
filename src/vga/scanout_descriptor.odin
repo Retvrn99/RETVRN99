@@ -37,27 +37,32 @@ Scanout_Descriptor :: struct {
 	vram:               []u8,
 	frame_pixels:       []u32,
 	frame:              Display_Frame,
+	text:               Text_Snapshot,
 	generation:         u64,
 	bytes_copied:       int,
 	copy_duration_ns:   u64,
+	preconverted:       bool,
+	converted_pixels:   u64,
 	legacy_update:      contract.Legacy_Frame_Update,
 	gsw_presentation:   Gsw_Presentation_Descriptor,
 	gsw_frame_pixels:   []u32,
 	gsw_frame:          Display_Frame,
 }
 
-@(private = "file")
 scanout_required_vram :: proc(v: ^Vga) -> int {
 	legacy_bytes := LEGACY_PLANE_SIZE * 4
 	if !vga_vbe_enabled(v) {return legacy_bytes}
 	kind, width, height := display_geometry(v)
 	if kind == .Invalid || width <= 0 || height <= 0 {return legacy_bytes}
 	bpp := int(v.dispi[DISPI_INDEX_BPP])
-	if bpp == 4 {return legacy_bytes}
-	bytes_per_pixel := (bpp + 7) / 8
 	pitch := vga_vbe_pitch(v)
 	x_end := int(v.dispi[DISPI_INDEX_X_OFFSET]) + width
 	y_end := int(v.dispi[DISPI_INDEX_Y_OFFSET]) + height
+	if bpp == 4 {
+		needed := ((y_end - 1) * pitch + (x_end + 7) / 8) * 4
+		return min(max(needed, legacy_bytes), VRAM_SIZE)
+	}
+	bytes_per_pixel := (bpp + 7) / 8
 	needed := (y_end - 1) * pitch + x_end * bytes_per_pixel
 	return min(max(needed, legacy_bytes), VRAM_SIZE)
 }
@@ -137,21 +142,74 @@ scanout_descriptor_capture :: proc(descriptor: ^Scanout_Descriptor, source: ^Vga
 		if descriptor.vram != nil {delete(descriptor.vram, descriptor.allocator)}
 		descriptor.vram = make([]u8, VRAM_SIZE, descriptor.allocator)
 	}
-	bytes := scanout_required_vram(source)
-	copy_started := time.tick_now()
-	copy(descriptor.vram[:bytes], source.vram[:bytes])
-	descriptor.copy_duration_ns = u64(max(time.Duration(0), time.tick_since(copy_started)))
 	scanout_state_capture(&descriptor.state, source)
 	descriptor.mode_observability = vga_mode_observability(source)
 	descriptor.legacy_update = vga_legacy_frame_update(source)
 	descriptor.frame = {}
+	descriptor.text = vga_text_snapshot(source)
 	descriptor.generation = source.presentation_sequence
-	descriptor.bytes_copied = bytes
+	descriptor.bytes_copied = 0
+	descriptor.copy_duration_ns = 0
+	descriptor.preconverted = false
+	descriptor.converted_pixels = 0
+	update := &descriptor.legacy_update
+	if update.damage_kind == .Invalid || update.header.dirty.count == 0 {return true}
+	if update.damage_kind == .Palette_Only {
+		state := scanout_state_to_vga(
+			&descriptor.state,
+			source.vram,
+			descriptor.frame_pixels,
+			descriptor.allocator,
+		)
+		frame := vga_display_frame(&state)
+		if frame == nil || frame.width <= 0 || frame.height <= 0 {return false}
+		descriptor.frame_pixels = state.frame_pixels
+		descriptor.frame = frame^
+		descriptor.frame.pixels = descriptor.frame_pixels
+		descriptor.frame.text = descriptor.text
+		descriptor.frame.dirty = update.header.dirty
+		descriptor.frame.updated_pixels = u64(frame.width * frame.height)
+		descriptor.preconverted = true
+		descriptor.converted_pixels = descriptor.frame.updated_pixels
+		return true
+	}
+	full :=
+		update.full_reason != .None ||
+		(update.header.dirty.count == 1 &&
+				contract.rect_equal(update.header.dirty.rects[0], update.header.source))
+	copy_started := time.tick_now()
+	if full {
+		bytes := scanout_required_vram(source)
+		copy(descriptor.vram[:bytes], source.vram[:bytes])
+		descriptor.bytes_copied = bytes
+	} else {
+		ranges: Vga_Capture_Range_Set
+		if !vga_damage_capture_ranges(source, update.header.dirty, &ranges) {
+			update.full_reason = .Capacity_Exceeded
+			update.header.dirty = contract.rect_set_full(update.header.surface_extent)
+			bytes := scanout_required_vram(source)
+			copy(descriptor.vram[:bytes], source.vram[:bytes])
+			descriptor.bytes_copied = bytes
+		} else {
+			for i in 0 ..< int(ranges.count) {
+				range := ranges.ranges[i]
+				start, end := int(range.start), int(range.end)
+				copy(descriptor.vram[start:end], source.vram[start:end])
+				descriptor.bytes_copied += end - start
+			}
+		}
+	}
+	descriptor.copy_duration_ns = u64(max(time.Duration(0), time.tick_since(copy_started)))
 	return true
 }
 
 scanout_descriptor_render :: proc(descriptor: ^Scanout_Descriptor) -> ^Display_Frame {
-	if descriptor == nil || descriptor.vram == nil {return nil}
+	if descriptor == nil ||
+	   descriptor.vram == nil ||
+	   descriptor.legacy_update.damage_kind == .Invalid {
+		return nil
+	}
+	if descriptor.preconverted {return &descriptor.frame}
 	if descriptor.allocator.procedure == nil {descriptor.allocator = context.allocator}
 	state := scanout_state_to_vga(
 		&descriptor.state,
@@ -159,21 +217,71 @@ scanout_descriptor_render :: proc(descriptor: ^Scanout_Descriptor) -> ^Display_F
 		descriptor.frame_pixels,
 		descriptor.allocator,
 	)
-	frame := vga_display_frame(&state)
+	kind, width, height := display_geometry(&state)
+	if kind == .Invalid ||
+	   width <= 0 ||
+	   height <= 0 ||
+	   width > DISPI_MAX_XRES ||
+	   height > DISPI_MAX_YRES ||
+	   u32(width) != descriptor.legacy_update.header.surface_extent.width ||
+	   u32(height) != descriptor.legacy_update.header.surface_extent.height {return nil}
+	needed := width * height
+	if len(state.frame_pixels) != needed {
+		if state.frame_pixels != nil {delete(state.frame_pixels, descriptor.allocator)}
+		state.frame_pixels = make([]u32, needed, descriptor.allocator)
+	}
+	full :=
+		descriptor.legacy_update.full_reason != .None ||
+		(descriptor.legacy_update.header.dirty.count == 1 &&
+				contract.rect_equal(
+					descriptor.legacy_update.header.dirty.rects[0],
+					descriptor.legacy_update.header.source,
+				))
+	if full {
+		frame := vga_display_frame(&state)
+		descriptor.frame = frame^
+		descriptor.converted_pixels = u64(needed)
+	} else {
+		descriptor.converted_pixels = 0
+		for rect_index in 0 ..< int(descriptor.legacy_update.header.dirty.count) {
+			rect := descriptor.legacy_update.header.dirty.rects[rect_index]
+			for y in int(rect.y) ..< int(rect.y + rect.height) {
+				render_scanline_span(
+					&state,
+					state.frame_pixels,
+					kind,
+					width,
+					height,
+					y,
+					int(rect.x),
+					int(rect.x + rect.width),
+				)
+			}
+			descriptor.converted_pixels += u64(rect.width) * u64(rect.height)
+		}
+		descriptor.frame = {
+			kind                      = kind,
+			width                     = width,
+			height                    = height,
+			aspect_width              = vga_vbe_enabled(&state) ? width : 4,
+			aspect_height             = vga_vbe_enabled(&state) ? height : 3,
+			generation                = state.timing.generation,
+			content_generation        = state.content_generation,
+			guest_activity_generation = state.guest_activity_generation,
+		}
+	}
 	descriptor.frame_pixels = state.frame_pixels
-	descriptor.frame = frame^
 	descriptor.frame.pixels = descriptor.frame_pixels
+	descriptor.frame.text = descriptor.text
+	descriptor.frame.dirty = descriptor.legacy_update.header.dirty
+	descriptor.frame.updated_pixels = descriptor.converted_pixels
 	descriptor.state.present_generation = state.present_generation
 	return &descriptor.frame
 }
 
 @(private = "file")
 scanout_descriptor_gsw_palette_color :: proc(descriptor: ^Scanout_Descriptor, index: u8) -> u32 {
-	base := int(index) * 3
-	r := descriptor.gsw_presentation.palette.entries[base]
-	g := descriptor.gsw_presentation.palette.entries[base + 1]
-	b := descriptor.gsw_presentation.palette.entries[base + 2]
-	return 0xFF00_0000 | u32(r) << 16 | u32(g) << 8 | u32(b)
+	return gsw_presentation_palette_pixel(&descriptor.gsw_presentation.palette, index)
 }
 
 scanout_descriptor_render_gsw :: proc(descriptor: ^Scanout_Descriptor) -> ^Display_Frame {
@@ -211,6 +319,22 @@ scanout_descriptor_render_gsw :: proc(descriptor: ^Scanout_Descriptor) -> ^Displ
 	   descriptor.gsw_presentation.palette.dac_bits != GSW_PALETTE_DAC_BITS {return nil}
 	if descriptor.allocator.procedure == nil {descriptor.allocator = context.allocator}
 	needed := width * height
+	if descriptor.gsw_presentation.preconverted {
+		if len(descriptor.gsw_presentation.preconverted_pixels) != needed ||
+		   descriptor.gsw_presentation.converted_pixels != u64(needed) {return nil}
+		descriptor.gsw_frame = {
+			kind               = .Indexed_8,
+			width              = width,
+			height             = height,
+			aspect_width       = int(present.header.canvas_extent.width),
+			aspect_height      = int(present.header.canvas_extent.height),
+			content_generation = present.header.sequence,
+			pixels             = descriptor.gsw_presentation.preconverted_pixels,
+			dirty              = present.header.dirty,
+			updated_pixels     = descriptor.gsw_presentation.converted_pixels,
+		}
+		return &descriptor.gsw_frame
+	}
 	if len(descriptor.gsw_frame_pixels) != needed {
 		if descriptor.gsw_frame_pixels != nil {
 			delete(descriptor.gsw_frame_pixels, descriptor.allocator)
@@ -219,51 +343,56 @@ scanout_descriptor_render_gsw :: proc(descriptor: ^Scanout_Descriptor) -> ^Displ
 	}
 	source := descriptor.gsw_presentation.source
 	pitch := int(present.source_pitch)
-	for y in 0 ..< height {
-		row := y * pitch
-		for x in 0 ..< width {
-			offset := row + x * int(bytes_per_pixel)
-			pixel: u32
-			#partial switch present.header.format {
-			case .Indexed_8:
-				pixel = scanout_descriptor_gsw_palette_color(descriptor, source[offset])
-			case .Rgb_555:
-				value := u16(source[offset]) | u16(source[offset + 1]) << 8
-				r := u8((value >> 10) & 0x1F)
-				g := u8((value >> 5) & 0x1F)
-				b := u8(value & 0x1F)
-				pixel =
-					0xFF00_0000 |
-					u32(r << 3 | r >> 2) << 16 |
-					u32(g << 3 | g >> 2) << 8 |
-					u32(b << 3 | b >> 2)
-			case .Rgb_565:
-				value := u16(source[offset]) | u16(source[offset + 1]) << 8
-				r := u8((value >> 11) & 0x1F)
-				g := u8((value >> 5) & 0x3F)
-				b := u8(value & 0x1F)
-				pixel =
-					0xFF00_0000 |
-					u32(r << 3 | r >> 2) << 16 |
-					u32(g << 2 | g >> 4) << 8 |
-					u32(b << 3 | b >> 2)
-			case .Bgr_888, .Bgrx_8888, .Bgra_8888:
-				pixel =
-					0xFF00_0000 |
-					u32(source[offset + 2]) << 16 |
-					u32(source[offset + 1]) << 8 |
-					u32(source[offset])
-			case .Rgba_8888:
-				pixel =
-					0xFF00_0000 |
-					u32(source[offset]) << 16 |
-					u32(source[offset + 1]) << 8 |
-					u32(source[offset + 2])
-			case:
-				return nil
+	converted_pixels: u64
+	for rect_index in 0 ..< int(present.header.dirty.count) {
+		rect := present.header.dirty.rects[rect_index]
+		for y in int(rect.y) ..< int(rect.y + rect.height) {
+			row := y * pitch
+			for x in int(rect.x) ..< int(rect.x + rect.width) {
+				offset := row + x * int(bytes_per_pixel)
+				pixel: u32
+				#partial switch present.header.format {
+				case .Indexed_8:
+					pixel = scanout_descriptor_gsw_palette_color(descriptor, source[offset])
+				case .Rgb_555:
+					value := u16(source[offset]) | u16(source[offset + 1]) << 8
+					r := u8((value >> 10) & 0x1F)
+					g := u8((value >> 5) & 0x1F)
+					b := u8(value & 0x1F)
+					pixel =
+						0xFF00_0000 |
+						u32(r << 3 | r >> 2) << 16 |
+						u32(g << 3 | g >> 2) << 8 |
+						u32(b << 3 | b >> 2)
+				case .Rgb_565:
+					value := u16(source[offset]) | u16(source[offset + 1]) << 8
+					r := u8((value >> 11) & 0x1F)
+					g := u8((value >> 5) & 0x3F)
+					b := u8(value & 0x1F)
+					pixel =
+						0xFF00_0000 |
+						u32(r << 3 | r >> 2) << 16 |
+						u32(g << 2 | g >> 4) << 8 |
+						u32(b << 3 | b >> 2)
+				case .Bgr_888, .Bgrx_8888, .Bgra_8888:
+					pixel =
+						0xFF00_0000 |
+						u32(source[offset + 2]) << 16 |
+						u32(source[offset + 1]) << 8 |
+						u32(source[offset])
+				case .Rgba_8888:
+					pixel =
+						0xFF00_0000 |
+						u32(source[offset]) << 16 |
+						u32(source[offset + 1]) << 8 |
+						u32(source[offset + 2])
+				case:
+					return nil
+				}
+				descriptor.gsw_frame_pixels[y * width + x] = pixel
 			}
-			descriptor.gsw_frame_pixels[y * width + x] = pixel
 		}
+		converted_pixels += u64(rect.width) * u64(rect.height)
 	}
 	kind := Display_Kind.Xrgb_8888
 	#partial switch present.header.format {
@@ -287,6 +416,8 @@ scanout_descriptor_render_gsw :: proc(descriptor: ^Scanout_Descriptor) -> ^Displ
 		aspect_height      = int(present.header.canvas_extent.height),
 		content_generation = present.header.sequence,
 		pixels             = descriptor.gsw_frame_pixels,
+		dirty              = present.header.dirty,
+		updated_pixels     = converted_pixels,
 	}
 	return &descriptor.gsw_frame
 }

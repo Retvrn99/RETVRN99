@@ -87,27 +87,10 @@ DDENTRY(CanCreateSurface32, LPDDHAL_CANCREATESURFACEDATA, data)
 
 DDENTRY(CreateSurface32, LPDDHAL_CREATESURFACEDATA, data)
 {
-	VMDAHAL_t *hal;
-	DWORD index;
 	if(data == NULL || data->lplpSList == NULL)
 		return DDHAL_DRIVER_NOTHANDLED;
-	hal = GetHAL(data->lpDD);
-	for(index = 0; index < data->dwSCnt; ++index)
-	{
-		if(GSWDD_surface(hal, data->lplpSList[index]) == 0)
-		{
-			while(index != 0)
-			{
-				--index;
-				GSWDD_unregister((DWORD)data->lplpSList[index]->dwReserved1);
-				data->lplpSList[index]->dwReserved1 = 0;
-			}
-			data->ddRVal = DDERR_INVALIDPARAMS;
-			return DDHAL_DRIVER_HANDLED;
-		}
-	}
 	data->ddRVal = DD_OK;
-	return DDHAL_DRIVER_HANDLED;
+	return DDHAL_DRIVER_NOTHANDLED;
 }
 
 DDENTRY(DestroySurface32, LPDDHAL_DESTROYSURFACEDATA, data)

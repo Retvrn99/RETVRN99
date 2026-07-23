@@ -121,6 +121,7 @@ host_gsw3d_proof_present :: proc(ctx: rawptr, present: ^Gsw3d_Proof_Present) -> 
 	mode_clock := h.presentation_state.mode_clock
 	mode_generation, _ := contract.mode_clock_observe(&mode_clock, .Gsw3d, mode_key)
 	record := contract.Gsw_Present {
+		clip_mode = .Fullscreen,
 		header = {
 			sequence = contract.generation_next(h.presentation_state.sequence),
 			lifecycle_generation = h.presentation_state.lifecycle,
@@ -180,6 +181,7 @@ host_gsw3d_proof_enable :: proc(h: ^Host) -> bool {
 	if h == nil || h.gpu == nil || h.gsw3d_proof_enabled {return false}
 	if !gsw3d_triangle_renderer_init(&h.gsw3d_triangle, h.gpu) {return false}
 	h.gsw3d_triangle.readback_counter = &h.presentation_metrics.readback_requests
+	h.gsw3d_triangle.readback_bytes = &h.presentation_metrics.readback_bytes
 	if !gsw3d_proof_executor_init(
 		&h.gsw3d_executor,
 		{

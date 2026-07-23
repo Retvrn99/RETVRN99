@@ -157,7 +157,7 @@ scancode_set1_event :: proc(
 		return buf, 4, code, extended, tracks_hold, ok
 	case .PAUSE:
 		if down {
-			buf = {0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5}
+			buf = {0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0, 0}
 			return buf, 6, 0, false, false, true
 		}
 		return {}, 0, 0, false, false, true

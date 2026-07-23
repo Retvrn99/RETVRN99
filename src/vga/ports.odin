@@ -65,14 +65,28 @@ vga_io_write :: proc(v: ^Vga, port: u16, size: u8, value: u32) {
 	v.io_write_bytes += u64(max(size, 1))
 	if !v.pci_io_enabled {return}
 	if port == DISPI_PORT_INDEX || port == DISPI_PORT_DATA {
-		if dispi_io_write(v, port, size, value) {vga_note_content_change(v)}
+		index := v.dispi_index
+		if !dispi_io_write(v, port, size, value) {return}
+		switch int(index) {
+		case DISPI_INDEX_ID, DISPI_INDEX_BANK, DISPI_INDEX_DDC:
+			return
+		case:
+			vga_damage_record_full(v, .Pixel_Memory, .Mode_Boundary)
+			vga_note_recorded_change(v, true)
+		}
 		return
 	}
+	serial := v.legacy_damage.write_serial
 	changed := false
 	for i in 0 ..< int(max(size, 1)) {
 		changed = standard_port_write(v, port + u16(i), u8(value >> uint(i * 8))) || changed
 	}
-	if changed {vga_note_content_change(v)}
+	if changed {
+		if serial == v.legacy_damage.write_serial {
+			vga_damage_record_full(v, .Pixel_Memory, .Mode_Boundary)
+		}
+		vga_note_recorded_change(v, true)
+	}
 }
 
 vga_io_read :: proc(v: ^Vga, port: u16, size: u8) -> u32 {
@@ -129,6 +143,10 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 			v.attr[v.attr_ix] = masked
 			vga_recalculate_timing(v)
 			v.attr_flip = false
+			palette_register := v.attr_ix < 0x10 || v.attr_ix == 0x12 || v.attr_ix == 0x14
+			if changed && palette_register {
+				return vga_damage_record_palette(v)
+			}
 			return changed
 		}
 		v.attr_flip = !v.attr_flip
@@ -151,12 +169,12 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 			changed := v.seq[v.seq_ix] != masked
 			v.seq[v.seq_ix] = masked
 			vga_recalculate_timing(v)
-			return changed
+			return changed && v.seq_ix != 2
 		}
 	case 0x3C6:
 		changed := v.pel_mask != value
 		v.pel_mask = value
-		return changed
+		return changed && vga_damage_record_palette(v)
 	case 0x3C7:
 		v.dac_read = value
 		v.dac_sub = 0
@@ -176,16 +194,19 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 			v.dac_sub = 0
 			v.dac_write += 1
 		}
-		return changed
+		return changed && vga_damage_record_palette(v)
 	case 0x3CE:
 		v.gfx_ix = value & 0x0F
 	case 0x3CF:
 		if int(v.gfx_ix) < len(v.gfx) {
 			masked := value & GFX_MASKS[v.gfx_ix]
-			changed := v.gfx[v.gfx_ix] != masked
+			before := v.gfx[v.gfx_ix]
+			changed := before != masked
 			v.gfx[v.gfx_ix] = masked
 			vga_recalculate_timing(v)
-			return changed
+			if v.gfx_ix == 5 {return (before & 0x60) != (masked & 0x60)}
+			if v.gfx_ix == 6 {return (before & 0x0D) != (masked & 0x0D)}
+			return false
 		}
 	case 0x3DA, 0x3BA:
 		v.feature = value & 3
@@ -196,11 +217,10 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 	case 0x3DB:
 		changed := v.cga.light_pen_triggered
 		v.cga.light_pen_triggered = false
-		return changed
+		return false
 	case 0x3DC:
-		was_triggered := v.cga.light_pen_triggered
 		cga_latch_light_pen(v)
-		return !was_triggered && v.cga.light_pen_triggered
+		return false
 	}
 	return false
 }
@@ -291,6 +311,7 @@ crtc_write :: proc(v: ^Vga, index, value: u8) -> bool {
 	if index == 0x0C || index == 0x0D {
 		v.pending_start = u16(v.crtc[0x0C]) << 8 | u16(v.crtc[0x0D])
 		v.start_pending = true
+		changed = false
 	}
 	vga_recalculate_timing(v)
 	if index == 0x11 {

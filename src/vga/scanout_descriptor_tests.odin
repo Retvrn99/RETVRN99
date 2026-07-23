@@ -27,6 +27,7 @@ scanout_descriptor_test_set_owned_gsw :: proc(
 		destination = full,
 	}
 	present := contract.Gsw_Present {
+		clip_mode = .Windowed,
 		header = {
 			sequence = 17,
 			lifecycle_generation = 2,
@@ -117,6 +118,125 @@ scanout_descriptor_test_uses_explicit_state_without_source_vga_lifetime :: proc(
 	testing.expect(t, frame != nil)
 	testing.expect_value(t, frame.kind, Display_Kind.Indexed_8)
 	testing.expect_value(t, frame.pixels[0], u32(0xFFFF0000))
+}
+
+@(test)
+scanout_descriptor_test_partial_vbe_capture_copies_and_converts_exact_pixel :: proc(
+	t: ^testing.T,
+) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	testing.expect(t, test_set_vbe_mode(&v, 4, 1, 32))
+	v.vram[4], v.vram[5], v.vram[6], v.vram[7] = 0x11, 0x22, 0x33, 0
+	testing.expect(t, vga_damage_acknowledge(&v, v.legacy_presentation_sequence))
+	testing.expect(t, vga_mmio_write(&v, v.framebuffer_base + 4, 1, 0x44))
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	testing.expect(t, scanout_descriptor_capture(&descriptor, &v))
+	testing.expect_value(t, descriptor.bytes_copied, 4)
+	testing.expect_value(t, descriptor.legacy_update.header.dirty.count, u32(1))
+	testing.expect_value(
+		t,
+		descriptor.legacy_update.header.dirty.rects[0],
+		contract.Rect{1, 0, 1, 1},
+	)
+	for i in 0 ..< 8 {v.vram[i] = 0}
+	frame := scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect_value(t, frame.updated_pixels, u64(1))
+	testing.expect_value(t, frame.pixels[1], u32(0xFF332244))
+	testing.expect_value(t, frame.pixels[0], u32(0))
+}
+
+@(test)
+scanout_descriptor_test_fragment_budget_captures_and_converts_full_surface :: proc(
+	t: ^testing.T,
+) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	testing.expect(t, test_set_vbe_mode(&v, 128, 1, 8))
+	testing.expect(t, vga_damage_acknowledge(&v, v.legacy_presentation_sequence))
+	for i in 0 ..< VGA_DAMAGE_MAX_PARTIAL_RANGES + 1 {
+		testing.expect(t, vga_damage_record_backing_range(&v, u32(i * 2), 1))
+	}
+	vga_note_memory_change(&v)
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	testing.expect(t, scanout_descriptor_capture(&descriptor, &v))
+	testing.expect_value(t, descriptor.bytes_copied, scanout_required_vram(&v))
+	testing.expect_value(
+		t,
+		descriptor.legacy_update.full_reason,
+		contract.Damage_Full_Reason.Capacity_Exceeded,
+	)
+	testing.expect_value(
+		t,
+		descriptor.legacy_update.header.dirty,
+		contract.rect_set_full({128, 1}),
+	)
+	frame := scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect_value(t, descriptor.converted_pixels, u64(128))
+	testing.expect_value(t, frame.updated_pixels, u64(128))
+}
+
+@(test)
+scanout_descriptor_test_palette_only_preconverts_without_vram_copy :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	testing.expect(t, test_set_vbe_mode(&v, 2, 1, 8))
+	v.vram[0], v.vram[1] = 1, 2
+	v.dac[3], v.dac[4], v.dac[5] = 0x3F, 0, 0
+	v.dac[6], v.dac[7], v.dac[8] = 0, 0x3F, 0
+	testing.expect(t, vga_damage_acknowledge(&v, v.legacy_presentation_sequence))
+	vga_note_palette_change(&v)
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	testing.expect(t, scanout_descriptor_capture(&descriptor, &v))
+	testing.expect_value(t, descriptor.bytes_copied, 0)
+	testing.expect(t, descriptor.preconverted)
+	for i in 0 ..< 9 {v.dac[i] = 0}
+	v.vram[0], v.vram[1] = 0, 0
+	frame := scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect_value(t, frame.updated_pixels, u64(2))
+	testing.expect_value(t, frame.pixels[0], u32(0xFFFF0000))
+	testing.expect_value(t, frame.pixels[1], u32(0xFF00FF00))
+}
+
+@(test)
+scanout_descriptor_test_empty_damage_performs_no_legacy_work :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	testing.expect(t, test_set_vbe_mode(&v, 2, 1, 32))
+	testing.expect(t, vga_damage_acknowledge(&v, v.legacy_presentation_sequence))
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	testing.expect(t, scanout_descriptor_capture(&descriptor, &v))
+	testing.expect_value(t, descriptor.bytes_copied, 0)
+	testing.expect_value(t, descriptor.converted_pixels, u64(0))
+	testing.expect(t, scanout_descriptor_render(&descriptor) == nil)
+}
+
+@(test)
+scanout_descriptor_test_large_vbe_planar_capture_exceeds_legacy_window :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	testing.expect(t, test_set_vbe_mode(&v, 1024, 1024, 4))
+	testing.expect_value(t, scanout_required_vram(&v), 512 * 1024)
 }
 
 @(test)

@@ -27,6 +27,7 @@ function Get-SimpleFunctionBody {
 }
 
 $root = Join-Path $PSScriptRoot '..\drivers\win98\derived\vmdisp9x-gsw'
+$halRoot = Join-Path $PSScriptRoot '..\drivers\win98\derived\vmhal9x-gsw'
 $transport = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_transport.c')
 $transport3d = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw3d_transport.c')
 $ddraw = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_ddraw.c')
@@ -42,6 +43,8 @@ $pm16 = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\pm16_calls_gsw.c
 $lifecycle = Get-Content -Raw -LiteralPath (
     Join-Path $root 'patches\0009-gsw-pnp-display-lifecycle.patch'
 )
+$halDdraw = Get-Content -Raw -LiteralPath (Join-Path $halRoot 'overlay\gsw_ddraw.c')
+$halBackend = Get-Content -Raw -LiteralPath (Join-Path $halRoot 'overlay\gsw_backend.c')
 
 Assert-Match $transport '#define GSW_PCI_COMMAND_REQUIRED 0x0006' (
     'The transport must require memory decode and bus mastering without claiming I/O decode.'
@@ -87,6 +90,36 @@ Assert-Match $header 'void GSW3D_transport_process_cleanup\(DWORD owner_pid\);' 
 )
 Assert-Match $ddraw 'GSW_transport_surface_register\(&output\.registration,\s*params->tagProcess\);' (
     'DirectDraw surface registration must tag resources with DIOCParams.tagProcess.'
+)
+$createSurfaceBody = Get-SimpleFunctionBody $halDdraw (
+    'DDENTRY(CreateSurface32, LPDDHAL_CREATESURFACEDATA, data)'
+)
+Assert-Match $createSurfaceBody 'data->ddRVal\s*=\s*DD_OK;\s*return DDHAL_DRIVER_NOTHANDLED;' (
+    'CreateSurface must leave video-memory allocation to DirectDraw before GSW registration.'
+)
+Assert-NotMatch $createSurfaceBody 'GSWDD_surface|GSWDD_unregister|dwReserved1|DDERR_INVALIDPARAMS' (
+    'CreateSurface must not treat the pre-allocation video-memory sentinel as an address.'
+)
+foreach ($signature in @(
+    'DDENTRY(Lock32, LPDDHAL_LOCKDATA, data)',
+    'DDENTRY(Blt32, LPDDHAL_BLTDATA, data)',
+    'DDENTRY(Flip32, LPDDHAL_FLIPDATA, data)'
+)) {
+    Assert-Match (Get-SimpleFunctionBody $halDdraw $signature) 'GSWDD_surface\(' (
+        "$signature must retain lazy surface registration after allocation."
+    )
+}
+$destroySurfaceBody = Get-SimpleFunctionBody $halDdraw (
+    'DDENTRY(DestroySurface32, LPDDHAL_DESTROYSURFACEDATA, data)'
+)
+Assert-Match $destroySurfaceBody (
+    'dwReserved1\s*!=\s*0[\s\S]+GSWDD_unregister\([\s\S]+dwReserved1\s*=\s*0;'
+) 'DestroySurface must unregister and clear a lazily assigned surface identity.'
+Assert-Match $halBackend 'fpVidMem < hal->vramLinear \|\| surface->lpGbl->lPitch <= 0' (
+    'Lazy registration must reject sentinel, below-framebuffer, and invalid-pitch addresses.'
+)
+Assert-Match $halBackend 'surface->dwReserved1 = request\.surface_id;' (
+    'Lazy registration must cache the validated surface identity.'
 )
 Assert-Match $transport 'typedef struct GSWSurfaceRecord \{[\s\S]+DWORD owner_pid;' (
     '2D surface records must carry process ownership.'
@@ -245,3 +278,4 @@ Write-Host 'PASS GSW-VGA physical enable avoids a redundant destructive transpor
 Write-Host 'PASS GSW-VGA blocks PnP BIOS mode sets while preserving explicit VGA transitions.'
 Write-Host 'PASS GSW-VGA installs and removes its V86 INT 10h hook with fail-closed unload semantics.'
 Write-Host 'PASS GSW-VGA DirectDraw and 3D resources carry process ownership for lifecycle cleanup.'
+Write-Host 'PASS GSW-VGA DirectDraw defers surface registration until runtime allocation.'

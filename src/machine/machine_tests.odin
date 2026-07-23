@@ -3,6 +3,7 @@ package machine
 
 import disk "../disk"
 import hv "../hv"
+import contract "../presentation"
 import video "../vga"
 import "core:fmt"
 import "core:log"
@@ -903,18 +904,23 @@ test_machine_vga_legacy_aperture_batches_mmio_transaction :: proc(t: ^testing.T)
 	defer free(m)
 	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
 	defer video.vga_destroy(&m.vga)
+	video.gsw_vga_init(&m.gsw_vga, backing)
+	defer video.gsw_vga_destroy(&m.gsw_vga)
+	video.gsw_vga_attach_scanout(&m.gsw_vga, &m.vga)
 	m.vga.seq[2] = 0x0F
 	m.vga.seq[4] = 0x0E
 	m.vga.gfx[5] = 0
 	m.vga.gfx[6] = 0x05
 	m.vga.gfx[8] = 0xFF
 	initial_content := m.vga.content_generation
+	gsw_sequence := m.gsw_vga.presentation_state.sequence
 	data := [4]u8{0x41, 0x42, 0x43, 0x44}
 
 	machine_mmio(m, 0xA0010, true, data[:])
 	testing.expect_value(t, m.legacy_aperture_write_bytes, u64(4))
 	testing.expect_value(t, m.legacy_aperture_read_bytes, u64(0))
 	testing.expect_value(t, m.vga.content_generation, initial_content + 1)
+	testing.expect_value(t, m.gsw_vga.presentation_state.sequence, gsw_sequence)
 	for p in 0 ..< 4 {
 		testing.expect_value(t, video.vga_vram(&m.vga)[0x10 + p], data[p])
 	}
@@ -925,6 +931,84 @@ test_machine_vga_legacy_aperture_batches_mmio_transaction :: proc(t: ^testing.T)
 	testing.expect_value(t, m.legacy_aperture_read_bytes, u64(4))
 	testing.expect_value(t, readback, data)
 	testing.expect_value(t, m.vga.content_generation, initial_content + 1)
+}
+
+@(test)
+test_machine_vga_legacy_aperture_pairs_active_gsw_before_legacy :: proc(t: ^testing.T) {
+	backing := make([]u8, video.VRAM_SIZE)
+	defer delete(backing)
+	ram := make([]u8, 1024)
+	defer delete(ram)
+	m := new(Machine)
+	defer free(m)
+	m.vm.ram = ram
+	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
+	defer video.vga_destroy(&m.vga)
+	video.gsw_vga_init(&m.gsw_vga, backing)
+	defer video.gsw_vga_destroy(&m.gsw_vga)
+	video.gsw_vga_attach_scanout(&m.gsw_vga, &m.vga)
+	m.gsw_vga.ring_gpa = 128
+	m.gsw_vga.ring_size = 256
+	m.vga.seq[2] = 0x0F
+	m.vga.seq[4] = 0x0E
+	m.vga.gfx[5] = 0
+	m.vga.gfx[6] = 0x05
+	m.vga.gfx[8] = 0xFF
+	prime := [1]u8{0x11}
+	machine_mmio(m, 0xA0020, true, prime[:])
+	present := ram[128:168]
+	values := [?]struct {
+		offset: int,
+		size:   int,
+		value:  u64,
+	}{
+		{0, 2, u64(video.Gsw_Vga_Opcode.Present)},
+		{2, 2, u64(video.GSW_VGA_COMMAND_VERSION_2)},
+		{4, 4, 40},
+		{8, 8, 1},
+		{16, 4, 0},
+		{20, 4, 4},
+		{24, 4, 2},
+		{28, 4, 16},
+		{32, 4, u64(video.Gsw_Pixel_Format.Xrgb_8888)},
+	}
+	for field in values {
+		for byte in 0 ..< field.size {
+			present[field.offset + byte] = u8(field.value >> uint(byte * 8))
+		}
+	}
+	m.gsw_vga.ring_tail = 40
+	video.gsw_vga_process(&m.gsw_vga, m.vm.ram)
+	if !testing.expect(t, m.gsw_vga.status & video.GSW_VGA_STATUS_ERROR == 0) {return}
+	initial := video.gsw_vga_presentation_snapshot(&m.gsw_vga)
+	if !testing.expect(t, initial.active_valid) {return}
+	if !testing.expect(t, machine_acknowledge_gsw_scanout(m, initial.active)) {return}
+	sequence := video.vga_presentation_sequence(&m.vga)
+	data := [4]u8{0x41, 0x42, 0x43, 0x44}
+
+	machine_mmio(m, 0xA0010, true, data[:])
+	descriptor: video.Scanout_Descriptor
+	defer video.scanout_descriptor_destroy(&descriptor)
+	if !testing.expect(t, machine_capture_scanout(m, &descriptor, 1)) {return}
+	gsw := descriptor.gsw_presentation
+	legacy := descriptor.legacy_update
+	testing.expect(t, gsw.present_valid)
+	testing.expect_value(t, gsw.present.header.sequence, sequence + 1)
+	testing.expect_value(t, legacy.header.sequence, sequence + 2)
+	testing.expect_value(
+		t,
+		gsw.full_reason,
+		contract.Damage_Full_Reason.External_Tracking,
+	)
+	testing.expect_value(t, gsw.present.header.dirty, contract.rect_set_full({4, 2}))
+	testing.expect_value(
+		t,
+		gsw.present.header.lifecycle_generation,
+		initial.active.header.lifecycle_generation,
+	)
+	testing.expect_value(t, gsw.present.header.mode_generation, initial.active.header.mode_generation)
+	testing.expect_value(t, legacy.header.mode_generation, gsw.present.header.mode_generation)
+	testing.expect_value(t, gsw.present.header.surface, initial.active.header.surface)
 }
 
 @(test)

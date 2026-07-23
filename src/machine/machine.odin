@@ -1732,7 +1732,14 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 				u64(len(data)),
 			)
 		}
-		_ = video.vga_aperture_access(&m.vga, decoded_gpa, write, data, m.active_ns)
+		_ = video.vga_aperture_access_paired(
+			&m.vga,
+			&m.gsw_vga,
+			decoded_gpa,
+			write,
+			data,
+			m.active_ns,
+		)
 		machine_rearm_wake(m)
 		return
 	}

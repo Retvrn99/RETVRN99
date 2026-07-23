@@ -190,13 +190,21 @@ host_input_test_print_screen_and_pause_sequences :: proc(t: ^testing.T) {
 	brk, _ := host_input_pop(&q)
 	pause, _ := host_input_pop(&q)
 	testing.expect_value(t, make.key_n, u8(4))
-	testing.expect_value(t, make.key, [HOST_INPUT_KEY_BYTES]u8{0xE0, 0x2A, 0xE0, 0x37, 0, 0})
-	testing.expect_value(t, brk.key, [HOST_INPUT_KEY_BYTES]u8{0xE0, 0xB7, 0xE0, 0xAA, 0, 0})
+	testing.expect_value(
+		t,
+		make.key,
+		[HOST_INPUT_KEY_BYTES]u8{0xE0, 0x2A, 0xE0, 0x37, 0, 0, 0, 0},
+	)
+	testing.expect_value(
+		t,
+		brk.key,
+		[HOST_INPUT_KEY_BYTES]u8{0xE0, 0xB7, 0xE0, 0xAA, 0, 0, 0, 0},
+	)
 	testing.expect_value(t, pause.key_n, u8(6))
 	testing.expect_value(
 		t,
 		pause.key,
-		[HOST_INPUT_KEY_BYTES]u8{0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5},
+		[HOST_INPUT_KEY_BYTES]u8{0xE1, 0x1D, 0x45, 0xE1, 0x9D, 0xC5, 0, 0},
 	)
 }
 
@@ -222,4 +230,49 @@ host_input_test_residence_is_monotonic_and_coalescing_keeps_oldest_tick :: proc(
 	testing.expect_value(t, event.queued_at, time.Tick{100})
 	testing.expect_value(t, host_input_residence_ns(&event, time.Tick{400}), u64(300))
 	testing.expect_value(t, host_input_residence_ns(&event, time.Tick{50}), u64(0))
+}
+
+@(test)
+host_input_test_control_sequence_keeps_eight_byte_chord_atomic :: proc(t: ^testing.T) {
+	q: Host_Input_Queue
+	sequence := [8]u8{0x1D, 0x38, 0xE0, 0x53, 0xE0, 0xD3, 0xB8, 0x9D}
+	testing.expect(t, host_input_push_key_sequence(&q, sequence[:], 7))
+	testing.expect_value(t, q.count, 1)
+	event, ok := host_input_pop(&q)
+	if !testing.expect(t, ok) {return}
+	testing.expect_value(t, event.key_n, u8(8))
+	testing.expect_value(t, event.key, sequence)
+	testing.expect_value(t, event.control_generation, u64(7))
+}
+
+@(test)
+host_input_test_motion_does_not_coalesce_across_control_generation :: proc(t: ^testing.T) {
+	q: Host_Input_Queue
+	testing.expect(t, host_input_push_motion(&q, 3, 0, 0, 4))
+	testing.expect(t, host_input_push_motion(&q, 5, 0, 0, 5))
+	testing.expect_value(t, q.count, 2)
+}
+
+@(test)
+host_input_test_control_motion_actions_remain_distinct :: proc(t: ^testing.T) {
+	q: Host_Input_Queue
+	testing.expect(
+		t,
+		host_input_push_control(
+			&q,
+			{kind = .Mouse_Motion, dx = 3, control_generation = 4},
+		),
+	)
+	testing.expect(
+		t,
+		host_input_push_control(
+			&q,
+			{kind = .Mouse_Motion, dx = 5, control_generation = 4},
+		),
+	)
+	testing.expect_value(t, q.count, 2)
+	first, _ := host_input_pop(&q)
+	second, _ := host_input_pop(&q)
+	testing.expect_value(t, first.dx, i32(3))
+	testing.expect_value(t, second.dx, i32(5))
 }

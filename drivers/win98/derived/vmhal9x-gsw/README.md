@@ -19,9 +19,10 @@ Mesa, OpenGL, Direct3D, VESA, or tray payload. Fixed image bases, resource
 versions, and linker timestamps keep the outputs reproducible.
 
 `gswhal9x.dll` implements the conservative DirectDraw HAL callbacks. It
-accepts only video-memory surfaces with bounded framebuffer offsets and
-supported RGB formats, forwards fill/blit/stretch/color-key/present operations
-through generation-tagged surface IDs, and returns `DDHAL_DRIVER_NOTHANDLED`
-for unsupported flags so DirectDraw can use its software path. `gswdd32.dll`
-is the narrow DeviceIoControl bridge to the display VxD. HAL initialization
-fails unless the bridge ABI, capability mask, and framebuffer identity match.
+defers surface allocation to DirectDraw, then lazily registers only
+video-memory surfaces with bounded framebuffer offsets and supported RGB
+formats. It forwards fill/blit/stretch/color-key/present operations through
+generation-tagged surface IDs and returns `DDHAL_DRIVER_NOTHANDLED` for
+unsupported flags so DirectDraw can use its software path. `gswdd32.dll` is the
+narrow DeviceIoControl bridge to the display VxD. HAL initialization fails
+unless the bridge ABI, capability mask, and framebuffer identity match.

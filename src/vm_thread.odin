@@ -160,6 +160,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						}
 					}
 				} else if launch_ready {
+					publish_machine_reinitializing(s)
 					reset_diagnostic = vm_reinitialize_machine(
 						c,
 						m,
@@ -621,11 +622,15 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			input_events: [HOST_INPUTS_PER_VM_STEP]host.Host_Input_Event
 			sync.lock(&s.mu)
 			input_count := host.host_input_drain(&s.input, input_events[:])
+			input_generation := s.input_generation
 			sync.unlock(&s.mu)
 			input_drained_at := time.tick_now()
 			input_residence_ns, max_input_residence_ns: u64
 			oldest_input_queued_at: time.Tick
+			input_applied_count := 0
 			for &event in input_events[:input_count] {
+				if !input_control_event_current(&event, input_generation) {continue}
+				input_applied_count += 1
 				residence_ns := host.host_input_residence_ns(&event, input_drained_at)
 				input_residence_ns += residence_ns
 				max_input_residence_ns = max(max_input_residence_ns, residence_ns)
@@ -645,7 +650,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			}
 			frame_mailbox_graphics_telemetry_note_input(
 				&s.frames,
-				u64(input_count),
+				u64(input_applied_count),
 				input_residence_ns,
 				max_input_residence_ns,
 				input_drained_at,
@@ -702,6 +707,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				} else if machine.machine_cpu_reset_pending(m) {
 					reason := machine.machine_cpu_reset_reason(m)
 					reset_code := m.cpu_reset_cmos_0f
+					publish_machine_reinitializing(s)
 					sync.lock(&c.guard.mu)
 					c.guard.valid = false
 					reset_ok := machine.machine_cpu_reset(m)
@@ -724,6 +730,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						frozen = true
 						publish_freeze(s, m.bus.freeze_msg, "")
 					}
+					publish_machine_running(s, machine_live)
 				} else if machine.machine_reset_requested(m) {
 					reset_reason := strings.clone(machine.machine_reset_reason(m))
 					reset_transaction, reset_state_ready := install_reset_transaction_stage(
@@ -752,7 +759,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 							continue loop
 						}
 					}
-					publish_machine_running(s, false)
+					publish_machine_reinitializing(s)
 					reset_diagnostic := vm_reinitialize_machine(
 						c,
 						m,

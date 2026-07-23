@@ -126,11 +126,74 @@ graphics_host_presentation_interval :: proc(
 	delta, wrapped = graphics_counter_delta(current.readback_requests, previous.readback_requests)
 	result.readback_requests = delta
 	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.readback_bytes, previous.readback_bytes)
+	result.readback_bytes = delta
+	reset = reset || wrapped
 	delta, wrapped = graphics_counter_delta(
 		current.last_good_restorations,
 		previous.last_good_restorations,
 	)
 	result.last_good_restorations = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.resource_reuses, previous.resource_reuses)
+	result.resource_reuses = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.resource_recreations,
+		previous.resource_recreations,
+	)
+	result.resource_recreations = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.resource_retirements,
+		previous.resource_retirements,
+	)
+	result.resource_retirements = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.full_fallback_uploads,
+		previous.full_fallback_uploads,
+	)
+	result.full_fallback_uploads = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.overlay_invalidated_regions,
+		previous.overlay_invalidated_regions,
+	)
+	result.overlay_invalidated_regions = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.overlay_full_invalidations,
+		previous.overlay_full_invalidations,
+	)
+	result.overlay_full_invalidations = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.source_full_initial,
+		previous.source_full_initial,
+	)
+	result.source_full_initial = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.source_full_mode, previous.source_full_mode)
+	result.source_full_mode = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.source_full_ambiguous,
+		previous.source_full_ambiguous,
+	)
+	result.source_full_ambiguous = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.source_full_capacity,
+		previous.source_full_capacity,
+	)
+	result.source_full_capacity = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.source_full_external,
+		previous.source_full_external,
+	)
+	result.source_full_external = delta
 	reset = reset || wrapped
 	return result, reset
 }
@@ -164,7 +227,25 @@ graphics_host_presentation_interval_add :: proc(
 	graphics_interval_add_counter(&target.closed_rejections, addition.closed_rejections)
 	graphics_interval_add_counter(&target.resident_presents, addition.resident_presents)
 	graphics_interval_add_counter(&target.readback_requests, addition.readback_requests)
+	graphics_interval_add_counter(&target.readback_bytes, addition.readback_bytes)
 	graphics_interval_add_counter(&target.last_good_restorations, addition.last_good_restorations)
+	graphics_interval_add_counter(&target.resource_reuses, addition.resource_reuses)
+	graphics_interval_add_counter(&target.resource_recreations, addition.resource_recreations)
+	graphics_interval_add_counter(&target.resource_retirements, addition.resource_retirements)
+	graphics_interval_add_counter(&target.full_fallback_uploads, addition.full_fallback_uploads)
+	graphics_interval_add_counter(
+		&target.overlay_invalidated_regions,
+		addition.overlay_invalidated_regions,
+	)
+	graphics_interval_add_counter(
+		&target.overlay_full_invalidations,
+		addition.overlay_full_invalidations,
+	)
+	graphics_interval_add_counter(&target.source_full_initial, addition.source_full_initial)
+	graphics_interval_add_counter(&target.source_full_mode, addition.source_full_mode)
+	graphics_interval_add_counter(&target.source_full_ambiguous, addition.source_full_ambiguous)
+	graphics_interval_add_counter(&target.source_full_capacity, addition.source_full_capacity)
+	graphics_interval_add_counter(&target.source_full_external, addition.source_full_external)
 }
 
 graphics_host_gpu_interval :: proc(

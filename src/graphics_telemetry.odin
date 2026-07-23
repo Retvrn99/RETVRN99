@@ -485,10 +485,8 @@ graphics_frame_epoch_render_complete :: proc(
 	epoch.kind = frame.kind
 	epoch.width = frame.width
 	epoch.height = frame.height
-	epoch.rendered_pixels = graphics_counter_add(
-		epoch.rendered_pixels,
-		graphics_frame_pixel_count(frame.width, frame.height),
-	)
+	pixels := frame.updated_pixels
+	epoch.rendered_pixels = graphics_counter_add(epoch.rendered_pixels, pixels)
 }
 
 graphics_frame_epoch_upload_begin :: proc(epoch: ^Graphics_Frame_Epoch, now: time.Tick) {
@@ -498,7 +496,7 @@ graphics_frame_epoch_upload_begin :: proc(epoch: ^Graphics_Frame_Epoch, now: tim
 
 graphics_frame_epoch_upload_complete :: proc(
 	epoch: ^Graphics_Frame_Epoch,
-	succeeded: bool,
+	bytes_uploaded: u64,
 	texture_recreated: bool,
 	now: time.Tick,
 ) {
@@ -511,16 +509,7 @@ graphics_frame_epoch_upload_complete :: proc(
 		now,
 	)
 	epoch.texture_recreated = epoch.texture_recreated || texture_recreated
-	if succeeded {
-		pixels := graphics_frame_pixel_count(epoch.width, epoch.height)
-		bytes := pixels
-		if pixels > max(u64) / size_of(u32) {
-			bytes = max(u64)
-		} else {
-			bytes *= size_of(u32)
-		}
-		epoch.bytes_uploaded = graphics_counter_add(epoch.bytes_uploaded, bytes)
-	}
+	epoch.bytes_uploaded = graphics_counter_add(epoch.bytes_uploaded, bytes_uploaded)
 }
 
 graphics_frame_epoch_gpu_drain :: proc(
@@ -990,7 +979,7 @@ graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> str
 	pm := g.presentation
 	fmt.sbprintf(
 		&builder,
-		" presentation_updates=legacy_full:%d legacy_partial:%d gsw_snapshot_full:%d gsw_snapshot_partial:%d copy_bytes:%d conversion_pixels:%d upload_bytes:%d upload_regions:%d stale_total:%d stale_finalize:%d reject_invalid:%d reject_closed:%d resident_presents:%d readbacks:%d restorations:%d",
+		" presentation_updates=legacy_full:%d legacy_partial:%d gsw_snapshot_full:%d gsw_snapshot_partial:%d copy_bytes:%d conversion_pixels:%d upload_bytes:%d upload_regions:%d stale_total:%d stale_finalize:%d reject_invalid:%d reject_closed:%d resident_presents:%d readbacks:%d/%d restorations:%d",
 		pm.legacy_full_updates,
 		pm.legacy_partial_updates,
 		pm.gsw_snapshot_full_updates,
@@ -1005,7 +994,23 @@ graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> str
 		pm.closed_rejections,
 		pm.resident_presents,
 		pm.readback_requests,
+		pm.readback_bytes,
 		pm.last_good_restorations,
+	)
+	fmt.sbprintf(
+		&builder,
+		" presentation_resources=reuse:%d recreate:%d retire:%d host_full_fallback:%d overlay:%d/%d source_full:%d/%d/%d/%d/%d",
+		pm.resource_reuses,
+		pm.resource_recreations,
+		pm.resource_retirements,
+		pm.full_fallback_uploads,
+		pm.overlay_invalidated_regions,
+		pm.overlay_full_invalidations,
+		pm.source_full_initial,
+		pm.source_full_mode,
+		pm.source_full_ambiguous,
+		pm.source_full_capacity,
+		pm.source_full_external,
 	)
 	fmt.sbprintf(
 		&builder,
@@ -1175,7 +1180,7 @@ graphics_telemetry_trace_text :: proc(telemetry: ^Graphics_Telemetry) -> string 
 		pm := g.presentation
 		fmt.sbprintf(
 			&builder,
-			" presentation=legacy:%d/%d gsw_snapshot:%d/%d copy:%d conversion:%d upload:%d/%d stale:%d/%d reject:%d/%d resident:%d readback:%d restore:%d",
+			" presentation=legacy:%d/%d gsw_snapshot:%d/%d copy:%d conversion:%d upload:%d/%d stale:%d/%d reject:%d/%d resident:%d readback:%d/%d restore:%d",
 			pm.legacy_full_updates,
 			pm.legacy_partial_updates,
 			pm.gsw_snapshot_full_updates,
@@ -1190,7 +1195,23 @@ graphics_telemetry_trace_text :: proc(telemetry: ^Graphics_Telemetry) -> string 
 			pm.closed_rejections,
 			pm.resident_presents,
 			pm.readback_requests,
+			pm.readback_bytes,
 			pm.last_good_restorations,
+		)
+		fmt.sbprintf(
+			&builder,
+			" presentation_resources=reuse:%d recreate:%d retire:%d host_full_fallback:%d overlay:%d/%d source_full:%d/%d/%d/%d/%d",
+			pm.resource_reuses,
+			pm.resource_recreations,
+			pm.resource_retirements,
+			pm.full_fallback_uploads,
+			pm.overlay_invalidated_regions,
+			pm.overlay_full_invalidations,
+			pm.source_full_initial,
+			pm.source_full_mode,
+			pm.source_full_ambiguous,
+			pm.source_full_capacity,
+			pm.source_full_external,
 		)
 		fmt.sbprintf(
 			&builder,

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package vga
 
+import contract "../presentation"
+
 // Pixel expansion follows the VGA memory organization documented by and
 // selectively adapted from DOSBox-X vga_draw.cpp at commit f3483ce. See
 // DOSBOX_X_NOTICE.md for copyright and license provenance.
@@ -80,6 +82,8 @@ vga_display_frame :: proc(v: ^Vga) -> ^Display_Frame {
 	v.frame.guest_activity_generation = v.guest_activity_generation
 	v.frame.pixels = v.frame_pixels
 	v.frame.text = {}
+	v.frame.dirty = contract.rect_set_full({u32(width), u32(height)})
+	v.frame.updated_pixels = u64(needed)
 	if !output_enabled {return &v.frame}
 	switch kind {
 	case .Text:
@@ -223,35 +227,47 @@ scanout_finalize :: proc(v: ^Vga) {
 	v.raster_valid = false
 }
 
-@(private = "file")
 render_scanline :: proc(v: ^Vga, pixels: []u32, kind: Display_Kind, width, height, y: int) {
+	render_scanline_span(v, pixels, kind, width, height, y, 0, width)
+}
+
+@(private = "package")
+render_scanline_span :: proc(
+	v: ^Vga,
+	pixels: []u32,
+	kind: Display_Kind,
+	width, height, y, x0, x1: int,
+) {
+	start := clamp(x0, 0, width)
+	end := clamp(x1, start, width)
+	if start >= end || y < 0 || y >= height {return}
 	if !video_output_enabled(v) {
-		for x in 0 ..< width {pixels[y * width + x] = 0xFF000000}
+		for x in start ..< end {pixels[y * width + x] = 0xFF000000}
 		return
 	}
 	switch kind {
 	case .Text:
-		render_text_scanline(v, pixels, width, height, y)
+		render_text_scanline(v, pixels, width, height, y, start, end)
 	case .Planar_4:
 		if vga_vbe_enabled(
 			v,
-		) {render_vbe_scanline(v, pixels, width, y)} else {render_planar_scanline(v, pixels, width, y)}
+		) {render_vbe_scanline(v, pixels, width, y, start, end)} else {render_planar_scanline(v, pixels, width, y, start, end)}
 	case .Cga_2:
-		render_cga_scanline(v, pixels, width, y)
+		render_cga_scanline(v, pixels, width, y, start, end)
 	case .Cga_1:
-		render_cga_1_scanline(v, pixels, width, y)
+		render_cga_1_scanline(v, pixels, width, y, start, end)
 	case .Indexed_8:
 		if vga_vbe_enabled(
 			v,
-		) {render_vbe_scanline(v, pixels, width, y)} else {render_indexed_scanline(v, pixels, width, y)}
+		) {render_vbe_scanline(v, pixels, width, y, start, end)} else {render_indexed_scanline(v, pixels, width, y, start, end)}
 	case .Rgb_555, .Rgb_565, .Rgb_888, .Xrgb_8888:
-		render_vbe_scanline(v, pixels, width, y)
+		render_vbe_scanline(v, pixels, width, y, start, end)
 	case .Invalid:
 	}
 }
 
 @(private = "file")
-render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y: int) {
+render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y, x0, x1: int) {
 	character_width := v.cga.active ? 8 : (v.seq[1] & 1 != 0 ? 8 : 9)
 	character_height := max(int(v.crtc[9] & 0x1F) + 1, 1)
 	columns := width / character_width
@@ -276,6 +292,8 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y: int) {
 	cursor_line := glyph_y >= cursor_start && glyph_y <= cursor_end
 	if cursor_start > cursor_end {cursor_line = glyph_y >= cursor_start || glyph_y <= cursor_end}
 	for column in 0 ..= columns {
+		cell_origin := column * character_width - pan
+		if cell_origin + character_width <= x0 || cell_origin >= x1 {continue}
 		cell := (start + row * pitch + column) & 0x3fff
 		raw := (cell * 2 + byte_pan) & 0x7fff
 		character := legacy_text_byte(v, raw)
@@ -296,10 +314,9 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y: int) {
 		cursor_here := v.crtc[0x0A] & 0x20 == 0 && blink_on && cursor_line && raw == cursor_raw
 		if cursor_here {temporary := fg; fg = bg; bg = temporary}
 		bits := plane_byte(v, 2, font_base + int(character) * 32 + min(glyph_y, 31))
-		cell_origin := column * character_width - pan
 		for glyph_x in 0 ..< character_width {
 			x := cell_origin + glyph_x
-			if x < 0 || x >= width {continue}
+			if x < x0 || x >= x1 {continue}
 			set := glyph_x < 8 && bits & (u8(0x80) >> uint(glyph_x)) != 0
 			if glyph_x == 8 &&
 			   character >= 0xC0 &&
@@ -311,10 +328,10 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y: int) {
 }
 
 @(private = "file")
-render_planar_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
+render_planar_scanline :: proc(v: ^Vga, pixels: []u32, width, y, x0, x1: int) {
 	geometry := legacy_graphics_row(v, .Planar_4, y)
 	pan := legacy_pel_pan(v, geometry.below_split)
-	for x in 0 ..< width {
+	for x in x0 ..< x1 {
 		source_x := x + pan
 		address := legacy_display_counter(v, geometry.row_base, u32(source_x / 8))
 		offset := legacy_display_offset(v, address, geometry.row_scan)
@@ -329,11 +346,11 @@ render_planar_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
 }
 
 @(private = "file")
-render_indexed_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
+render_indexed_scanline :: proc(v: ^Vga, pixels: []u32, width, y, x0, x1: int) {
 	geometry := legacy_graphics_row(v, .Indexed_8, y)
 	pan := legacy_pel_pan(v, geometry.below_split) & 3
 	chained := v.seq[4] & 0x08 != 0
-	for x in 0 ..< width {
+	for x in x0 ..< x1 {
 		source_x := x + pan
 		plane := source_x & 3
 		offset: int
@@ -348,11 +365,11 @@ render_indexed_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
 }
 
 @(private = "file")
-render_cga_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
+render_cga_scanline :: proc(v: ^Vga, pixels: []u32, width, y, x0, x1: int) {
 	pitch := max(width / 4, 1)
 	start := int(display_start(v)) * 2
 	row := (y & 1) * 0x2000 + (y >> 1) * pitch
-	for x in 0 ..< width {
+	for x in x0 ..< x1 {
 		value := legacy_linear_byte(v, start + row + x / 4)
 		shift := uint(6 - (x & 3) * 2)
 		pixel := (value >> shift) & 3
@@ -361,12 +378,12 @@ render_cga_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
 }
 
 @(private = "file")
-render_vbe_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
+render_vbe_scanline :: proc(v: ^Vga, pixels: []u32, width, y, x0, x1: int) {
 	pitch := vga_vbe_pitch(v)
 	x_offset := int(v.dispi[DISPI_INDEX_X_OFFSET])
 	row := (y + int(v.dispi[DISPI_INDEX_Y_OFFSET])) * pitch
 	bpp := int(v.dispi[DISPI_INDEX_BPP])
-	for x in 0 ..< width {
+	for x in x0 ..< x1 {
 		source_x := x + x_offset
 		pixels[y * width + x] = vbe_pixel(v, row, source_x, bpp)
 	}
@@ -502,11 +519,16 @@ start_retrace_crossed :: proc(v: ^Vga, old_ns, now_ns: u64) -> bool {
 	return crossing <= now_ns
 }
 
-@(private = "file")
+@(private = "package")
 latch_display_start :: proc(v: ^Vga) {
 	if !v.start_pending {return}
+	changed := v.latched_start != v.pending_start
 	v.latched_start = v.pending_start
 	v.start_pending = false
+	if changed {
+		vga_damage_record_full(v, .Pixel_Memory, .Mode_Boundary)
+		vga_note_recorded_change(v, true)
+	}
 }
 
 @(private = "file")
@@ -554,17 +576,17 @@ attribute_color :: proc(v: ^Vga, color: u8) -> u32 {
 
 @(private = "file")
 render_text :: proc(v: ^Vga, pixels: []u32, width, height: int) {
-	for y in 0 ..< height {render_text_scanline(v, pixels, width, height, y)}
+	for y in 0 ..< height {render_text_scanline(v, pixels, width, height, y, 0, width)}
 }
 
 @(private = "file")
 render_planar :: proc(v: ^Vga, pixels: []u32, width, height: int) {
-	for y in 0 ..< height {render_planar_scanline(v, pixels, width, y)}
+	for y in 0 ..< height {render_planar_scanline(v, pixels, width, y, 0, width)}
 }
 
 @(private = "file")
 render_indexed_legacy :: proc(v: ^Vga, pixels: []u32, width, height: int) {
-	for y in 0 ..< height {render_indexed_scanline(v, pixels, width, y)}
+	for y in 0 ..< height {render_indexed_scanline(v, pixels, width, y, 0, width)}
 }
 
 @(private = "file")
@@ -576,20 +598,20 @@ legacy_linear_byte :: proc(v: ^Vga, raw: int) -> u8 {
 
 @(private = "file")
 render_cga :: proc(v: ^Vga, pixels: []u32, width, height: int) {
-	for y in 0 ..< height {render_cga_scanline(v, pixels, width, y)}
+	for y in 0 ..< height {render_cga_scanline(v, pixels, width, y, 0, width)}
 }
 
 @(private = "file")
 render_cga_1 :: proc(v: ^Vga, pixels: []u32, width, height: int) {
-	for y in 0 ..< height {render_cga_1_scanline(v, pixels, width, y)}
+	for y in 0 ..< height {render_cga_1_scanline(v, pixels, width, y, 0, width)}
 }
 
 @(private = "file")
-render_cga_1_scanline :: proc(v: ^Vga, pixels: []u32, width, y: int) {
+render_cga_1_scanline :: proc(v: ^Vga, pixels: []u32, width, y, x0, x1: int) {
 	pitch := max(width / 8, 1)
 	start := int(display_start(v)) * 2
 	row := (y & 1) * 0x2000 + (y >> 1) * pitch
-	for x in 0 ..< width {
+	for x in x0 ..< x1 {
 		value := legacy_linear_byte(v, start + row + x / 8)
 		index := value & (u8(0x80) >> uint(x & 7)) != 0 ? u8(1) : u8(0)
 		pixels[y * width + x] = v.cga.active ? cga_color(v, index) : attribute_color(v, index)

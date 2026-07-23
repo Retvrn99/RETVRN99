@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
+import contract "../presentation"
 import "../vga"
 import "core:c"
 import sdl3 "vendor:sdl3"
@@ -162,8 +163,107 @@ host_cpu_frame_metadata_publish :: proc(h: ^Host, aspect_width, aspect_height: i
 	h.has_frame = true
 }
 
+@(private = "file")
+host_render_texture_region :: proc(
+	h: ^Host,
+	texture: ^sdl3.Texture,
+	texture_width, texture_height: int,
+	source: sdl3.FRect,
+	has_source: bool,
+	destination: sdl3.FRect,
+) -> bool {
+	if h == nil || texture == nil || texture_width <= 0 || texture_height <= 0 {return false}
+	shader_active := host_shader_begin(h, texture_width, texture_height)
+	source_rect := source
+	destination_rect := destination
+	source_ptr: Maybe(^sdl3.FRect)
+	if has_source {source_ptr = &source_rect}
+	ok := sdl3.RenderTexture(h.ren, texture, source_ptr, &destination_rect)
+	if shader_active {host_shader_end(h)}
+	return ok
+}
+
+@(private = "file")
+host_render_resident_composition :: proc(h: ^Host, guest_view: sdl3.FRect) -> bool {
+	if h == nil || h.presentation_state.selector.active.source_kind != .Gsw_Resident {return false}
+	resident := h.presentation_state.gsw
+	ok := true
+	needs_desktop := host_presentation_resident_requires_desktop(resident)
+	desktop_drawn := !needs_desktop
+	desktop := h.presentation_state.gsw_snapshot
+	if needs_desktop && host_presentation_gsw_desktop_available(h, resident.header) {
+		source := sdl3.FRect {
+			f32(desktop.header.source.x),
+			f32(desktop.header.source.y),
+			f32(desktop.header.source.width),
+			f32(desktop.header.source.height),
+		}
+		destination, valid := host_presentation_guest_rect(
+			guest_view,
+			desktop.header.destination,
+			desktop.header.canvas_extent,
+		)
+		if valid {
+			ok =
+				host_render_texture_region(
+					h,
+					h.presentation_state.gsw_texture,
+					h.presentation_state.gsw_texture_width,
+					h.presentation_state.gsw_texture_height,
+					source,
+					true,
+					destination,
+				) &&
+				ok
+			desktop_drawn = true
+		}
+	}
+	if !desktop_drawn &&
+	   h.tex != nil &&
+	   h.presentation_state.selector.has_last_good_legacy &&
+	   contract.mode_key_equal(
+		   contract.output_mode_key(h.presentation_state.selector.last_good_legacy.header),
+		   contract.output_mode_key(resident.header),
+	   ) {
+		ok =
+			host_render_texture_region(
+				h,
+				h.tex,
+				h.tex_width,
+				h.tex_height,
+				{},
+				false,
+				guest_view,
+			) &&
+			ok
+	}
+	texture, _, has_texture, _ := host_active_gpu_texture(h)
+	if texture == nil || !has_texture {return false}
+	texture_width, texture_height, valid_extent := host_presentation_resident_texture_extent(
+		resident,
+	)
+	if !valid_extent {return false}
+	plan := host_presentation_build_resident_draw_plan(resident, guest_view)
+	if !plan.valid {return false}
+	for i in 0 ..< int(plan.count) {
+		segment := plan.segments[i]
+		ok =
+			host_render_texture_region(
+				h,
+				texture,
+				texture_width,
+				texture_height,
+				segment.source,
+				true,
+				segment.destination,
+			) &&
+			ok
+	}
+	return ok
+}
+
 host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
-	if h == nil {return false}
+	if h == nil || !sdl3.IsMainThread() {return false}
 	ok := sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
 	ok = sdl3.RenderClear(h.ren) && ok
 	output_width, output_height := WIN_W, WIN_H
@@ -177,8 +277,29 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 		host_render_stopped_screen(h, output_width, output_height)
 		return ok
 	}
+	active := h.presentation_state.selector.active
+	if active.kind == .Gsw && active.source_kind == .Gsw_Resident && h.has_frame {
+		dst := guest_view_rect_insets(
+			h.aspect_width,
+			h.aspect_height,
+			output_width,
+			output_height,
+			host_client_insets(h),
+		)
+		return host_render_resident_composition(h, dst) && ok
+	}
 	texture, source, has_source, gpu_present := host_active_texture(h)
 	if texture != nil && h.has_frame {
+		texture_width, texture_height := h.tex_width, h.tex_height
+		if active.kind == .Gsw && active.source_kind == .Gsw_Snapshot {
+			texture_width = h.presentation_state.gsw_texture_width
+			texture_height = h.presentation_state.gsw_texture_height
+		} else if gpu_present != nil {
+			if surface := host_gpu_surface_find(h, gpu_present.surface_id); surface != nil {
+				texture_width = int(surface.descriptor.width)
+				texture_height = int(surface.descriptor.height)
+			}
+		}
 		dst := guest_view_rect_insets(
 			h.aspect_width,
 			h.aspect_height,
@@ -191,16 +312,17 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 		} else {
 			dst = host_presentation_destination(h, dst)
 		}
-		source_width, source_height := h.tex_width, h.tex_height
-		if has_source {
-			source_width = int(source.w)
-			source_height = int(source.h)
-		}
-		shader_active := host_shader_begin(h, source_width, source_height)
-		source_ptr: Maybe(^sdl3.FRect)
-		if has_source {source_ptr = &source}
-		ok = sdl3.RenderTexture(h.ren, texture, source_ptr, &dst) && ok
-		if shader_active {host_shader_end(h)}
+		ok =
+			host_render_texture_region(
+				h,
+				texture,
+				texture_width,
+				texture_height,
+				source,
+				has_source,
+				dst,
+			) &&
+			ok
 	}
 	return ok
 }

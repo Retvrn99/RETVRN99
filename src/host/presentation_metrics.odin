@@ -16,7 +16,19 @@ Host_Presentation_Metrics :: struct {
 	closed_rejections:            u64,
 	resident_presents:            u64,
 	readback_requests:            u64,
+	readback_bytes:               u64,
 	last_good_restorations:       u64,
+	resource_reuses:              u64,
+	resource_recreations:         u64,
+	resource_retirements:         u64,
+	full_fallback_uploads:        u64,
+	overlay_invalidated_regions:  u64,
+	overlay_full_invalidations:   u64,
+	source_full_initial:          u64,
+	source_full_mode:             u64,
+	source_full_ambiguous:        u64,
+	source_full_capacity:         u64,
+	source_full_external:         u64,
 }
 
 host_presentation_resident_zero_work :: proc(before, after: Host_Presentation_Metrics) -> bool {

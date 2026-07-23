@@ -105,25 +105,28 @@ the tree. Draft mode cannot publish an output or be consumed by the builder.
 `-DescribeTree` similarly emits a double-scanned descriptor for an existing
 overlay without changing it.
 
-`drivers/win98/build-plan.json` is `ready` for the paired VMDisp9x-derived
-display driver and VMHAL9x-derived GSW DirectDraw HAL. The schema-3 plan pins
-the ready derived-source plan, both toolchain locks, and upstream lock. The builder
-snapshots those exact linked bytes and every lock-linked component manifest at
-its canonical relative path before use, and rejects an alternate upstream-lock
-path. It names a hash-verified local toolchain executable, a
-literal argument array, a derived-recipe working directory, one explicit
-Win16 normalization operation, and exact adapted output sizes and SHA-256
-values. Every DRV output must be normalized exactly once. A `build`-origin
-output must be absent before its producing step, while a `derived`-origin
-output must already match and remain unchanged.
+`drivers/win98/build-plan.json` is currently `blocked` because the
+VMHAL9x-derived GSW DirectDraw HAL changed its surface-allocation boundary and
+fresh deterministic DLL hashes have not been authorized and reviewed. The
+blocked form contains no executable toolchain or build step. Once rebound, the
+schema-3 ready plan pins the ready derived-source plan, both toolchain locks,
+and upstream lock. The builder snapshots those exact linked bytes and every
+lock-linked component manifest at its canonical relative path before use, and
+rejects an alternate upstream-lock path. It names a hash-verified local
+toolchain executable, a literal argument array, a derived-recipe working
+directory, one explicit Win16 normalization operation, and exact adapted
+output sizes and SHA-256 values. Every DRV output must be normalized exactly
+once. A `build`-origin output must be absent before its producing step, while a
+`derived`-origin output must already match and remain unchanged.
 
 The builder re-verifies both complete toolchains, prepares private derived
 scratch, installs only the selected child environment, and launches pinned
 `wmake.exe` or `mingw32-make.exe` with literal arguments. It restores inherited
 mixed-case environment variables and never mutates the caller's PATH. It
 validates every normalized output before atomic publication, performs no
-network operation, and cannot consume a `reference-only` source row. The exact
-declared GSW-VGA payloads are:
+network operation, and cannot consume a `reference-only` source row. The last
+verified pre-change GSW-VGA payloads, retained only for provenance until the
+plan is rebound, are:
 
 - `gswmini.drv`: 16,922 bytes, `9748b9feeebfaa4b4597f63a17fd8699ddfa01bce1aba6fc8ecc8ec7542fb13d`.
 - `gswmini.vxd`: 39,341 bytes, `61edea1973a7ce17fde3725d930c75495dd1ce2eeeb87fa799b8289cf534d876`.

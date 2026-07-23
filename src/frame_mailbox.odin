@@ -23,14 +23,47 @@ Frame_Slot :: struct {
 	producer_sample:               Graphics_Producer_Sample,
 }
 
+Frame_Mailbox_Legacy_Ack :: struct {
+	valid:                bool,
+	lifecycle_generation: u64,
+	sequence:             u64,
+	mode_generation:      u64,
+	surface_id:           u64,
+	surface_generation:   u64,
+}
+
+Frame_Mailbox_Gsw_Ack :: struct {
+	valid:                bool,
+	lifecycle_generation: u64,
+	sequence:             u64,
+	device_generation:    u64,
+	surface_id:           u64,
+	surface_generation:   u64,
+}
+
+Frame_Mailbox_Legacy_Commit :: struct {
+	valid:  bool,
+	update: contract.Legacy_Frame_Update,
+}
+
+Frame_Mailbox_Gsw_Commit :: struct {
+	valid:   bool,
+	present: contract.Gsw_Present,
+}
+
 Frame_Mailbox :: struct {
 	mu:                   sync.Mutex,
 	slots:                [2]Frame_Slot,
 	published:            u64,
+	published_epoch:      u64,
 	has_frame:            bool,
 	next_epoch:           u64,
 	lifecycle_generation: u64,
 	telemetry:            Graphics_Telemetry,
+	legacy_ack:           Frame_Mailbox_Legacy_Ack,
+	gsw_ack:              Frame_Mailbox_Gsw_Ack,
+	legacy_committed:     Frame_Mailbox_Legacy_Commit,
+	gsw_committed:        Frame_Mailbox_Gsw_Commit,
 }
 
 Frame_Mailbox_Current_Commit_Proc :: proc(ctx: rawptr) -> bool
@@ -160,6 +193,7 @@ frame_mailbox_commit :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot, ready: 
 	if ready {
 		slot.state = .Ready
 		mailbox.published = slot.scanout.generation
+		mailbox.published_epoch = slot.epoch.sequence
 		mailbox.has_frame = true
 		return true
 	} else {
@@ -176,6 +210,30 @@ frame_mailbox_publish_observed :: proc(
 	postmortem: ^Graphics_Postmortem = nil,
 ) -> bool {
 	if mailbox == nil || source == nil {return false}
+	if ack, valid := frame_mailbox_take_legacy_ack(mailbox); valid {
+		_ = machine.machine_acknowledge_legacy_scanout(
+			source,
+			{
+				header = {
+					sequence = ack.sequence,
+					mode_generation = ack.mode_generation,
+					surface = {id = ack.surface_id, generation = ack.surface_generation},
+				},
+			},
+		)
+	}
+	if ack, valid := frame_mailbox_take_gsw_ack(mailbox); valid {
+		_ = machine.machine_acknowledge_gsw_scanout(
+			source,
+			{
+				header = {
+					sequence = ack.sequence,
+					device_generation = ack.device_generation,
+					surface = {id = ack.surface_id, generation = ack.surface_generation},
+				},
+			},
+		)
+	}
 	started := time.tick_now()
 	generation := machine.machine_scanout_generation(source)
 	producer_sample := graphics_producer_sample(source, session_generation, vm)
@@ -254,6 +312,132 @@ frame_mailbox_release :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot) {
 	sync.unlock(&mailbox.mu)
 }
 
+frame_mailbox_retry_latest :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot) -> bool {
+	if mailbox == nil || slot == nil {return false}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	if slot.state != .Reading ||
+	   slot.reserved_lifecycle_generation != mailbox.lifecycle_generation ||
+	   slot.epoch.lifecycle_generation != mailbox.lifecycle_generation ||
+	   !mailbox.has_frame ||
+	   mailbox.published != slot.scanout.generation ||
+	   mailbox.published_epoch != slot.epoch.sequence {
+		return false
+	}
+	mailbox.published = 0
+	mailbox.published_epoch = 0
+	mailbox.has_frame = false
+	return true
+}
+
+frame_mailbox_note_legacy_applied :: proc(
+	mailbox: ^Frame_Mailbox,
+	update: contract.Legacy_Frame_Update,
+) -> bool {
+	if mailbox == nil || update.header.sequence == 0 {return false}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	if update.header.lifecycle_generation != mailbox.lifecycle_generation {return false}
+	mailbox.legacy_ack = {
+		valid                = true,
+		lifecycle_generation = update.header.lifecycle_generation,
+		sequence             = update.header.sequence,
+		mode_generation      = update.header.mode_generation,
+		surface_id           = update.header.surface.id,
+		surface_generation   = update.header.surface.generation,
+	}
+	mailbox.legacy_committed = {
+		valid  = true,
+		update = update,
+	}
+	return true
+}
+
+frame_mailbox_legacy_was_committed :: proc(
+	mailbox: ^Frame_Mailbox,
+	update: contract.Legacy_Frame_Update,
+) -> bool {
+	if mailbox == nil {return false}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	committed := mailbox.legacy_committed
+	return(
+		committed.valid &&
+		committed.update.header.lifecycle_generation == mailbox.lifecycle_generation &&
+		contract.legacy_frame_update_equal(committed.update, update) \
+	)
+}
+
+@(private = "package")
+frame_mailbox_take_legacy_ack :: proc(
+	mailbox: ^Frame_Mailbox,
+) -> (
+	Frame_Mailbox_Legacy_Ack,
+	bool,
+) {
+	if mailbox == nil {return {}, false}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	ack := mailbox.legacy_ack
+	mailbox.legacy_ack = {}
+	return ack, ack.valid && ack.lifecycle_generation == mailbox.lifecycle_generation
+}
+
+frame_mailbox_note_gsw_applied :: proc(
+	mailbox: ^Frame_Mailbox,
+	present: contract.Gsw_Present,
+) -> bool {
+	if mailbox == nil || present.header.sequence == 0 {return false}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	if present.header.lifecycle_generation != mailbox.lifecycle_generation {return false}
+	mailbox.gsw_ack = {
+		valid                = true,
+		lifecycle_generation = present.header.lifecycle_generation,
+		sequence             = present.header.sequence,
+		device_generation    = present.header.device_generation,
+		surface_id           = present.header.surface.id,
+		surface_generation   = present.header.surface.generation,
+	}
+	mailbox.gsw_committed = {
+		valid   = true,
+		present = present,
+	}
+	return true
+}
+
+frame_mailbox_gsw_was_committed :: proc(
+	mailbox: ^Frame_Mailbox,
+	present: contract.Gsw_Present,
+) -> bool {
+	if mailbox == nil {return false}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	committed := mailbox.gsw_committed
+	return(
+		committed.valid &&
+		committed.present.header.lifecycle_generation == mailbox.lifecycle_generation &&
+		contract.gsw_present_equal(committed.present, present) \
+	)
+}
+
+@(private = "package")
+frame_mailbox_take_gsw_ack :: proc(mailbox: ^Frame_Mailbox) -> (Frame_Mailbox_Gsw_Ack, bool) {
+	if mailbox == nil {return {}, false}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	ack := mailbox.gsw_ack
+	mailbox.gsw_ack = {}
+	return ack, ack.valid && ack.lifecycle_generation == mailbox.lifecycle_generation
+}
+
 frame_mailbox_reset :: proc(mailbox: ^Frame_Mailbox) {
 	sync.lock(&mailbox.mu)
 	now := time.tick_now()
@@ -266,7 +450,12 @@ frame_mailbox_reset :: proc(mailbox: ^Frame_Mailbox) {
 		}
 	}
 	mailbox.published = 0
+	mailbox.published_epoch = 0
 	mailbox.has_frame = false
+	mailbox.legacy_ack = {}
+	mailbox.gsw_ack = {}
+	mailbox.legacy_committed = {}
+	mailbox.gsw_committed = {}
 	mailbox.next_epoch += 1
 	if mailbox.next_epoch == 0 {mailbox.next_epoch = 1}
 	reset_epoch := graphics_telemetry_begin_epoch(&mailbox.telemetry, mailbox.next_epoch, 0, now)

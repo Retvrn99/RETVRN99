@@ -31,6 +31,34 @@ Graphics_Gsw_Invalidation_Commit :: struct {
 	action:       presentation.Selector_Action,
 }
 
+Graphics_Gsw_Frame_Consume_Result :: struct {
+	attempted:      bool,
+	committed:      bool,
+	failed:         bool,
+	retry:          bool,
+	graphics_epoch: Graphics_Frame_Epoch,
+	epoch_pending:  bool,
+}
+
+Graphics_Frame_Record_Order :: enum u8 {
+	Single,
+	Legacy_First,
+	Gsw_First,
+	Invalid,
+}
+
+Graphics_Frame_Stage_Proc :: proc(
+	ctx: rawptr,
+	target: ^host.Host,
+	admission: ^host.Host_Presentation_Admission,
+	frame: ^vga.Display_Frame,
+) -> host.Host_Presentation_Staged_Texture
+
+Graphics_Frame_Consumer_Ops :: struct {
+	ctx:   rawptr,
+	stage: Graphics_Frame_Stage_Proc,
+}
+
 graphics_legacy_staged_commit :: proc(ctx: rawptr) -> bool {
 	commit := (^Graphics_Legacy_Staged_Commit)(ctx)
 	if commit == nil {return false}
@@ -58,11 +86,185 @@ graphics_gsw_invalidation_commit :: proc(ctx: rawptr) -> bool {
 	return true
 }
 
+graphics_gsw_restoration_source :: proc(
+	action: presentation.Selector_Action,
+) -> (
+	Graphics_Frame_Source,
+	bool,
+) {
+	#partial switch action {
+	case .Restore_Legacy:
+		return .Legacy_Scanout, true
+	case .Restore_Gsw:
+		return .Gsw2d, true
+	case:
+		return {}, false
+	}
+}
+
+graphics_frame_stage :: proc(
+	ops: ^Graphics_Frame_Consumer_Ops,
+	target: ^host.Host,
+	admission: ^host.Host_Presentation_Admission,
+	frame: ^vga.Display_Frame,
+) -> host.Host_Presentation_Staged_Texture {
+	if ops != nil && ops.stage != nil {
+		return ops.stage(ops.ctx, target, admission, frame)
+	}
+	if admission != nil && admission.kind == .Legacy {
+		return host.host_presentation_stage_legacy(target, admission, frame)
+	}
+	return host.host_presentation_stage_gsw_snapshot(target, admission, frame)
+}
+
+graphics_frame_consumer_record_order :: proc(
+	descriptor: ^vga.Scanout_Descriptor,
+) -> Graphics_Frame_Record_Order {
+	if descriptor == nil {return .Invalid}
+	if !descriptor.gsw_presentation.present_valid {return .Single}
+	legacy_sequence := descriptor.legacy_update.header.sequence
+	gsw_sequence := descriptor.gsw_presentation.present.header.sequence
+	if legacy_sequence == 0 {return .Single}
+	switch presentation.generation_order(gsw_sequence, legacy_sequence) {
+	case .Older:
+		return .Gsw_First
+	case .Newer:
+		return .Legacy_First
+	case .Same, .Invalid, .Ambiguous:
+		return .Invalid
+	}
+	return .Invalid
+}
+
+graphics_frame_consume_gsw_present :: proc(
+	shared: ^Shared,
+	target: ^host.Host,
+	frame_slot: ^Frame_Slot,
+	descriptor: ^vga.Gsw_Presentation_Descriptor,
+	postmortem_state: ^Graphics_Postmortem_State,
+	postmortem_state_valid: bool,
+	ops: ^Graphics_Frame_Consumer_Ops,
+) -> Graphics_Gsw_Frame_Consume_Result {
+	result: Graphics_Gsw_Frame_Consume_Result
+	if shared == nil ||
+	   target == nil ||
+	   frame_slot == nil ||
+	   descriptor == nil ||
+	   !descriptor.present_valid ||
+	   frame_slot.epoch.result != .Incomplete {
+		return result
+	}
+	result.attempted = true
+	gsw_admission := host.host_presentation_admit_gsw(
+		target,
+		descriptor.present,
+		u64(len(descriptor.source)),
+		descriptor.full_reason,
+	)
+	if !gsw_admission.valid {
+		if gsw_admission.rejection == .Stale &&
+		   frame_mailbox_gsw_was_committed(&shared.frames, descriptor.present) {
+			_ = frame_mailbox_note_gsw_applied(&shared.frames, descriptor.present)
+			return result
+		}
+		still_current := frame_mailbox_graphics_epoch_current(&shared.frames, &frame_slot.epoch)
+		_ = frame_mailbox_graphics_epoch_complete_and_record(
+			&shared.frames,
+			&frame_slot.epoch,
+			still_current ? .Render_Failed : .Reset,
+			time.tick_now(),
+		)
+		result.failed = true
+		if postmortem_state_valid {
+			postmortem_state.host_stage = .Failed
+			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state^)
+		}
+		return result
+	}
+
+	graphics_frame_epoch_render_begin(&frame_slot.epoch, .Gsw2d, time.tick_now())
+	gsw_frame := vga.scanout_descriptor_render_gsw(&frame_slot.scanout)
+	graphics_frame_epoch_render_complete(&frame_slot.epoch, gsw_frame, time.tick_now())
+	host.host_presentation_record_conversion(target, gsw_frame)
+	if gsw_frame == nil {
+		still_current := frame_mailbox_graphics_epoch_current(&shared.frames, &frame_slot.epoch)
+		_ = frame_mailbox_graphics_epoch_complete_and_record(
+			&shared.frames,
+			&frame_slot.epoch,
+			still_current ? .Render_Failed : .Reset,
+			time.tick_now(),
+		)
+		result.failed = true
+		result.retry = still_current
+		if postmortem_state_valid {
+			postmortem_state.host_stage = .Failed
+			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state^)
+		}
+		return result
+	}
+
+	if postmortem_state_valid {
+		postmortem_state.host_stage = .Upload
+		_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state^)
+	}
+	graphics_frame_epoch_upload_begin(&frame_slot.epoch, time.tick_now())
+	staged := graphics_frame_stage(ops, target, &gsw_admission, gsw_frame)
+	commit := Graphics_Gsw_Staged_Commit {
+		target    = target,
+		admission = gsw_admission,
+		staged    = staged,
+	}
+	commit_result := Frame_Mailbox_Current_Commit_Result.Invalid
+	if staged.valid {
+		commit_result = frame_mailbox_graphics_epoch_commit_current(
+			&shared.frames,
+			&frame_slot.epoch,
+			&commit,
+			graphics_gsw_staged_commit,
+		)
+	}
+	if commit_result == .Stale {
+		host.host_presentation_note_stale_finalization(target)
+	}
+	if commit_result != .Committed && staged.in_place && staged.mutated {
+		_ = host.host_presentation_retire_mutated(target, staged)
+	}
+	still_current := frame_mailbox_graphics_epoch_current(&shared.frames, &frame_slot.epoch)
+	graphics_frame_epoch_upload_complete(
+		&frame_slot.epoch,
+		staged.upload_bytes,
+		staged.texture_recreated,
+		time.tick_now(),
+	)
+	if commit_result == .Committed {
+		_ = frame_mailbox_note_gsw_applied(&shared.frames, descriptor.present)
+		result.committed = true
+		result.graphics_epoch = frame_slot.epoch
+		result.epoch_pending = true
+		return result
+	}
+
+	_ = frame_mailbox_graphics_epoch_complete_and_record(
+		&shared.frames,
+		&frame_slot.epoch,
+		still_current ? .Upload_Failed : .Reset,
+		time.tick_now(),
+	)
+	result.failed = true
+	result.retry = still_current
+	if postmortem_state_valid {
+		postmortem_state.host_stage = .Failed
+		_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state^)
+	}
+	return result
+}
+
 graphics_frame_consume :: proc(
 	shared: ^Shared,
 	target: ^host.Host,
 	trace_enabled: bool,
 	last_vm_checkpoint: ^time.Tick,
+	ops: ^Graphics_Frame_Consumer_Ops = nil,
 ) -> Graphics_Frame_Consumer_Result {
 	graphics_epoch: Graphics_Frame_Epoch
 	graphics_epoch_pending := false
@@ -72,7 +274,6 @@ graphics_frame_consume :: proc(
 		gsw_descriptor := &frame_slot.scanout.gsw_presentation
 		host.host_presentation_record_descriptor_copy(target, frame_slot.scanout.bytes_copied)
 		gsw_transition := gsw_descriptor.present_valid || gsw_descriptor.invalidation_valid
-		legacy_refreshed := false
 		if trace_enabled {
 			postmortem_state = graphics_postmortem_measured_state(
 				frame_slot.producer_sample.session_generation,
@@ -104,41 +305,116 @@ graphics_frame_consume :: proc(
 		paired_invalidation :=
 			gsw_descriptor.invalidation_valid &&
 			host.host_presentation_invalidation_matches_active(target, gsw_descriptor.invalidation)
-		legacy_admission := host.host_presentation_admit_legacy(
-			target,
-			frame_slot.scanout.legacy_update,
-			paired_invalidation,
-		)
+		has_legacy_update := frame_slot.scanout.legacy_update.header.sequence != 0
+		retry_latest := false
+		gsw_processed := false
+		record_order := graphics_frame_consumer_record_order(&frame_slot.scanout)
+		legacy_admission: host.Host_Presentation_Admission
 		current_before_render := frame_mailbox_graphics_epoch_current(
 			&shared.frames,
 			&frame_slot.epoch,
 		)
-		if !current_before_render || (!legacy_admission.valid && !gsw_transition) {
+		if !current_before_render ||
+		   (!has_legacy_update && !gsw_transition) ||
+		   record_order == .Invalid {
+			result := Graphics_Frame_Result.Superseded
+			if !current_before_render {
+				result = .Reset
+			} else if record_order == .Invalid {
+				result = .Render_Failed
+			}
 			_ = frame_mailbox_graphics_epoch_complete_and_record(
 				&shared.frames,
 				&frame_slot.epoch,
-				current_before_render ? .Render_Failed : .Reset,
+				result,
 				time.tick_now(),
 			)
-			if postmortem_state_valid {
+			if postmortem_state_valid && result == .Render_Failed {
 				postmortem_state.host_stage = .Failed
 				_ = graphics_postmortem_publish_state(
 					&shared.graphics_postmortem,
 					postmortem_state,
 				)
 			}
-		} else if legacy_admission.valid {
+		} else {
+			if record_order == .Gsw_First {
+				gsw_result := graphics_frame_consume_gsw_present(
+					shared,
+					target,
+					frame_slot,
+					gsw_descriptor,
+					&postmortem_state,
+					postmortem_state_valid,
+					ops,
+				)
+				gsw_processed = gsw_result.attempted
+				retry_latest = retry_latest || gsw_result.retry
+				if gsw_result.committed {
+					graphics_epoch = gsw_result.graphics_epoch
+					graphics_epoch_pending = gsw_result.epoch_pending
+				} else if gsw_result.failed {
+					graphics_epoch_pending = false
+				}
+			}
+			if has_legacy_update && frame_slot.epoch.result == .Incomplete {
+				legacy_admission = host.host_presentation_admit_legacy(
+					target,
+					frame_slot.scanout.legacy_update,
+					paired_invalidation,
+				)
+				if !legacy_admission.valid {
+					legacy_already_committed := frame_mailbox_legacy_was_committed(
+						&shared.frames,
+						frame_slot.scanout.legacy_update,
+					)
+					if legacy_admission.rejection == .Stale && legacy_already_committed {
+						_ = frame_mailbox_note_legacy_applied(
+							&shared.frames,
+							frame_slot.scanout.legacy_update,
+						)
+						if !gsw_transition {
+							_ = frame_mailbox_graphics_epoch_complete_and_record(
+								&shared.frames,
+								&frame_slot.epoch,
+								.Superseded,
+								time.tick_now(),
+							)
+						}
+					} else {
+						_ = frame_mailbox_graphics_epoch_complete_and_record(
+							&shared.frames,
+							&frame_slot.epoch,
+							.Render_Failed,
+							time.tick_now(),
+						)
+						if postmortem_state_valid {
+							postmortem_state.host_stage = .Failed
+							_ = graphics_postmortem_publish_state(
+								&shared.graphics_postmortem,
+								postmortem_state,
+							)
+						}
+					}
+				}
+			}
+		}
+		if current_before_render &&
+		   legacy_admission.valid &&
+		   frame_slot.epoch.result == .Incomplete {
 			graphics_frame_epoch_render_begin(&frame_slot.epoch, .Legacy_Scanout, time.tick_now())
 			frame := vga.scanout_descriptor_render(&frame_slot.scanout)
 			graphics_frame_epoch_render_complete(&frame_slot.epoch, frame, time.tick_now())
 			host.host_presentation_record_conversion(target, frame)
-			if frame == nil && !gsw_transition {
-				_ = frame_mailbox_graphics_epoch_complete_and_record(
-					&shared.frames,
-					&frame_slot.epoch,
-					.Render_Failed,
-					time.tick_now(),
-				)
+			if frame == nil {
+				retry_latest = true
+				if !graphics_epoch_pending {
+					_ = frame_mailbox_graphics_epoch_complete_and_record(
+						&shared.frames,
+						&frame_slot.epoch,
+						.Render_Failed,
+						time.tick_now(),
+					)
+				}
 			} else if frame != nil {
 				if postmortem_state_valid {
 					postmortem_state.host_stage = .Upload
@@ -148,7 +424,7 @@ graphics_frame_consume :: proc(
 					)
 				}
 				graphics_frame_epoch_upload_begin(&frame_slot.epoch, time.tick_now())
-				staged := host.host_presentation_stage_legacy(target, &legacy_admission, frame)
+				staged := graphics_frame_stage(ops, target, &legacy_admission, frame)
 				commit := Graphics_Legacy_Staged_Commit {
 					target    = target,
 					admission = legacy_admission,
@@ -166,6 +442,9 @@ graphics_frame_consume :: proc(
 				if commit_result == .Stale {
 					host.host_presentation_note_stale_finalization(target)
 				}
+				if commit_result != .Committed && staged.in_place && staged.mutated {
+					_ = host.host_presentation_retire_mutated(target, staged)
+				}
 				committed := commit_result == .Committed
 				still_current := frame_mailbox_graphics_epoch_current(
 					&shared.frames,
@@ -173,11 +452,15 @@ graphics_frame_consume :: proc(
 				)
 				graphics_frame_epoch_upload_complete(
 					&frame_slot.epoch,
-					staged.valid,
+					staged.upload_bytes,
 					staged.texture_recreated,
 					time.tick_now(),
 				)
 				if committed {
+					_ = frame_mailbox_note_legacy_applied(
+						&shared.frames,
+						frame_slot.scanout.legacy_update,
+					)
 					disposition := graphics_legacy_upload_disposition(
 						legacy_admission.result.action,
 						gsw_transition,
@@ -185,102 +468,20 @@ graphics_frame_consume :: proc(
 					if disposition == .Visible {
 						graphics_epoch = frame_slot.epoch
 						graphics_epoch_pending = true
-					} else if disposition == .Refresh_Terminal ||
-					   disposition == .Refresh_Deferred {
-						legacy_refreshed = true
-					}
-				} else if !gsw_transition || !still_current {
-					_ = frame_mailbox_graphics_epoch_complete_and_record(
-						&shared.frames,
-						&frame_slot.epoch,
-						still_current ? .Upload_Failed : .Reset,
-						time.tick_now(),
-					)
-					if postmortem_state_valid {
-						postmortem_state.host_stage = .Failed
-						_ = graphics_postmortem_publish_state(
-							&shared.graphics_postmortem,
-							postmortem_state,
-						)
-					}
-				}
-			}
-		}
-		if current_before_render &&
-		   gsw_descriptor.present_valid &&
-		   frame_slot.epoch.result == .Incomplete {
-			gsw_admission := host.host_presentation_admit_gsw(
-				target,
-				gsw_descriptor.present,
-				u64(len(gsw_descriptor.source)),
-			)
-			if gsw_admission.valid {
-				graphics_frame_epoch_render_begin(&frame_slot.epoch, .Gsw2d, time.tick_now())
-				gsw_frame := vga.scanout_descriptor_render_gsw(&frame_slot.scanout)
-				graphics_frame_epoch_render_complete(&frame_slot.epoch, gsw_frame, time.tick_now())
-				host.host_presentation_record_conversion(target, gsw_frame)
-				if gsw_frame == nil {
-					_ = frame_mailbox_graphics_epoch_complete_and_record(
-						&shared.frames,
-						&frame_slot.epoch,
-						.Render_Failed,
-						time.tick_now(),
-					)
-					graphics_epoch_pending = false
-					if postmortem_state_valid {
-						postmortem_state.host_stage = .Failed
-						_ = graphics_postmortem_publish_state(
-							&shared.graphics_postmortem,
-							postmortem_state,
-						)
+					} else if graphics_epoch_pending {
+						visible_source := graphics_epoch.source
+						visible_kind := graphics_epoch.kind
+						visible_width := graphics_epoch.width
+						visible_height := graphics_epoch.height
+						graphics_epoch = frame_slot.epoch
+						graphics_epoch.source = visible_source
+						graphics_epoch.kind = visible_kind
+						graphics_epoch.width = visible_width
+						graphics_epoch.height = visible_height
 					}
 				} else {
-					if postmortem_state_valid {
-						postmortem_state.host_stage = .Upload
-						_ = graphics_postmortem_publish_state(
-							&shared.graphics_postmortem,
-							postmortem_state,
-						)
-					}
-					graphics_frame_epoch_upload_begin(&frame_slot.epoch, time.tick_now())
-					staged := host.host_presentation_stage_gsw_snapshot(
-						target,
-						&gsw_admission,
-						gsw_frame,
-					)
-					commit := Graphics_Gsw_Staged_Commit {
-						target    = target,
-						admission = gsw_admission,
-						staged    = staged,
-					}
-					commit_result := Frame_Mailbox_Current_Commit_Result.Invalid
-					if staged.valid {
-						commit_result = frame_mailbox_graphics_epoch_commit_current(
-							&shared.frames,
-							&frame_slot.epoch,
-							&commit,
-							graphics_gsw_staged_commit,
-						)
-					}
-					if commit_result == .Stale {
-						host.host_presentation_note_stale_finalization(target)
-					}
-					committed := commit_result == .Committed
-					still_current := frame_mailbox_graphics_epoch_current(
-						&shared.frames,
-						&frame_slot.epoch,
-					)
-					graphics_frame_epoch_upload_complete(
-						&frame_slot.epoch,
-						staged.valid,
-						staged.texture_recreated,
-						time.tick_now(),
-					)
-					if committed {
-						legacy_refreshed = false
-						graphics_epoch = frame_slot.epoch
-						graphics_epoch_pending = true
-					} else {
+					retry_latest = retry_latest || still_current
+					if !graphics_epoch_pending || !still_current {
 						_ = frame_mailbox_graphics_epoch_complete_and_record(
 							&shared.frames,
 							&frame_slot.epoch,
@@ -297,13 +498,25 @@ graphics_frame_consume :: proc(
 						}
 					}
 				}
-			} else if !graphics_epoch_pending {
-				_ = frame_mailbox_graphics_epoch_complete_and_record(
-					&shared.frames,
-					&frame_slot.epoch,
-					.Superseded,
-					time.tick_now(),
-				)
+			}
+		}
+		if current_before_render && !gsw_processed && frame_slot.epoch.result == .Incomplete {
+			gsw_result := graphics_frame_consume_gsw_present(
+				shared,
+				target,
+				frame_slot,
+				gsw_descriptor,
+				&postmortem_state,
+				postmortem_state_valid,
+				ops,
+			)
+			gsw_processed = gsw_result.attempted
+			retry_latest = retry_latest || gsw_result.retry
+			if gsw_result.committed {
+				graphics_epoch = gsw_result.graphics_epoch
+				graphics_epoch_pending = gsw_result.epoch_pending
+			} else if gsw_result.failed {
+				graphics_epoch_pending = false
 			}
 		}
 		if current_before_render &&
@@ -323,13 +536,11 @@ graphics_frame_consume :: proc(
 			if commit_result == .Stale {
 				host.host_presentation_note_stale_finalization(target)
 			}
-			if action == .Restore_Legacy {
-				legacy_refreshed = false
-				frame_slot.epoch.source = .Legacy_Scanout
+			if restored_source, restored := graphics_gsw_restoration_source(action); restored {
+				frame_slot.epoch.source = restored_source
 				graphics_epoch = frame_slot.epoch
 				graphics_epoch_pending = true
 			} else if action == .Clear {
-				legacy_refreshed = false
 				frame_slot.epoch.source = .Gsw2d
 				_ = frame_mailbox_graphics_epoch_complete_and_record(
 					&shared.frames,
@@ -355,13 +566,19 @@ graphics_frame_consume :: proc(
 				)
 			}
 		}
-		if legacy_refreshed && frame_slot.epoch.result == .Incomplete {
+		if graphics_epoch_pending && frame_slot.epoch.result != .Incomplete {
+			graphics_epoch_pending = false
+		}
+		if !graphics_epoch_pending && frame_slot.epoch.result == .Incomplete {
 			_ = frame_mailbox_graphics_epoch_complete_and_record(
 				&shared.frames,
 				&frame_slot.epoch,
 				.Superseded,
 				time.tick_now(),
 			)
+		}
+		if retry_latest {
+			_ = frame_mailbox_retry_latest(&shared.frames, frame_slot)
 		}
 		frame_mailbox_release(&shared.frames, frame_slot)
 	}

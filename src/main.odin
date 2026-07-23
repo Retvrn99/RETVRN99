@@ -91,6 +91,8 @@ Shared :: struct {
 	install_prepare_message:          string,
 	pause_state:                      host.Pause_State,
 	input:                            host.Host_Input_Queue,
+	input_generation:                 u64,
+	input_generation_exhausted:       bool,
 	guard:                            ^Vm_Guard,
 }
 
@@ -144,6 +146,8 @@ run_main :: proc() -> int {
 	start_requested := false
 	gsw3d_proof := false
 	graphics_trace := false
+	control_script_path := ""
+	control_script_seen := false
 	acceptance_options, acceptance_diagnostic := acceptance.options_parse(os.args[1:])
 	if acceptance_diagnostic != .None {
 		fmt.eprintfln("acceptance option error: %v", acceptance_diagnostic)
@@ -151,6 +155,10 @@ run_main :: proc() -> int {
 	}
 	if acceptance.options_request_headless(&acceptance_options) {console = true}
 	for a in os.args[1:] {
+		if a == "--control-script" {
+			fmt.eprintln("--control-script requires a path")
+			return 1
+		}
 		if a == "--console" {console = true}
 		if a == "--start" {start_requested = true}
 		if a == "--gsw3d-proof" {gsw3d_proof = true}
@@ -175,6 +183,19 @@ run_main :: proc() -> int {
 		if strings.has_prefix(a, "--frame-dump:") {
 			frame_dump_path = a[len("--frame-dump:"):]
 		}
+		if strings.has_prefix(a, "--control-script:") ||
+		   strings.has_prefix(a, "--control-script=") {
+			if control_script_seen {
+				fmt.eprintln("--control-script may be specified only once")
+				return 1
+			}
+			control_script_seen = true
+			control_script_path = a[len("--control-script:"):]
+			if control_script_path == "" {
+				fmt.eprintln("--control-script requires a path")
+				return 1
+			}
+		}
 	}
 	if acceptance_options.accept_until == .Hardware_Detection && !seconds_explicit {
 		run_seconds = 30 * 60
@@ -188,6 +209,18 @@ run_main :: proc() -> int {
 	}
 	if console && graphics_trace {
 		fmt.eprintln("--graphics-trace is available only in the GUI host")
+		return 1
+	}
+	if control_script_path != "" && !RETVRN99_TEST_CONTROL {
+		fmt.eprintln("--control-script requires a RETVRN99_TEST_CONTROL build")
+		return 1
+	}
+	if control_script_path != "" && console {
+		fmt.eprintln("--control-script is available only in the GUI host")
+		return 1
+	}
+	if control_script_path != "" && profile_root == "" {
+		fmt.eprintln("--control-script requires an explicit --profile-root")
 		return 1
 	}
 
@@ -322,6 +355,7 @@ run_main :: proc() -> int {
 		start_requested,
 		gsw3d_proof,
 		graphics_trace,
+		control_script_path,
 	)
 }
 
@@ -338,9 +372,24 @@ gui_main :: proc(
 	start_requested: bool,
 	gsw3d_proof: bool,
 	graphics_trace: bool,
+	control_script_path: string,
 ) -> (
 	result: int,
 ) {
+	input_control: Input_Control
+	defer input_control_destroy(&input_control)
+	input_control_exclusive := control_script_path != ""
+	if input_control_exclusive {
+		if diagnostic := input_control_load(&input_control, control_script_path);
+		   diagnostic != .None {
+			fmt.eprintfln("control script: load failed (%v)", diagnostic)
+			return 1
+		}
+		fmt.printfln(
+			"control script: loaded %d actions; physical guest input is disabled",
+			len(input_control.script.actions),
+		)
+	}
 	active_settings := profile.settings_clone(settings)
 	defer profile.settings_destroy(&active_settings)
 	settings_save_pending := false
@@ -610,6 +659,7 @@ gui_main :: proc(
 	menu_animation_tick := start
 	last_graphics_vm_checkpoint: time.Tick
 	graphics_aggregate_logs: u64
+	last_input_control_state := input_control.state
 
 	for {
 		sync.lock(&shared.mu)
@@ -723,9 +773,10 @@ gui_main :: proc(
 				// releases always reach the guest: swallowing a break code
 				// while ImGui captures the keyboard leaves a stuck key
 				if ev.key.down && io.WantCaptureKeyboard {continue}
+				if input_control_exclusive {continue}
 				push_host_key(shared, &keyboard, ev.key.scancode, ev.key.down)
 			case .MOUSE_MOTION:
-				if h.mouse_captured {
+				if h.mouse_captured && !input_control_exclusive {
 					h.mouse_buttons = host.mouse_buttons_from_sdl(ev.motion.state)
 					push_mouse_motion(
 						shared,
@@ -735,6 +786,7 @@ gui_main :: proc(
 					)
 				}
 			case .MOUSE_BUTTON_DOWN, .MOUSE_BUTTON_UP:
+				if input_control_exclusive {continue}
 				if !h.mouse_captured {
 					if !ev.button.down ||
 					   io.WantCaptureMouse ||
@@ -751,7 +803,7 @@ gui_main :: proc(
 				)
 				push_mouse_buttons(shared, h.mouse_buttons, !ev.button.down)
 			case .MOUSE_WHEEL:
-				if h.mouse_captured {
+				if h.mouse_captured && !input_control_exclusive {
 					wheel := ev.wheel.integer_y
 					if wheel == 0 && ev.wheel.y != 0 {wheel = ev.wheel.y > 0 ? 1 : -1}
 					if ev.wheel.direction == .FLIPPED {wheel = -wheel}
@@ -946,6 +998,8 @@ gui_main :: proc(
 		frozen := strings.clone(shared.frozen_msg, context.temp_allocator)
 		regs := strings.clone(shared.regs_text, context.temp_allocator)
 		machine_running := shared.machine_running
+		input_generation := shared.input_generation
+		input_generation_exhausted := shared.input_generation_exhausted
 		st.user_paused = host.pause_reason_active(&shared.pause_state, .User)
 		st.install_active = shared.installing_windows_98
 		st.install_recovery_required = shared.install_recovery_required
@@ -1016,6 +1070,36 @@ gui_main :: proc(
 		st.visual_shader = h.visual_shader
 		h.sidebar_collapsed = st.sidebar_collapsed
 		menu_animation_now := time.tick_now()
+		if input_control_exclusive {
+			control_state := input_control_tick(
+				&input_control,
+				{
+					running = machine_running,
+					paused = st.machine_paused,
+					frozen = frozen != "" || input_generation_exhausted,
+					generation = input_generation,
+				},
+				menu_animation_now,
+				input_control_enqueue_shared,
+				shared,
+			)
+			if control_state != last_input_control_state {
+				switch control_state {
+				case .Running:
+					vm_log(shared, "control script: input pump started")
+				case .Completed:
+					vm_log(shared, "control script: all actions queued")
+				case .Failed:
+					input_control_release_mouse(&input_control, shared)
+					vm_log(
+						shared,
+						fmt.tprintf("control script: stopped (%v)", input_control.failure),
+					)
+				case .Disabled, .Waiting:
+				}
+				last_input_control_state = control_state
+			}
+		}
 		menu_animation_seconds := f32(
 			time.duration_seconds(time.tick_diff(menu_animation_tick, menu_animation_now)),
 		)
@@ -1670,6 +1754,7 @@ gui_main :: proc(
 	hard_drive_controller_destroy(&hard_drive_controller)
 	guided_install_destroy(&guided_install)
 
+	if input_control_exclusive {input_control_release_mouse(&input_control, shared)}
 	thread.destroy(vm_thr)
 	if graphics_trace {
 		trace := frame_mailbox_graphics_trace_text(&shared.frames)
@@ -1873,8 +1958,20 @@ publish_pause_state :: proc(s: ^Shared, state: host.Pause_State) {
 publish_machine_running :: proc(s: ^Shared, running: bool) {
 	if s == nil {return}
 	sync.lock(&s.mu)
+	if s.machine_running != running && !s.input_generation_exhausted {
+		if s.input_generation == max(u64) {
+			s.input_generation_exhausted = true
+			host.host_input_discard(&s.input)
+		} else {
+			s.input_generation += 1
+		}
+	}
 	s.machine_running = running
 	sync.unlock(&s.mu)
+}
+
+publish_machine_reinitializing :: proc(s: ^Shared) {
+	publish_machine_running(s, false)
 }
 // line to the device-log panel
 vm_log :: proc(s: ^Shared, msg: string) {
