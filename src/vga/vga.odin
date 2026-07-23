@@ -2,6 +2,7 @@
 package vga
 
 import persona "../persona"
+import contract "../presentation"
 
 import "base:runtime"
 
@@ -114,80 +115,87 @@ Video_Timing :: struct {
 }
 
 Vga :: struct {
-	allocator:                  runtime.Allocator,
-	vram:                       []u8,
-	pci_io_enabled:             bool,
-	pci_memory_enabled:         bool,
-	framebuffer_base:           u64,
-	frame_pixels:               []u32,
-	frame:                      Display_Frame,
-	raster_pixels:              []u32,
-	raster_kind:                Display_Kind,
-	raster_width:               int,
-	raster_height:              int,
-	raster_next_line:           int,
-	raster_frame:               u64,
-	raster_valid:               bool,
-	raster_fallback:            bool,
-	raster_change_frame:        u64,
-	defer_scanout_conversion:   bool,
-	frame_valid:                bool,
-	present_generation:         u64,
-	content_generation:         u64,
-	guest_activity_generation:  u64,
-	full_frame_renders:         u64,
-	raster_pixels_rendered:     u64,
-	crtc:                       [32]u8,
-	crtc_ix:                    u8,
-	seq:                        [8]u8,
-	seq_ix:                     u8,
-	gfx:                        [16]u8,
-	gfx_ix:                     u8,
-	attr:                       [32]u8,
-	attr_ix:                    u8,
-	attr_flip:                  bool,
-	video_on:                   bool,
-	misc:                       u8,
-	feature:                    u8,
-	pel_mask:                   u8,
-	dac_read:                   u8,
-	dac_write:                  u8,
-	dac_sub:                    u8,
-	dac_state:                  u8,
-	dac:                        [256 * 3]u8,
-	latch:                      [4]u8,
-	video_subsystem_enable:     u8,
-	cga:                        Cga_State,
-	dispi_index:                u16,
-	dispi:                      [12]u16,
-	bank_read:                  u16,
-	bank_write:                 u16,
-	bank_program_count:         u64,
-	bank_change_count:          u64,
-	bank_read_change_count:     u64,
-	bank_write_change_count:    u64,
-	io_write_count:             u64,
-	io_write_bytes:             u64,
-	ddc_host_scl_release:       bool,
-	ddc_host_sda_release:       bool,
-	ddc_drive_sda_low:          bool,
-	ddc_phase:                  Ddc_Phase,
-	ddc_after_ack_phase:        Ddc_Phase,
-	ddc_bit_count:              int,
-	ddc_shift:                  u8,
-	ddc_offset:                 u8,
-	ddc_read_byte:              u8,
-	ddc_read_bit:               int,
-	ddc_master_ack:             bool,
-	timing:                     Video_Timing,
-	latched_start:              u16,
-	pending_start:              u16,
-	start_pending:              bool,
-	legacy_irq_ctx:             rawptr,
-	legacy_irq:                 Legacy_Irq_Proc,
-	legacy_irq_asserted:        bool,
-	vertical_interrupt_pending: bool,
-	initialized:                bool,
+	allocator:                              runtime.Allocator,
+	vram:                                   []u8,
+	pci_io_enabled:                         bool,
+	pci_memory_enabled:                     bool,
+	framebuffer_base:                       u64,
+	frame_pixels:                           []u32,
+	frame:                                  Display_Frame,
+	raster_pixels:                          []u32,
+	raster_kind:                            Display_Kind,
+	raster_width:                           int,
+	raster_height:                          int,
+	raster_next_line:                       int,
+	raster_frame:                           u64,
+	raster_valid:                           bool,
+	raster_fallback:                        bool,
+	raster_change_frame:                    u64,
+	defer_scanout_conversion:               bool,
+	frame_valid:                            bool,
+	present_generation:                     u64,
+	content_generation:                     u64,
+	guest_activity_generation:              u64,
+	presentation_sequence:                  u64,
+	legacy_presentation_sequence:           u64,
+	presentation_mode_clock:                contract.Mode_Clock,
+	legacy_presentation_mode_generation:    u64,
+	legacy_presentation_mode_key:           contract.Mode_Key,
+	legacy_presentation_surface_generation: u64,
+	legacy_presentation_surface_key:        contract.Mode_Key,
+	full_frame_renders:                     u64,
+	raster_pixels_rendered:                 u64,
+	crtc:                                   [32]u8,
+	crtc_ix:                                u8,
+	seq:                                    [8]u8,
+	seq_ix:                                 u8,
+	gfx:                                    [16]u8,
+	gfx_ix:                                 u8,
+	attr:                                   [32]u8,
+	attr_ix:                                u8,
+	attr_flip:                              bool,
+	video_on:                               bool,
+	misc:                                   u8,
+	feature:                                u8,
+	pel_mask:                               u8,
+	dac_read:                               u8,
+	dac_write:                              u8,
+	dac_sub:                                u8,
+	dac_state:                              u8,
+	dac:                                    [256 * 3]u8,
+	latch:                                  [4]u8,
+	video_subsystem_enable:                 u8,
+	cga:                                    Cga_State,
+	dispi_index:                            u16,
+	dispi:                                  [12]u16,
+	bank_read:                              u16,
+	bank_write:                             u16,
+	bank_program_count:                     u64,
+	bank_change_count:                      u64,
+	bank_read_change_count:                 u64,
+	bank_write_change_count:                u64,
+	io_write_count:                         u64,
+	io_write_bytes:                         u64,
+	ddc_host_scl_release:                   bool,
+	ddc_host_sda_release:                   bool,
+	ddc_drive_sda_low:                      bool,
+	ddc_phase:                              Ddc_Phase,
+	ddc_after_ack_phase:                    Ddc_Phase,
+	ddc_bit_count:                          int,
+	ddc_shift:                              u8,
+	ddc_offset:                             u8,
+	ddc_read_byte:                          u8,
+	ddc_read_bit:                           int,
+	ddc_master_ack:                         bool,
+	timing:                                 Video_Timing,
+	latched_start:                          u16,
+	pending_start:                          u16,
+	start_pending:                          bool,
+	legacy_irq_ctx:                         rawptr,
+	legacy_irq:                             Legacy_Irq_Proc,
+	legacy_irq_asserted:                    bool,
+	vertical_interrupt_pending:             bool,
+	initialized:                            bool,
 }
 
 vga_init :: proc(v: ^Vga, backing: []u8) -> bool {
@@ -295,12 +303,33 @@ vga_reset :: proc(v: ^Vga) {
 	v.timing = {}
 	v.content_generation = 1
 	v.guest_activity_generation = 1
+	v.presentation_sequence = 1
+	v.legacy_presentation_sequence = 1
 	vga_recalculate_timing(v)
+	_ = vga_legacy_presentation_mode_generation(v, true)
 	vga_refresh_legacy_irq(v)
+}
+
+@(private = "file")
+vga_advance_presentation_sequence :: proc(v: ^Vga) -> u64 {
+	if v == nil {return 0}
+	v.presentation_sequence += 1
+	if v.presentation_sequence == 0 {v.presentation_sequence = 1}
+	return v.presentation_sequence
+}
+
+vga_note_gsw_presentation :: proc(v: ^Vga) -> u64 {
+	return vga_advance_presentation_sequence(v)
+}
+
+vga_presentation_sequence :: proc(v: ^Vga) -> u64 {
+	return v == nil ? u64(0) : v.presentation_sequence
 }
 
 vga_note_content_change :: proc(v: ^Vga) {
 	if v == nil {return}
+	v.legacy_presentation_sequence = vga_advance_presentation_sequence(v)
+	_ = vga_legacy_presentation_mode_generation(v)
 	v.content_generation += 1
 	if v.content_generation == 0 {v.content_generation = 1}
 	v.guest_activity_generation += 1
@@ -325,6 +354,8 @@ vga_legacy_irq_line :: proc(v: ^Vga) -> bool {
 
 vga_note_animation_change :: proc(v: ^Vga) {
 	if v == nil {return}
+	v.legacy_presentation_sequence = vga_advance_presentation_sequence(v)
+	_ = vga_legacy_presentation_mode_generation(v)
 	v.content_generation += 1
 	if v.content_generation == 0 {v.content_generation = 1}
 	if !v.raster_fallback {v.frame_valid = false}

@@ -76,6 +76,16 @@ host_set_visual_shader :: proc(h: ^Host, style: Visual_Shader) -> bool {
 	if h.tex != nil {
 		sdl3.SetTextureScaleMode(h.tex, style == .None ? .NEAREST : .LINEAR)
 	}
+	state := &h.presentation_state
+	if state.legacy_staging.texture != nil {
+		sdl3.SetTextureScaleMode(state.legacy_staging.texture, style == .None ? .NEAREST : .LINEAR)
+	}
+	if state.gsw_texture != nil {
+		sdl3.SetTextureScaleMode(state.gsw_texture, style == .None ? .NEAREST : .LINEAR)
+	}
+	if state.gsw_staging.texture != nil {
+		sdl3.SetTextureScaleMode(state.gsw_staging.texture, style == .None ? .NEAREST : .LINEAR)
+	}
 	return true
 }
 

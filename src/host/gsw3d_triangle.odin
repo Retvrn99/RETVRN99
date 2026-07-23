@@ -86,19 +86,20 @@ Gsw3d_Triangle_Metrics :: struct {
 }
 
 Gsw3d_Triangle_Renderer :: struct {
-	gpu:             ^sdl3.GPUDevice,
-	vertex_shader:   ^sdl3.GPUShader,
-	fragment_shader: ^sdl3.GPUShader,
-	vertex_buffer:   ^sdl3.GPUBuffer,
-	transfer_buffer: ^sdl3.GPUTransferBuffer,
-	pipelines:       [GSW3D_TRIANGLE_PIPELINE_CAPACITY]Gsw3d_Triangle_Pipeline,
-	flights:         [GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT]Gsw3d_Triangle_Flight,
-	flight_head:     int,
-	flight_count:    int,
-	next_token:      u64,
-	fence_ops:       Gsw3d_Triangle_Fence_Ops,
-	metrics:         Gsw3d_Triangle_Metrics,
-	live:            bool,
+	gpu:              ^sdl3.GPUDevice,
+	vertex_shader:    ^sdl3.GPUShader,
+	fragment_shader:  ^sdl3.GPUShader,
+	vertex_buffer:    ^sdl3.GPUBuffer,
+	transfer_buffer:  ^sdl3.GPUTransferBuffer,
+	pipelines:        [GSW3D_TRIANGLE_PIPELINE_CAPACITY]Gsw3d_Triangle_Pipeline,
+	flights:          [GSW3D_TRIANGLE_MAX_FRAMES_IN_FLIGHT]Gsw3d_Triangle_Flight,
+	flight_head:      int,
+	flight_count:     int,
+	next_token:       u64,
+	fence_ops:        Gsw3d_Triangle_Fence_Ops,
+	metrics:          Gsw3d_Triangle_Metrics,
+	readback_counter: ^u64,
+	live:             bool,
 }
 
 @(private = "package")

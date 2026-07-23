@@ -80,10 +80,12 @@ gsw3d_readback_test_canonicalizes_rgba_and_rejects_bad_layout :: proc(t: ^testin
 
 @(test)
 gsw3d_readback_test_gpu_readback_rejects_tracked_frames :: proc(t: ^testing.T) {
+	readbacks: u64
 	renderer := Gsw3d_Triangle_Renderer {
-		gpu          = transmute(^sdl3.GPUDevice)(uintptr(1)),
-		flight_count = 1,
-		live         = true,
+		gpu              = transmute(^sdl3.GPUDevice)(uintptr(1)),
+		flight_count     = 1,
+		readback_counter = &readbacks,
+		live             = true,
 	}
 	target := transmute(^sdl3.GPUTexture)(uintptr(1))
 	destination: [4]u8
@@ -91,6 +93,7 @@ gsw3d_readback_test_gpu_readback_rejects_tracked_frames :: proc(t: ^testing.T) {
 		t,
 		!gsw3d_debug_readback_rgba_sync(&renderer, target, .R8G8B8A8_UNORM, 1, 1, destination[:]),
 	)
+	testing.expect_value(t, readbacks, u64(1))
 }
 
 @(test)

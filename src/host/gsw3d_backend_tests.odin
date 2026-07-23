@@ -825,7 +825,8 @@ host_gsw3d_proof_test_cancel_generation_and_machine_restart :: proc(t: ^testing.
 
 	if !testing.expect(t, gsw3d_proof_backend_init(&backend, &bridge)) {return}
 	descriptor = gsw3d_proof_backend_descriptor(&backend)
-	defer descriptor.cancel(descriptor.ctx, 1, true)
+	work.generation = 3
+	defer descriptor.cancel(descriptor.ctx, 3, true)
 	result, drained = gsw3d_proof_test_submit(
 		t,
 		&pending,
@@ -836,8 +837,8 @@ host_gsw3d_proof_test_cancel_generation_and_machine_restart :: proc(t: ^testing.
 		&work,
 	)
 	testing.expect(t, result && drained)
-	testing.expect_value(t, executor.generation, u64(1))
+	testing.expect_value(t, executor.generation, u64(3))
 	testing.expect_value(t, state.event_count, 2)
 	testing.expect_value(t, state.events[1], Gsw3d_Proof_Test_Event.Reset)
-	testing.expect_value(t, state.generation, u64(1))
+	testing.expect_value(t, state.generation, u64(3))
 }

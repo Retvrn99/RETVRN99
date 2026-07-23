@@ -43,6 +43,8 @@ Gsw3d_Proof_Present :: struct {
 	source:      vga.Gsw3d_Rect,
 	destination: vga.Gsw3d_Rect,
 	interval:    u32,
+	generation:  u64,
+	fence:       u64,
 }
 
 Gsw3d_Proof_Create_Surface_Proc :: proc(ctx: rawptr, surface: Gsw3d_Proof_Surface) -> bool
@@ -96,6 +98,7 @@ Gsw3d_Proof_Backend :: struct {
 	mu:                 sync.Mutex,
 	bridge_generation:  u64,
 	device_generation:  u64,
+	generation_clock:   u64,
 	stopped:            bool,
 	cleanup_required:   bool,
 	cleanup_generation: u64,
@@ -359,6 +362,8 @@ gsw3d_proof_execute_work :: proc(executor: ^Gsw3d_Proof_Executor, work: ^vga.Gsw
 			source      = work.source,
 			destination = work.destination,
 			interval    = work.interval,
+			generation  = work.generation,
+			fence       = work.fence,
 		}
 		return executor.ops.present(executor.ops.ctx, &present)
 	case .Transport_Barrier, .Reset, .Resource_Upload:
@@ -580,6 +585,7 @@ gsw3d_proof_backend_cancel :: proc(ctx: rawptr, generation: u64, stopping: bool)
 		backend.cleanup_required = true
 	} else {
 		backend.device_generation = gsw3d_proof_next_generation(generation)
+		backend.generation_clock = backend.device_generation
 	}
 	sync.unlock(&backend.mu)
 
@@ -601,12 +607,13 @@ gsw3d_proof_backend_init :: proc(backend: ^Gsw3d_Proof_Backend, bridge: ^Gsw3d_B
 	restarting := backend.bridge != nil
 	backend.bridge = bridge
 	backend.bridge_generation = 0
-	backend.device_generation = 1
+	backend.generation_clock = gsw3d_proof_next_generation(backend.generation_clock)
+	backend.device_generation = backend.generation_clock
 	backend.stopped = false
 	backend.completed = {}
 	if restarting {
 		backend.cleanup_required = true
-		backend.cleanup_generation = 1
+		backend.cleanup_generation = backend.device_generation
 	}
 	sync.unlock(&backend.mu)
 

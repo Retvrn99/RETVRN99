@@ -4,13 +4,98 @@ package main
 import "core:testing"
 import "core:time"
 import host "host"
+import "machine"
+import contract "presentation"
+import vga "vga"
+
+Frame_Mailbox_Test_Current_Commit :: struct {
+	calls:  int,
+	result: bool,
+}
+
+frame_mailbox_test_current_commit :: proc(ctx: rawptr) -> bool {
+	commit := (^Frame_Mailbox_Test_Current_Commit)(ctx)
+	if commit == nil {return false}
+	commit.calls += 1
+	return commit.result
+}
 
 frame_mailbox_test_publish_generation :: proc(mailbox: ^Frame_Mailbox, generation: u64) -> bool {
 	slot, reserved := frame_mailbox_begin(mailbox, generation)
 	if !reserved {return false}
 	slot.scanout.generation = generation
-	frame_mailbox_commit(mailbox, slot, true)
-	return true
+	return frame_mailbox_commit(mailbox, slot, true)
+}
+
+@(test)
+frame_mailbox_test_capture_failure_retains_completed_legacy_copy :: proc(t: ^testing.T) {
+	m := new(machine.Machine)
+	defer free(m)
+	if !testing.expect(t, machine.machine_init(m, 64 * 1024 * 1024)) {return}
+	defer machine.machine_destroy(m)
+	full := contract.Rect {
+		width  = 2,
+		height = 2,
+	}
+	dirty: contract.Rect_Set
+	if !testing.expect(t, contract.rect_set_append(&dirty, full)) {return}
+	mode_generation := m.vga.presentation_mode_clock.generation
+	if mode_generation == 0 {mode_generation = 1}
+	m.gsw_vga.presentation_state.active = {
+		header = {
+			sequence = contract.generation_next(vga.vga_presentation_sequence(&m.vga)),
+			lifecycle_generation = 1,
+			mode_generation = mode_generation,
+			mode_key = {
+				format = .Bgrx_8888,
+				surface_extent = {2, 2},
+				canvas_extent = {2, 2},
+				source = full,
+				destination = full,
+			},
+			identity_namespace = .Gsw2d,
+			device_generation = m.gsw_vga.presentation_state.device_generation,
+			surface = {id = 7, generation = 1},
+			format = .Bgrx_8888,
+			surface_extent = {2, 2},
+			canvas_extent = {2, 2},
+			source = full,
+			destination = full,
+			dirty = dirty,
+			source_kind = .Gsw_Snapshot,
+			ownership = .Vm_Framebuffer,
+		},
+		source_pitch = 8,
+	}
+	m.gsw_vga.presentation_state.active_valid = true
+
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	if !testing.expect(t, machine.machine_capture_scanout(m, &mailbox.slots[0].scanout, 1)) {
+		return
+	}
+	gsw_bytes := mailbox.slots[0].scanout.gsw_presentation.bytes_copied
+	if !testing.expect(t, gsw_bytes > 0) {return}
+	legacy_bytes := mailbox.slots[0].scanout.bytes_copied - gsw_bytes
+	if !testing.expect(t, legacy_bytes > 0) {return}
+	mailbox.slots[0].scanout.copy_duration_ns = max(u64)
+	mailbox.slots[0].scanout.gsw_presentation.copy_duration_ns = max(u64)
+	m.gsw_vga.presentation_state.active.header.format = .Invalid
+	frame_mailbox_graphics_telemetry_init(&mailbox, true)
+	testing.expect(t, !frame_mailbox_publish_observed(&mailbox, m, 1, {}))
+
+	epoch, found := graphics_telemetry_trace_epoch(&mailbox.telemetry, 0)
+	if !testing.expect(t, found) {return}
+	testing.expect_value(t, epoch.result, Graphics_Frame_Result.Capture_Failed)
+	testing.expect_value(t, epoch.bytes_copied, u64(legacy_bytes))
+	testing.expect_value(t, mailbox.telemetry.current.bytes_copied, epoch.bytes_copied)
+	testing.expect_value(t, mailbox.telemetry.current.capture_failures, u64(1))
+	testing.expect_value(t, mailbox.telemetry.current.presented, u64(0))
+	testing.expect_value(t, mailbox.slots[0].scanout.bytes_copied, legacy_bytes)
+	testing.expect_value(t, mailbox.slots[0].scanout.gsw_presentation.bytes_copied, 0)
+	testing.expect_value(t, mailbox.slots[0].scanout.gsw_presentation.copy_duration_ns, u64(0))
+	testing.expect(t, mailbox.slots[0].scanout.copy_duration_ns < max(u64))
+	testing.expect(t, frame_mailbox_acquire(&mailbox) == nil)
 }
 
 @(test)
@@ -73,7 +158,7 @@ frame_mailbox_test_epoch_is_monotonic_and_coalescing_is_traced :: proc(t: ^testi
 	if !testing.expect(t, reserved) {return}
 	first.scanout.generation = 10
 	graphics_frame_epoch_capture_complete(&first.epoch, 256, time.Tick{120})
-	frame_mailbox_commit(&mailbox, first, true)
+	testing.expect(t, frame_mailbox_commit(&mailbox, first, true))
 	frame_mailbox_graphics_telemetry_note_input(&mailbox, 1, 25, 25, time.Tick{130})
 
 	second: ^Frame_Slot
@@ -95,7 +180,7 @@ frame_mailbox_test_epoch_is_monotonic_and_coalescing_is_traced :: proc(t: ^testi
 	testing.expect_value(t, coalesced.sequence, u64(1))
 	testing.expect_value(t, coalesced.result, Graphics_Frame_Result.Coalesced)
 	testing.expect_value(t, coalesced.bytes_copied, u64(256))
-	frame_mailbox_commit(&mailbox, second, false)
+	_ = frame_mailbox_commit(&mailbox, second, false)
 }
 
 @(test)
@@ -109,18 +194,11 @@ frame_mailbox_test_coalescing_carries_oldest_input_to_eventual_present :: proc(t
 		output_underrun_frames = 5,
 	}
 	producer_before.machine.gsw3d.device_generation = 4
-	frame_mailbox_graphics_telemetry_note_input(
-		&mailbox,
-		1,
-		20,
-		20,
-		time.Tick{60},
-		time.Tick{50},
-	)
+	frame_mailbox_graphics_telemetry_note_input(&mailbox, 1, 20, 20, time.Tick{60}, time.Tick{50})
 	first, reserved := frame_mailbox_begin_at(&mailbox, 10, time.Tick{100}, producer_before)
 	if !testing.expect(t, reserved) {return}
 	first.scanout.generation = 10
-	frame_mailbox_commit(&mailbox, first, true)
+	testing.expect(t, frame_mailbox_commit(&mailbox, first, true))
 
 	frame_mailbox_graphics_telemetry_note_input(
 		&mailbox,
@@ -150,7 +228,7 @@ frame_mailbox_test_coalescing_carries_oldest_input_to_eventual_present :: proc(t
 	testing.expect_value(t, coalesced.producer, Graphics_Producer_Interval{})
 
 	second.scanout.generation = 11
-	frame_mailbox_commit(&mailbox, second, true)
+	testing.expect(t, frame_mailbox_commit(&mailbox, second, true))
 	presented := frame_mailbox_acquire(&mailbox)
 	if !testing.expect(t, presented == second) {return}
 	graphics_frame_epoch_present_begin(&presented.epoch, time.Tick{290})
@@ -213,7 +291,7 @@ frame_mailbox_test_direct_epoch_takes_correlated_producer_and_host_work :: proc(
 	testing.expect_value(t, direct.host_gpu.direct_present_surface_id, u32(23))
 	testing.expect_value(t, legacy.epoch.producer, Graphics_Producer_Interval{})
 	testing.expect_value(t, legacy.epoch.host_gpu, Graphics_Host_Gpu_Interval{})
-	frame_mailbox_commit(&mailbox, legacy, false)
+	_ = frame_mailbox_commit(&mailbox, legacy, false)
 }
 
 @(test)
@@ -244,13 +322,11 @@ frame_mailbox_test_reset_clears_pending_generation_attribution_and_baselines :: 
 	after_reset, reserved := frame_mailbox_begin_at(&mailbox, 1, time.Tick{20}, producer)
 	if !testing.expect(t, reserved) {return}
 	testing.expect_value(t, after_reset.epoch.producer.output_underrun_frames, u64(0))
-	frame_mailbox_commit(&mailbox, after_reset, false)
+	_ = frame_mailbox_commit(&mailbox, after_reset, false)
 }
 
 @(test)
-frame_mailbox_test_lifecycle_marks_writer_and_local_epoch_from_before_reset :: proc(
-	t: ^testing.T,
-) {
+frame_mailbox_test_reset_rejects_writer_reserved_before_reset :: proc(t: ^testing.T) {
 	mailbox: Frame_Mailbox
 	defer frame_mailbox_destroy(&mailbox)
 	stale, reserved := frame_mailbox_begin_at(&mailbox, 4, time.Tick{10}, {})
@@ -268,14 +344,58 @@ frame_mailbox_test_lifecycle_marks_writer_and_local_epoch_from_before_reset :: p
 	)
 	testing.expect_value(t, result, Graphics_Frame_Result.Reset)
 	testing.expect_value(t, completed.result, Graphics_Frame_Result.Reset)
-	frame_mailbox_commit(&mailbox, stale, true)
-	testing.expect_value(t, stale.state, Frame_Slot_State.Ready)
+	testing.expect(t, !frame_mailbox_commit(&mailbox, stale, true))
+	testing.expect_value(t, stale.state, Frame_Slot_State.Free)
 	observed := frame_mailbox_acquire(&mailbox)
-	if !testing.expect(t, observed == stale) {return}
-	testing.expect(t, !frame_mailbox_graphics_epoch_current(&mailbox, &observed.epoch))
-	frame_mailbox_release(&mailbox, observed)
+	testing.expect(t, observed == nil)
 
 	current := frame_mailbox_graphics_telemetry_begin_host_epoch(&mailbox, time.Tick{20})
 	testing.expect(t, frame_mailbox_graphics_epoch_current(&mailbox, &current))
 	testing.expect(t, current.lifecycle_generation != local_epoch.lifecycle_generation)
+}
+
+@(test)
+frame_mailbox_test_current_commit_is_gated_by_lifecycle_lock :: proc(t: ^testing.T) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	epoch := frame_mailbox_graphics_telemetry_begin_host_epoch(&mailbox, time.Tick{10})
+	commit := Frame_Mailbox_Test_Current_Commit {
+		result = true,
+	}
+	testing.expect_value(
+		t,
+		frame_mailbox_graphics_epoch_commit_current(
+			&mailbox,
+			&epoch,
+			&commit,
+			frame_mailbox_test_current_commit,
+		),
+		Frame_Mailbox_Current_Commit_Result.Committed,
+	)
+	testing.expect_value(t, commit.calls, 1)
+	commit.result = false
+	testing.expect_value(
+		t,
+		frame_mailbox_graphics_epoch_commit_current(
+			&mailbox,
+			&epoch,
+			&commit,
+			frame_mailbox_test_current_commit,
+		),
+		Frame_Mailbox_Current_Commit_Result.Rejected,
+	)
+	testing.expect_value(t, commit.calls, 2)
+
+	frame_mailbox_reset(&mailbox)
+	testing.expect_value(
+		t,
+		frame_mailbox_graphics_epoch_commit_current(
+			&mailbox,
+			&epoch,
+			&commit,
+			frame_mailbox_test_current_commit,
+		),
+		Frame_Mailbox_Current_Commit_Result.Stale,
+	)
+	testing.expect_value(t, commit.calls, 2)
 }

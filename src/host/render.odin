@@ -150,20 +150,13 @@ host_upload_frame :: proc(h: ^Host, frame: ^vga.Display_Frame) -> bool {
 		copy(dst[y * pitch_px:][:frame.width], frame.pixels[y * frame.width:][:frame.width])
 	}
 	sdl3.UnlockTexture(h.tex)
-	host_cpu_frame_metadata_publish(
-		h,
-		frame.aspect_width > 0 ? frame.aspect_width : frame.width,
-		frame.aspect_height > 0 ? frame.aspect_height : frame.height,
-	)
 	return true
 }
 
 @(private = "package")
 host_cpu_frame_metadata_publish :: proc(h: ^Host, aspect_width, aspect_height: int) {
 	if h == nil {return}
-	// A new legacy scanout is a real ownership transition. The UI drains GSW3D
-	// after this upload, so a newer direct present in the same frame wins.
-	h.gpu_present = {}
+	if h.presentation_state.selector.active.kind == .None {h.gpu_present = {}}
 	h.aspect_width = aspect_width
 	h.aspect_height = aspect_height
 	h.has_frame = true
@@ -193,7 +186,11 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 			output_height,
 			host_client_insets(h),
 		)
-		if gpu_present != nil {dst = host_gpu_present_destination(dst, gpu_present^)}
+		if gpu_present != nil {
+			dst = host_gpu_present_destination(dst, gpu_present^)
+		} else {
+			dst = host_presentation_destination(h, dst)
+		}
 		source_width, source_height := h.tex_width, h.tex_height
 		if has_source {
 			source_width = int(source.w)
@@ -209,10 +206,7 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 }
 
 host_clear_frame :: proc(h: ^Host) {
-	if h != nil {
-		h.gpu_present = {}
-		h.has_frame = false
-	}
+	if h != nil {host_presentation_stop(h)}
 }
 
 // Upload the rasterized grid at 2x below the menu bar without presenting:

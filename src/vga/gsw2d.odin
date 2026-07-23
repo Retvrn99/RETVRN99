@@ -166,16 +166,6 @@ gsw_vga_execute_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 			gsw_pixel_write(g.framebuffer, offset, bytes, result)
 		}
 	}
-	gsw_vga_note_surface_write(
-		g,
-		destination_base,
-		destination_pitch,
-		destination_x,
-		destination_y,
-		destination_width,
-		destination_height,
-		bytes,
-	)
 	g.metrics.blits += 1
 	g.metrics.software_pixels += u64(destination_width) * u64(destination_height)
 	return true
@@ -241,7 +231,6 @@ gsw_vga_execute_surface_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 		}
 	}
 
-	wrote := false
 	for y in 0 ..< int(destination_height) {
 		sample_y := int(u64(y) * u64(source_height) / u64(destination_height))
 		destination_row := destination_start + u64(y) * u64(destination_surface.pitch)
@@ -256,21 +245,8 @@ gsw_vga_execute_surface_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 			result := gsw_rop3(u8(rop_value), source, destination, pattern, mask)
 			if result != destination {
 				gsw_pixel_write(g.framebuffer, offset, bytes, result)
-				wrote = true
 			}
 		}
-	}
-	if wrote {
-		gsw_vga_note_surface_write(
-			g,
-			destination_surface.base,
-			destination_surface.pitch,
-			destination_x,
-			destination_y,
-			destination_width,
-			destination_height,
-			bytes,
-		)
 	}
 	g.metrics.blits += 1
 	g.metrics.software_pixels += destination_pixels_count

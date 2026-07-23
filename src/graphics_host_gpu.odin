@@ -49,6 +49,122 @@ Graphics_Host_Gpu_Interval :: struct {
 	direct_present_latest_draw_generation:   u64,
 	resident_gpu_surface_bytes_current:      u64,
 	resident_gpu_surface_bytes_peak:         u64,
+	presentation:                            host.Host_Presentation_Metrics,
+}
+
+@(private = "file")
+graphics_host_presentation_interval :: proc(
+	current, previous: host.Host_Presentation_Metrics,
+) -> (
+	host.Host_Presentation_Metrics,
+	bool,
+) {
+	result: host.Host_Presentation_Metrics
+	reset := false
+	delta: u64
+	wrapped: bool
+	delta, wrapped = graphics_counter_delta(
+		current.legacy_full_updates,
+		previous.legacy_full_updates,
+	)
+	result.legacy_full_updates = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.legacy_partial_updates,
+		previous.legacy_partial_updates,
+	)
+	result.legacy_partial_updates = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.gsw_snapshot_full_updates,
+		previous.gsw_snapshot_full_updates,
+	)
+	result.gsw_snapshot_full_updates = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.gsw_snapshot_partial_updates,
+		previous.gsw_snapshot_partial_updates,
+	)
+	result.gsw_snapshot_partial_updates = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.copy_bytes, previous.copy_bytes)
+	result.copy_bytes = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.conversion_pixels, previous.conversion_pixels)
+	result.conversion_pixels = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.upload_bytes, previous.upload_bytes)
+	result.upload_bytes = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.upload_regions, previous.upload_regions)
+	result.upload_regions = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.stale_generation_drops,
+		previous.stale_generation_drops,
+	)
+	result.stale_generation_drops = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.stale_finalization_drops,
+		previous.stale_finalization_drops,
+	)
+	result.stale_finalization_drops = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.invalid_rejections,
+		previous.invalid_rejections,
+	)
+	result.invalid_rejections = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.closed_rejections, previous.closed_rejections)
+	result.closed_rejections = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.resident_presents, previous.resident_presents)
+	result.resident_presents = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(current.readback_requests, previous.readback_requests)
+	result.readback_requests = delta
+	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.last_good_restorations,
+		previous.last_good_restorations,
+	)
+	result.last_good_restorations = delta
+	reset = reset || wrapped
+	return result, reset
+}
+
+@(private = "file")
+graphics_host_presentation_interval_add :: proc(
+	target: ^host.Host_Presentation_Metrics,
+	addition: host.Host_Presentation_Metrics,
+) {
+	if target == nil {return}
+	graphics_interval_add_counter(&target.legacy_full_updates, addition.legacy_full_updates)
+	graphics_interval_add_counter(&target.legacy_partial_updates, addition.legacy_partial_updates)
+	graphics_interval_add_counter(
+		&target.gsw_snapshot_full_updates,
+		addition.gsw_snapshot_full_updates,
+	)
+	graphics_interval_add_counter(
+		&target.gsw_snapshot_partial_updates,
+		addition.gsw_snapshot_partial_updates,
+	)
+	graphics_interval_add_counter(&target.copy_bytes, addition.copy_bytes)
+	graphics_interval_add_counter(&target.conversion_pixels, addition.conversion_pixels)
+	graphics_interval_add_counter(&target.upload_bytes, addition.upload_bytes)
+	graphics_interval_add_counter(&target.upload_regions, addition.upload_regions)
+	graphics_interval_add_counter(&target.stale_generation_drops, addition.stale_generation_drops)
+	graphics_interval_add_counter(
+		&target.stale_finalization_drops,
+		addition.stale_finalization_drops,
+	)
+	graphics_interval_add_counter(&target.invalid_rejections, addition.invalid_rejections)
+	graphics_interval_add_counter(&target.closed_rejections, addition.closed_rejections)
+	graphics_interval_add_counter(&target.resident_presents, addition.resident_presents)
+	graphics_interval_add_counter(&target.readback_requests, addition.readback_requests)
+	graphics_interval_add_counter(&target.last_good_restorations, addition.last_good_restorations)
 }
 
 graphics_host_gpu_interval :: proc(
@@ -148,6 +264,11 @@ graphics_host_gpu_interval :: proc(
 	result.direct_present_commands = delta
 	if delta > 1 {result.direct_present_commands_coalesced = delta - 1}
 	reset = reset || wrapped
+	result.presentation, wrapped = graphics_host_presentation_interval(
+		current.presentation,
+		previous.presentation,
+	)
+	reset = reset || wrapped
 	if previous.direct_present_active && !current.direct_present_active {
 		result.direct_present_deactivations = 1
 	}
@@ -208,6 +329,7 @@ graphics_host_gpu_interval_add :: proc(
 		&target.direct_present_deactivations,
 		addition.direct_present_deactivations,
 	)
+	graphics_host_presentation_interval_add(&target.presentation, addition.presentation)
 	target.device_generation = addition.device_generation
 	target.sdl_gpu_latest_submission_ns = addition.sdl_gpu_latest_submission_ns
 	target.sdl_gpu_fence_in_flight_current = addition.sdl_gpu_fence_in_flight_current

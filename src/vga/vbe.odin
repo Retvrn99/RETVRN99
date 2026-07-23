@@ -88,66 +88,6 @@ vga_vbe_pitch :: proc(v: ^Vga) -> int {
 	return dispi_pitch(width, int(dispi_effective_bpp(v.dispi[DISPI_INDEX_BPP])))
 }
 
-vga_gsw_present_surface :: proc(
-	v: ^Vga,
-	offset, width, height, pitch: u32,
-	format: Gsw_Pixel_Format,
-) -> bool {
-	if v == nil || !gsw_vga_present_valid(len(v.vram), offset, width, height, pitch, format) {
-		return false
-	}
-	bpp, bytes: u16
-	switch format {
-	case .Indexed_8:
-		bpp, bytes = 8, 1
-	case .Rgb_555:
-		bpp, bytes = 15, 2
-	case .Rgb_565:
-		bpp, bytes = 16, 2
-	case .Rgb_888:
-		bpp, bytes = 24, 3
-	case .Xrgb_8888:
-		bpp, bytes = 32, 4
-	case:
-		return false
-	}
-	if pitch == 0 || pitch % u32(bytes) != 0 || offset % u32(bytes) != 0 {return false}
-	virtual_width := pitch / u32(bytes)
-	x_offset := offset % pitch / u32(bytes)
-	y_offset := offset / pitch
-	last := u64(offset) + u64(height - 1) * u64(pitch) + u64(width) * u64(bytes)
-	if width > u32(max(u16)) ||
-	   height > u32(max(u16)) ||
-	   virtual_width > u32(max(u16)) ||
-	   x_offset > u32(max(u16)) ||
-	   y_offset > u32(max(u16)) ||
-	   last > u64(len(v.vram)) {
-		return false
-	}
-	candidate := v.dispi
-	candidate[DISPI_INDEX_XRES] = u16(width)
-	candidate[DISPI_INDEX_YRES] = u16(height)
-	candidate[DISPI_INDEX_BPP] = bpp
-	candidate[DISPI_INDEX_VIRT_WIDTH] = u16(virtual_width)
-	candidate[DISPI_INDEX_X_OFFSET] = u16(x_offset)
-	candidate[DISPI_INDEX_Y_OFFSET] = u16(y_offset)
-	candidate[DISPI_INDEX_ENABLE] =
-		candidate[DISPI_INDEX_ENABLE] & DISPI_8BIT_DAC |
-		DISPI_ENABLED |
-		DISPI_LFB_ENABLED |
-		DISPI_NOCLEARMEM
-	if !dispi_mode_valid(&candidate) {return false}
-	v.dispi = candidate
-	v.video_on = true
-	vga_recalculate_timing(v)
-	vga_note_content_change(v)
-	return true
-}
-
-vga_gsw_present :: proc(v: ^Vga, width, height, pitch: u32, format: Gsw_Pixel_Format) -> bool {
-	return vga_gsw_present_surface(v, 0, width, height, pitch, format)
-}
-
 @(private = "package")
 dispi_pitch :: proc(width, bpp: int) -> int {
 	switch bpp {

@@ -18,6 +18,173 @@ graphics_telemetry_test_aggregate_log_is_bounded :: proc(t: ^testing.T) {
 }
 
 @(test)
+graphics_telemetry_test_legacy_refresh_then_gsw_attempt_preserves_physical_work :: proc(
+	t: ^testing.T,
+) {
+	epoch := Graphics_Frame_Epoch {
+		sequence = 4,
+		lifecycle_generation = 3,
+		bytes_copied = 512,
+		descriptor_copy_ns = 20,
+		producer = {valid = true},
+	}
+	graphics_frame_epoch_render_begin(&epoch, .Legacy_Scanout, time.Tick{10})
+	frame := vga.Display_Frame {
+		kind   = .Xrgb_8888,
+		width  = 640,
+		height = 480,
+	}
+	graphics_frame_epoch_render_complete(&epoch, &frame, time.Tick{20})
+	graphics_frame_epoch_upload_begin(&epoch, time.Tick{21})
+	graphics_frame_epoch_upload_complete(&epoch, true, true, time.Tick{30})
+
+	graphics_frame_epoch_render_begin(&epoch, .Gsw2d, time.Tick{40})
+
+	testing.expect_value(t, epoch.source, Graphics_Frame_Source.Gsw2d)
+	testing.expect_value(t, epoch.kind, vga.Display_Kind.Invalid)
+	testing.expect_value(t, epoch.width, 0)
+	testing.expect_value(t, epoch.height, 0)
+	testing.expect_value(t, epoch.rendered_pixels, u64(640 * 480))
+	testing.expect_value(t, epoch.bytes_uploaded, u64(640 * 480 * 4))
+	testing.expect(t, epoch.texture_recreated)
+	testing.expect_value(t, epoch.render_ended, time.Tick{})
+	testing.expect_value(t, epoch.upload_started, time.Tick{})
+	testing.expect_value(t, epoch.upload_ended, time.Tick{})
+	testing.expect_value(t, epoch.lifecycle_generation, u64(3))
+	testing.expect_value(t, epoch.bytes_copied, u64(512))
+	testing.expect_value(t, epoch.descriptor_copy_ns, u64(20))
+	testing.expect(t, epoch.producer.valid)
+
+	gsw_frame := vga.Display_Frame {
+		kind   = .Rgb_565,
+		width  = 320,
+		height = 240,
+	}
+	graphics_frame_epoch_render_complete(&epoch, &gsw_frame, time.Tick{50})
+	graphics_frame_epoch_upload_begin(&epoch, time.Tick{51})
+	graphics_frame_epoch_upload_complete(&epoch, true, false, time.Tick{60})
+
+	testing.expect_value(t, epoch.source, Graphics_Frame_Source.Gsw2d)
+	testing.expect_value(t, epoch.kind, vga.Display_Kind.Rgb_565)
+	testing.expect_value(t, epoch.width, 320)
+	testing.expect_value(t, epoch.height, 240)
+	testing.expect_value(t, epoch.rendered_pixels, u64(640 * 480 + 320 * 240))
+	testing.expect_value(t, epoch.bytes_uploaded, u64((640 * 480 + 320 * 240) * 4))
+	testing.expect(t, epoch.texture_recreated)
+	testing.expect_value(t, epoch.first_render_started, time.Tick{10})
+	testing.expect_value(t, epoch.render_started, time.Tick{40})
+	testing.expect_value(t, epoch.render_work_ns, u64(20))
+	testing.expect_value(t, epoch.render_work_samples, u64(2))
+	testing.expect_value(t, epoch.upload_work_ns, u64(18))
+	testing.expect_value(t, epoch.upload_work_samples, u64(2))
+}
+
+@(test)
+graphics_telemetry_test_two_attempt_window_accumulates_work_without_queue_inflation :: proc(
+	t: ^testing.T,
+) {
+	telemetry: Graphics_Telemetry
+	epoch := graphics_frame_epoch_begin(1, 1, time.Tick{10})
+	graphics_frame_epoch_capture_begin(&epoch, time.Tick{10})
+	graphics_frame_epoch_capture_complete(&epoch, 64, time.Tick{20})
+	legacy := vga.Display_Frame {
+		kind   = .Xrgb_8888,
+		width  = 4,
+		height = 2,
+	}
+	graphics_frame_epoch_render_begin(&epoch, .Legacy_Scanout, time.Tick{30})
+	graphics_frame_epoch_render_complete(&epoch, &legacy, time.Tick{40})
+	graphics_frame_epoch_upload_begin(&epoch, time.Tick{41})
+	graphics_frame_epoch_upload_complete(&epoch, true, true, time.Tick{51})
+	gsw := vga.Display_Frame {
+		kind   = .Rgb_565,
+		width  = 2,
+		height = 2,
+	}
+	graphics_frame_epoch_render_begin(&epoch, .Gsw2d, time.Tick{100})
+	graphics_frame_epoch_render_complete(&epoch, &gsw, time.Tick{120})
+	graphics_frame_epoch_upload_begin(&epoch, time.Tick{121})
+	graphics_frame_epoch_upload_complete(&epoch, true, false, time.Tick{151})
+	graphics_frame_epoch_complete(&epoch, .Superseded, time.Tick{160})
+	graphics_telemetry_record(&telemetry, epoch)
+
+	window := telemetry.current
+	testing.expect_value(t, window.queue_ns, u64(10))
+	testing.expect_value(t, window.queue_samples, u64(1))
+	testing.expect_value(t, window.render_ns, u64(30))
+	testing.expect_value(t, window.render_samples, u64(2))
+	testing.expect_value(t, window.upload_ns, u64(40))
+	testing.expect_value(t, window.upload_samples, u64(2))
+	testing.expect_value(t, window.rendered_pixels, u64(12))
+	testing.expect_value(t, window.bytes_uploaded, u64(48))
+	testing.expect_value(t, window.texture_recreates, u64(1))
+	testing.expect_value(t, window.latest_source, Graphics_Frame_Source.Gsw2d)
+	testing.expect_value(t, window.latest_kind, vga.Display_Kind.Rgb_565)
+	testing.expect_value(t, window.latest_width, 2)
+	testing.expect_value(t, window.latest_height, 2)
+}
+
+@(test)
+graphics_telemetry_test_top_level_aggregates_saturate :: proc(t: ^testing.T) {
+	telemetry: Graphics_Telemetry
+	telemetry.window_active = true
+	telemetry.current = {
+		started                  = time.Tick{1},
+		publish_attempts         = max(u64),
+		input_events             = max(u64) - 1,
+		input_residence_ns       = max(u64) - 2,
+		epochs                   = max(u64),
+		presented                = max(u64),
+		bytes_copied             = max(u64) - 3,
+		descriptor_copy_ns       = max(u64) - 4,
+		descriptor_copy_samples  = max(u64),
+		bytes_uploaded           = max(u64) - 5,
+		rendered_pixels          = max(u64) - 6,
+		texture_recreates        = max(u64),
+		input_to_present_ns      = max(u64) - 7,
+		input_to_present_samples = max(u64),
+		compose_ns               = max(u64) - 8,
+		compose_samples          = max(u64),
+	}
+	telemetry.pending_input_events = max(u64) - 1
+	telemetry.pending_input_ns = max(u64) - 2
+	graphics_telemetry_note_publish_attempt(&telemetry, time.Tick{2})
+	graphics_telemetry_note_input(&telemetry, 8, 8, 8, time.Tick{3})
+	graphics_telemetry_note_compose(&telemetry, time.Tick{3}, time.Tick{20})
+
+	epoch := graphics_frame_epoch_begin(1, 1, time.Tick{2})
+	epoch.bytes_copied = 8
+	epoch.descriptor_copy_ns = 8
+	epoch.bytes_uploaded = 8
+	epoch.rendered_pixels = 8
+	epoch.texture_recreated = true
+	epoch.input_to_present_ns = 8
+	epoch.compose_started = time.Tick{3}
+	epoch.compose_ended = time.Tick{20}
+	graphics_frame_epoch_complete(&epoch, .Presented, time.Tick{20})
+	graphics_telemetry_record(&telemetry, epoch)
+
+	window := telemetry.current
+	testing.expect_value(t, window.publish_attempts, max(u64))
+	testing.expect_value(t, window.input_events, max(u64))
+	testing.expect_value(t, window.input_residence_ns, max(u64))
+	testing.expect_value(t, telemetry.pending_input_events, max(u64))
+	testing.expect_value(t, telemetry.pending_input_ns, max(u64))
+	testing.expect_value(t, window.epochs, max(u64))
+	testing.expect_value(t, window.presented, max(u64))
+	testing.expect_value(t, window.bytes_copied, max(u64))
+	testing.expect_value(t, window.descriptor_copy_ns, max(u64))
+	testing.expect_value(t, window.descriptor_copy_samples, max(u64))
+	testing.expect_value(t, window.bytes_uploaded, max(u64))
+	testing.expect_value(t, window.rendered_pixels, max(u64))
+	testing.expect_value(t, window.texture_recreates, max(u64))
+	testing.expect_value(t, window.input_to_present_ns, max(u64))
+	testing.expect_value(t, window.input_to_present_samples, max(u64))
+	testing.expect_value(t, window.compose_ns, max(u64))
+	testing.expect_value(t, window.compose_samples, max(u64))
+}
+
+@(test)
 graphics_telemetry_test_compose_and_present_aggregate_every_host_call :: proc(t: ^testing.T) {
 	telemetry: Graphics_Telemetry
 	graphics_telemetry_init(&telemetry, true)
@@ -137,7 +304,7 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	graphics_frame_epoch_capture_begin(&epoch, started)
 	graphics_frame_epoch_descriptor_copy(&epoch, 40)
 	graphics_frame_epoch_capture_complete(&epoch, 1024, time.Tick{200})
-	graphics_frame_epoch_render_begin(&epoch, time.Tick{300})
+	graphics_frame_epoch_render_begin(&epoch, .Legacy_Scanout, time.Tick{300})
 	frame := vga.Display_Frame {
 		kind   = .Rgb_565,
 		width  = 640,
@@ -287,6 +454,34 @@ graphics_telemetry_test_trace_is_opt_in_and_bounded :: proc(t: ^testing.T) {
 	testing.expect_value(t, last.sequence, u64(GRAPHICS_FRAME_TRACE_CAPACITY + 3))
 	_, overflow := graphics_telemetry_trace_epoch(&telemetry, GRAPHICS_FRAME_TRACE_CAPACITY)
 	testing.expect(t, !overflow)
+}
+
+@(test)
+graphics_telemetry_test_trace_cursor_rotates_after_observed_count_saturates :: proc(
+	t: ^testing.T,
+) {
+	telemetry: Graphics_Telemetry
+	graphics_telemetry_init(&telemetry, true)
+	defer graphics_telemetry_destroy(&telemetry)
+	telemetry.trace_count = max(u64) - 1
+	telemetry.trace_cursor = GRAPHICS_FRAME_TRACE_CAPACITY - 2
+	for sequence in u64(100) ..= 102 {
+		epoch := graphics_frame_epoch_begin(sequence, sequence, time.Tick{i64(sequence)})
+		graphics_frame_epoch_complete(&epoch, .Coalesced, time.Tick{i64(sequence + 1)})
+		graphics_telemetry_record(&telemetry, epoch)
+	}
+
+	testing.expect_value(t, telemetry.trace_count, max(u64))
+	testing.expect_value(t, telemetry.trace_cursor, 1)
+	expected_sequences := [3]u64{100, 101, 102}
+	for expected, offset in expected_sequences {
+		index := u64(GRAPHICS_FRAME_TRACE_CAPACITY - 3 + offset)
+		epoch, ok := graphics_telemetry_trace_epoch(&telemetry, index)
+		if testing.expect(t, ok) {testing.expect_value(t, epoch.sequence, expected)}
+	}
+	snapshot := graphics_telemetry_snapshot(&telemetry, time.Tick{200})
+	testing.expect_value(t, snapshot.trace_observed, max(u64))
+	testing.expect_value(t, snapshot.trace_retained, u64(GRAPHICS_FRAME_TRACE_CAPACITY))
 }
 
 @(test)

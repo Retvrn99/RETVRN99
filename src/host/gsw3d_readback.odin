@@ -94,6 +94,9 @@ gsw3d_debug_readback_rgba_sync :: proc(
 	width, height: u32,
 	destination: []u8,
 ) -> bool {
+	if renderer != nil && renderer.readback_counter != nil {
+		host_presentation_metric_add(renderer.readback_counter, 1)
+	}
 	if renderer == nil ||
 	   !renderer.live ||
 	   renderer.gpu == nil ||

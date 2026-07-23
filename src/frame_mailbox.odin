@@ -5,6 +5,7 @@ import "core:sync"
 import "core:time"
 import host "host"
 import machine "machine"
+import contract "presentation"
 import vga "vga"
 
 Frame_Slot_State :: enum {
@@ -15,10 +16,11 @@ Frame_Slot_State :: enum {
 }
 
 Frame_Slot :: struct {
-	state:           Frame_Slot_State,
-	scanout:         vga.Scanout_Descriptor,
-	epoch:           Graphics_Frame_Epoch,
-	producer_sample: Graphics_Producer_Sample,
+	state:                         Frame_Slot_State,
+	reserved_lifecycle_generation: u64,
+	scanout:                       vga.Scanout_Descriptor,
+	epoch:                         Graphics_Frame_Epoch,
+	producer_sample:               Graphics_Producer_Sample,
 }
 
 Frame_Mailbox :: struct {
@@ -29,6 +31,15 @@ Frame_Mailbox :: struct {
 	next_epoch:           u64,
 	lifecycle_generation: u64,
 	telemetry:            Graphics_Telemetry,
+}
+
+Frame_Mailbox_Current_Commit_Proc :: proc(ctx: rawptr) -> bool
+
+Frame_Mailbox_Current_Commit_Result :: enum u8 {
+	Invalid,
+	Stale,
+	Rejected,
+	Committed,
 }
 
 @(private = "file")
@@ -72,9 +83,11 @@ frame_mailbox_begin_at :: proc(
 		if slot.state == .Free {chosen = i; break}
 	}
 	if chosen < 0 {
-		oldest := max(u64)
+		oldest: u64
 		for &slot, i in mailbox.slots {
-			if slot.state == .Ready && slot.scanout.generation < oldest {
+			if slot.state == .Ready &&
+			   (chosen < 0 ||
+					   contract.generation_order(slot.scanout.generation, oldest) == .Older) {
 				oldest = slot.scanout.generation
 				chosen = i
 			}
@@ -91,7 +104,9 @@ frame_mailbox_begin_at :: proc(
 		newest_sequence: u64
 		for &ready, i in mailbox.slots {
 			if ready.state == .Ready &&
-			   (newest_ready < 0 || ready.epoch.sequence > newest_sequence) {
+			   (newest_ready < 0 ||
+					   contract.generation_order(ready.epoch.sequence, newest_sequence) ==
+						   .Newer) {
 				newest_ready = i
 				newest_sequence = ready.epoch.sequence
 			}
@@ -108,6 +123,7 @@ frame_mailbox_begin_at :: proc(
 	}
 	slot := &mailbox.slots[chosen]
 	slot.state = .Writing
+	slot.reserved_lifecycle_generation = mailbox.lifecycle_generation
 	mailbox.next_epoch += 1
 	if mailbox.next_epoch == 0 {mailbox.next_epoch = 1}
 	slot.epoch = graphics_telemetry_begin_epoch(
@@ -116,10 +132,7 @@ frame_mailbox_begin_at :: proc(
 		generation,
 		now,
 	)
-	graphics_frame_epoch_transfer_input_producer_correlation(
-		&slot.epoch,
-		&coalesced_correlation,
-	)
+	graphics_frame_epoch_transfer_input_producer_correlation(&slot.epoch, &coalesced_correlation)
 	slot.epoch.lifecycle_generation = mailbox.lifecycle_generation
 	slot.producer_sample = producer_sample
 	sync.unlock(&mailbox.mu)
@@ -130,18 +143,29 @@ frame_mailbox_begin :: proc(mailbox: ^Frame_Mailbox, generation: u64) -> (^Frame
 	return frame_mailbox_begin_at(mailbox, generation, time.tick_now(), {})
 }
 
-frame_mailbox_commit :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot, ready: bool) {
-	if mailbox == nil || slot == nil {return}
+frame_mailbox_commit :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot, ready: bool) -> bool {
+	if mailbox == nil || slot == nil {return false}
 	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
 	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	if slot.state != .Writing {return false}
+	if slot.reserved_lifecycle_generation != mailbox.lifecycle_generation {
+		if slot.epoch.result == .Incomplete && slot.epoch.sequence != 0 {
+			graphics_frame_epoch_complete(&slot.epoch, .Reset, time.tick_now())
+			graphics_telemetry_record(&mailbox.telemetry, slot.epoch)
+		}
+		slot.state = .Free
+		return false
+	}
 	if ready {
 		slot.state = .Ready
 		mailbox.published = slot.scanout.generation
 		mailbox.has_frame = true
+		return true
 	} else {
 		slot.state = .Free
 	}
-	sync.unlock(&mailbox.mu)
+	return false
 }
 
 frame_mailbox_publish_observed :: proc(
@@ -169,9 +193,14 @@ frame_mailbox_publish_observed :: proc(
 	}
 
 	graphics_frame_epoch_capture_begin(&slot.epoch, time.tick_now())
-	if !machine.machine_capture_scanout(source, &slot.scanout) {
+	if !machine.machine_capture_scanout(
+		source,
+		&slot.scanout,
+		slot.reserved_lifecycle_generation,
+	) {
 		failed_at := time.tick_now()
-		graphics_frame_epoch_capture_complete(&slot.epoch, 0, failed_at)
+		graphics_frame_epoch_descriptor_copy(&slot.epoch, slot.scanout.copy_duration_ns)
+		graphics_frame_epoch_capture_complete(&slot.epoch, slot.scanout.bytes_copied, failed_at)
 		_ = frame_mailbox_graphics_epoch_complete_and_record(
 			mailbox,
 			&slot.epoch,
@@ -182,17 +211,18 @@ frame_mailbox_publish_observed :: proc(
 			postmortem_state.host_stage = .Failed
 			_ = graphics_postmortem_publish_state(postmortem, postmortem_state)
 		}
-		frame_mailbox_commit(mailbox, slot, false)
+		_ = frame_mailbox_commit(mailbox, slot, false)
 		return false
 	}
+	slot.scanout.legacy_update.header.lifecycle_generation = slot.reserved_lifecycle_generation
 	graphics_frame_epoch_descriptor_copy(&slot.epoch, slot.scanout.copy_duration_ns)
 	graphics_frame_epoch_capture_complete(&slot.epoch, slot.scanout.bytes_copied, time.tick_now())
-	frame_mailbox_commit(mailbox, slot, true)
+	committed := frame_mailbox_commit(mailbox, slot, true)
 	if postmortem != nil {
-		postmortem_state.host_stage = .Mailbox
+		postmortem_state.host_stage = committed ? .Mailbox : .Failed
 		_ = graphics_postmortem_publish_state(postmortem, postmortem_state)
 	}
-	return true
+	return committed
 }
 
 frame_mailbox_publish :: proc(mailbox: ^Frame_Mailbox, source: ^machine.Machine) -> bool {
@@ -206,7 +236,8 @@ frame_mailbox_acquire :: proc(mailbox: ^Frame_Mailbox) -> ^Frame_Slot {
 	chosen := -1
 	newest: u64
 	for &slot, i in mailbox.slots {
-		if slot.state == .Ready && (chosen < 0 || slot.scanout.generation > newest) {
+		if slot.state == .Ready &&
+		   (chosen < 0 || contract.generation_order(slot.scanout.generation, newest) == .Newer) {
 			chosen = i
 			newest = slot.scanout.generation
 		}
@@ -377,6 +408,29 @@ frame_mailbox_graphics_epoch_current :: proc(
 	defer sync.unlock(&mailbox.mu)
 	frame_mailbox_ensure_lifecycle_locked(mailbox)
 	return epoch.lifecycle_generation == mailbox.lifecycle_generation
+}
+
+frame_mailbox_graphics_epoch_commit_current :: proc(
+	mailbox: ^Frame_Mailbox,
+	epoch: ^Graphics_Frame_Epoch,
+	ctx: rawptr,
+	commit: Frame_Mailbox_Current_Commit_Proc,
+) -> Frame_Mailbox_Current_Commit_Result {
+	if mailbox == nil || epoch == nil || commit == nil {return .Invalid}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	if epoch.lifecycle_generation != mailbox.lifecycle_generation {return .Stale}
+	if !commit(ctx) {return .Rejected}
+	return .Committed
+}
+
+frame_mailbox_lifecycle_generation :: proc(mailbox: ^Frame_Mailbox) -> u64 {
+	if mailbox == nil {return 0}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	return mailbox.lifecycle_generation
 }
 
 frame_mailbox_graphics_telemetry_take_window :: proc(

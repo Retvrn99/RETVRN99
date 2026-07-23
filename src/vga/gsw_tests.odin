@@ -46,7 +46,7 @@ gsw_vga_test_raw_mmio_write_metrics_include_rejected_accesses :: proc(t: ^testin
 }
 
 @(test)
-gsw_vga_test_v2_surface_offset_present :: proc(t: ^testing.T) {
+gsw_vga_test_v2_surface_offset_present_publishes_without_legacy_mutation :: proc(t: ^testing.T) {
 	v: Vga
 	framebuffer := test_vga_init(t, &v)
 	defer delete(framebuffer)
@@ -68,17 +68,38 @@ gsw_vga_test_v2_surface_offset_present :: proc(t: ^testing.T) {
 	gsw_test_wr32(present, 24, 1)
 	gsw_test_wr32(present, 28, 8)
 	gsw_test_wr32(present, 32, u32(Gsw_Pixel_Format.Indexed_8))
+	legacy := gsw_test_legacy_state(&v)
+	sequence := vga_presentation_sequence(&v)
 	g.ring_tail = 40
 	gsw_vga_process(&g, ram)
 
-	testing.expect_value(t, v.dispi[DISPI_INDEX_X_OFFSET], u16(4))
-	testing.expect_value(t, v.dispi[DISPI_INDEX_Y_OFFSET], u16(0))
-	frame := vga_display_frame(&v)
-	testing.expect_value(t, frame.pixels[0], u32(0xFF00_AAAA))
+	gsw_test_expect_legacy_unchanged(t, &v, legacy)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 1)
+	snapshot := gsw_vga_presentation_snapshot(&g)
+	testing.expect(t, snapshot.active_valid)
+	testing.expect_value(t, snapshot.active.header.sequence, sequence + 1)
+	testing.expect_value(t, snapshot.active.header.lifecycle_generation, u64(1))
+	testing.expect(t, snapshot.active.header.mode_generation != 0)
+	testing.expect_value(t, snapshot.active.header.device_generation, u64(1))
+	testing.expect_value(t, snapshot.active.header.surface.id, GSW_IMPLICIT_SURFACE_ID)
+	testing.expect(t, snapshot.active.header.surface.generation != 0)
+	testing.expect_value(t, snapshot.active.source_offset, u64(4))
+	testing.expect_value(t, snapshot.active.source_pitch, u32(8))
+	testing.expect_value(t, snapshot.active.header.source.width, u32(2))
+	testing.expect_value(t, snapshot.active.header.source.height, u32(1))
+	testing.expect_value(t, snapshot.active.header.dirty.count, u32(1))
+	testing.expect_value(t, snapshot.active.header.interval, u32(0))
+	testing.expect_value(t, snapshot.active.header.completion.value, u64(11))
+	testing.expect_value(t, snapshot.active.header.completion.generation, u64(1))
+	testing.expect(t, snapshot.active.header.source_kind == .Gsw_Snapshot)
+	testing.expect(t, snapshot.active.header.ownership == .Vm_Framebuffer)
+	testing.expect_value(t, g.present_generation, u64(1))
+	testing.expect_value(t, g.metrics.presents, u64(1))
+	testing.expect_value(t, g.metrics.commands, u64(1))
 }
 
 @(test)
-gsw_vga_test_v2_present_flips_between_surface_offsets :: proc(t: ^testing.T) {
+gsw_vga_test_v2_present_identity_change_advances_surface_generation :: proc(t: ^testing.T) {
 	v: Vga
 	framebuffer := test_vga_init(t, &v)
 	defer delete(framebuffer)
@@ -110,18 +131,30 @@ gsw_vga_test_v2_present_flips_between_surface_offsets :: proc(t: ^testing.T) {
 	gsw_test_wr32(second, 28, 8)
 	gsw_test_wr32(second, 32, u32(Gsw_Pixel_Format.Indexed_8))
 
+	legacy := gsw_test_legacy_state(&v)
+	sequence := vga_presentation_sequence(&v)
 	g.ring_tail = 40
 	gsw_vga_process(&g, ram)
-	first_frame := vga_display_frame(&v)
-	testing.expect_value(t, first_frame.pixels[0], u32(0xFFFF_0000))
+	first_snapshot := gsw_vga_presentation_snapshot(&g)
+	testing.expect(t, first_snapshot.active_valid)
+	testing.expect_value(t, first_snapshot.active.source_offset, u64(0))
+	first_surface_generation := first_snapshot.active.header.surface.generation
 	g.ring_tail = 80
 	gsw_vga_process(&g, ram)
-	testing.expect_value(t, v.dispi[DISPI_INDEX_X_OFFSET], u16(0))
-	testing.expect_value(t, v.dispi[DISPI_INDEX_Y_OFFSET], u16(2))
-	second_frame := vga_display_frame(&v)
-	testing.expect_value(t, second_frame.pixels[0], u32(0xFF00_FF00))
+	second_snapshot := gsw_vga_presentation_snapshot(&g)
+	gsw_test_expect_legacy_unchanged(t, &v, legacy)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 2)
+	testing.expect(t, second_snapshot.active_valid)
+	testing.expect_value(t, second_snapshot.active.source_offset, u64(16))
+	testing.expect(t, second_snapshot.active.header.surface.generation != first_surface_generation)
+	testing.expect_value(
+		t,
+		second_snapshot.active.header.mode_generation,
+		first_snapshot.active.header.mode_generation,
+	)
 	testing.expect_value(t, g.completed_fence, u64(2))
 	testing.expect_value(t, g.metrics.presents, u64(2))
+	testing.expect_value(t, g.present_generation, u64(2))
 }
 
 @(test)
@@ -168,7 +201,7 @@ gsw_vga_test_mode_and_present_reject_unrepresentable_surfaces_without_scanout ::
 }
 
 @(test)
-gsw_vga_test_2d_writes_invalidate_only_the_visible_surface_span :: proc(t: ^testing.T) {
+gsw_vga_test_2d_writes_do_not_fabricate_legacy_content :: proc(t: ^testing.T) {
 	v: Vga
 	framebuffer := test_vga_init(t, &v)
 	defer delete(framebuffer)
@@ -179,62 +212,55 @@ gsw_vga_test_2d_writes_invalidate_only_the_visible_surface_span :: proc(t: ^test
 	gsw_vga_init(&g, framebuffer)
 	defer gsw_vga_destroy(&g)
 	gsw_vga_attach_scanout(&g, &v)
+	testing.expect(t, test_set_vbe_mode(&v, 1, 2, 32, DISPI_NOCLEARMEM | DISPI_LFB_ENABLED))
+	testing.expect(t, dispi_write_register(&v, DISPI_INDEX_VIRT_WIDTH, 2))
+	_ = vga_display_frame(&v)
+	testing.expect(t, v.frame_valid)
 	g.ring_gpa = 128
 	g.ring_size = 256
+	legacy := gsw_test_legacy_state(&v)
+	sequence := vga_presentation_sequence(&v)
+	mode_clock := v.presentation_mode_clock
 
-	present := ram[128:168]
-	gsw_test_header(present, .Present, 1, GSW_VGA_COMMAND_VERSION_2)
-	gsw_test_wr32(present, 20, 1)
-	gsw_test_wr32(present, 24, 2)
-	gsw_test_wr32(present, 28, 8)
-	gsw_test_wr32(present, 32, u32(Gsw_Pixel_Format.Xrgb_8888))
-	g.ring_tail = 40
-	gsw_vga_process(&g, ram)
-	_ = vga_display_frame(&v)
-	testing.expect(t, v.frame_valid)
-
-	visible_fill := ram[168:208]
-	gsw_test_header(visible_fill, .Fill, 2)
-	gsw_test_wr32(visible_fill, 20, 8)
-	gsw_test_wr32(visible_fill, 24, 1)
-	gsw_test_wr32(visible_fill, 28, 1)
-	gsw_test_wr32(visible_fill, 32, 0x0011_2233)
-	gsw_test_wr32(visible_fill, 36, u32(Gsw_Pixel_Format.Xrgb_8888))
-	generation := v.content_generation
-	g.ring_tail = 80
-	gsw_vga_process(&g, ram)
-	testing.expect_value(t, v.content_generation, generation + 1)
-	testing.expect(t, !v.frame_valid)
-	_ = vga_display_frame(&v)
-
-	offscreen_fill := ram[208:248]
-	gsw_test_header(offscreen_fill, .Fill, 3)
-	gsw_test_wr32(offscreen_fill, 16, 4)
-	gsw_test_wr32(offscreen_fill, 20, 8)
-	gsw_test_wr32(offscreen_fill, 24, 1)
-	gsw_test_wr32(offscreen_fill, 28, 2)
-	gsw_test_wr32(offscreen_fill, 32, 0x0044_5566)
-	gsw_test_wr32(offscreen_fill, 36, u32(Gsw_Pixel_Format.Xrgb_8888))
-	generation = v.content_generation
-	g.ring_tail = 120
-	gsw_vga_process(&g, ram)
-	testing.expect_value(t, v.content_generation, generation)
-	testing.expect(t, v.frame_valid)
-
-	copy_command := ram[248:292]
-	gsw_test_header(copy_command, .Copy, 4)
-	gsw_test_wr32(copy_command, 16, 128)
-	gsw_test_wr32(copy_command, 20, 8)
+	fill := ram[128:168]
+	gsw_test_header(fill, .Fill, 1)
+	gsw_test_wr32(fill, 20, 8)
+	gsw_test_wr32(fill, 24, 1)
+	gsw_test_wr32(fill, 28, 1)
+	gsw_test_wr32(fill, 32, 0x0011_2233)
+	gsw_test_wr32(fill, 36, u32(Gsw_Pixel_Format.Xrgb_8888))
+	copy_command := ram[168:212]
+	gsw_test_header(copy_command, .Copy, 2)
+	gsw_test_wr32(copy_command, 16, 0)
+	gsw_test_wr32(copy_command, 20, 64)
 	gsw_test_wr32(copy_command, 24, 8)
 	gsw_test_wr32(copy_command, 28, 8)
 	gsw_test_wr32(copy_command, 32, 1)
 	gsw_test_wr32(copy_command, 36, 1)
 	gsw_test_wr32(copy_command, 40, u32(Gsw_Pixel_Format.Xrgb_8888))
-	generation = v.content_generation
-	g.ring_tail = 164
+	gsw2d_test_register(t, &g, 7, 128, 2, 1, 8, .Xrgb_8888)
+	surface_fill := ram[212:252]
+	gsw_test_header(surface_fill, .Surface_Fill, 3, GSW_VGA_COMMAND_VERSION_3)
+	gsw_test_wr32(surface_fill, 16, 7)
+	gsw_test_wr32(surface_fill, 28, 1)
+	gsw_test_wr32(surface_fill, 32, 1)
+	gsw_test_wr32(surface_fill, 36, 0x0044_5566)
+	surface_dirty := ram[252:288]
+	gsw_test_header(surface_dirty, .Surface_Dirty, 4, GSW_VGA_COMMAND_VERSION_3)
+	gsw_test_wr32(surface_dirty, 16, 7)
+	gsw_test_wr32(surface_dirty, 28, 1)
+	gsw_test_wr32(surface_dirty, 32, 1)
+	g.ring_tail = 160
 	gsw_vga_process(&g, ram)
-	testing.expect_value(t, v.content_generation, generation + 1)
-	testing.expect(t, !v.frame_valid)
+
+	gsw_test_expect_legacy_unchanged(t, &v, legacy)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence)
+	testing.expect_value(t, v.presentation_mode_clock, mode_clock)
+	testing.expect_value(t, framebuffer[0], u8(0x33))
+	testing.expect_value(t, framebuffer[64], u8(0x33))
+	testing.expect_value(t, framebuffer[128], u8(0x66))
+	testing.expect_value(t, g.metrics.fills, u64(2))
+	testing.expect_value(t, g.metrics.copies, u64(1))
 }
 
 @(test)
@@ -500,7 +526,7 @@ gsw_vga_test_rejects_wrapping_mode_and_fill_dimensions :: proc(t: ^testing.T) {
 }
 
 @(test)
-gsw_vga_test_mode_palette_and_present_drive_scanout :: proc(t: ^testing.T) {
+gsw_vga_test_mode_palette_and_present_have_separate_legacy_effects :: proc(t: ^testing.T) {
 	v: Vga
 	framebuffer := test_vga_init(t, &v)
 	defer delete(framebuffer)
@@ -509,6 +535,7 @@ gsw_vga_test_mode_palette_and_present_drive_scanout :: proc(t: ^testing.T) {
 	defer delete(ram)
 	g: Gsw_Vga
 	gsw_vga_init(&g, framebuffer)
+	defer gsw_vga_destroy(&g)
 	gsw_vga_attach_scanout(&g, &v)
 	g.ring_gpa = 512
 	g.ring_size = 256
@@ -527,18 +554,32 @@ gsw_vga_test_mode_palette_and_present_drive_scanout :: proc(t: ^testing.T) {
 	present := ram[572:588]
 	gsw_test_header(present, .Present, 10)
 	framebuffer[0] = 1
+	legacy := gsw_test_legacy_state(&v)
+	sequence := vga_presentation_sequence(&v)
+	g.ring_tail = 60
+	gsw_vga_process(&g, ram)
+	gsw_test_expect_legacy_unchanged(t, &v, legacy)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence)
+	testing.expect_value(t, g.metrics.palette_updates, u64(1))
+	testing.expect_value(t, g.palette.dac_bits, GSW_PALETTE_DAC_BITS)
+	testing.expect_value(t, g.palette.entries[3], u8(0xFF))
+	testing.expect_value(t, g.palette.entries[4], u8(0))
+	testing.expect_value(t, g.palette.entries[5], u8(0))
 	g.ring_tail = 76
 	gsw_vga_process(&g, ram)
 
-	testing.expect(t, vga_vbe_enabled(&v))
-	testing.expect_value(t, v.dispi[DISPI_INDEX_XRES], u16(2))
-	testing.expect_value(t, g.metrics.palette_updates, u64(1))
-	frame := vga_display_frame(&v)
-	testing.expect_value(t, frame.pixels[0], u32(0xFFFF_0000))
+	gsw_test_expect_legacy_unchanged(t, &v, legacy)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 1)
+	testing.expect_value(t, g.width, u32(2))
+	testing.expect_value(t, g.height, u32(1))
+	snapshot := gsw_vga_presentation_snapshot(&g)
+	testing.expect(t, snapshot.active_valid)
+	testing.expect(t, snapshot.active.header.format == .Indexed_8)
+	testing.expect_value(t, snapshot.active.header.completion.value, u64(10))
 }
 
 @(test)
-gsw_vga_test_present_preserves_8bit_dac_mode :: proc(t: ^testing.T) {
+gsw_vga_test_palette_does_not_inherit_legacy_dac_width :: proc(t: ^testing.T) {
 	v: Vga
 	framebuffer := test_vga_init(t, &v)
 	defer delete(framebuffer)
@@ -546,6 +587,7 @@ gsw_vga_test_present_preserves_8bit_dac_mode :: proc(t: ^testing.T) {
 	ram := make([]u8, 1024)
 	defer delete(ram)
 	v.dispi[DISPI_INDEX_ENABLE] |= DISPI_8BIT_DAC
+	v.dac[3], v.dac[4], v.dac[5] = 0x11, 0x22, 0x33
 	framebuffer[0] = 1
 
 	g: Gsw_Vga
@@ -566,12 +608,50 @@ gsw_vga_test_present_preserves_8bit_dac_mode :: proc(t: ^testing.T) {
 	gsw_test_wr32(palette, 24, 0x0080_4020)
 	present := ram[188:204]
 	gsw_test_header(present, .Present, 1)
+	legacy := gsw_test_legacy_state(&v)
+	sequence := vga_presentation_sequence(&v)
+	g.ring_tail = 60
+	gsw_vga_process(&g, ram)
+	gsw_test_expect_legacy_unchanged(t, &v, legacy)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence)
+	testing.expect_value(t, g.palette.dac_bits, GSW_PALETTE_DAC_BITS)
+	testing.expect_value(t, g.palette.entries[3], u8(0x80))
+	testing.expect_value(t, g.palette.entries[4], u8(0x40))
+	testing.expect_value(t, g.palette.entries[5], u8(0x20))
 	g.ring_tail = 76
 	gsw_vga_process(&g, ram)
 
+	gsw_test_expect_legacy_unchanged(t, &v, legacy)
+	testing.expect_value(t, vga_presentation_sequence(&v), sequence + 1)
 	testing.expect(t, v.dispi[DISPI_INDEX_ENABLE] & DISPI_8BIT_DAC != 0)
-	frame := vga_display_frame(&v)
-	testing.expect_value(t, frame.pixels[0], u32(0xFF80_4020))
+	testing.expect_value(t, v.dac[3], u8(0x11))
+	testing.expect_value(t, v.dac[4], u8(0x22))
+	testing.expect_value(t, v.dac[5], u8(0x33))
+	testing.expect(t, gsw_vga_presentation_snapshot(&g).active_valid)
+}
+
+@(test)
+gsw_vga_test_palette_rejection_is_transactional :: proc(t: ^testing.T) {
+	framebuffer: [256]u8
+	ram: [GSW_VGA_RING_MIN_SIZE]u8
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer[:])
+	defer gsw_vga_destroy(&g)
+	g.palette.entries[3], g.palette.entries[4], g.palette.entries[5] = 1, 2, 3
+	before := g.palette
+	gsw_test_header(ram[:28], .Set_Palette, 0)
+	gsw_test_wr32(ram[:28], 16, 255)
+	gsw_test_wr32(ram[:28], 20, 2)
+	gsw_test_wr32(ram[:28], 24, 0x00FF_FFFF)
+	g.ring_size = GSW_VGA_RING_MIN_SIZE
+	g.ring_tail = 28
+
+	gsw_vga_process(&g, ram[:])
+
+	testing.expect_value(t, g.palette, before)
+	testing.expect_value(t, g.metrics.palette_updates, u64(0))
+	testing.expect_value(t, g.ring_head, u32(0))
+	testing.expect(t, g.status & GSW_VGA_STATUS_ERROR != 0)
 }
 
 @(test)

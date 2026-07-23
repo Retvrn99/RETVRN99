@@ -132,6 +132,43 @@ host_gpu_surface_test_present_selects_resident_texture_without_readback :: proc(
 }
 
 @(test)
+host_gpu_surface_test_selected_resident_generation_must_match_live_surface :: proc(t: ^testing.T) {
+	h: Host
+	h.gpu_surfaces[0] = {
+		live           = true,
+		generation     = 2,
+		descriptor     = {23, 1024, 768, .Bgra8_Unorm},
+		render_texture = transmute(^sdl3.Texture)(uintptr(1)),
+	}
+	h.gpu_present = {
+		surface_id    = 23,
+		source        = {0, 0, 1024, 768},
+		destination   = {0, 0, 1024, 768},
+		canvas_width  = 1024,
+		canvas_height = 768,
+		interval      = HOST_GPU_PRESENT_INTERVAL,
+	}
+	h.presentation_state.selector.active = {
+		kind = .Gsw,
+		display_owner = .Gsw3d,
+		surface = {id = 23, generation = 1},
+		source_kind = .Gsw_Resident,
+		identity_namespace = .Gsw3d,
+	}
+
+	texture, _, has_source, selected := host_active_texture(&h)
+	testing.expect(t, texture == nil)
+	testing.expect(t, !has_source)
+	testing.expect(t, selected == nil)
+
+	h.presentation_state.selector.active.surface.generation = 2
+	texture, _, has_source, selected = host_active_texture(&h)
+	testing.expect(t, texture == h.gpu_surfaces[0].render_texture)
+	testing.expect(t, has_source)
+	testing.expect(t, selected != nil)
+}
+
+@(test)
 host_gpu_surface_test_new_legacy_frame_takes_display_ownership :: proc(t: ^testing.T) {
 	h: Host
 	h.gpu_present = {

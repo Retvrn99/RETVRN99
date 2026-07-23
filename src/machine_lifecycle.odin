@@ -9,6 +9,15 @@ import "machine"
 import "profile"
 import sdl3 "vendor:sdl3"
 
+graphics_presentation_sync_lifecycle :: proc(
+	h: ^host.Host,
+	frames: ^Frame_Mailbox,
+	machine_running: bool,
+) -> bool {
+	if !machine_running {return false}
+	return host.host_presentation_start(h, frame_mailbox_lifecycle_generation(frames))
+}
+
 vm_open_volume :: proc(c: ^Vm_Ctx) -> bool {
 	return vm_open_volume_with_adapter(c, fat32session.DEFAULT_ADAPTER)
 }

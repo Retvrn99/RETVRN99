@@ -5,14 +5,15 @@ GSW_SURFACE_LIMIT :: 256
 GSW_SURFACE_PRESENTABLE :: u32(1 << 0)
 
 Gsw_Surface :: struct {
-	id:        u32,
-	base:      u32,
-	byte_size: u32,
-	width:     u32,
-	height:    u32,
-	pitch:     u32,
-	format:    Gsw_Pixel_Format,
-	flags:     u32,
+	id:         u32,
+	base:       u32,
+	byte_size:  u32,
+	width:      u32,
+	height:     u32,
+	pitch:      u32,
+	format:     Gsw_Pixel_Format,
+	flags:      u32,
+	generation: u64,
 }
 
 @(private = "package")
@@ -29,7 +30,11 @@ gsw_surface_register :: proc(
 	format: Gsw_Pixel_Format,
 	flags: u32,
 ) -> bool {
-	if g == nil || id == 0 || byte_size == 0 || width == 0 || height == 0 ||
+	if g == nil ||
+	   id == 0 ||
+	   byte_size == 0 ||
+	   width == 0 ||
+	   height == 0 ||
 	   flags &~ GSW_SURFACE_PRESENTABLE != 0 {
 		return false
 	}
@@ -40,8 +45,7 @@ gsw_surface_register :: proc(
 	row_bytes := u64(width) * u64(bytes)
 	required := u64(height - 1) * u64(pitch) + row_bytes
 	end := u64(base) + u64(byte_size)
-	if row_bytes > u64(pitch) || required > u64(byte_size) ||
-	   end > u64(len(g.framebuffer)) {
+	if row_bytes > u64(pitch) || required > u64(byte_size) || end > u64(len(g.framebuffer)) {
 		return false
 	}
 	slot := &g.surfaces[int(id & (GSW_SURFACE_LIMIT - 1))]
@@ -52,14 +56,15 @@ gsw_surface_register :: proc(
 		if u64(base) < existing_end && u64(existing.base) < end {return false}
 	}
 	slot^ = {
-		id = id,
-		base = base,
-		byte_size = byte_size,
-		width = width,
-		height = height,
-		pitch = pitch,
-		format = format,
-		flags = flags,
+		id         = id,
+		base       = base,
+		byte_size  = byte_size,
+		width      = width,
+		height     = height,
+		pitch      = pitch,
+		format     = format,
+		flags      = flags,
+		generation = gsw_presentation_surface_created(g),
 	}
 	return true
 }
@@ -68,6 +73,7 @@ gsw_surface_register :: proc(
 gsw_surface_unregister :: proc(g: ^Gsw_Vga, id: u32) -> bool {
 	surface, ok := gsw_surface_get(g, id)
 	if !ok {return false}
+	gsw_presentation_surface_destroyed(g, surface)
 	surface^ = {}
 	return true
 }
@@ -75,6 +81,7 @@ gsw_surface_unregister :: proc(g: ^Gsw_Vga, id: u32) -> bool {
 @(private = "package")
 gsw_surface_reset :: proc(g: ^Gsw_Vga) {
 	if g == nil {return}
+	gsw_presentation_device_reset(g)
 	for &surface in g.surfaces {surface = {}}
 }
 
@@ -83,15 +90,28 @@ gsw_registered_surface_rect :: proc(
 	g: ^Gsw_Vga,
 	surface: ^Gsw_Surface,
 	x, y, width, height: u32,
-) -> (u64, bool) {
-	if g == nil || surface == nil || surface.id == 0 ||
-	   x > surface.width || width > surface.width - x ||
-	   y > surface.height || height > surface.height - y {
+) -> (
+	u64,
+	bool,
+) {
+	if g == nil ||
+	   surface == nil ||
+	   surface.id == 0 ||
+	   x > surface.width ||
+	   width > surface.width - x ||
+	   y > surface.height ||
+	   height > surface.height - y {
 		return 0, false
 	}
 	start, ok := gsw_surface_rect(
-		len(g.framebuffer), surface.base, surface.pitch,
-		x, y, width, height, gsw_format_bytes(surface.format),
+		len(g.framebuffer),
+		surface.base,
+		surface.pitch,
+		x,
+		y,
+		width,
+		height,
+		gsw_format_bytes(surface.format),
 	)
 	if !ok {return 0, false}
 	relative := start - u64(surface.base)

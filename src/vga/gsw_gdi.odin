@@ -296,16 +296,6 @@ gsw_vga_execute_gdi_blt :: proc(g: ^Gsw_Vga, command: []u8) -> bool {
 			}
 		}
 	}
-	gsw_vga_note_surface_write(
-		g,
-		destination_base,
-		destination_pitch,
-		destination_x,
-		destination_y,
-		width,
-		height,
-		bytes,
-	)
 	g.metrics.blits += 1
 	g.metrics.software_pixels += u64(width) * u64(height)
 	return true

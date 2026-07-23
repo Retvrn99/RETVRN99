@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
+import contract "../presentation"
 import vga "../vga"
 import "core:time"
 import sdl3 "vendor:sdl3"
@@ -98,43 +99,87 @@ host_gsw3d_proof_present :: proc(ctx: rawptr, present: ^Gsw3d_Proof_Present) -> 
 			   present.destination.width,
 			   present.destination.height,
 		   ) {return false}
-	return host_gpu_surface_present(
-		h,
-		{
-			surface_id = present.surface_id,
-			source = {
-				present.source.x,
-				present.source.y,
-				present.source.width,
-				present.source.height,
+	extent := contract.Extent{present.source.width, present.source.height}
+	canvas := contract.Extent{present.destination.width, present.destination.height}
+	source := contract.Rect {
+		present.source.x,
+		present.source.y,
+		present.source.width,
+		present.source.height,
+	}
+	destination := contract.Rect {
+		present.destination.x,
+		present.destination.y,
+		present.destination.width,
+		present.destination.height,
+	}
+	dirty: contract.Rect_Set
+	_ = contract.rect_set_append(&dirty, source)
+	completion: contract.Completion
+	if present.fence != 0 {completion = {present.fence, present.generation}}
+	mode_key := vga.vga_presentation_mode_key(canvas.width, canvas.height)
+	mode_clock := h.presentation_state.mode_clock
+	mode_generation, _ := contract.mode_clock_observe(&mode_clock, .Gsw3d, mode_key)
+	record := contract.Gsw_Present {
+		header = {
+			sequence = contract.generation_next(h.presentation_state.sequence),
+			lifecycle_generation = h.presentation_state.lifecycle,
+			mode_generation = mode_generation,
+			mode_key = mode_key,
+			identity_namespace = .Gsw3d,
+			device_generation = present.generation,
+			surface = {
+				id = u64(present.surface_id),
+				generation = host_gpu_surface_generation(h, present.surface_id),
 			},
-			destination = {
-				present.destination.x,
-				present.destination.y,
-				present.destination.width,
-				present.destination.height,
-			},
-			canvas_width = present.destination.width,
-			canvas_height = present.destination.height,
+			format = .Bgra_8888,
+			surface_extent = extent,
+			canvas_extent = canvas,
+			source = source,
+			destination = destination,
+			dirty = dirty,
 			interval = present.interval,
+			completion = completion,
+			source_kind = .Gsw_Resident,
+			ownership = .Host_Resident,
 		},
-	)
+	}
+	admission := host_presentation_admit_gsw(h, record)
+	physical := Host_Gpu_Present {
+		surface_id    = present.surface_id,
+		source        = {
+			present.source.x,
+			present.source.y,
+			present.source.width,
+			present.source.height,
+		},
+		destination   = {
+			present.destination.x,
+			present.destination.y,
+			present.destination.width,
+			present.destination.height,
+		},
+		canvas_width  = present.destination.width,
+		canvas_height = present.destination.height,
+		interval      = present.interval,
+	}
+	return host_presentation_commit_resident(h, &admission, physical)
 }
 
 host_gsw3d_proof_reset :: proc(ctx: rawptr, generation: u64) -> bool {
 	h := (^Host)(ctx)
 	if h == nil {return false}
 	gsw3d_triangle_discard_other_generations(&h.gsw3d_triangle, generation)
+	_ = host_presentation_invalidate_active(h, .Gsw3d, .Device_Reset)
 	if host_gpu_surface_texture(h, GSW3D_PROOF_TARGET_ID) != nil &&
 	   !host_gpu_surface_destroy(h, GSW3D_PROOF_TARGET_ID) {return false}
-	if h.gpu_present.surface_id == GSW3D_PROOF_TARGET_ID {h.gpu_present = {}}
-	h.has_frame = false
 	return true
 }
 
 host_gsw3d_proof_enable :: proc(h: ^Host) -> bool {
 	if h == nil || h.gpu == nil || h.gsw3d_proof_enabled {return false}
 	if !gsw3d_triangle_renderer_init(&h.gsw3d_triangle, h.gpu) {return false}
+	h.gsw3d_triangle.readback_counter = &h.presentation_metrics.readback_requests
 	if !gsw3d_proof_executor_init(
 		&h.gsw3d_executor,
 		{

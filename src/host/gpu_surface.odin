@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package host
 
+import contract "../presentation"
 import sdl3 "vendor:sdl3"
 
 HOST_GPU_SURFACE_CAPACITY :: 256
@@ -38,6 +39,7 @@ Host_Gpu_Present :: struct {
 
 Host_Gpu_Surface :: struct {
 	live:           bool,
+	generation:     u64,
 	descriptor:     Host_Gpu_Surface_Descriptor,
 	byte_size:      u64,
 	gpu_texture:    ^sdl3.GPUTexture,
@@ -131,7 +133,7 @@ host_gpu_present_destination :: proc(base: sdl3.FRect, present: Host_Gpu_Present
 	}
 }
 
-@(private = "file")
+@(private = "package")
 host_gpu_surface_find :: proc(h: ^Host, id: u32) -> ^Host_Gpu_Surface {
 	if h == nil || id == 0 {return nil}
 	for &surface in h.gpu_surfaces {
@@ -149,6 +151,11 @@ host_gpu_surface_free_slot :: proc(h: ^Host) -> ^Host_Gpu_Surface {
 host_gpu_surface_texture :: proc(h: ^Host, id: u32) -> ^sdl3.GPUTexture {
 	surface := host_gpu_surface_find(h, id)
 	return surface != nil ? surface.gpu_texture : nil
+}
+
+host_gpu_surface_generation :: proc(h: ^Host, id: u32) -> u64 {
+	surface := host_gpu_surface_find(h, id)
+	return surface != nil ? surface.generation : 0
 }
 
 @(private = "package")
@@ -262,8 +269,23 @@ host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descripto
 	}
 	byte_size, _ := host_gpu_surface_byte_size(descriptor)
 	previous := slot^
+	if previous.live &&
+	   previous.generation != 0 &&
+	   h.presentation_state.selector.active.kind == .Gsw &&
+	   h.presentation_state.selector.active.identity_namespace == .Gsw3d &&
+	   h.presentation_state.gsw.header.surface.id == u64(descriptor.id) &&
+	   h.presentation_state.gsw.header.surface.generation == previous.generation {
+		action := host_presentation_invalidate_active(h, .Gsw3d, .Surface_Destroyed)
+		if action != .Restore_Legacy && action != .Clear {
+			sdl3.DestroyTexture(render_texture)
+			sdl3.ReleaseGPUTexture(h.gpu, gpu_texture)
+			return false
+		}
+	}
+	h.gpu_surface_generation = contract.generation_next(h.gpu_surface_generation)
 	slot^ = {
 		live           = true,
+		generation     = h.gpu_surface_generation,
 		descriptor     = descriptor,
 		byte_size      = byte_size,
 		gpu_texture    = gpu_texture,
@@ -273,7 +295,8 @@ host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descripto
 	if previous.live {
 		// Replacement storage is undefined until the backend renders or uploads
 		// it, even when the new descriptor has the same dimensions and format.
-		if h.gpu_present.surface_id == descriptor.id {
+		if h.gpu_present.surface_id == descriptor.id &&
+		   h.presentation_state.selector.active.kind == .None {
 			h.gpu_present = {}
 			h.has_frame = false
 		}
@@ -286,7 +309,14 @@ host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descripto
 host_gpu_surface_destroy :: proc(h: ^Host, id: u32) -> bool {
 	surface := host_gpu_surface_find(h, id)
 	if surface == nil {return false}
-	if h.gpu_present.surface_id == id {
+	if h.presentation_state.selector.active.kind == .Gsw &&
+	   h.presentation_state.selector.active.identity_namespace == .Gsw3d &&
+	   h.presentation_state.gsw.header.surface.id == u64(id) &&
+	   h.presentation_state.gsw.header.surface.generation == surface.generation {
+		action := host_presentation_invalidate_active(h, .Gsw3d, .Surface_Destroyed)
+		if action != .Restore_Legacy && action != .Clear {return false}
+	}
+	if h.gpu_present.surface_id == id && h.presentation_state.selector.active.kind == .None {
 		h.gpu_present = {}
 		h.has_frame = false
 	}
@@ -301,6 +331,7 @@ host_gpu_surface_destroy :: proc(h: ^Host, id: u32) -> bool {
 
 host_gpu_surfaces_destroy :: proc(h: ^Host) {
 	if h == nil {return}
+	_ = host_presentation_invalidate_active(h, .Gsw3d, .Process_Exit)
 	for &surface in h.gpu_surfaces {
 		if !surface.live {continue}
 		if surface.render_texture != nil {sdl3.DestroyTexture(surface.render_texture)}
@@ -328,10 +359,18 @@ host_gpu_surface_present :: proc(h: ^Host, present: Host_Gpu_Present) -> bool {
 }
 
 @(private = "package")
-host_active_texture :: proc(h: ^Host) -> (^sdl3.Texture, sdl3.FRect, bool, ^Host_Gpu_Present) {
+host_active_gpu_texture :: proc(h: ^Host) -> (^sdl3.Texture, sdl3.FRect, bool, ^Host_Gpu_Present) {
 	if h == nil {return nil, {}, false, nil}
 	if h.gpu_present.surface_id != 0 {
 		surface := host_gpu_surface_find(h, h.gpu_present.surface_id)
+		active := h.presentation_state.selector.active
+		if active.kind == .Gsw &&
+		   active.source_kind == .Gsw_Resident &&
+		   (active.surface.id != u64(h.gpu_present.surface_id) ||
+				   surface == nil ||
+				   surface.generation != active.surface.generation) {
+			return nil, {}, false, nil
+		}
 		if surface != nil && surface.render_texture != nil {
 			source := sdl3.FRect {
 				f32(h.gpu_present.source.x),
@@ -343,4 +382,13 @@ host_active_texture :: proc(h: ^Host) -> (^sdl3.Texture, sdl3.FRect, bool, ^Host
 		}
 	}
 	return h.tex, {}, false, nil
+}
+
+@(private = "package")
+host_active_texture :: proc(h: ^Host) -> (^sdl3.Texture, sdl3.FRect, bool, ^Host_Gpu_Present) {
+	if h == nil {return nil, {}, false, nil}
+	if h.presentation_state.selector.active.kind != .None {
+		return host_presentation_active_texture(h)
+	}
+	return host_active_gpu_texture(h)
 }

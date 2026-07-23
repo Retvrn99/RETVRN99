@@ -29,6 +29,7 @@ Graphics_Frame_Result :: enum u8 {
 
 Graphics_Frame_Source :: enum u8 {
 	Legacy_Scanout,
+	Gsw2d,
 	Gsw3d,
 }
 
@@ -49,10 +50,15 @@ Graphics_Frame_Epoch :: struct {
 	issued_at:              time.Tick,
 	capture_started:        time.Tick,
 	capture_ended:          time.Tick,
+	first_render_started:   time.Tick,
 	render_started:         time.Tick,
 	render_ended:           time.Tick,
+	render_work_ns:         u64,
+	render_work_samples:    u64,
 	upload_started:         time.Tick,
 	upload_ended:           time.Tick,
+	upload_work_ns:         u64,
+	upload_work_samples:    u64,
 	gpu_drain_started:      time.Tick,
 	gpu_drain_ended:        time.Tick,
 	gpu_requests:           u64,
@@ -142,6 +148,7 @@ Graphics_Telemetry :: struct {
 	reported_sequence:    u64,
 	trace:                ^[GRAPHICS_FRAME_TRACE_CAPACITY]Graphics_Frame_Epoch,
 	trace_count:          u64,
+	trace_cursor:         int,
 	pending_input_events: u64,
 	pending_input_ns:     u64,
 	pending_input_max_ns: u64,
@@ -218,19 +225,28 @@ graphics_telemetry_window_touch :: proc(telemetry: ^Graphics_Telemetry, now: tim
 graphics_telemetry_note_publish_attempt :: proc(telemetry: ^Graphics_Telemetry, now: time.Tick) {
 	if telemetry == nil {return}
 	graphics_telemetry_window_touch(telemetry, now)
-	telemetry.current.publish_attempts += 1
+	telemetry.current.publish_attempts = graphics_counter_add(
+		telemetry.current.publish_attempts,
+		1,
+	)
 }
 
 graphics_telemetry_note_unchanged :: proc(telemetry: ^Graphics_Telemetry, now: time.Tick) {
 	if telemetry == nil {return}
 	graphics_telemetry_window_touch(telemetry, now)
-	telemetry.current.unchanged_attempts += 1
+	telemetry.current.unchanged_attempts = graphics_counter_add(
+		telemetry.current.unchanged_attempts,
+		1,
+	)
 }
 
 graphics_telemetry_note_blocked :: proc(telemetry: ^Graphics_Telemetry, now: time.Tick) {
 	if telemetry == nil {return}
 	graphics_telemetry_window_touch(telemetry, now)
-	telemetry.current.blocked_attempts += 1
+	telemetry.current.blocked_attempts = graphics_counter_add(
+		telemetry.current.blocked_attempts,
+		1,
+	)
 }
 
 graphics_telemetry_note_input :: proc(
@@ -241,14 +257,17 @@ graphics_telemetry_note_input :: proc(
 ) {
 	if telemetry == nil || events == 0 {return}
 	graphics_telemetry_window_touch(telemetry, now)
-	telemetry.current.input_events += events
-	telemetry.current.input_residence_ns += residence_ns
+	telemetry.current.input_events = graphics_counter_add(telemetry.current.input_events, events)
+	telemetry.current.input_residence_ns = graphics_counter_add(
+		telemetry.current.input_residence_ns,
+		residence_ns,
+	)
 	telemetry.current.max_input_residence_ns = max(
 		telemetry.current.max_input_residence_ns,
 		max_residence_ns,
 	)
-	telemetry.pending_input_events += events
-	telemetry.pending_input_ns += residence_ns
+	telemetry.pending_input_events = graphics_counter_add(telemetry.pending_input_events, events)
+	telemetry.pending_input_ns = graphics_counter_add(telemetry.pending_input_ns, residence_ns)
 	telemetry.pending_input_max_ns = max(telemetry.pending_input_max_ns, max_residence_ns)
 	if oldest_queued_at != (time.Tick{}) &&
 	   (telemetry.pending_input_oldest == (time.Tick{}) ||
@@ -423,9 +442,30 @@ graphics_frame_epoch_descriptor_copy :: proc(epoch: ^Graphics_Frame_Epoch, durat
 	epoch.descriptor_copy_ns = duration_ns
 }
 
-graphics_frame_epoch_render_begin :: proc(epoch: ^Graphics_Frame_Epoch, now: time.Tick) {
+graphics_frame_epoch_render_begin :: proc(
+	epoch: ^Graphics_Frame_Epoch,
+	source: Graphics_Frame_Source,
+	now: time.Tick,
+) {
 	if epoch == nil || epoch.result != .Incomplete {return}
+	epoch.source = source
+	epoch.kind = .Invalid
+	epoch.width = 0
+	epoch.height = 0
+	if epoch.first_render_started == (time.Tick{}) {epoch.first_render_started = now}
 	epoch.render_started = now
+	epoch.render_ended = {}
+	epoch.upload_started = {}
+	epoch.upload_ended = {}
+}
+
+@(private = "file")
+graphics_frame_pixel_count :: proc(width, height: int) -> u64 {
+	if width <= 0 || height <= 0 {return 0}
+	w := u64(width)
+	h := u64(height)
+	if w > max(u64) / h {return max(u64)}
+	return w * h
 }
 
 graphics_frame_epoch_render_complete :: proc(
@@ -435,13 +475,20 @@ graphics_frame_epoch_render_complete :: proc(
 ) {
 	if epoch == nil || epoch.result != .Incomplete {return}
 	epoch.render_ended = now
+	graphics_telemetry_add_span(
+		&epoch.render_work_ns,
+		&epoch.render_work_samples,
+		epoch.render_started,
+		now,
+	)
 	if frame == nil {return}
 	epoch.kind = frame.kind
 	epoch.width = frame.width
 	epoch.height = frame.height
-	if frame.width > 0 && frame.height > 0 {
-		epoch.rendered_pixels = u64(frame.width) * u64(frame.height)
-	}
+	epoch.rendered_pixels = graphics_counter_add(
+		epoch.rendered_pixels,
+		graphics_frame_pixel_count(frame.width, frame.height),
+	)
 }
 
 graphics_frame_epoch_upload_begin :: proc(epoch: ^Graphics_Frame_Epoch, now: time.Tick) {
@@ -457,9 +504,22 @@ graphics_frame_epoch_upload_complete :: proc(
 ) {
 	if epoch == nil || epoch.result != .Incomplete {return}
 	epoch.upload_ended = now
-	epoch.texture_recreated = texture_recreated
-	if succeeded && epoch.rendered_pixels <= max(u64) / size_of(u32) {
-		epoch.bytes_uploaded = epoch.rendered_pixels * size_of(u32)
+	graphics_telemetry_add_span(
+		&epoch.upload_work_ns,
+		&epoch.upload_work_samples,
+		epoch.upload_started,
+		now,
+	)
+	epoch.texture_recreated = epoch.texture_recreated || texture_recreated
+	if succeeded {
+		pixels := graphics_frame_pixel_count(epoch.width, epoch.height)
+		bytes := pixels
+		if pixels > max(u64) / size_of(u32) {
+			bytes = max(u64)
+		} else {
+			bytes *= size_of(u32)
+		}
+		epoch.bytes_uploaded = graphics_counter_add(epoch.bytes_uploaded, bytes)
 	}
 }
 
@@ -515,8 +575,8 @@ graphics_frame_span_ns :: proc(started, ended: time.Tick) -> u64 {
 graphics_telemetry_add_span :: proc(total, samples: ^u64, started, ended: time.Tick) -> u64 {
 	if started == (time.Tick{}) || ended == (time.Tick{}) {return 0}
 	span := graphics_frame_span_ns(started, ended)
-	total^ += span
-	samples^ += 1
+	total^ = graphics_counter_add(total^, span)
+	samples^ = graphics_counter_add(samples^, 1)
 	return span
 }
 
@@ -552,44 +612,46 @@ graphics_telemetry_record :: proc(telemetry: ^Graphics_Telemetry, epoch: Graphic
 	if telemetry == nil || epoch.sequence == 0 || epoch.result == .Incomplete {return}
 	graphics_telemetry_window_touch(telemetry, epoch.completed)
 	w := &telemetry.current
-	w.epochs += 1
+	w.epochs = graphics_counter_add(w.epochs, 1)
 	#partial switch epoch.result {
 	case .Presented:
-		w.presented += 1
+		w.presented = graphics_counter_add(w.presented, 1)
 	case .Superseded:
-		w.superseded += 1
+		w.superseded = graphics_counter_add(w.superseded, 1)
 	case .Coalesced:
-		w.coalesced += 1
+		w.coalesced = graphics_counter_add(w.coalesced, 1)
 	case .Capture_Failed:
-		w.capture_failures += 1
+		w.capture_failures = graphics_counter_add(w.capture_failures, 1)
 	case .Render_Failed:
-		w.render_failures += 1
+		w.render_failures = graphics_counter_add(w.render_failures, 1)
 	case .Upload_Failed:
-		w.upload_failures += 1
+		w.upload_failures = graphics_counter_add(w.upload_failures, 1)
 	case .Compose_Failed:
-		w.compose_failures += 1
+		w.compose_failures = graphics_counter_add(w.compose_failures, 1)
 	case .Present_Failed:
-		w.present_failures += 1
+		w.present_failures = graphics_counter_add(w.present_failures, 1)
 	case .Gpu_Work:
-		w.gpu_work_epochs += 1
+		w.gpu_work_epochs = graphics_counter_add(w.gpu_work_epochs, 1)
 	case .Reset:
-		w.reset_frames += 1
+		w.reset_frames = graphics_counter_add(w.reset_frames, 1)
 	}
-	w.bytes_copied += epoch.bytes_copied
+	w.bytes_copied = graphics_counter_add(w.bytes_copied, epoch.bytes_copied)
 	if epoch.descriptor_copy_ns > 0 {
 		w.descriptor_copy_ns = graphics_counter_add(w.descriptor_copy_ns, epoch.descriptor_copy_ns)
-		w.descriptor_copy_samples += 1
+		w.descriptor_copy_samples = graphics_counter_add(w.descriptor_copy_samples, 1)
 	}
-	w.bytes_uploaded += epoch.bytes_uploaded
-	w.rendered_pixels += epoch.rendered_pixels
-	if epoch.texture_recreated {w.texture_recreates += 1}
+	w.bytes_uploaded = graphics_counter_add(w.bytes_uploaded, epoch.bytes_uploaded)
+	w.rendered_pixels = graphics_counter_add(w.rendered_pixels, epoch.rendered_pixels)
+	if epoch.texture_recreated {
+		w.texture_recreates = graphics_counter_add(w.texture_recreates, 1)
+	}
 	if epoch.input_to_present_ns > 0 {
 		w.input_to_present_ns = graphics_counter_add(
 			w.input_to_present_ns,
 			epoch.input_to_present_ns,
 		)
 		w.max_input_to_present_ns = max(w.max_input_to_present_ns, epoch.input_to_present_ns)
-		w.input_to_present_samples += 1
+		w.input_to_present_samples = graphics_counter_add(w.input_to_present_samples, 1)
 	}
 	graphics_telemetry_add_span(
 		&w.capture_ns,
@@ -601,20 +663,12 @@ graphics_telemetry_record :: proc(telemetry: ^Graphics_Telemetry, epoch: Graphic
 		&w.queue_ns,
 		&w.queue_samples,
 		epoch.capture_ended,
-		epoch.render_started,
+		epoch.first_render_started,
 	)
-	graphics_telemetry_add_span(
-		&w.render_ns,
-		&w.render_samples,
-		epoch.render_started,
-		epoch.render_ended,
-	)
-	graphics_telemetry_add_span(
-		&w.upload_ns,
-		&w.upload_samples,
-		epoch.upload_started,
-		epoch.upload_ended,
-	)
+	w.render_ns = graphics_counter_add(w.render_ns, epoch.render_work_ns)
+	w.render_samples = graphics_counter_add(w.render_samples, epoch.render_work_samples)
+	w.upload_ns = graphics_counter_add(w.upload_ns, epoch.upload_work_ns)
+	w.upload_samples = graphics_counter_add(w.upload_samples, epoch.upload_work_samples)
 	end_to_end := graphics_telemetry_add_span(
 		&w.end_to_end_ns,
 		&w.end_to_end_samples,
@@ -633,8 +687,9 @@ graphics_telemetry_record :: proc(telemetry: ^Graphics_Telemetry, epoch: Graphic
 	w.latest_width = epoch.width
 	w.latest_height = epoch.height
 	if telemetry.trace_enabled {
-		telemetry.trace[telemetry.trace_count % GRAPHICS_FRAME_TRACE_CAPACITY] = epoch
-		telemetry.trace_count += 1
+		telemetry.trace[telemetry.trace_cursor] = epoch
+		telemetry.trace_cursor = (telemetry.trace_cursor + 1) % GRAPHICS_FRAME_TRACE_CAPACITY
+		telemetry.trace_count = graphics_counter_add(telemetry.trace_count, 1)
 	}
 }
 
@@ -664,8 +719,9 @@ graphics_telemetry_trace_epoch :: proc(
 	if telemetry == nil || !telemetry.trace_enabled || telemetry.trace == nil {return {}, false}
 	count := min(telemetry.trace_count, u64(GRAPHICS_FRAME_TRACE_CAPACITY))
 	if index >= count {return {}, false}
-	start := telemetry.trace_count - count
-	return telemetry.trace[(start + index) % GRAPHICS_FRAME_TRACE_CAPACITY], true
+	start := telemetry.trace_cursor - int(count)
+	if start < 0 {start += GRAPHICS_FRAME_TRACE_CAPACITY}
+	return telemetry.trace[(start + int(index)) % GRAPHICS_FRAME_TRACE_CAPACITY], true
 }
 
 graphics_telemetry_snapshot :: proc(
@@ -744,6 +800,8 @@ graphics_frame_source_name :: proc(source: Graphics_Frame_Source) -> string {
 	switch source {
 	case .Legacy_Scanout:
 		return "legacy-scanout"
+	case .Gsw2d:
+		return "gsw2d"
 	case .Gsw3d:
 		return "gsw3d"
 	}
@@ -929,6 +987,26 @@ graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> str
 		g.resident_gpu_surface_bytes_current,
 		g.resident_gpu_surface_bytes_peak,
 	)
+	pm := g.presentation
+	fmt.sbprintf(
+		&builder,
+		" presentation_updates=legacy_full:%d legacy_partial:%d gsw_snapshot_full:%d gsw_snapshot_partial:%d copy_bytes:%d conversion_pixels:%d upload_bytes:%d upload_regions:%d stale_total:%d stale_finalize:%d reject_invalid:%d reject_closed:%d resident_presents:%d readbacks:%d restorations:%d",
+		pm.legacy_full_updates,
+		pm.legacy_partial_updates,
+		pm.gsw_snapshot_full_updates,
+		pm.gsw_snapshot_partial_updates,
+		pm.copy_bytes,
+		pm.conversion_pixels,
+		pm.upload_bytes,
+		pm.upload_regions,
+		pm.stale_generation_drops,
+		pm.stale_finalization_drops,
+		pm.invalid_rejections,
+		pm.closed_rejections,
+		pm.resident_presents,
+		pm.readback_requests,
+		pm.last_good_restorations,
+	)
 	fmt.sbprintf(
 		&builder,
 		" capacity_wait_ns=%d latest_capacity_wait_ns=%d latest_submission=%d/%d latest_completion=%d/%d/%dns/discarded:%d direct_draw=%d/%d/valid:%d",
@@ -1083,18 +1161,36 @@ graphics_telemetry_trace_text :: proc(telemetry: ^Graphics_Telemetry) -> string 
 			epoch.texture_recreated ? 1 : 0,
 			graphics_frame_span_ns(epoch.capture_started, epoch.capture_ended) /
 			u64(time.Microsecond),
-			graphics_frame_span_ns(epoch.capture_ended, epoch.render_started) /
+			graphics_frame_span_ns(epoch.capture_ended, epoch.first_render_started) /
 			u64(time.Microsecond),
-			graphics_frame_span_ns(epoch.render_started, epoch.render_ended) /
-			u64(time.Microsecond),
-			graphics_frame_span_ns(epoch.upload_started, epoch.upload_ended) /
-			u64(time.Microsecond),
+			epoch.render_work_ns / u64(time.Microsecond),
+			epoch.upload_work_ns / u64(time.Microsecond),
 			graphics_frame_span_ns(epoch.gpu_drain_started, epoch.gpu_drain_ended) /
 			u64(time.Microsecond),
 			graphics_frame_span_ns(epoch.compose_started, epoch.compose_ended) /
 			u64(time.Microsecond),
 			graphics_frame_span_ns(epoch.present_started, epoch.completed) / u64(time.Microsecond),
 			graphics_frame_span_ns(epoch.issued_at, epoch.completed) / u64(time.Microsecond),
+		)
+		pm := g.presentation
+		fmt.sbprintf(
+			&builder,
+			" presentation=legacy:%d/%d gsw_snapshot:%d/%d copy:%d conversion:%d upload:%d/%d stale:%d/%d reject:%d/%d resident:%d readback:%d restore:%d",
+			pm.legacy_full_updates,
+			pm.legacy_partial_updates,
+			pm.gsw_snapshot_full_updates,
+			pm.gsw_snapshot_partial_updates,
+			pm.copy_bytes,
+			pm.conversion_pixels,
+			pm.upload_bytes,
+			pm.upload_regions,
+			pm.stale_generation_drops,
+			pm.stale_finalization_drops,
+			pm.invalid_rejections,
+			pm.closed_rejections,
+			pm.resident_presents,
+			pm.readback_requests,
+			pm.last_good_restorations,
 		)
 		fmt.sbprintf(
 			&builder,

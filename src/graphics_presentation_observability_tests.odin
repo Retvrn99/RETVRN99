@@ -3,6 +3,8 @@ package main
 
 import "core:testing"
 import "core:time"
+import host "host"
+import presentation "presentation"
 
 graphics_presentation_test_observation :: proc(
 	host_gpu: Graphics_Host_Gpu_Interval,
@@ -17,6 +19,62 @@ graphics_presentation_test_observation :: proc(
 		budget = u64(max(executed + failed, 0)) * 16,
 		host_gpu = host_gpu,
 	}
+}
+
+@(test)
+graphics_presentation_test_running_machine_resynchronizes_reset_lifecycle :: proc(t: ^testing.T) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	h: host.Host
+	testing.expect(t, !graphics_presentation_sync_lifecycle(&h, &mailbox, false))
+	testing.expect(t, !h.presentation_state.accepting)
+	testing.expect(t, graphics_presentation_sync_lifecycle(&h, &mailbox, true))
+	first := h.presentation_state.lifecycle
+	h.presentation_state.sequence = 7
+	h.presentation_state.selector.active.kind = .Gsw
+	h.has_frame = true
+
+	frame_mailbox_reset(&mailbox)
+
+	testing.expect(t, graphics_presentation_sync_lifecycle(&h, &mailbox, true))
+	testing.expect(t, h.presentation_state.lifecycle != first)
+	testing.expect_value(t, h.presentation_state.sequence, u64(0))
+	testing.expect_value(
+		t,
+		h.presentation_state.selector.lifecycle_generation,
+		h.presentation_state.lifecycle,
+	)
+	testing.expect_value(
+		t,
+		h.presentation_state.selector.active.kind,
+		presentation.Active_Kind.None,
+	)
+	testing.expect(t, !h.presentation_state.selector.has_last_good_legacy)
+	testing.expect(t, !h.has_frame)
+}
+
+@(test)
+graphics_presentation_test_legacy_refresh_never_claims_visible_selection :: proc(t: ^testing.T) {
+	testing.expect_value(
+		t,
+		graphics_legacy_upload_disposition(.Present_Legacy, false),
+		Graphics_Legacy_Upload_Disposition.Visible,
+	)
+	testing.expect_value(
+		t,
+		graphics_legacy_upload_disposition(.Refresh_Legacy, false),
+		Graphics_Legacy_Upload_Disposition.Refresh_Terminal,
+	)
+	testing.expect_value(
+		t,
+		graphics_legacy_upload_disposition(.Refresh_Legacy, true),
+		Graphics_Legacy_Upload_Disposition.Refresh_Deferred,
+	)
+	testing.expect_value(
+		t,
+		graphics_legacy_upload_disposition(.Present_Gsw, true),
+		Graphics_Legacy_Upload_Disposition.Invalid,
+	)
 }
 
 @(test)

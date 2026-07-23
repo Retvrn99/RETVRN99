@@ -49,6 +49,7 @@ Host_Gsw3d_Observability_Snapshot :: struct {
 	direct_present_latest_draw_token:        u64,
 	direct_present_latest_draw_generation:   u64,
 	resident_gpu_surface_bytes:              u64,
+	presentation:                            Host_Presentation_Metrics,
 }
 
 // Presentation-thread only; the existing backend lock stabilizes generation during the copy.
@@ -185,5 +186,6 @@ host_gsw3d_observability_snapshot :: proc(h: ^Host) -> Host_Gsw3d_Observability_
 		direct_present_latest_draw_token = draw_token,
 		direct_present_latest_draw_generation = draw_generation,
 		resident_gpu_surface_bytes = h.gpu_surface_bytes,
+		presentation = h.presentation_metrics,
 	}
 }

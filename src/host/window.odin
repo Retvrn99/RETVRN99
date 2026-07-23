@@ -22,36 +22,39 @@ Host_Client_Insets :: struct {
 }
 
 Host :: struct {
-	win:                 ^sdl3.Window,
-	ren:                 ^sdl3.Renderer,
-	gpu:                 ^sdl3.GPUDevice,
-	tex:                 ^sdl3.Texture,
-	gpu_surfaces:        [HOST_GPU_SURFACE_CAPACITY]Host_Gpu_Surface,
-	gpu_surface_bytes:   u64,
-	gpu_present:         Host_Gpu_Present,
-	gpu_direct_presents: u64,
-	gsw3d_bridge:        Gsw3d_Bridge,
-	gsw3d_triangle:      Gsw3d_Triangle_Renderer,
-	gsw3d_backend:       Gsw3d_Proof_Backend,
-	gsw3d_executor:      Gsw3d_Proof_Executor,
-	gsw3d_proof_enabled: bool,
-	shader:              ^sdl3.GPUShader,
-	shader_state:        ^sdl3.GPURenderState,
-	tex_width:           int,
-	tex_height:          int,
-	aspect_width:        int,
-	aspect_height:       int,
-	window_scale:        int,
-	fullscreen:          bool,
-	menu_reveal:         f32,
-	sidebar_collapsed:   bool,
-	visual_shader:       Visual_Shader,
-	storage_icons:       Storage_Icon_Textures,
-	stopped_logo:        Ui_Icon_Texture,
-	has_frame:           bool,
-	vsync:               bool, // presents are paced by the display; else the UI loop sleeps
-	mouse_captured:      bool,
-	mouse_buttons:       u8,
+	win:                    ^sdl3.Window,
+	ren:                    ^sdl3.Renderer,
+	gpu:                    ^sdl3.GPUDevice,
+	tex:                    ^sdl3.Texture,
+	gpu_surfaces:           [HOST_GPU_SURFACE_CAPACITY]Host_Gpu_Surface,
+	gpu_surface_bytes:      u64,
+	gpu_surface_generation: u64,
+	gpu_present:            Host_Gpu_Present,
+	gpu_direct_presents:    u64,
+	presentation_metrics:   Host_Presentation_Metrics,
+	presentation_state:     Host_Presentation_State,
+	gsw3d_bridge:           Gsw3d_Bridge,
+	gsw3d_triangle:         Gsw3d_Triangle_Renderer,
+	gsw3d_backend:          Gsw3d_Proof_Backend,
+	gsw3d_executor:         Gsw3d_Proof_Executor,
+	gsw3d_proof_enabled:    bool,
+	shader:                 ^sdl3.GPUShader,
+	shader_state:           ^sdl3.GPURenderState,
+	tex_width:              int,
+	tex_height:             int,
+	aspect_width:           int,
+	aspect_height:          int,
+	window_scale:           int,
+	fullscreen:             bool,
+	menu_reveal:            f32,
+	sidebar_collapsed:      bool,
+	visual_shader:          Visual_Shader,
+	storage_icons:          Storage_Icon_Textures,
+	stopped_logo:           Ui_Icon_Texture,
+	has_frame:              bool,
+	vsync:                  bool, // presents are paced by the display; else the UI loop sleeps
+	mouse_captured:         bool,
+	mouse_buttons:          u8,
 }
 
 @(private = "file")
@@ -124,6 +127,7 @@ host_init :: proc(h: ^Host) -> (ok: bool) {
 	h.tex_height = TEXT_H
 	h.aspect_width = 4
 	h.aspect_height = 3
+	_ = host_presentation_start(h, 1)
 	if host_shader_init(h) {
 		_ = host_set_visual_shader(h, .Subtle)
 	} else {
@@ -138,6 +142,7 @@ host_destroy :: proc(h: ^Host) {
 	if h.gsw3d_proof_enabled {_ = host_gsw3d_proof_reset(h, 0)}
 	gsw3d_triangle_renderer_destroy(&h.gsw3d_triangle)
 	host_shader_destroy(h)
+	host_presentation_destroy(h)
 	if h.tex != nil {sdl3.DestroyTexture(h.tex)}
 	host_gpu_surfaces_destroy(h)
 	storage_icon_textures_destroy(&h.storage_icons)

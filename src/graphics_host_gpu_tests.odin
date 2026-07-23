@@ -10,19 +10,33 @@ graphics_host_gpu_test_interval_tracks_physical_fences_and_present_coalescing ::
 	t: ^testing.T,
 ) {
 	previous := host.Host_Gsw3d_Observability_Snapshot {
-		device_generation              = 4,
-		sdl_gpu_submission_calls       = 10,
-		sdl_gpu_submission_failures    = 1,
-		sdl_gpu_submission_ns          = 1000,
-		sdl_gpu_fence_submissions      = 10,
-		sdl_gpu_fence_completions      = 8,
-		sdl_gpu_fence_completion_ns    = 800,
-		sdl_gpu_fence_capacity_waits   = 1,
+		device_generation = 4,
+		sdl_gpu_submission_calls = 10,
+		sdl_gpu_submission_failures = 1,
+		sdl_gpu_submission_ns = 1000,
+		sdl_gpu_fence_submissions = 10,
+		sdl_gpu_fence_completions = 8,
+		sdl_gpu_fence_completion_ns = 800,
+		sdl_gpu_fence_capacity_waits = 1,
 		sdl_gpu_fence_capacity_wait_ns = 100,
-		sdl_gpu_fence_in_flight        = 2,
-		sdl_gpu_fence_max_in_flight    = 2,
-		direct_presents                = 5,
-		resident_gpu_surface_bytes     = 4096,
+		sdl_gpu_fence_in_flight = 2,
+		sdl_gpu_fence_max_in_flight = 2,
+		direct_presents = 5,
+		resident_gpu_surface_bytes = 4096,
+		presentation = {
+			legacy_full_updates = 2,
+			gsw_snapshot_full_updates = 1,
+			gsw_snapshot_partial_updates = 2,
+			copy_bytes = 100,
+			conversion_pixels = 25,
+			upload_bytes = 100,
+			upload_regions = 2,
+			stale_generation_drops = 1,
+			stale_finalization_drops = 1,
+			invalid_rejections = 2,
+			closed_rejections = 3,
+			readback_requests = 1,
+		},
 	}
 	current := previous
 	current.device_generation = 5
@@ -64,6 +78,23 @@ graphics_host_gpu_test_interval_tracks_physical_fences_and_present_coalescing ::
 	current.direct_present_latest_draw_token = 41
 	current.direct_present_latest_draw_generation = 5
 	current.resident_gpu_surface_bytes = 8192
+	current.presentation = {
+		legacy_full_updates          = 4,
+		legacy_partial_updates       = 1,
+		gsw_snapshot_full_updates    = 4,
+		gsw_snapshot_partial_updates = 3,
+		copy_bytes                   = 300,
+		conversion_pixels            = 75,
+		upload_bytes                 = 300,
+		upload_regions               = 5,
+		stale_generation_drops       = 3,
+		stale_finalization_drops     = 2,
+		invalid_rejections           = 5,
+		closed_rejections            = 7,
+		resident_presents            = 2,
+		readback_requests            = 1,
+		last_good_restorations       = 1,
+	}
 
 	interval := graphics_host_gpu_interval(current, previous, true)
 	testing.expect(t, interval.valid)
@@ -98,6 +129,21 @@ graphics_host_gpu_test_interval_tracks_physical_fences_and_present_coalescing ::
 	testing.expect_value(t, interval.direct_present_latest_draw_token, u64(41))
 	testing.expect_value(t, interval.direct_present_latest_draw_generation, u64(5))
 	testing.expect_value(t, interval.resident_gpu_surface_bytes_current, u64(8192))
+	testing.expect_value(t, interval.presentation.legacy_full_updates, u64(2))
+	testing.expect_value(t, interval.presentation.legacy_partial_updates, u64(1))
+	testing.expect_value(t, interval.presentation.gsw_snapshot_full_updates, u64(3))
+	testing.expect_value(t, interval.presentation.gsw_snapshot_partial_updates, u64(1))
+	testing.expect_value(t, interval.presentation.copy_bytes, u64(200))
+	testing.expect_value(t, interval.presentation.conversion_pixels, u64(50))
+	testing.expect_value(t, interval.presentation.upload_bytes, u64(200))
+	testing.expect_value(t, interval.presentation.upload_regions, u64(3))
+	testing.expect_value(t, interval.presentation.stale_generation_drops, u64(2))
+	testing.expect_value(t, interval.presentation.stale_finalization_drops, u64(1))
+	testing.expect_value(t, interval.presentation.invalid_rejections, u64(3))
+	testing.expect_value(t, interval.presentation.closed_rejections, u64(4))
+	testing.expect_value(t, interval.presentation.resident_presents, u64(2))
+	testing.expect_value(t, interval.presentation.readback_requests, u64(0))
+	testing.expect_value(t, interval.presentation.last_good_restorations, u64(1))
 }
 
 @(test)
@@ -117,11 +163,13 @@ graphics_host_gpu_test_reset_and_addition_are_explicit_and_bounded :: proc(t: ^t
 	testing.expect_value(t, interval.direct_present_deactivations, u64(1))
 
 	total := Graphics_Host_Gpu_Interval {
-		sdl_gpu_fence_submissions       = max(u64) - 1,
-		sdl_gpu_fence_completion_ns     = max(u64) - 1,
+		sdl_gpu_fence_submissions = max(u64) - 1,
+		sdl_gpu_fence_completion_ns = max(u64) - 1,
 		resident_gpu_surface_bytes_peak = 4096,
+		presentation = {upload_regions = max(u64) - 1},
 	}
 	interval.sdl_gpu_fence_completion_ns = 600
+	interval.presentation.upload_regions = 600
 	graphics_host_gpu_interval_add(&total, interval)
 	testing.expect(t, total.valid)
 	testing.expect_value(t, total.sdl_gpu_fence_submissions, max(u64))
@@ -130,4 +178,5 @@ graphics_host_gpu_test_reset_and_addition_are_explicit_and_bounded :: proc(t: ^t
 	testing.expect_value(t, total.sdl_gpu_fence_in_flight_current, u32(1))
 	testing.expect_value(t, total.sdl_gpu_fence_in_flight_sampled_peak, u32(1))
 	testing.expect_value(t, total.resident_gpu_surface_bytes_peak, u64(4096))
+	testing.expect_value(t, total.presentation.upload_regions, max(u64))
 }

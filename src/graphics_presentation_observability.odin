@@ -2,6 +2,23 @@
 package main
 
 import "core:time"
+import contract "presentation"
+
+Graphics_Legacy_Upload_Disposition :: enum u8 {
+	Invalid,
+	Visible,
+	Refresh_Terminal,
+	Refresh_Deferred,
+}
+
+graphics_legacy_upload_disposition :: proc(
+	action: contract.Selector_Action,
+	gsw_transition: bool,
+) -> Graphics_Legacy_Upload_Disposition {
+	if action == .Present_Legacy {return .Visible}
+	if action != .Refresh_Legacy {return .Invalid}
+	return gsw_transition ? .Refresh_Deferred : .Refresh_Terminal
+}
 
 Graphics_Presentation_Drain_Observation :: struct {
 	started:  time.Tick,
