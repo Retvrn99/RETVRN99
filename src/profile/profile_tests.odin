@@ -239,6 +239,80 @@ test_settings_round_trip :: proc(t: ^testing.T) {
 }
 
 @(test)
+test_settings_save_keeps_normalized_path_alive_during_json_encode :: proc(t: ^testing.T) {
+	dir := profile_test_directory(t)
+	defer delete(dir)
+	defer os.remove_all(dir)
+	path, path_error := filepath.join({dir, "settings.json"})
+	defer delete(path)
+	testing.expect(t, path_error == nil)
+	image_path, image_path_error := filepath.join({dir, "c_drive.img"})
+	defer delete(image_path)
+	testing.expect(t, image_path_error == nil)
+	expected_path, normalized := settings_normalize_hard_drive_path(image_path)
+	defer delete(expected_path)
+	testing.expect(t, normalized)
+	floppy_path, floppy_path_error := filepath.join({dir, "boot.img"})
+	defer delete(floppy_path)
+	testing.expect(t, floppy_path_error == nil)
+	expected_floppy_path, floppy_normalized := settings_normalize_media_path(floppy_path)
+	defer delete(expected_floppy_path)
+	testing.expect(t, floppy_normalized)
+	cdrom_path, cdrom_path_error := filepath.join({dir, "game.cue"})
+	defer delete(cdrom_path)
+	testing.expect(t, cdrom_path_error == nil)
+	expected_cdrom_path, cdrom_normalized := settings_normalize_media_path(cdrom_path)
+	defer delete(expected_cdrom_path)
+	testing.expect(t, cdrom_normalized)
+
+	settings := settings_default()
+	defer settings_destroy(&settings)
+	settings.cpu_mode = .Turbo
+	settings.hard_drive_path = strings.clone(image_path)
+	settings.floppy_path = strings.clone(floppy_path)
+	settings.cdrom_path = strings.clone(cdrom_path)
+	testing.expect_value(t, settings_save(path, settings), Settings_Diagnostic.None)
+	data, read_error := os.read_entire_file(path, context.allocator)
+	defer delete(data)
+	testing.expect(t, read_error == nil)
+	testing.expect(
+		t,
+		!strings.contains(
+			string(data),
+			`"hard_drive_path": "{\n  \"version\": 3`,
+		),
+	)
+	testing.expect(
+		t,
+		!strings.contains(string(data), `"floppy_path": "{\n  \"version\": 3`),
+	)
+	testing.expect(
+		t,
+		!strings.contains(string(data), `"cdrom_path": "{\n  \"version\": 3`),
+	)
+
+	loaded, diagnostic, migration := settings_load(path)
+	defer settings_destroy(&loaded)
+	testing.expect_value(t, diagnostic, Settings_Diagnostic.None)
+	testing.expect_value(t, migration, Settings_Migration_Status.None)
+	testing.expect_value(t, loaded.hard_drive_path, expected_path)
+	testing.expect_value(t, loaded.floppy_path, expected_floppy_path)
+	testing.expect_value(t, loaded.cdrom_path, expected_cdrom_path)
+	testing.expect_value(t, settings_save(path, loaded), Settings_Diagnostic.None)
+	testing.expect_value(t, loaded.hard_drive_path, expected_path)
+	testing.expect_value(t, loaded.floppy_path, expected_floppy_path)
+	testing.expect_value(t, loaded.cdrom_path, expected_cdrom_path)
+
+	reloaded, reload_diagnostic, reload_migration := settings_load(path)
+	defer settings_destroy(&reloaded)
+	testing.expect_value(t, reload_diagnostic, Settings_Diagnostic.None)
+	testing.expect_value(t, reload_migration, Settings_Migration_Status.None)
+	testing.expect_value(t, reloaded.hard_drive_path, expected_path)
+	testing.expect_value(t, reloaded.floppy_path, expected_floppy_path)
+	testing.expect_value(t, reloaded.cdrom_path, expected_cdrom_path)
+}
+
+@(test)
 test_settings_v1_migrates_cpu_to_v3_and_clears_hard_drive :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	dir := profile_test_directory(t)
@@ -348,6 +422,7 @@ test_settings_unknown_keys_are_ignored :: proc(t: ^testing.T) {
 @(private)
 profile_test_directory :: proc(t: ^testing.T) -> string {
 	base, berr := os.temp_directory(context.allocator)
+	defer delete(base)
 	testing.expect(t, berr == nil)
 	dir, derr := os.make_directory_temp(base, "retvrn99_profile_*", context.allocator)
 	testing.expect(t, derr == nil)

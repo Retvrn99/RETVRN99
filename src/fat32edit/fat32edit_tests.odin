@@ -607,6 +607,7 @@ fat32edit_test_cancelled_and_failed_tree_replace_preserve_original_through_apply
 	directory, state, path, image, ok := edit_test_open(t)
 	if !ok {return}
 	defer os.remove_all(directory)
+	defer if image != nil {_ = fat32image.close(image, .Clean)}
 	original_tree, _ := filepath.join({directory, "original-tree"}, context.temp_allocator)
 	original_file, _ := filepath.join({original_tree, "ORIGINAL.TXT"}, context.temp_allocator)
 	if !testing.expect_value(t, os.make_directory_all(original_tree), os.Error(nil)) ||
@@ -615,58 +616,125 @@ fat32edit_test_cancelled_and_failed_tree_replace_preserve_original_through_apply
 	}
 	session, session_ok := edit_test_session(t, image, state)
 	if !session_ok {return}
+	defer if session.impl != nil {_ = discard(&session)}
 	original_job, original_error := begin_import_tree(&session, original_tree, "TREE")
 	if !testing.expect_value(t, original_error.code, Error_Code.None) {return}
 	for original_job.state != .Complete && original_job.state != .Failed {
 		_ = job_step(&original_job)
 	}
-	if !testing.expect_value(t, original_job.state, Job_State.Complete) {return}
+	if !testing.expect_value(t, original_job.state, Job_State.Complete) {
+		_ = job_cancel(&original_job)
+		job_destroy(&original_job)
+		return
+	}
 	job_destroy(&original_job)
 
 	replacement_tree, _ := filepath.join({directory, "replacement-tree"}, context.temp_allocator)
-	replacement_file, _ := filepath.join(
-		{replacement_tree, "REPLACEMENT.BIN"},
-		context.temp_allocator,
-	)
+	first_file, _ := filepath.join({replacement_tree, "FIRST.TXT"}, context.temp_allocator)
+	second_file, _ := filepath.join({replacement_tree, "SECOND.TXT"}, context.temp_allocator)
 	if !testing.expect_value(t, os.make_directory_all(replacement_tree), os.Error(nil)) {return}
-	replacement := make([]u8, MAX_TRANSFER_BYTES * 2 + 17, context.temp_allocator)
-	if !testing.expect_value(
-		t,
-		os.write_entire_file(replacement_file, replacement),
-		os.Error(nil),
-	) {
+	if !testing.expect_value(t, os.write_entire_file(first_file, "first"), os.Error(nil)) ||
+	   !testing.expect_value(t, os.write_entire_file(second_file, "second"), os.Error(nil)) {
 		return
 	}
 	cancelled_job, cancelled_error := begin_import_tree(&session, replacement_tree, "TREE", true)
 	if !testing.expect_value(t, cancelled_error.code, Error_Code.None) {return}
-	_ = job_step(&cancelled_job)
-	_ = job_step(&cancelled_job)
+	for cancelled_job.items_completed < 1 &&
+	    cancelled_job.state != .Complete &&
+	    cancelled_job.state != .Failed {
+		_ = job_step(&cancelled_job)
+	}
+	cancelled_boundary_ok :=
+		testing.expect_value(t, cancelled_job.items_completed, u64(1)) &&
+		testing.expect_value(t, cancelled_job.state, Job_State.Running)
+	cancelled_original_visible := false
+	if cancelled_boundary_ok {
+		cancelled_original_visible = edit_test_read_file(
+			t,
+			&session,
+			"TREE/ORIGINAL.TXT",
+			"original",
+		)
+		first_info, first_stat_error := stat(&session, "TREE/FIRST.TXT")
+		second_info, second_stat_error := stat(&session, "TREE/SECOND.TXT")
+		testing.expect_value(t, first_stat_error.code, Error_Code.None)
+		testing.expect_value(t, second_stat_error.code, Error_Code.None)
+		testing.expect(t, !first_info.exists && !second_info.exists)
+	}
 	testing.expect_value(t, job_cancel(&cancelled_job).code, Error_Code.Cancelled)
 	job_destroy(&cancelled_job)
+	if !cancelled_boundary_ok || !cancelled_original_visible {return}
 	if !edit_test_read_file(t, &session, "TREE/ORIGINAL.TXT", "original") {return}
 
 	failed_job, failed_error := begin_import_tree(&session, replacement_tree, "TREE", true)
 	if !testing.expect_value(t, failed_error.code, Error_Code.None) {return}
+	for failed_job.items_completed < 1 &&
+	    failed_job.state != .Complete &&
+	    failed_job.state != .Failed {
+		_ = job_step(&failed_job)
+	}
+	failed_boundary_ok :=
+		testing.expect_value(t, failed_job.items_completed, u64(1)) &&
+		testing.expect_value(t, failed_job.state, Job_State.Running)
+	failed_original_visible := false
+	if failed_boundary_ok {
+		failed_original_visible = edit_test_read_file(
+			t,
+			&session,
+			"TREE/ORIGINAL.TXT",
+			"original",
+		)
+	}
+	if !failed_boundary_ok || !failed_original_visible {
+		_ = job_cancel(&failed_job)
+		job_destroy(&failed_job)
+		return
+	}
 	late_file, _ := filepath.join({replacement_tree, "LATE.TXT"}, context.temp_allocator)
-	if !testing.expect_value(t, os.write_entire_file(late_file, "late"), os.Error(nil)) {return}
+	if !testing.expect_value(t, os.write_entire_file(late_file, "late"), os.Error(nil)) {
+		_ = job_cancel(&failed_job)
+		job_destroy(&failed_job)
+		return
+	}
 	failed := job_step(&failed_job)
 	testing.expect_value(t, failed.state, Job_State.Failed)
 	testing.expect_value(t, job_error(&failed_job).code, Error_Code.Host_Path_Unsafe)
 	testing.expect_value(t, job_cancel(&failed_job).code, Error_Code.Cancelled)
 	job_destroy(&failed_job)
 	if !edit_test_read_file(t, &session, "TREE/ORIGINAL.TXT", "original") {return}
-	if !testing.expect_value(t, mkdir(&session, "OTHER").code, Error_Code.None) {return}
-	if !testing.expect_value(t, apply(&session).code, Error_Code.None) {return}
-	if !testing.expect_value(t, fat32image.close(image, .Clean).code, fat32image.Error_Code.None) {
+	if !testing.expect_value(t, os.remove(late_file), os.Error(nil)) {return}
+
+	completed_job, completed_error := begin_import_tree(&session, replacement_tree, "TREE", true)
+	if !testing.expect_value(t, completed_error.code, Error_Code.None) {return}
+	for completed_job.state != .Complete && completed_job.state != .Failed {
+		_ = job_step(&completed_job)
+	}
+	completed_ok := testing.expect_value(t, completed_job.state, Job_State.Complete)
+	job_destroy(&completed_job)
+	if !completed_ok {return}
+	original_info, original_stat_error := stat(&session, "TREE/ORIGINAL.TXT")
+	testing.expect_value(t, original_stat_error.code, Error_Code.None)
+	testing.expect(t, !original_info.exists)
+	if !edit_test_read_file(t, &session, "TREE/FIRST.TXT", "first") ||
+	   !edit_test_read_file(t, &session, "TREE/SECOND.TXT", "second") {
 		return
 	}
-	if !edit_test_read_image_file(t, path, "TREE/ORIGINAL.TXT", "original") {return}
+	if !testing.expect_value(t, apply(&session).code, Error_Code.None) {return}
+	image_close_error := fat32image.close(image, .Clean)
+	image = nil
+	if !testing.expect_value(t, image_close_error.code, fat32image.Error_Code.None) {
+		return
+	}
+	if !edit_test_read_image_file(t, path, "TREE/FIRST.TXT", "first") ||
+	   !edit_test_read_image_file(t, path, "TREE/SECOND.TXT", "second") {
+		return
+	}
 	read_image, open_error := fat32image.open(path, .Read_Only)
 	if !testing.expect_value(t, open_error.code, fat32image.Error_Code.None) {return}
 	defer fat32image.close(read_image, .Clean)
 	volume, volume_error := fat32fs.open(fat32image.block_device(read_image))
 	if !testing.expect_value(t, volume_error.code, fat32fs.Error_Code.None) {return}
-	other, stat_error := fat32fs.stat(&volume, "OTHER")
+	persisted_original, stat_error := fat32fs.stat(&volume, "TREE/ORIGINAL.TXT")
 	testing.expect_value(t, stat_error.code, fat32fs.Error_Code.None)
-	testing.expect(t, other.exists && other.is_directory)
+	testing.expect(t, !persisted_original.exists)
 }

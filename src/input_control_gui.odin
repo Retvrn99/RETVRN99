@@ -10,6 +10,14 @@ input_control_event_current :: proc(event: ^host.Host_Input_Event, generation: u
 	       (event.control_generation == 0 || event.control_generation == generation)
 }
 
+input_control_note_reset_cancelled_locked :: proc(s: ^Shared) {
+	if s == nil {return}
+	s.input_control_stats.reset_cancelled = graphics_counter_add(
+		s.input_control_stats.reset_cancelled,
+		host.host_input_control_pending(&s.input),
+	)
+}
+
 input_control_enqueue_shared :: proc(
 	ctx: rawptr,
 	action: acceptance.Input_Action,
@@ -70,6 +78,9 @@ input_control_enqueue_shared :: proc(
 		)
 	case:
 	}
+	if accepted {
+		s.input_control_stats.queued = graphics_counter_add(s.input_control_stats.queued, 1)
+	}
 	sync.unlock(&s.mu)
 	if accepted {vm_guard_kick(s.guard)}
 	return accepted ? .Accepted : .Backpressure
@@ -82,7 +93,10 @@ input_control_release_mouse :: proc(control: ^Input_Control, s: ^Shared) {
 		s.machine_running &&
 		!s.input_generation_exhausted &&
 		s.input_generation == control.generation &&
-		host.host_input_push_buttons(&s.input, 0, true, control.generation)
+		host.host_input_push_control_release(&s.input, control.generation)
+	if accepted {
+		s.input_control_stats.queued = graphics_counter_add(s.input_control_stats.queued, 1)
+	}
 	sync.unlock(&s.mu)
 	if accepted {vm_guard_kick(s.guard)}
 	control.buttons = 0

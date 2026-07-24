@@ -440,6 +440,21 @@ try {
         Assert-True (-not (Test-Path (Join-Path $script:TestRoot 'explicit-vga\SOUND')))
     }
 
+    Invoke-SelfTest 'PowerShell source verification does not require LASTEXITCODE' {
+        $savedLastExitCode = Get-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+        try {
+            Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+            $output = Invoke-Staging 'unset-last-exit-code' $vgaInventory $vgaManifest @('gsw-vga')
+            Assert-True (($output -join [Environment]::NewLine) -match 'Staged 5 hash-verified')
+        }
+        finally {
+            Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+            if ($null -ne $savedLastExitCode) {
+                Set-Variable LASTEXITCODE -Scope Global -Value $savedLastExitCode.Value
+            }
+        }
+    }
+
     Invoke-SelfTest 'Omitted selection stages every inventory-declared package' {
         $output = Invoke-Staging -Name 'declared-vga' -Inventory $vgaInventory -Manifest $vgaManifest
         Assert-True (($output -join [Environment]::NewLine) -match 'Staged 5 hash-verified')

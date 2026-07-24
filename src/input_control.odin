@@ -55,6 +55,48 @@ Input_Control_Machine_State :: struct {
 	generation: u64,
 }
 
+Input_Control_Stats :: struct {
+	queued:          u64,
+	applied:         u64,
+	stale_dropped:   u64,
+	reset_cancelled: u64,
+}
+
+input_control_stats_resolved :: proc(stats: Input_Control_Stats) -> u64 {
+	return graphics_counter_add(
+		graphics_counter_add(stats.applied, stats.stale_dropped),
+		stats.reset_cancelled,
+	)
+}
+
+input_control_exit_success :: proc(
+	control: ^Input_Control,
+	stats: Input_Control_Stats,
+	pending: u64,
+) -> bool {
+	return control != nil &&
+	       control.state == .Completed &&
+	       control.failure == .None &&
+	       pending == 0 &&
+	       stats.stale_dropped == 0 &&
+	       stats.reset_cancelled == 0 &&
+	       stats.queued == input_control_stats_resolved(stats)
+}
+
+input_control_correlation_success :: proc(
+	graphics_trace: bool,
+	expected_events: u64,
+	correlation: Graphics_Input_Correlation,
+) -> bool {
+	return !graphics_trace ||
+	       correlation.retention_enabled &&
+	       correlation.percentiles_valid &&
+	       !correlation.retention_overflowed &&
+	       expected_events > 0 &&
+	       correlation.events == expected_events &&
+	       correlation.samples > 0
+}
+
 Input_Control_Enqueue_Proc :: #type proc(
 	ctx: rawptr,
 	action: acceptance.Input_Action,

@@ -134,9 +134,21 @@ payloads are registered for the correct Setup phase. This keeps Spanish,
 English, Korean, and future media-specific text in the source's own code page.
 
 The repository can reproducibly build and stage the complete five-file GSW-VGA
-PnP package, but Guided Setup does not yet inject it into the Setup source.
-The native GSW-Sound driver, DirectX 9, and compatibility-layer RunOnce actions
-also remain disabled. A reproducible GSW-Sound `INF + DRV + VXD` developer
+PnP package, but Guided Setup does not inject it into the Setup source. A
+developer may run `scripts\stage-win98-gsw-vga-offline.ps1` against a stopped
+disposable Profile clone to transactionally place the exact reviewed package
+at `C:\GSW-VGA`. The command refuses an active Profile lock, retained FAT32
+companion state, a mismatched `settings.json` image path, reparse traversal,
+or unexpected prior `C:\GSW-VGA` content. Existing files may match only the
+current package or the exact repository-pinned five-file legacy manifest; a
+partial, mixed, extra, or hash-mismatched set is rejected before mutation. It
+also pins the current five sizes and hashes inside the staging executable, so
+an alternate self-consistent payload manifest cannot authorize other bytes. It
+stages files only: it does not change the registry or Windows system files,
+bind or activate the display device, launch the guest, or prove that the driver
+works. The native
+GSW-Sound driver, DirectX 9, and compatibility-layer RunOnce actions also
+remain disabled. A reproducible GSW-Sound `INF + DRV + VXD` developer
 package exists, but repeated guest binding tests did not produce a working
 device. It has no reviewed payload inventory rows and is not injected. The
 default machine now hides its reserved `PCI\VEN_FFFE&DEV_0003` endpoint; do not

@@ -21,6 +21,8 @@ $script:MaximumArgumentCharacters = 4096
 $script:MaximumOutputs = 128
 $script:MaximumBuildTreeEntries = 50000
 $script:MaximumComponentManifests = 64
+$script:MaximumComponentManifestBytes = [UInt64]4194304
+$script:MaximumComponentManifestAggregateBytes = [UInt64]16777216
 if ([string]::IsNullOrWhiteSpace($BuildPlan)) {
     $BuildPlan = Join-Path $PSScriptRoot '..\drivers\win98\build-plan.json'
 }
@@ -484,6 +486,7 @@ function Get-ComponentManifestSnapshots {
         [StringComparer]::OrdinalIgnoreCase
     )
     $snapshots = [Collections.Generic.List[object]]::new()
+    $aggregateBytes = [UInt64]0
     foreach ($entry in $entries) {
         if ($entry.disposition -cne 'planned-component') { continue }
         if ($snapshots.Count -ge $script:MaximumComponentManifests) {
@@ -502,7 +505,14 @@ function Get-ComponentManifestSnapshots {
         }
         $snapshot = Get-LinkedFileSnapshot -PlanDirectory $lockDirectory -Metadata $link `
             -Name "component closure manifest '$($entry.closure_manifest)'" `
-            -MaximumBytes 1048576
+            -MaximumBytes $script:MaximumComponentManifestBytes
+        $manifestBytes = [UInt64]$snapshot.Bytes.LongLength
+        if ($manifestBytes -gt (
+                $script:MaximumComponentManifestAggregateBytes - $aggregateBytes
+            )) {
+            throw "Component closure manifests exceed the $($script:MaximumComponentManifestAggregateBytes)-byte aggregate bound."
+        }
+        $aggregateBytes += $manifestBytes
         [void]$snapshots.Add([pscustomobject]@{
             RelativePath = [string]$entry.closure_manifest
             OriginalPath = $snapshot.OriginalPath

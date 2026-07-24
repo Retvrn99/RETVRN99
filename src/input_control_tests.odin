@@ -202,6 +202,7 @@ input_control_test_shared_enqueue_retries_full_queue_and_tags_generation :: proc
 	)
 	testing.expect_value(t, shared.input.count, host.HOST_INPUT_NORMAL_CAPACITY)
 	testing.expect_value(t, shared.input.dropped_motion, u64(0))
+	testing.expect_value(t, shared.input_control_stats.queued, u64(0))
 	_, _ = host.host_input_pop(&shared.input)
 	testing.expect_value(
 		t,
@@ -211,6 +212,7 @@ input_control_test_shared_enqueue_retries_full_queue_and_tags_generation :: proc
 	last := shared.input.events[(shared.input.head + shared.input.count - 1) % host.HOST_INPUT_CAPACITY]
 	testing.expect_value(t, last.control_generation, u64(3))
 	testing.expect_value(t, last.key_n, u8(2))
+	testing.expect_value(t, shared.input_control_stats.queued, u64(1))
 }
 
 @(test)
@@ -224,9 +226,11 @@ input_control_test_machine_lifecycle_advances_generation_fail_closed :: proc(t: 
 	shared.machine_running = true
 	shared.input_generation = max(u64)
 	_ = host.host_input_push_wheel(&shared.input, 1, 0)
+	_ = host.host_input_push_wheel(&shared.input, 1, 0, max(u64))
 	publish_machine_running(shared, false)
 	testing.expect(t, shared.input_generation_exhausted)
 	testing.expect_value(t, shared.input.count, 0)
+	testing.expect_value(t, shared.input_control_stats.reset_cancelled, u64(1))
 }
 
 @(test)
@@ -252,4 +256,54 @@ input_control_test_event_generation_rejects_only_stale_control :: proc(t: ^testi
 	testing.expect(t, input_control_event_current(&physical, 6))
 	testing.expect(t, input_control_event_current(&current, 6))
 	testing.expect(t, !input_control_event_current(&stale, 6))
+}
+
+@(test)
+input_control_test_exit_requires_completed_lossless_reconciliation :: proc(t: ^testing.T) {
+	control := Input_Control{state = .Completed}
+	stats := Input_Control_Stats{queued = 3, applied = 3}
+	testing.expect(t, input_control_exit_success(&control, stats, 0))
+
+	control.state = .Waiting
+	testing.expect(t, !input_control_exit_success(&control, stats, 0))
+	control.state = .Failed
+	control.failure = .Lifecycle_Changed
+	testing.expect(t, !input_control_exit_success(&control, stats, 0))
+	control.state = .Completed
+	control.failure = .None
+	testing.expect(t, !input_control_exit_success(&control, stats, 1))
+	stats = {queued = 3, applied = 2}
+	testing.expect(t, !input_control_exit_success(&control, stats, 0))
+	stats = {queued = 3, applied = 2, stale_dropped = 1}
+	testing.expect(t, !input_control_exit_success(&control, stats, 0))
+	stats = {queued = 3, applied = 2, reset_cancelled = 1}
+	testing.expect(t, !input_control_exit_success(&control, stats, 0))
+}
+
+@(test)
+input_control_test_traced_run_requires_complete_correlation_distribution :: proc(t: ^testing.T) {
+	correlation := Graphics_Input_Correlation {
+		events = 3,
+		samples = 2,
+		retention_enabled = true,
+		percentiles_valid = true,
+	}
+	testing.expect(t, input_control_correlation_success(true, 3, correlation))
+	testing.expect(t, input_control_correlation_success(false, 0, {}))
+
+	missing := correlation
+	missing.events = 0
+	testing.expect(t, !input_control_correlation_success(true, 3, missing))
+	partial := correlation
+	partial.events = 2
+	testing.expect(t, !input_control_correlation_success(true, 3, partial))
+	over_attributed := correlation
+	over_attributed.events = 4
+	testing.expect(t, !input_control_correlation_success(true, 3, over_attributed))
+	incomplete := correlation
+	incomplete.percentiles_valid = false
+	testing.expect(t, !input_control_correlation_success(true, 3, incomplete))
+	overflow := correlation
+	overflow.retention_overflowed = true
+	testing.expect(t, !input_control_correlation_success(true, 3, overflow))
 }

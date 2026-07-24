@@ -645,6 +645,15 @@ frame_mailbox_graphics_telemetry_snapshot :: proc(
 	return graphics_telemetry_snapshot(&mailbox.telemetry, now)
 }
 
+frame_mailbox_graphics_input_correlation :: proc(
+	mailbox: ^Frame_Mailbox,
+) -> Graphics_Input_Correlation {
+	if mailbox == nil {return {}}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	return graphics_telemetry_input_correlation(&mailbox.telemetry)
+}
+
 frame_mailbox_graphics_trace_text :: proc(mailbox: ^Frame_Mailbox) -> string {
 	if mailbox == nil {return ""}
 	sync.lock(&mailbox.mu)

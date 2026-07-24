@@ -2,6 +2,7 @@
 package main
 
 import "core:fmt"
+import "core:slice"
 import "core:strings"
 import "core:time"
 import host "host"
@@ -12,6 +13,7 @@ GRAPHICS_TELEMETRY_WINDOW :: time.Second
 GRAPHICS_TELEMETRY_AGGREGATE_LOG_CAPACITY :: 3600
 GRAPHICS_FRAME_TRACE_CAPACITY :: 256
 GRAPHICS_FRAME_TRACE_LINE_BYTES :: 2048
+GRAPHICS_INPUT_CORRELATION_CAPACITY :: 4096
 
 Graphics_Frame_Result :: enum u8 {
 	Incomplete,
@@ -129,6 +131,7 @@ Graphics_Telemetry_Window :: struct {
 	compose_samples:                u64,
 	present_samples:                u64,
 	end_to_end_samples:             u64,
+	first_epoch:                    u64,
 	latest_epoch:                   u64,
 	latest_generation:              u64,
 	latest_source:                  Graphics_Frame_Source,
@@ -153,12 +156,35 @@ Graphics_Telemetry :: struct {
 	pending_input_ns:     u64,
 	pending_input_max_ns: u64,
 	pending_input_oldest: time.Tick,
+	input_correlation_events:   u64,
+	input_correlation_samples:  u64,
+	input_correlation_total_ns: u64,
+	input_correlation_max_ns:   u64,
+	input_correlation_latencies: ^[GRAPHICS_INPUT_CORRELATION_CAPACITY]u64,
+	input_correlation_retained:  u64,
+	input_correlation_dropped:   u64,
 	producer_sampled:     bool,
 	last_producer:        Graphics_Producer_Sample,
 	pending_producer:     Graphics_Producer_Interval,
 	host_gpu_sampled:     bool,
 	last_host_gpu:        host.Host_Gsw3d_Observability_Snapshot,
 	pending_host_gpu:     Graphics_Host_Gpu_Interval,
+}
+
+Graphics_Input_Correlation :: struct {
+	events:               u64,
+	samples:              u64,
+	total_ns:             u64,
+	max_ns:               u64,
+	p50_ns:               u64,
+	p95_ns:               u64,
+	p99_ns:               u64,
+	retained_samples:     u64,
+	retention_capacity:   u64,
+	retention_dropped:    u64,
+	retention_enabled:    bool,
+	retention_overflowed: bool,
+	percentiles_valid:    bool,
 }
 
 Graphics_Telemetry_Snapshot :: struct {
@@ -178,9 +204,11 @@ graphics_telemetry_aggregate_log_admit :: proc(emitted: ^u64) -> bool {
 graphics_telemetry_init :: proc(telemetry: ^Graphics_Telemetry, trace_enabled: bool) {
 	if telemetry == nil {return}
 	if telemetry.trace != nil {free(telemetry.trace)}
+	if telemetry.input_correlation_latencies != nil {free(telemetry.input_correlation_latencies)}
 	telemetry^ = {}
 	if trace_enabled {
 		telemetry.trace = new([GRAPHICS_FRAME_TRACE_CAPACITY]Graphics_Frame_Epoch)
+		telemetry.input_correlation_latencies = new([GRAPHICS_INPUT_CORRELATION_CAPACITY]u64)
 		telemetry.trace_enabled = true
 	}
 }
@@ -188,6 +216,7 @@ graphics_telemetry_init :: proc(telemetry: ^Graphics_Telemetry, trace_enabled: b
 graphics_telemetry_destroy :: proc(telemetry: ^Graphics_Telemetry) {
 	if telemetry == nil {return}
 	if telemetry.trace != nil {free(telemetry.trace)}
+	if telemetry.input_correlation_latencies != nil {free(telemetry.input_correlation_latencies)}
 	telemetry^ = {}
 }
 
@@ -601,6 +630,7 @@ graphics_telemetry_record :: proc(telemetry: ^Graphics_Telemetry, epoch: Graphic
 	if telemetry == nil || epoch.sequence == 0 || epoch.result == .Incomplete {return}
 	graphics_telemetry_window_touch(telemetry, epoch.completed)
 	w := &telemetry.current
+	if w.first_epoch == 0 {w.first_epoch = epoch.sequence}
 	w.epochs = graphics_counter_add(w.epochs, 1)
 	#partial switch epoch.result {
 	case .Presented:
@@ -641,6 +671,38 @@ graphics_telemetry_record :: proc(telemetry: ^Graphics_Telemetry, epoch: Graphic
 		)
 		w.max_input_to_present_ns = max(w.max_input_to_present_ns, epoch.input_to_present_ns)
 		w.input_to_present_samples = graphics_counter_add(w.input_to_present_samples, 1)
+		telemetry.input_correlation_events = graphics_counter_add(
+			telemetry.input_correlation_events,
+			epoch.input_events,
+		)
+		telemetry.input_correlation_samples = graphics_counter_add(
+			telemetry.input_correlation_samples,
+			1,
+		)
+		telemetry.input_correlation_total_ns = graphics_counter_add(
+			telemetry.input_correlation_total_ns,
+			epoch.input_to_present_ns,
+		)
+		telemetry.input_correlation_max_ns = max(
+			telemetry.input_correlation_max_ns,
+			epoch.input_to_present_ns,
+		)
+		if telemetry.trace_enabled {
+			if telemetry.input_correlation_latencies != nil &&
+			   telemetry.input_correlation_retained < GRAPHICS_INPUT_CORRELATION_CAPACITY {
+				telemetry.input_correlation_latencies[telemetry.input_correlation_retained] =
+					epoch.input_to_present_ns
+				telemetry.input_correlation_retained = graphics_counter_add(
+					telemetry.input_correlation_retained,
+					1,
+				)
+			} else {
+				telemetry.input_correlation_dropped = graphics_counter_add(
+					telemetry.input_correlation_dropped,
+					1,
+				)
+			}
+		}
 	}
 	graphics_telemetry_add_span(
 		&w.capture_ns,
@@ -680,6 +742,46 @@ graphics_telemetry_record :: proc(telemetry: ^Graphics_Telemetry, epoch: Graphic
 		telemetry.trace_cursor = (telemetry.trace_cursor + 1) % GRAPHICS_FRAME_TRACE_CAPACITY
 		telemetry.trace_count = graphics_counter_add(telemetry.trace_count, 1)
 	}
+}
+
+@(private = "file")
+graphics_input_correlation_percentile :: proc(sorted: []u64, percentile: u64) -> u64 {
+	if len(sorted) == 0 || percentile == 0 || percentile > 100 {return 0}
+	rank := (u64(len(sorted)) * percentile + 99) / 100
+	return sorted[int(rank - 1)]
+}
+
+graphics_telemetry_input_correlation :: proc(
+	telemetry: ^Graphics_Telemetry,
+) -> Graphics_Input_Correlation {
+	if telemetry == nil {return {retention_capacity = GRAPHICS_INPUT_CORRELATION_CAPACITY}}
+	result := Graphics_Input_Correlation {
+		events = telemetry.input_correlation_events,
+		samples = telemetry.input_correlation_samples,
+		total_ns = telemetry.input_correlation_total_ns,
+		max_ns = telemetry.input_correlation_max_ns,
+		retained_samples = telemetry.input_correlation_retained,
+		retention_capacity = GRAPHICS_INPUT_CORRELATION_CAPACITY,
+		retention_dropped = telemetry.input_correlation_dropped,
+		retention_enabled = telemetry.trace_enabled &&
+			telemetry.input_correlation_latencies != nil,
+	}
+	result.retention_overflowed = result.retention_dropped != 0
+	result.percentiles_valid =
+		result.retention_enabled &&
+		!result.retention_overflowed &&
+		result.samples > 0 &&
+		result.retained_samples == result.samples
+	if !result.percentiles_valid {return result}
+
+	values: [GRAPHICS_INPUT_CORRELATION_CAPACITY]u64
+	count := int(result.retained_samples)
+	copy(values[:count], telemetry.input_correlation_latencies[:count])
+	slice.sort(values[:count])
+	result.p50_ns = graphics_input_correlation_percentile(values[:count], 50)
+	result.p95_ns = graphics_input_correlation_percentile(values[:count], 95)
+	result.p99_ns = graphics_input_correlation_percentile(values[:count], 99)
+	return result
 }
 
 graphics_telemetry_take_window :: proc(
@@ -802,8 +904,11 @@ graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> str
 	builder := strings.builder_make(0, 4096, context.allocator)
 	fmt.sbprintf(
 		&builder,
-		"graphics/s window=%dms attempts=%d unchanged=%d blocked=%d epochs=%d presented=%d superseded=%d coalesced=%d gpu_work=%d failures=%d/%d/%d/%d/%d source=%s guest_device=%d host_device=%d mode=%dx%d/%s descriptor_copy=%d/%dus texture_upload_bytes=%d converted_pixels=%d texture_recreates=%d proof_gpu_requests=%d/%d/%d input_queue=%d/%dus/%dus input_to_present=%d/%dus/%dus",
+		"graphics/s window=%dms window_sequence=%d first_epoch=%d latest_epoch=%d attempts=%d unchanged=%d blocked=%d epochs=%d presented=%d superseded=%d coalesced=%d gpu_work=%d failures=%d/%d/%d/%d/%d source=%s guest_device=%d host_device=%d mode=%dx%d/%s descriptor_copy=%d/%dus texture_upload_bytes=%d converted_pixels=%d texture_recreates=%d proof_gpu_requests=%d/%d/%d input_queue=%d/%dus/%dus input_to_present=%d/%dus/%dus",
 		elapsed_ms,
+		window.sequence,
+		window.first_epoch,
+		window.latest_epoch,
 		window.publish_attempts,
 		window.unchanged_attempts,
 		window.blocked_attempts,

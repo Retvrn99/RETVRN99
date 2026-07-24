@@ -276,3 +276,45 @@ host_input_test_control_motion_actions_remain_distinct :: proc(t: ^testing.T) {
 	testing.expect_value(t, first.dx, i32(3))
 	testing.expect_value(t, second.dx, i32(5))
 }
+
+@(test)
+host_input_test_control_pending_counts_only_generation_tagged_events :: proc(t: ^testing.T) {
+	q: Host_Input_Queue
+	testing.expect(t, host_input_push_wheel(&q, 1, 0))
+	testing.expect(t, host_input_push_wheel(&q, 1, 0, 4))
+	testing.expect(t, host_input_push_key_sequence(&q, []u8{0x1c, 0x9c}, 4))
+	testing.expect_value(t, host_input_control_pending(&q), u64(2))
+	_, _ = host_input_pop(&q)
+	testing.expect_value(t, host_input_control_pending(&q), u64(2))
+	_, _ = host_input_pop(&q)
+	testing.expect_value(t, host_input_control_pending(&q), u64(1))
+	_, _ = host_input_pop(&q)
+	testing.expect_value(t, host_input_control_pending(&q), u64(0))
+}
+
+@(test)
+host_input_test_control_release_uses_reserve_without_evicting_control_input :: proc(
+	t: ^testing.T,
+) {
+	q: Host_Input_Queue
+	for i in 0 ..< HOST_INPUT_NORMAL_CAPACITY {
+		testing.expect(
+			t,
+			host_input_push_control(
+				&q,
+				{kind = .Mouse_Motion, dx = i32(i + 1), control_generation = 9},
+			),
+		)
+	}
+	first := q.events[q.head]
+	testing.expect(t, host_input_push_control_release(&q, 9))
+	testing.expect_value(t, q.count, HOST_INPUT_NORMAL_CAPACITY + 1)
+	testing.expect_value(t, q.events[q.head], first)
+	testing.expect_value(t, q.dropped_motion, u64(0))
+	testing.expect_value(t, q.dropped_edges, u64(0))
+	last := q.events[host_input_last_index(&q)]
+	testing.expect_value(t, last.kind, Host_Input_Kind.Mouse_Buttons)
+	testing.expect_value(t, last.buttons, u8(0))
+	testing.expect_value(t, last.control_generation, u64(9))
+	testing.expect(t, last.durable_release)
+}

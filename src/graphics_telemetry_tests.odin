@@ -152,6 +152,10 @@ graphics_telemetry_test_top_level_aggregates_saturate :: proc(t: ^testing.T) {
 	}
 	telemetry.pending_input_events = max(u64) - 1
 	telemetry.pending_input_ns = max(u64) - 2
+	telemetry.input_correlation_events = max(u64) - 1
+	telemetry.input_correlation_samples = max(u64)
+	telemetry.input_correlation_total_ns = max(u64) - 2
+	telemetry.input_correlation_max_ns = 7
 	graphics_telemetry_note_publish_attempt(&telemetry, time.Tick{2})
 	graphics_telemetry_note_input(&telemetry, 8, 8, 8, time.Tick{3})
 	graphics_telemetry_note_compose(&telemetry, time.Tick{3}, time.Tick{20})
@@ -162,6 +166,7 @@ graphics_telemetry_test_top_level_aggregates_saturate :: proc(t: ^testing.T) {
 	epoch.bytes_uploaded = 8
 	epoch.rendered_pixels = 8
 	epoch.texture_recreated = true
+	epoch.input_events = 8
 	epoch.input_to_present_ns = 8
 	epoch.compose_started = time.Tick{3}
 	epoch.compose_ended = time.Tick{20}
@@ -184,6 +189,10 @@ graphics_telemetry_test_top_level_aggregates_saturate :: proc(t: ^testing.T) {
 	testing.expect_value(t, window.texture_recreates, max(u64))
 	testing.expect_value(t, window.input_to_present_ns, max(u64))
 	testing.expect_value(t, window.input_to_present_samples, max(u64))
+	testing.expect_value(t, telemetry.input_correlation_events, max(u64))
+	testing.expect_value(t, telemetry.input_correlation_samples, max(u64))
+	testing.expect_value(t, telemetry.input_correlation_total_ns, max(u64))
+	testing.expect_value(t, telemetry.input_correlation_max_ns, u64(8))
 	testing.expect_value(t, window.compose_ns, max(u64))
 	testing.expect_value(t, window.compose_samples, max(u64))
 }
@@ -350,6 +359,20 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	testing.expect_value(t, window.input_to_present_ns, u64(1050))
 	testing.expect_value(t, window.max_input_to_present_ns, u64(1050))
 	testing.expect_value(t, window.input_to_present_samples, u64(1))
+	testing.expect_value(t, telemetry.input_correlation_events, u64(2))
+	testing.expect_value(t, telemetry.input_correlation_samples, u64(1))
+	testing.expect_value(t, telemetry.input_correlation_total_ns, u64(1050))
+	testing.expect_value(t, telemetry.input_correlation_max_ns, u64(1050))
+	correlation := graphics_telemetry_input_correlation(&telemetry)
+	testing.expect_value(t, correlation.retained_samples, u64(1))
+	testing.expect_value(t, correlation.retention_capacity, u64(4096))
+	testing.expect_value(t, correlation.retention_dropped, u64(0))
+	testing.expect(t, correlation.retention_enabled)
+	testing.expect(t, !correlation.retention_overflowed)
+	testing.expect(t, correlation.percentiles_valid)
+	testing.expect_value(t, correlation.p50_ns, u64(1050))
+	testing.expect_value(t, correlation.p95_ns, u64(1050))
+	testing.expect_value(t, correlation.p99_ns, u64(1050))
 	testing.expect_value(t, window.producer.output_underrun_frames, u64(2))
 	testing.expect_value(t, window.producer.output_underrun_events, u64(1))
 	testing.expect_value(t, window.producer.native_pcm_starvation_frames, u64(3))
@@ -438,10 +461,18 @@ graphics_telemetry_test_trace_is_opt_in_and_bounded :: proc(t: ^testing.T) {
 	graphics_telemetry_init(&disabled, false)
 	defer graphics_telemetry_destroy(&disabled)
 	epoch := graphics_frame_epoch_begin(1, 1, time.Tick{1})
-	graphics_frame_epoch_complete(&epoch, .Coalesced, time.Tick{2})
+	epoch.input_events = 1
+	graphics_frame_epoch_complete(&epoch, .Presented, time.Tick{2})
+	epoch.input_to_present_ns = 1
 	graphics_telemetry_record(&disabled, epoch)
 	_, retained := graphics_telemetry_trace_epoch(&disabled, 0)
 	testing.expect(t, !retained)
+	disabled_correlation := graphics_telemetry_input_correlation(&disabled)
+	testing.expect_value(t, disabled_correlation.samples, u64(1))
+	testing.expect_value(t, disabled_correlation.retained_samples, u64(0))
+	testing.expect(t, !disabled_correlation.retention_enabled)
+	testing.expect(t, !disabled_correlation.retention_overflowed)
+	testing.expect(t, !disabled_correlation.percentiles_valid)
 
 	telemetry: Graphics_Telemetry
 	graphics_telemetry_init(&telemetry, true)
@@ -459,6 +490,69 @@ graphics_telemetry_test_trace_is_opt_in_and_bounded :: proc(t: ^testing.T) {
 	testing.expect_value(t, last.sequence, u64(GRAPHICS_FRAME_TRACE_CAPACITY + 3))
 	_, overflow := graphics_telemetry_trace_epoch(&telemetry, GRAPHICS_FRAME_TRACE_CAPACITY)
 	testing.expect(t, !overflow)
+}
+
+@(test)
+graphics_telemetry_test_input_correlation_retention_outlives_trace_ring :: proc(
+	t: ^testing.T,
+) {
+	telemetry: Graphics_Telemetry
+	graphics_telemetry_init(&telemetry, true)
+	defer graphics_telemetry_destroy(&telemetry)
+	for index in 0 ..< GRAPHICS_INPUT_CORRELATION_CAPACITY {
+		sequence := u64(index + 1)
+		latency := u64(GRAPHICS_INPUT_CORRELATION_CAPACITY - index)
+		epoch := graphics_frame_epoch_begin(sequence, sequence, time.Tick{i64(sequence)})
+		epoch.input_events = 1
+		graphics_frame_epoch_complete(&epoch, .Presented, time.Tick{i64(sequence + 1)})
+		epoch.input_to_present_ns = latency
+		graphics_telemetry_record(&telemetry, epoch)
+	}
+
+	snapshot := graphics_telemetry_snapshot(&telemetry, time.Tick{5000})
+	testing.expect_value(t, snapshot.trace_observed, u64(4096))
+	testing.expect_value(t, snapshot.trace_retained, u64(GRAPHICS_FRAME_TRACE_CAPACITY))
+	correlation := graphics_telemetry_input_correlation(&telemetry)
+	testing.expect_value(t, correlation.events, u64(4096))
+	testing.expect_value(t, correlation.samples, u64(4096))
+	testing.expect_value(t, correlation.retained_samples, u64(4096))
+	testing.expect_value(t, correlation.retention_capacity, u64(4096))
+	testing.expect_value(t, correlation.retention_dropped, u64(0))
+	testing.expect(t, correlation.retention_enabled)
+	testing.expect(t, !correlation.retention_overflowed)
+	testing.expect(t, correlation.percentiles_valid)
+	testing.expect_value(t, correlation.p50_ns, u64(2048))
+	testing.expect_value(t, correlation.p95_ns, u64(3892))
+	testing.expect_value(t, correlation.p99_ns, u64(4056))
+	testing.expect_value(t, correlation.max_ns, u64(4096))
+	testing.expect_value(t, telemetry.input_correlation_latencies[0], u64(4096))
+	testing.expect_value(t, telemetry.input_correlation_latencies[4095], u64(1))
+
+	overflow := graphics_frame_epoch_begin(4097, 4097, time.Tick{4097})
+	overflow.input_events = 1
+	graphics_frame_epoch_complete(&overflow, .Presented, time.Tick{4098})
+	overflow.input_to_present_ns = 4097
+	graphics_telemetry_record(&telemetry, overflow)
+	correlation = graphics_telemetry_input_correlation(&telemetry)
+	testing.expect_value(t, correlation.samples, u64(4097))
+	testing.expect_value(t, correlation.retained_samples, u64(4096))
+	testing.expect_value(t, correlation.retention_dropped, u64(1))
+	testing.expect(t, correlation.retention_overflowed)
+	testing.expect(t, !correlation.percentiles_valid)
+	testing.expect_value(t, correlation.p50_ns, u64(0))
+	testing.expect_value(t, correlation.p95_ns, u64(0))
+	testing.expect_value(t, correlation.p99_ns, u64(0))
+	testing.expect_value(t, correlation.max_ns, u64(4097))
+
+	telemetry.input_correlation_dropped = max(u64)
+	graphics_telemetry_record(&telemetry, {
+		sequence = 4098,
+		result = .Presented,
+		completed = time.Tick{4099},
+		input_events = 1,
+		input_to_present_ns = 4098,
+	})
+	testing.expect_value(t, telemetry.input_correlation_dropped, max(u64))
 }
 
 @(test)
@@ -509,4 +603,95 @@ graphics_telemetry_test_one_second_window_is_delivered_once :: proc(t: ^testing.
 		time.tick_add(time.Tick{10}, time.Second),
 	)
 	testing.expect(t, !repeated)
+}
+
+@(test)
+graphics_telemetry_test_window_tracks_first_and_latest_completed_epochs :: proc(t: ^testing.T) {
+	telemetry: Graphics_Telemetry
+	first := graphics_frame_epoch_begin(7, 1, time.Tick{10})
+	graphics_frame_epoch_complete(&first, .Coalesced, time.Tick{11})
+	graphics_telemetry_record(&telemetry, first)
+	last := graphics_frame_epoch_begin(9, 1, time.Tick{12})
+	graphics_frame_epoch_complete(&last, .Presented, time.Tick{13})
+	graphics_telemetry_record(&telemetry, last)
+
+	testing.expect_value(t, telemetry.current.first_epoch, u64(7))
+	testing.expect_value(t, telemetry.current.latest_epoch, u64(9))
+	testing.expect_value(t, telemetry.current.epochs, u64(2))
+}
+
+@(test)
+graphics_telemetry_test_epoch_range_resets_on_window_rollover :: proc(t: ^testing.T) {
+	telemetry: Graphics_Telemetry
+	started := time.Tick{100}
+	graphics_telemetry_note_publish_attempt(&telemetry, started)
+	first := graphics_frame_epoch_begin(11, 1, started)
+	graphics_frame_epoch_complete(&first, .Presented, time.Tick{101})
+	graphics_telemetry_record(&telemetry, first)
+
+	window, ready := graphics_telemetry_take_window(
+		&telemetry,
+		time.tick_add(started, time.Second),
+	)
+	if !testing.expect(t, ready) {return}
+	testing.expect_value(t, window.sequence, u64(1))
+	testing.expect_value(t, window.first_epoch, u64(11))
+	testing.expect_value(t, window.latest_epoch, u64(11))
+	testing.expect_value(t, telemetry.current.first_epoch, u64(0))
+	testing.expect_value(t, telemetry.current.latest_epoch, u64(0))
+
+	second := graphics_frame_epoch_begin(12, 1, time.tick_add(started, time.Second + 1))
+	graphics_frame_epoch_complete(
+		&second,
+		.Presented,
+		time.tick_add(started, time.Second + 2),
+	)
+	graphics_telemetry_record(&telemetry, second)
+	testing.expect_value(t, telemetry.current.first_epoch, u64(12))
+	testing.expect_value(t, telemetry.current.latest_epoch, u64(12))
+
+	window, ready = graphics_telemetry_take_window(
+		&telemetry,
+		time.tick_add(started, 2 * time.Second),
+	)
+	if !testing.expect(t, ready) {return}
+	testing.expect_value(t, window.sequence, u64(2))
+	testing.expect_value(t, window.first_epoch, u64(12))
+	testing.expect_value(t, window.latest_epoch, u64(12))
+}
+
+@(test)
+graphics_telemetry_test_no_epoch_window_has_zero_epoch_range :: proc(t: ^testing.T) {
+	telemetry: Graphics_Telemetry
+	started := time.Tick{10}
+	graphics_telemetry_note_publish_attempt(&telemetry, started)
+	window, ready := graphics_telemetry_take_window(
+		&telemetry,
+		time.tick_add(started, time.Second),
+	)
+	if !testing.expect(t, ready) {return}
+	testing.expect_value(t, window.epochs, u64(0))
+	testing.expect_value(t, window.first_epoch, u64(0))
+	testing.expect_value(t, window.latest_epoch, u64(0))
+}
+
+@(test)
+graphics_telemetry_test_window_text_formats_epoch_range :: proc(t: ^testing.T) {
+	started := time.Tick{10}
+	window := Graphics_Telemetry_Window {
+		sequence     = 17,
+		started      = started,
+		ended        = time.tick_add(started, time.Second),
+		first_epoch  = 23,
+		latest_epoch = 29,
+	}
+	text := graphics_telemetry_window_text(window)
+	defer delete(text)
+	testing.expect(
+		t,
+		strings.has_prefix(
+			text,
+			"graphics/s window=1000ms window_sequence=17 first_epoch=23 latest_epoch=29 attempts=0",
+		),
+	)
 }

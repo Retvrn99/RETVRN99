@@ -35,6 +35,27 @@ edit_process_test_expect_pages_equal :: proc(t: ^testing.T, left, right: ^Edit_P
 	}
 }
 
+@(private = "file")
+edit_process_test_step_pair :: proc(
+	t: ^testing.T,
+	left, right: ^Edit_Session,
+) -> (
+	Edit_Job_Progress,
+	bool,
+) {
+	left_progress, left_error := edit_job_step(left)
+	right_progress, right_error := edit_job_step(right)
+	if !testing.expect_value(t, right_error.code, left_error.code) ||
+	   !testing.expect_value(t, left_error.code, Error_Code.None) {
+		return {}, false
+	}
+	testing.expect_value(t, right_progress.state, left_progress.state)
+	testing.expect_value(t, right_progress.completed_bytes, left_progress.completed_bytes)
+	testing.expect_value(t, right_progress.total_bytes, left_progress.total_bytes)
+	testing.expect_value(t, right_progress.items_completed, left_progress.items_completed)
+	return left_progress, true
+}
+
 @(test)
 edit_process_adapter_test_trace_matches_in_process_with_korean_lfn :: proc(t: ^testing.T) {
 	root, root_error := os.make_directory_temp(
@@ -246,6 +267,89 @@ edit_process_adapter_test_trace_matches_in_process_with_korean_lfn :: proc(t: ^t
 	testing.expect_value(t, right_vbr[91], u8(0x18))
 	testing.expect_value(t, fat32image.close(left_image, .Clean).code, fat32image.Error_Code.None)
 	testing.expect_value(t, fat32image.close(right_image, .Clean).code, fat32image.Error_Code.None)
+}
+
+@(test)
+edit_process_adapter_test_tree_replace_cancel_after_first_child_matches_in_process :: proc(
+	t: ^testing.T,
+) {
+	root, root_error := os.make_directory_temp(
+		"",
+		"retvrn99-edit-process-tree-replace-*",
+		context.temp_allocator,
+	)
+	if !testing.expect_value(t, root_error, os.Error(nil)) {return}
+	defer os.remove_all(root)
+	left_path, left_ok := edit_process_test_create(t, root, "left-tree.img")
+	right_path, right_ok := edit_process_test_create(t, root, "right-tree.img")
+	if !left_ok || !right_ok {return}
+	original_tree, _ := filepath.join({root, "original-tree"}, context.temp_allocator)
+	original_file, _ := filepath.join({original_tree, "ORIGINAL.TXT"}, context.temp_allocator)
+	replacement_tree, _ := filepath.join({root, "replacement-tree"}, context.temp_allocator)
+	first_file, _ := filepath.join({replacement_tree, "FIRST.TXT"}, context.temp_allocator)
+	second_file, _ := filepath.join({replacement_tree, "SECOND.TXT"}, context.temp_allocator)
+	if !testing.expect_value(t, os.make_directory_all(original_tree), os.Error(nil)) ||
+	   !testing.expect_value(t, os.make_directory_all(replacement_tree), os.Error(nil)) ||
+	   !testing.expect_value(t, os.write_entire_file(original_file, "original"), os.Error(nil)) ||
+	   !testing.expect_value(t, os.write_entire_file(first_file, "alpha"), os.Error(nil)) ||
+	   !testing.expect_value(t, os.write_entire_file(second_file, "bravo"), os.Error(nil)) {
+		return
+	}
+	left, left_error := open_edit(left_path, "tree-replace-in-process", 0, .In_Process)
+	if !testing.expect_value(t, left_error.code, Error_Code.None) {return}
+	defer if left != nil {_ = edit_close_retain(left)}
+	right, right_error := open_edit(right_path, "tree-replace-process", 0, .Process)
+	if !testing.expect_value(t, right_error.code, Error_Code.None) {return}
+	defer if right != nil {_ = edit_close_retain(right)}
+	left_begin := edit_begin_import_tree(left, original_tree, "TREE")
+	right_begin := edit_begin_import_tree(right, original_tree, "TREE")
+	testing.expect_value(t, right_begin.code, left_begin.code)
+	if !testing.expect_value(t, left_begin.code, Error_Code.None) {return}
+	for {
+		progress, step_ok := edit_process_test_step_pair(t, left, right)
+		if !step_ok {return}
+		if progress.state == .Complete {break}
+		if !testing.expect(t, progress.state == .Running || progress.state == .Pending) {return}
+	}
+	left_begin = edit_begin_import_tree(left, replacement_tree, "TREE", true)
+	right_begin = edit_begin_import_tree(right, replacement_tree, "TREE", true)
+	testing.expect_value(t, right_begin.code, left_begin.code)
+	if !testing.expect_value(t, left_begin.code, Error_Code.None) {return}
+	progress: Edit_Job_Progress
+	for progress.items_completed < 1 {
+		step_ok: bool
+		progress, step_ok = edit_process_test_step_pair(t, left, right)
+		if !step_ok {return}
+		if !testing.expect(t, progress.state == .Running || progress.state == .Pending) {return}
+	}
+	testing.expect_value(t, progress.state, Edit_Job_State.Running)
+	left_original, left_original_error := edit_stat(left, "TREE/ORIGINAL.TXT")
+	right_original, right_original_error := edit_stat(right, "TREE/ORIGINAL.TXT")
+	testing.expect_value(t, right_original_error.code, left_original_error.code)
+	testing.expect_value(t, left_original_error.code, Error_Code.None)
+	testing.expect(t, left_original.exists && right_original.exists)
+	paths := [?]string{"TREE/FIRST.TXT", "TREE/SECOND.TXT"}
+	for path in paths {
+		left_replacement, left_stat_error := edit_stat(left, path)
+		right_replacement, right_stat_error := edit_stat(right, path)
+		testing.expect_value(t, right_stat_error.code, left_stat_error.code)
+		testing.expect_value(t, left_stat_error.code, Error_Code.None)
+		testing.expect(t, !left_replacement.exists && !right_replacement.exists)
+	}
+	left_cancel := edit_job_cancel(left)
+	right_cancel := edit_job_cancel(right)
+	testing.expect_value(t, right_cancel.code, left_cancel.code)
+	if !testing.expect_value(t, left_cancel.code, Error_Code.None) {return}
+	left_original, left_original_error = edit_stat(left, "TREE/ORIGINAL.TXT")
+	right_original, right_original_error = edit_stat(right, "TREE/ORIGINAL.TXT")
+	testing.expect_value(t, right_original_error.code, left_original_error.code)
+	testing.expect_value(t, left_original_error.code, Error_Code.None)
+	testing.expect(t, left_original.exists && right_original.exists)
+	testing.expect_value(t, edit_changed_sector_count(right), edit_changed_sector_count(left))
+	testing.expect_value(t, edit_finish(left, false).code, Error_Code.None)
+	left = nil
+	testing.expect_value(t, edit_finish(right, false).code, Error_Code.None)
+	right = nil
 }
 
 @(test)

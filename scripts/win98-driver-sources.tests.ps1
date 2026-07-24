@@ -125,6 +125,32 @@ function Write-MixedUpstreamLock {
     [IO.File]::WriteAllText($Path, $contents + "`r`n")
 }
 
+function Write-ComponentUpstreamLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$DisplayCommit,
+        [Parameter(Mandatory = $true)][object[]]$Components
+    )
+
+    $lines = [Collections.Generic.List[string]]::new()
+    [void]$lines.Add('# SPDX-License-Identifier: GPL-3.0-only')
+    [void]$lines.Add(
+        "name`tsource_directory`trepository`tcommit`tupstream_license`tdisposition`tclosure_manifest`tclosure_manifest_sha256`tscope"
+    )
+    [void]$lines.Add(
+        "vmdisp9x`tvmdisp9x`thttps://example.invalid/vmdisp9x.git`t$DisplayCommit`tMIT`tplanned`t`t`tdisplay-driver"
+    )
+    [void]$lines.Add(
+        "vmhal9x`tvmhal9x`thttps://example.invalid/vmhal9x.git`t$DisplayCommit`tMIT`tplanned`t`t`tdirectdraw-hal"
+    )
+    foreach ($component in $Components) {
+        [void]$lines.Add(
+            "$($component.Name)`t$($component.Name)`thttps://example.invalid/component.git`t$DisplayCommit`tMIT`tplanned-component`t$($component.RelativePath)`t$($component.Hash)`tfixture-component"
+        )
+    }
+    [IO.File]::WriteAllText($Path, (($lines -join "`r`n") + "`r`n"))
+}
+
 function Get-ByteHash {
     param([Parameter(Mandatory = $true)][byte[]]$Bytes)
 
@@ -839,6 +865,94 @@ Start-Sleep -Seconds 20
         [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
         $mixedBuildOutput = Join-Path $testRoot 'mixed-lock-build'
         $componentManifestText = [IO.File]::ReadAllText($componentManifestPath)
+        $utf8NoBom = [Text.UTF8Encoding]::new($false)
+        $componentManifestByteCount = $utf8NoBom.GetByteCount($componentManifestText)
+        try {
+            $largeManifestBytes = 1048577
+            [IO.File]::WriteAllText(
+                $componentManifestPath,
+                $componentManifestText + (' ' * ($largeManifestBytes - $componentManifestByteCount)),
+                $utf8NoBom
+            )
+            Write-MixedUpstreamLock -Path $lockPath -DisplayCommit $displayCommit `
+                -ManifestRelativePath $componentManifestRelativePath `
+                -ManifestHash ((Get-FileHash $componentManifestPath -Algorithm SHA256).Hash.ToLowerInvariant())
+            $plan.upstream_lock.sha256 = (
+                Get-FileHash $lockPath -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+            $largeManifestOutput = Join-Path $testRoot 'large-component-manifest-build'
+            & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+                -OutputRoot $largeManifestOutput -BuildPlan $planPath -LockFile $lockPath | Out-Null
+            Assert-True (Test-Path -LiteralPath (
+                Join-Path $largeManifestOutput 'vmdisp9x-derived\artifact.bin'
+            ) -PathType Leaf) 'The build rejected a valid component manifest above one MiB.'
+
+            $oversizedManifestBytes = 4194305
+            [IO.File]::WriteAllText(
+                $componentManifestPath,
+                $componentManifestText + (' ' * ($oversizedManifestBytes - $componentManifestByteCount)),
+                $utf8NoBom
+            )
+            Write-MixedUpstreamLock -Path $lockPath -DisplayCommit $displayCommit `
+                -ManifestRelativePath $componentManifestRelativePath `
+                -ManifestHash ((Get-FileHash $componentManifestPath -Algorithm SHA256).Hash.ToLowerInvariant())
+            $plan.upstream_lock.sha256 = (
+                Get-FileHash $lockPath -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+            Assert-Throws {
+                & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+                    -OutputRoot (Join-Path $testRoot 'oversized-component-manifest-build') `
+                    -BuildPlan $planPath -LockFile $lockPath
+            } 'exceeds the 4194304-byte bound'
+            Assert-True (-not (Test-Path -LiteralPath (
+                Join-Path $testRoot 'oversized-component-manifest-build'
+            ))) 'The oversized component manifest published output.'
+
+            $aggregateDirectory = Join-Path $testRoot 'component-closures\aggregate'
+            New-Item -ItemType Directory -Path $aggregateDirectory | Out-Null
+            $aggregateComponents = @()
+            for ($index = 0; $index -lt 5; $index++) {
+                $aggregateName = 'aggregate-' + $index.ToString('00')
+                $aggregateRelativePath = "component-closures/aggregate/$aggregateName.json"
+                $aggregatePath = Join-Path $testRoot $aggregateRelativePath
+                [IO.File]::WriteAllText(
+                    $aggregatePath,
+                    $componentManifestText + (' ' * (4194304 - $componentManifestByteCount)),
+                    $utf8NoBom
+                )
+                $aggregateComponents += [pscustomobject]@{
+                    Name = $aggregateName
+                    RelativePath = $aggregateRelativePath
+                    Hash = (Get-FileHash $aggregatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+            }
+            Write-ComponentUpstreamLock -Path $lockPath -DisplayCommit $displayCommit `
+                -Components $aggregateComponents
+            $plan.upstream_lock.sha256 = (
+                Get-FileHash $lockPath -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+            Assert-Throws {
+                & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
+                    -OutputRoot (Join-Path $testRoot 'aggregate-component-manifest-build') `
+                    -BuildPlan $planPath -LockFile $lockPath
+            } 'Component closure manifests exceed the 16777216-byte aggregate bound'
+            Assert-True (-not (Test-Path -LiteralPath (
+                Join-Path $testRoot 'aggregate-component-manifest-build'
+            ))) 'The aggregate component manifest overflow published output.'
+        }
+        finally {
+            [IO.File]::WriteAllText($componentManifestPath, $componentManifestText)
+            Write-MixedUpstreamLock -Path $lockPath -DisplayCommit $displayCommit `
+                -ManifestRelativePath $componentManifestRelativePath `
+                -ManifestHash ((Get-FileHash $componentManifestPath -Algorithm SHA256).Hash.ToLowerInvariant())
+            $plan.upstream_lock.sha256 = (
+                Get-FileHash $lockPath -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            [IO.File]::WriteAllText($planPath, ($plan | ConvertTo-Json -Depth 12))
+        }
         try {
             & $buildScript -SourceRoot $sourceRoot -ToolchainRoot $toolchainRoot `
                 -OutputRoot $mixedBuildOutput -BuildPlan $planPath -LockFile $lockPath `

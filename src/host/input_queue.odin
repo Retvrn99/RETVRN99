@@ -153,6 +153,22 @@ host_input_push_control :: proc(q: ^Host_Input_Queue, event: Host_Input_Event) -
 	return true
 }
 
+host_input_push_control_release :: proc(q: ^Host_Input_Queue, generation: u64) -> bool {
+	if q == nil || generation == 0 || q.count >= HOST_INPUT_CAPACITY {return false}
+	e := Host_Input_Event {
+		kind = .Mouse_Buttons,
+		queued_at = time.tick_now(),
+		control_generation = generation,
+		durable_release = true,
+	}
+	e.sequence = q.next_sequence
+	q.next_sequence += 1
+	tail := (q.head + q.count) % HOST_INPUT_CAPACITY
+	q.events[tail] = e
+	q.count += 1
+	return true
+}
+
 host_input_residence_ns :: proc(event: ^Host_Input_Event, now: time.Tick) -> u64 {
 	if event == nil || event.queued_at == (time.Tick{}) {return 0}
 	return u64(max(time.Duration(0), time.tick_diff(event.queued_at, now)))
@@ -236,6 +252,16 @@ host_input_drain :: proc(q: ^Host_Input_Queue, out: []Host_Input_Event) -> int {
 	n := min(len(out), q.count)
 	for i in 0 ..< n {out[i], _ = host_input_pop(q)}
 	return n
+}
+
+host_input_control_pending :: proc(q: ^Host_Input_Queue) -> u64 {
+	if q == nil {return 0}
+	result: u64
+	for i in 0 ..< q.count {
+		index := (q.head + i) % HOST_INPUT_CAPACITY
+		if q.events[index].control_generation != 0 {result += 1}
+	}
+	return result
 }
 
 host_keyboard_id :: proc(code: u8, extended: bool) -> int {

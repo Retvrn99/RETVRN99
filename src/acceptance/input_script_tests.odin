@@ -204,6 +204,25 @@ input_script_test_types_ascii_with_paced_key_actions :: proc(t: ^testing.T) {
 }
 
 @(test)
+input_script_test_distinguishes_us_and_spanish_underscore_scans :: proc(t: ^testing.T) {
+	script, diagnostic := input_script_parse("type _\nkey underscore-es\n")
+	defer input_script_destroy(&script)
+	testing.expect_value(t, diagnostic, Input_Script_Diagnostic.None)
+	testing.expect_value(t, len(script.actions), 2)
+	if len(script.actions) != 2 {return}
+	testing.expect_value(
+		t,
+		script.actions[0].key,
+		[INPUT_SCRIPT_KEY_BYTES]u8{0x2a, 0x0c, 0x8c, 0xaa, 0, 0, 0, 0},
+	)
+	testing.expect_value(
+		t,
+		script.actions[1].key,
+		[INPUT_SCRIPT_KEY_BYTES]u8{0x2a, 0x35, 0xb5, 0xaa, 0, 0, 0, 0},
+	)
+}
+
+@(test)
 input_script_test_parses_ctrl_escape :: proc(t: ^testing.T) {
 	script, diagnostic := input_script_parse("key ctrl-escape\n")
 	defer input_script_destroy(&script)

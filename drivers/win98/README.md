@@ -314,6 +314,44 @@ Guided Setup integration remains a separate acceptance boundary: the staged
 package is not silently injected into user media, and the user's installation
 media is never modified or redistributed.
 
+### Offline stage into a stopped profile clone
+
+The reviewed package can be copied into an existing disposable Profile image
+while the VM is stopped. Point `PackageDirectory` at the five-file `GSW-VGA`
+directory published by the staging pipeline, not at its parent:
+
+```powershell
+.\scripts\stage-win98-gsw-vga-offline.ps1 `
+    -ProfileRoot D:\proof\install-profile\profile `
+    -PackageDirectory D:\proof\stage\payloads\GSW-VGA `
+    -OutputDirectory D:\proof\offline-stage-tools
+```
+
+The output directory must not exist. The wrapper verifies that the Profile
+lock and FAT32 companion are absent, that `settings.json` names the Profile's
+`c_drive.img`, and that all traversed paths are ordinary non-reparse paths. It
+then freshly builds the staging executable and an adjacent
+`retvrn99-fat32.exe`. The executable verifies the reviewed manifest and
+inventory, requires those identities to equal its independently compiled
+current five-file size and SHA-256 contract, and then verifies the exact host
+files. A caller-supplied, self-consistent manifest cannot define another
+replacement target. The whole directory is transactionally imported as
+`C:\GSW-VGA`.
+
+If `C:\GSW-VGA` already exists, replacement is allowed only when its complete
+five-file content matches either the requested package or the one reviewed
+legacy set in `gsw-vga-prior-only-manifest.tsv`. The tool pins every legacy
+size and SHA-256 independently, so another manifest cannot widen replacement
+authority. Any mixed generation, extra, missing, nested, changed, or
+non-directory prior content fails before mutation. The caller remains
+responsible for supplying a disposable clone; the wrapper can prove that a
+Profile is stopped, but cannot prove how its image was cloned.
+
+This is offline package staging only. It does not alter the Windows registry,
+copy files into `WINDOWS`, bind or activate the display device, launch the
+guest, or establish guest-runtime proof. Driver selection and all acceptance
+observations still occur inside the licensed Windows 98 guest.
+
 ## GSW3D guest smoke
 
 The standalone Windows 98 proof client has a separate locked build closure and

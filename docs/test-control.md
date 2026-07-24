@@ -60,6 +60,7 @@ Launch with a separate Profile and the explicit test-control build:
 ```powershell
 & "$env:TEMP\retvrn99-control\retvrn99-control.exe" `
     --start `
+    --graphics-trace `
     "--profile-root:$env:TEMP\retvrn99-control-profile" `
     "--control-script:D:\path\to\quake.input"
 ```
@@ -79,9 +80,11 @@ button held.
 Key names include `escape`, `backspace`, `tab`, `enter`, `space`, `grave`,
 `slash`, `backslash`, `minus`, `equals`, `comma`, `period`, `semicolon`,
 `apostrophe`, `f1` through `f12`, the navigation keys, `ctrl-escape`, and
-`ctrl-alt-delete`. Spanish Win9x layouts can use `key underscore-es`. `type`
-emits paced set-1 key taps for its supported compact US-layout text: letters,
-digits, `-`, and `_`, with no spaces. Use `key space` between words.
+`ctrl-alt-delete`. Spanish Win9x text controls can use `key underscore-es`.
+Applications that interpret physical scan codes through a US key table, such
+as the WinQuake console, must use `type _`. `type` emits paced set-1 key taps
+for its supported compact US-layout text: letters, digits, `-`, and `_`, with
+no spaces. Use `key space` between words.
 
 Mouse buttons are a mask: left is `1`, right is `2`, middle is `4`, and released
 is `0`. Any nonzero state must be followed by `buttons 0` in the same script.
@@ -91,6 +94,20 @@ the complete action is accepted. Pausing the VM pauses script time. Stop,
 restart, reset, freeze, or input-generation exhaustion cancels the remaining
 script, and stale queued control actions are discarded by the VM thread.
 
-Completion means every action was accepted into `Shared.input`; it is not a
-fence proving that the VM or guest consumed every byte. Keep keyboard commands
-paced, especially around BIOS or application state changes.
+Completion means every action was accepted into `Shared.input`; it is not by
+itself a fence proving that the VM or guest consumed every byte. Keep keyboard
+commands paced, especially around BIOS or application state changes. At exit,
+the process fails if the script did not complete or any accepted event was
+stale, cancelled, pending, or otherwise unreconciled.
+
+At process exit, a control build prints one `control input:` summary. `queued`
+counts accepted generation-tagged events, and each queued event must resolve as
+`applied`, `stale_dropped`, or `reset_cancelled`; `unresolved` and `pending`
+must both be zero for a complete script. `correlated_events` reports applied
+events that reached a presented frame and must equal `applied`, while
+`correlated_presentations` and the latency fields report the corresponding
+presentation samples. With
+`--graphics-trace`, the control build retains up to 4,096 cumulative correlation
+samples independently of the frame-trace ring and reports exact nearest-rank
+p50, p95, and p99 values. Missing correlation or retention overflow makes that
+control run fail.

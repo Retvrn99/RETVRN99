@@ -652,7 +652,7 @@ job_step_import_file :: proc(job: ^Step_Job, tree_child: bool) -> Job_Progress {
 	if job.completed_bytes == job.total_bytes {
 		finish_error := fat32fs.file_finish(&job.writer)
 		if finish_error.code != .None {return job_fail(job, error_from_fat32(finish_error))}
-		if job.replace {
+		if job.replace && !tree_child {
 			replace_error := job_finish_replace(job)
 			if replace_error.code != .None {return job_fail(job, replace_error)}
 		}

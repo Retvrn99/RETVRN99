@@ -199,27 +199,27 @@ settings_save :: proc(path: string, settings: Settings) -> Settings_Diagnostic {
 		return .Invalid_CPU
 	}
 	normalized_path := ""
+	defer delete(normalized_path)
 	if len(settings.hard_drive_path) > 0 {
 		path_valid: bool
 		normalized_path, path_valid = settings_normalize_hard_drive_path(settings.hard_drive_path)
 		if !path_valid {
 			return .Invalid_Hard_Drive_Path
 		}
-		defer delete(normalized_path)
 	}
 	normalized_floppy_path := ""
+	defer delete(normalized_floppy_path)
 	if len(settings.floppy_path) > 0 {
 		path_valid: bool
 		normalized_floppy_path, path_valid = settings_normalize_media_path(settings.floppy_path)
 		if !path_valid {return .Invalid_Floppy_Path}
-		defer delete(normalized_floppy_path)
 	}
 	normalized_cdrom_path := ""
+	defer delete(normalized_cdrom_path)
 	if len(settings.cdrom_path) > 0 {
 		path_valid: bool
 		normalized_cdrom_path, path_valid = settings_normalize_media_path(settings.cdrom_path)
 		if !path_valid {return .Invalid_Cdrom_Path}
-		defer delete(normalized_cdrom_path)
 	}
 	hotkeys := hotkey_settings_with_defaults(settings.hotkeys)
 	disk := Disk_Settings {

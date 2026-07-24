@@ -93,6 +93,7 @@ Shared :: struct {
 	input:                            host.Host_Input_Queue,
 	input_generation:                 u64,
 	input_generation_exhausted:       bool,
+	input_control_stats:              Input_Control_Stats,
 	guard:                            ^Vm_Guard,
 }
 
@@ -124,6 +125,30 @@ Vm_Ctx :: struct {
 	firmware_log_all:         bool,
 	hard_drive_path:          string,
 	gsw3d_host:               ^host.Host,
+}
+
+Machine_Session_Kind :: enum u8 {
+	Gui,
+	Console,
+}
+
+machine_session_nonce_ns :: proc(now: time.Tick) -> u64 {
+	elapsed := time.duration_nanoseconds(time.tick_diff(time.Tick{}, now))
+	return u64(max(i64(0), elapsed))
+}
+
+machine_session_id_text :: proc(
+	kind: Machine_Session_Kind,
+	pid: int,
+	nonce_ns: u64,
+) -> string {
+	prefix := "gui"
+	if kind == .Console {prefix = "console"}
+	return fmt.tprintf("%s-%d-%d", prefix, pid, nonce_ns)
+}
+
+machine_session_id_now :: proc(kind: Machine_Session_Kind) -> string {
+	return machine_session_id_text(kind, os.get_pid(), machine_session_nonce_ns(time.tick_now()))
 }
 
 main :: proc() {
@@ -457,7 +482,7 @@ gui_main :: proc(
 	ctx.attach = attach
 	ctx.cpu_mode = active_settings.cpu_mode
 	ctx.paths = paths^
-	ctx.machine_session_id = strings.clone(fmt.tprintf("gui-%d-%d", os.get_pid(), time.tick_now()))
+	ctx.machine_session_id = strings.clone(machine_session_id_now(.Gui))
 	if postmortem_diagnostic := graphics_postmortem_init(
 		&shared.graphics_postmortem,
 		{
@@ -1056,6 +1081,7 @@ gui_main :: proc(
 			_ = host.mouse_capture(&h, false)
 			host.host_set_input_title(&h, false)
 			sync.lock(&shared.mu)
+			input_control_note_reset_cancelled_locked(shared)
 			host.host_input_discard_after_stop(&shared.input, &keyboard)
 			sync.unlock(&shared.mu)
 			host.host_clear_frame(&h)
@@ -1756,6 +1782,61 @@ gui_main :: proc(
 
 	if input_control_exclusive {input_control_release_mouse(&input_control, shared)}
 	thread.destroy(vm_thr)
+	control_exit_failed := false
+	if input_control_exclusive {
+		sync.lock(&shared.mu)
+		input_control_note_reset_cancelled_locked(shared)
+		host.host_input_discard(&shared.input)
+		control_stats := shared.input_control_stats
+		control_pending := host.host_input_control_pending(&shared.input)
+		sync.unlock(&shared.mu)
+		correlation := frame_mailbox_graphics_input_correlation(&shared.frames)
+		resolved := input_control_stats_resolved(control_stats)
+		unresolved := u64(0)
+		if control_stats.queued > resolved {unresolved = control_stats.queued - resolved}
+		over_resolved := u64(0)
+		if resolved > control_stats.queued {over_resolved = resolved - control_stats.queued}
+		control_success := input_control_exit_success(
+			&input_control,
+			control_stats,
+			control_pending,
+		)
+		correlation_success := input_control_correlation_success(
+			graphics_trace,
+			control_stats.applied,
+			correlation,
+		)
+		control_exit_failed = !control_success || !correlation_success
+		fmt.printfln(
+			"control input: state=%v failure=%v success=%v actions=%d queued=%d applied=%d stale_dropped=%d reset_cancelled=%d resolved=%d unresolved=%d over_resolved=%d pending=%d correlated_events=%d correlated_presentations=%d correlation_success=%v correlation_avg_us=%d correlation_p50_us=%d correlation_p95_us=%d correlation_p99_us=%d correlation_max_us=%d correlation_retained=%d correlation_capacity=%d correlation_dropped=%d correlation_retention_enabled=%v correlation_overflowed=%v correlation_percentiles_valid=%v",
+			input_control.state,
+			input_control.failure,
+			control_success,
+			len(input_control.script.actions),
+			control_stats.queued,
+			control_stats.applied,
+			control_stats.stale_dropped,
+			control_stats.reset_cancelled,
+			resolved,
+			unresolved,
+			over_resolved,
+			control_pending,
+			correlation.events,
+			correlation.samples,
+			correlation_success,
+			correlation.total_ns / max(correlation.samples, u64(1)) / u64(time.Microsecond),
+			correlation.p50_ns / u64(time.Microsecond),
+			correlation.p95_ns / u64(time.Microsecond),
+			correlation.p99_ns / u64(time.Microsecond),
+			correlation.max_ns / u64(time.Microsecond),
+			correlation.retained_samples,
+			correlation.retention_capacity,
+			correlation.retention_dropped,
+			correlation.retention_enabled,
+			correlation.retention_overflowed,
+			correlation.percentiles_valid,
+		)
+	}
 	if graphics_trace {
 		trace := frame_mailbox_graphics_trace_text(&shared.frames)
 		if trace != "" {
@@ -1775,6 +1856,7 @@ gui_main :: proc(
 		fmt.printf(" %v=%d", kind, shared.exit_stats[kind])
 	}
 	fmt.println()
+	if control_exit_failed {return 1}
 	return 0
 }
 
@@ -1961,6 +2043,7 @@ publish_machine_running :: proc(s: ^Shared, running: bool) {
 	if s.machine_running != running && !s.input_generation_exhausted {
 		if s.input_generation == max(u64) {
 			s.input_generation_exhausted = true
+			input_control_note_reset_cancelled_locked(s)
 			host.host_input_discard(&s.input)
 		} else {
 			s.input_generation += 1
@@ -2064,9 +2147,7 @@ console_main :: proc(
 		fmt.eprintfln("Windows 98: install state ignored (%v)", install_diagnostic)
 	}
 	fat_session: ^fat32session.Machine_Session
-	machine_session_id := strings.clone(
-		fmt.tprintf("console-%d-%d", os.get_pid(), time.tick_now()),
-	)
+	machine_session_id := strings.clone(machine_session_id_now(.Console))
 	defer delete(machine_session_id)
 	floppy_image: []u8
 	defer delete(floppy_image)

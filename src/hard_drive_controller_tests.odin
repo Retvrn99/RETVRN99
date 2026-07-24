@@ -51,6 +51,32 @@ hard_drive_controller_test_run :: proc(
 	return testing.expect(t, false)
 }
 
+@(private = "file")
+hard_drive_controller_test_discard_destroy :: proc(controller: ^Hard_Drive_Controller) {
+	if controller == nil {return}
+	if controller.operation != .None {hard_drive_controller_cancel_operation(controller)}
+	if controller.session != nil {
+		finish_error := fat32session.edit_finish(controller.session, false)
+		if finish_error.code != .None && finish_error.outcome != .Completed {
+			_ = fat32session.edit_close_retain(controller.session)
+		}
+		controller.session = nil
+	}
+	hard_drive_controller_destroy(controller)
+}
+
+@(private = "file")
+hard_drive_controller_test_remove_tree_replace_fixture :: proc(
+	root, image_path, host_parent, host_tree, first_file, second_file: string,
+) {
+	_ = os.remove(first_file)
+	_ = os.remove(second_file)
+	_ = os.remove(host_tree)
+	_ = os.remove(host_parent)
+	_ = os.remove(image_path)
+	_ = os.remove(root)
+}
+
 @(test)
 hard_drive_controller_test_typed_alias_collision_opens_conflict_prompt :: proc(t: ^testing.T) {
 	err := fat32session.error_make(
@@ -658,4 +684,101 @@ hard_drive_controller_test_import_conflict_cancel_and_recursive_export :: proc(t
 		testing.expect_value(t, string(readme.data), "new")
 		fat32session.edit_read_destroy(&readme)
 	}
+}
+
+@(test)
+hard_drive_controller_test_directory_conflict_replace_is_atomic :: proc(t: ^testing.T) {
+	root, root_error := os.make_directory_temp(
+		"",
+		"retvrn99-hard-drive-tree-replace-*",
+		context.temp_allocator,
+	)
+	if !testing.expect_value(t, root_error, os.Error(nil)) {return}
+	image_path := test_image_create(t, root, "directory-replace.img")
+	if image_path == "" {
+		_ = os.remove(root)
+		return
+	}
+	host_parent, _ := filepath.join({root, "host-source"}, context.temp_allocator)
+	host_tree, _ := filepath.join({host_parent, "TREE"}, context.temp_allocator)
+	first_file, _ := filepath.join({host_tree, "FIRST.TXT"}, context.temp_allocator)
+	second_file, _ := filepath.join({host_tree, "SECOND.TXT"}, context.temp_allocator)
+	defer hard_drive_controller_test_remove_tree_replace_fixture(
+		root,
+		image_path,
+		host_parent,
+		host_tree,
+		first_file,
+		second_file,
+	)
+	if !test_image_write_files(
+		t,
+		image_path,
+		[]string{"TREE"},
+		[]Test_Image_File{{path = "TREE/ORIGINAL.TXT", data = "original"}},
+	) {
+		return
+	}
+	if !testing.expect_value(t, os.make_directory_all(host_tree), os.Error(nil)) ||
+	   !testing.expect_value(t, os.write_entire_file(first_file, "alpha"), os.Error(nil)) ||
+	   !testing.expect_value(t, os.write_entire_file(second_file, "bravo"), os.Error(nil)) {
+		return
+	}
+
+	controller: Hard_Drive_Controller
+	hard_drive_controller_init(&controller, .In_Process)
+	defer hard_drive_controller_test_discard_destroy(&controller)
+	if !testing.expect(t, hard_drive_controller_open(&controller, image_path)) {return}
+	if !testing.expect(
+		t,
+		hard_drive_controller_handle(&controller, {kind = .Import, paths = []string{host_tree}}),
+	) {
+		return
+	}
+	hard_drive_controller_step(&controller)
+	if !testing.expect(t, controller.conflict_pending) {return}
+	testing.expect_value(t, controller.conflict_target, "TREE")
+	testing.expect(
+		t,
+		hard_drive_controller_handle(
+			&controller,
+			{
+				kind                = .Resolve_Conflict,
+				conflict_resolution = .Replace,
+			},
+		),
+	)
+	if !testing.expect(t, controller.job_active) {return}
+	hard_drive_controller_step(&controller)
+	hard_drive_controller_step(&controller)
+	if !testing.expect(t, controller.operation == .Import && controller.job_active) {return}
+	original, original_error := fat32session.edit_stat(controller.session, "TREE/ORIGINAL.TXT")
+	testing.expect_value(t, original_error.code, fat32session.Error_Code.None)
+	testing.expect(t, original.exists)
+	paths := [?]string{"TREE/FIRST.TXT", "TREE/SECOND.TXT"}
+	for path in paths {
+		replacement, stat_error := fat32session.edit_stat(controller.session, path)
+		testing.expect_value(t, stat_error.code, fat32session.Error_Code.None)
+		testing.expect(t, !replacement.exists)
+	}
+	if !hard_drive_controller_test_run(t, &controller) {return}
+	original, original_error = fat32session.edit_stat(controller.session, "TREE/ORIGINAL.TXT")
+	testing.expect_value(t, original_error.code, fat32session.Error_Code.None)
+	testing.expect(t, !original.exists)
+	expected_values := [?]string{"alpha", "bravo"}
+	for path, index in paths {
+		readback, read_error := fat32session.edit_read(controller.session, path, 0, 5)
+		if testing.expect_value(t, read_error.code, fat32session.Error_Code.None) {
+			testing.expect_value(t, string(readback.data), expected_values[index])
+			fat32session.edit_read_destroy(&readback)
+		}
+	}
+	if !testing.expect(
+		t,
+		hard_drive_controller_handle(&controller, {kind = .Apply, close_after = true}),
+	) {
+		return
+	}
+	if !hard_drive_controller_test_run(t, &controller) {return}
+	testing.expect(t, controller.session == nil && !controller.model.visible)
 }

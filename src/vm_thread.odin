@@ -628,8 +628,13 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			input_residence_ns, max_input_residence_ns: u64
 			oldest_input_queued_at: time.Tick
 			input_applied_count := 0
+			control_applied_count, control_stale_count: u64
 			for &event in input_events[:input_count] {
-				if !input_control_event_current(&event, input_generation) {continue}
+				if !input_control_event_current(&event, input_generation) {
+					if event.control_generation != 0 {control_stale_count += 1}
+					continue
+				}
+				if event.control_generation != 0 {control_applied_count += 1}
 				input_applied_count += 1
 				residence_ns := host.host_input_residence_ns(&event, input_drained_at)
 				input_residence_ns += residence_ns
@@ -647,6 +652,18 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				case .Mouse_Wheel:
 					machine.machine_mouse_wheel(m, event.wheel, event.buttons)
 				}
+			}
+			if control_applied_count != 0 || control_stale_count != 0 {
+				sync.lock(&s.mu)
+				s.input_control_stats.applied = graphics_counter_add(
+					s.input_control_stats.applied,
+					control_applied_count,
+				)
+				s.input_control_stats.stale_dropped = graphics_counter_add(
+					s.input_control_stats.stale_dropped,
+					control_stale_count,
+				)
+				sync.unlock(&s.mu)
 			}
 			frame_mailbox_graphics_telemetry_note_input(
 				&s.frames,

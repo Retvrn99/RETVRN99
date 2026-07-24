@@ -493,17 +493,11 @@ if ($requiredSourceDirectories.Count -gt 0) {
         & (Join-Path $PSScriptRoot 'verify-win98-driver-sources.ps1') `
             -SourceRoot $SourceRoot -LockFile $lockPath `
             -SourceName @($plannedSourceNames | Sort-Object -Unique)
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Pinned Windows 98 source verification failed.'
-        }
     }
     if ($componentSourceNames.Count -gt 0) {
         & (Join-Path $PSScriptRoot 'verify-win98-component-closure.ps1') `
             -SourceRoot $SourceRoot -LockFile $lockPath `
             -SourceName @($componentSourceNames | Sort-Object -Unique)
-        if ($LASTEXITCODE -ne 0) {
-            throw 'Windows 98 component source closure verification failed.'
-        }
     }
 }
 
