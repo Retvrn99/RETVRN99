@@ -1,0 +1,42 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 2,
+  "status": "ready",
+  "reason": "",
+  "recipes": [
+    {
+      "name": "gsw-graphics-probe",
+      "upstream_name": "vmdisp9x",
+      "source_directory": "vmdisp9x",
+      "destination_directory": "gsw-graphics-probe-source",
+      "patches": [],
+      "overlays": [
+        {
+          "relative_path": "guest-tools/gsw-graphics-probe",
+          "destination_relative_path": "gsw-graphics-probe",
+          "replace_existing": false,
+          "tree": {
+            "file_count": 15,
+            "directory_count": 0,
+            "total_entries": 15,
+            "aggregate_bytes": 94741,
+            "maximum_file_bytes": 22895,
+            "maximum_path_bytes": 15,
+            "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+            "sha256": "bafebd84f313a8f39cae6316a815c72c42b100f8a3807203c0a2c25f52345833"
+          }
+        }
+      ],
+      "output_tree": {
+        "file_count": 154,
+        "directory_count": 8,
+        "total_entries": 162,
+        "aggregate_bytes": 1382138,
+        "maximum_file_bytes": 113466,
+        "maximum_path_bytes": 34,
+        "digest_algorithm": "retvrn99-file-tree-sha256-v1",
+        "sha256": "2a9771993881402fa557e1de4ae81608fc20057f2a43559eaa8be4d33f75c24a"
+      }
+    }
+  ]
+}

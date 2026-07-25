@@ -17,6 +17,7 @@ Mmio_Zone :: enum {
 	Lapic, // 0xFEE00000: smp_scan LAPIC pokes
 	Mmconfig, // 0xE0000000: PCIe mmconfig probe
 	Pci_Window, // 0x80000000+: BAR / option-ROM signature reads (map_pcirom)
+	Ram_Sizing,
 }
 
 EXIT_HISTORY :: 32
@@ -309,6 +310,12 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	}
 	bus_register_byte_decomposed(&m.bus, LPT1_BASE, LPT1_BASE + 2, parallel_h)
 	bus_register_byte_decomposed(&m.bus, LPT2_BASE, LPT2_BASE + 2, parallel_h)
+	bus_whitelist(&m.bus, LPT1_BASE + LPT_ECR_OFFSET, LPT2_BASE + LPT_ECR_OFFSET)
+	bus_whitelist(
+		&m.bus,
+		LPT1_BASE + LPT_ALIAS_PROBE_OFFSET,
+		LPT2_BASE + LPT_ALIAS_PROBE_OFFSET,
+	)
 	machine_init_isa_pnp(m)
 
 	cmos_h := Io_Handler {
@@ -427,6 +434,8 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 
 	// deliberate whitelist: probed but not modeled yet
 	bus_whitelist(&m.bus, 0x81, 0xED) // delay ports
+	bus_whitelist(&m.bus, 0x421, 0x4A1) // Windows 98 PIC alias probe
+	bus_whitelist(&m.bus, 0x94, 0x102) // MCA POS probe; absent
 	machine_whitelist_range(&m.bus, 0x1F0, 0x1F7) // IDE until machine_attach_disk
 	bus_whitelist(&m.bus, 0x3F6)
 	machine_init_fdc(m)
@@ -443,10 +452,15 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	bus_whitelist(&m.bus, 0x36E, 0x36F) // IDE quaternary device control, same probe (tertiary's 0x3EE is inside the COM3 range above)
 	// Known-absent ISA game, SCSI, and network adapter probe windows.
 	machine_whitelist_range(&m.bus, 0x130, 0x13F)
+	machine_whitelist_range(&m.bus, 0x180, 0x18F)
 	machine_whitelist_range(&m.bus, 0x200, 0x207)
 	machine_whitelist_range(&m.bus, 0x230, 0x23F)
 	machine_whitelist_range(&m.bus, 0x240, 0x24F)
 	machine_whitelist_range(&m.bus, 0x280, 0x29F)
+	// AWE32 EMU8000 register windows; RETVRN99 exposes SB16 and OPL3 only.
+	machine_whitelist_range(&m.bus, 0x620, 0x623)
+	machine_whitelist_range(&m.bus, 0xA20, 0xA23)
+	machine_whitelist_range(&m.bus, 0xE20, 0xE23)
 	machine_whitelist_range(&m.bus, 0x300, 0x31F)
 	machine_whitelist_range(&m.bus, 0x330, 0x35F)
 	machine_clock_set_running(m, true)
@@ -625,6 +639,16 @@ machine_test_device_frame_crc :: proc(m: ^Machine) -> u32 {
 machine_test_device_exit_code :: proc(m: ^Machine) -> u8 {
 	if m == nil || !m.test_device_enabled {return 0}
 	return test_device_exit_code(&m.test_device)
+}
+
+machine_test_device_report_payload :: proc(m: ^Machine) -> ([]u8, bool) {
+	if m == nil || !m.test_device_enabled {return nil, false}
+	return test_device_report_payload(&m.test_device)
+}
+
+machine_test_device_set_report_status :: proc(m: ^Machine, value: u8) {
+	if m == nil || !m.test_device_enabled {return}
+	test_device_set_report_status(&m.test_device, value)
 }
 
 machine_audio_output :: proc(m: ^Machine) -> ^sound.Audio_Output {
@@ -1747,6 +1771,9 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 		for i in 0 ..< len(data) {data[i] = 0xFF}
 	}
 	zone, tolerated := machine_mmio_zone(decoded_gpa)
+	if machine_windows_ram_probe(decoded_gpa, write, len(data), u64(len(m.vm.ram))) {
+		zone, tolerated = .Ram_Sizing, true
+	}
 	if tolerated {
 		if !m.mmio_seen[zone] {
 			m.mmio_seen[zone] = true
@@ -1775,6 +1802,17 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 			),
 		)
 	}
+}
+
+@(private = "package")
+machine_windows_ram_probe :: proc(gpa: u64, _: bool, size: int, ram_bytes: u64) -> bool {
+	return(
+		ram_bytes > 0 &&
+		size == 4 &&
+		gpa >= ram_bytes &&
+		gpa < 0x8000_0000 &&
+		gpa & (gpa - 1) == 0
+	)
 }
 
 @(private = "file")

@@ -2221,6 +2221,13 @@ console_main :: proc(
 		&result,
 		&machine_segment_accumulated,
 	)
+	guest_report: acceptance.Guest_Report_Collector
+	guest_report_artifacts := run_options.test_device ? run_options.artifacts : ""
+	acceptance.guest_report_init(&guest_report, guest_report_artifacts)
+	defer acceptance.guest_report_destroy(&guest_report)
+	defer {
+		_ = acceptance.guest_report_finalize_partial(&guest_report)
+	}
 	defer {
 		if frame_dump_path != "" && machine_live {
 			console_dump_frame(frame_dump_path, machine.machine_display_frame(m))
@@ -2569,6 +2576,25 @@ console_main :: proc(
 			)
 			run_result.exit_code = result
 			break loop
+		case .Begin_Report:
+			status := acceptance.guest_report_begin(&guest_report)
+			machine.machine_test_device_set_report_status(m, u8(status))
+		case .Append_Report:
+			payload, payload_ok := machine.machine_test_device_report_payload(m)
+			status := acceptance.Guest_Report_Status.Artifacts_Disabled
+			if guest_report_artifacts != "" {
+				status = .Bad_Length
+			}
+			if payload_ok {
+				status = acceptance.guest_report_append(&guest_report, payload)
+			}
+			machine.machine_test_device_set_report_status(m, u8(status))
+		case .Commit_Report:
+			status := acceptance.guest_report_commit(&guest_report)
+			machine.machine_test_device_set_report_status(m, u8(status))
+		case .Abort_Report:
+			status := acceptance.guest_report_abort(&guest_report)
+			machine.machine_test_device_set_report_status(m, u8(status))
 		case .None:
 		}
 		if !alive {

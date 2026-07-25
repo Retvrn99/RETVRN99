@@ -26,6 +26,7 @@ drivers/win98/derived/**/overlay/**/*.rc text eol=lf
 drivers/win98/derived/**/overlay/**/*.txt text eol=lf
 drivers/win98/derived/shared/**/*.h text eol=lf
 drivers/win98/guest-tools/**/*.c text eol=lf
+drivers/win98/guest-tools/**/*.h text eol=lf
 drivers/win98/gsw-sound/**/*.c text eol=lf
 drivers/win98/gsw-sound/**/*.def text eol=lf
 drivers/win98/gsw-sound/**/*.h text eol=lf

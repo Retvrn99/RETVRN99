@@ -1,0 +1,108 @@
+{
+  "_spdx": "GPL-3.0-only",
+  "schema": 3,
+  "status": "ready",
+  "reason": "",
+  "derived_source_plan": {
+    "relative_path": "gsw-graphics-probe-derived-source-plan.json",
+    "sha256": "d71d06ce978fe62bd7fce27ba9a204ed9ccff8a9f408d10ef2e6141b6c961c6e"
+  },
+  "toolchain_locks": [
+    {
+      "name": "mingw32",
+      "relative_path": "mingw32-toolchain.lock.json",
+      "sha256": "db3a84b7388937a5ffd5ab3e30429bae4c3ca5d8d17f095a491a42bc82413a12"
+    },
+    {
+      "name": "open-watcom",
+      "relative_path": "toolchain.lock.json",
+      "sha256": "e97012fb9d9b1257e59ac5ea46ac8aa1b54b62e2feb03fed70545c5769e07dff"
+    }
+  ],
+  "upstream_lock": {
+    "relative_path": "upstream.lock.tsv",
+    "sha256": "bda6eb95d28b9ef4a9e6ef5677557a30d9bcee88e6b2e8821c892cf65edbb5ed"
+  },
+  "toolchains": [
+    {
+      "name": "mingw32-gcc",
+      "lock": "mingw32",
+      "relative_path": "bin/gcc.exe",
+      "sha256": "0c79d47814364067e560ba4d26849126388a44fc5765d33df00c1fdd582c89a9"
+    },
+    {
+      "name": "watcom-wcl386",
+      "lock": "open-watcom",
+      "relative_path": "binnt/wcl386.exe",
+      "sha256": "72f5f5fff6986e770c8e41f132689ed0435e3098681ae1d87cb0bafb43ebfcfc"
+    },
+    {
+      "name": "watcom-wlink",
+      "lock": "open-watcom",
+      "relative_path": "binnt/wlink.exe",
+      "sha256": "d58013821bfd77b6b68b56ab6582419a1a33ab7839709c5b973a992cd499b4e8"
+    },
+    {
+      "name": "dos32a-bind",
+      "lock": "open-watcom",
+      "relative_path": "binw/sb.exe",
+      "sha256": "77dee63052f8f7183d6a1eed19e2946c3bca7554f6b486ff600a5a873031a627"
+    },
+    {
+      "name": "dos32a-extender",
+      "lock": "open-watcom",
+      "relative_path": "binw/dos32a.exe",
+      "sha256": "da4a20e2d3e9fdff8231375d052994e620fe0a93fb301ae24564785e7126faab"
+    }
+  ],
+  "steps": [
+    {
+      "name": "build-gsw-graphics-probe",
+      "recipe": "gsw-graphics-probe",
+      "toolchain": "mingw32-gcc",
+      "working_directory": "gsw-graphics-probe",
+      "arguments": [
+        "-std=gnu99", "-Wall", "-Wextra", "-Werror", "-Os", "-pipe",
+        "-ffreestanding", "-fno-builtin", "-fno-ident", "-fomit-frame-pointer",
+        "-fno-asynchronous-unwind-tables", "-fno-unwind-tables", "-fno-stack-protector",
+        "-DNDEBUG", "-D_WIN32_WINNT=0x0400", "-DWINVER=0x0400",
+        "-DDIRECTDRAW_VERSION=0x0700", "-DDIRECT3D_VERSION=0x0700",
+        "-march=pentium2", "-mtune=core2", "-static", "-nostdlib",
+        "-nodefaultlibs", "main.c", "runtime.c", "crc32.c", "report.c",
+        "host_report.c", "pattern.c", "benchmark.c", "backend_gdi.c",
+        "backend_ddraw.c", "backend_d3d.c", "vbe_import.c", "summary.c",
+        "session.c", "-lkernel32", "-luser32", "-lgdi32", "-ldxguid", "-lgcc",
+        "-Wl,--entry,_mainCRTStartup,--no-insert-timestamp,--disable-dynamicbase,--disable-nxcompat,--subsystem,console:4.0,--image-base,0x00400000,--strip-all",
+        "-o", "GSWGFX.EXE"
+      ],
+      "normalizations": [],
+      "outputs": [
+        {
+          "relative_path": "gsw-graphics-probe/GSWGFX.EXE",
+          "origin": "build",
+          "bytes": 47104,
+          "sha256": "f97c0311fe027cfe82e85719820e584220ccaac4c12eaa2918eb6de0a1231f72"
+        }
+      ]
+    },
+    {
+      "name": "build-gsw-vbe-companion",
+      "recipe": "gsw-graphics-probe",
+      "toolchain": "watcom-wcl386",
+      "working_directory": "gsw-graphics-probe",
+      "arguments": [
+        "-q", "-w4", "-we", "-s", "-os", "-bt=dos", "-6r",
+        "-l=dos32a", "gswvbe.c", "-fe=GSWVBE.EXE"
+      ],
+      "normalizations": [],
+      "outputs": [
+        {
+          "relative_path": "gsw-graphics-probe/GSWVBE.EXE",
+          "origin": "build",
+          "bytes": 61270,
+          "sha256": "c9f62581020913ca967c72e67bb04bbbedca3db5ca4ee70364ebad631b68a81a"
+        }
+      ]
+    }
+  ]
+}

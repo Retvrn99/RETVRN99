@@ -21,12 +21,20 @@ TEST_DEVICE_REG_SELECTOR   :: 16
 TEST_DEVICE_REG_ITERATIONS :: 17
 TEST_DEVICE_REG_AUX        :: 21
 TEST_DEVICE_REG_STATUS     :: 25
+TEST_DEVICE_REG_REPORT_LENGTH :: 30
+TEST_DEVICE_REG_REPORT_STATUS :: 31
+
+TEST_DEVICE_REPORT_PAYLOAD_BYTES :: 30
 
 Test_Device_Command :: enum u8 {
 	None     = 0,
 	Crc      = 1,
 	Snapshot = 2,
 	Exit     = 3,
+	Begin_Report  = 4,
+	Append_Report = 5,
+	Commit_Report = 6,
+	Abort_Report  = 7,
 }
 
 Test_Device_Rect :: struct {
@@ -69,7 +77,7 @@ test_device_write :: proc(device: ^Test_Device, port: u16, value: u8) -> bool {
 		device.index = u8((u16(device.index) + 1) % TEST_DEVICE_REGISTER_COUNT)
 		return true
 	case TEST_DEVICE_COMMAND_PORT:
-		if command := Test_Device_Command(value); command >= .Crc && command <= .Exit {
+		if command := Test_Device_Command(value); command >= .Crc && command <= .Abort_Report {
 			device.pending = command
 		} else {
 			device.pending = .None
@@ -104,6 +112,16 @@ test_device_set_crc :: proc(device: ^Test_Device, value: u32) {
 
 test_device_exit_code :: proc(device: ^Test_Device) -> u8 {
 	return device.regs[TEST_DEVICE_REG_EXIT]
+}
+
+test_device_report_payload :: proc(device: ^Test_Device) -> ([]u8, bool) {
+	length := int(device.regs[TEST_DEVICE_REG_REPORT_LENGTH])
+	if length < 1 || length > TEST_DEVICE_REPORT_PAYLOAD_BYTES {return nil, false}
+	return device.regs[:length], true
+}
+
+test_device_set_report_status :: proc(device: ^Test_Device, value: u8) {
+	device.regs[TEST_DEVICE_REG_REPORT_STATUS] = value
 }
 
 test_device_register_u32 :: proc(device: ^Test_Device, offset: int) -> u32 {
