@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-only
+
+diff --git a/modes.c b/modes.c
+--- a/modes.c
++++ b/modes.c
+@@ -115,10 +115,11 @@ WORD FixModeInfo( LPMODEDESC lpMode )
+         rc = 0;             /* Mode wasn't valid. */
+     }
+ 
+-    /* Validate mode. If resolution is under 640x480 in
+-     * either direction, force 640x480.
++    /* Preserve the WinQuake-compatible 320x240x8 mode. For every other
++     * resolution under 640x480 in either direction, force 640x480.
+      */
+-    if( lpMode->xRes < 640 || lpMode->yRes < 480 )
++    if( (lpMode->xRes != 320 || lpMode->yRes != 240 || lpMode->bpp != 8) &&
++        (lpMode->xRes < 640 || lpMode->yRes < 480) )
+     {
+         lpMode->xRes = 640; /* Force 640x480. */
+         lpMode->yRes = 480;

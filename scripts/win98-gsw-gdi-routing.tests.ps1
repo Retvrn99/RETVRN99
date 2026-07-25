@@ -127,8 +127,8 @@ Assert-Match $transport 'GSW_VGA_CAP_GDI_SYNC_COOKIE[\s\S]+GSW_GDI_DOORBELL_COOK
 Assert-Match $transport 'GSW_VGA_CAP_GDI_FAST_DOORBELL\) == 0\)[\s\S]+gsw_submit\(&command' (
     'Hosts without the fast-doorbell capability must retain generic fenced submission.'
 )
-Assert-Match $inf 'DriverVer=07/20/2026,0\.2\.0\.5' 'The fixed driver version must be 0.2.0.5.'
-Assert-Match $readme '16,922[^\r\n]+9748b9feeebfaa4b4597f63a17fd8699ddfa01bce1aba6fc8ecc8ec7542fb13d' (
+Assert-Match $inf 'DriverVer=07/26/2026,0\.2\.0\.8' 'The fixed driver version must be 0.2.0.8.'
+Assert-Match $readme '16,988[^\r\n]+2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0' (
     'The documented Win16 driver identity must match the deterministic build.'
 )
 Assert-Match $readme '39,341[^\r\n]+61edea1973a7ce17fde3725d930c75495dd1ce2eeeb87fa799b8289cf534d876' (
@@ -138,4 +138,4 @@ Assert-Match $readme '39,341[^\r\n]+61edea1973a7ce17fde3725d930c75495dd1ce2eeeb8
 Write-Host 'PASS GSW GDI ABI is pointer-free, exact-size, and version frozen.'
 Write-Host 'PASS Win16 routing retains immediate DIB fallback and cursor exclusion.'
 Write-Host 'PASS VxD submission copies, validates, and uses the synchronous fenced ring.'
-Write-Host 'PASS GSW-VGA driver version is 0.2.0.5.'
+Write-Host 'PASS GSW-VGA driver version is 0.2.0.8.'

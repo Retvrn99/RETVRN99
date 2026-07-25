@@ -403,7 +403,7 @@ stage_test_contract_failures :: proc(t: ^testing.T, root: string) {
 	copy(altered, prior_data)
 	hash_offset := strings.index(
 		string(altered),
-		"952c2a18697a363944879b64031872266505d34ac50fca7080663bfa54783dea",
+		"5aa3b3a078ce3fb42ee80d1dec71f96b486a98e8c95bd085f8f7c9ede32e4e34",
 	)
 	if !testing.expect(t, hash_offset >= 0) {return}
 	altered[hash_offset] = '8'
@@ -437,7 +437,7 @@ stage_test_contract_failures :: proc(t: ^testing.T, root: string) {
 	extra_text := strings.concatenate(
 		{
 			string(prior_data),
-			"gsw-vga-prior-only\tGSW-VGA\\gswmini.inf\t952c2a18697a363944879b64031872266505d34ac50fca7080663bfa54783dea\t3188\n",
+			"gsw-vga-prior-only\tGSW-VGA\\gswmini.inf\t5aa3b3a078ce3fb42ee80d1dec71f96b486a98e8c95bd085f8f7c9ede32e4e34\t3210\n",
 		},
 		context.temp_allocator,
 	)

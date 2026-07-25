@@ -27,6 +27,13 @@ copies all five files to the Windows system directory, so staging must reject
 an incomplete set. The Win16 normalizer must run on `gswmini.drv` before its
 final size and SHA-256 are recorded.
 
+The 0.2.0.8 patch set preserves the existing low-resolution rejection except
+for exactly 320x240x8, and the INF exposes only that added low mode. Re-entry
+after a full display-driver disable restores the screen-switch hook and VDD I/O
+trap state without changing the ordinary in-place ReEnable path. The original
+INT 2Fh chain target is retained across Disable and ReEnable so a temporary DOS
+VM vector cannot become the persistent fallback target.
+
 The driver retains the QEMU/Bochs VBE mode programming used by the real VGA
 BIOS, then mirrors Windows mode sets and flips to GSW-VGA ABI v2. Its VxD:
 

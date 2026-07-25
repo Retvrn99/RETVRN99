@@ -16,6 +16,132 @@ function Assert-NotMatch {
     if ($Text -cmatch $Pattern) { throw $Message }
 }
 
+function Assert-GswLowModeSourceContract {
+    param([string]$PatchText, [string]$InfText)
+
+    if ([regex]::Matches($PatchText, '(?m)^diff --git ').Count -ne 1) {
+        throw 'The low-mode patch must modify exactly one source file.'
+    }
+    Assert-Match $PatchText '(?m)^diff --git a/modes\.c b/modes\.c\r?$' (
+        'The low-mode patch must modify only modes.c.'
+    )
+    Assert-Match $PatchText '(?m)^\+\s+if\( \(lpMode->xRes != 320 \|\| lpMode->yRes != 240 \|\| lpMode->bpp != 8\) &&\r?$' (
+        'FixModeInfo must bind the exact 320x240x8 exception.'
+    )
+    Assert-Match $PatchText '(?m)^\+\s+\(lpMode->xRes < 640 \|\| lpMode->yRes < 480\) \)\r?$' (
+        'FixModeInfo must preserve the original low-resolution boundary.'
+    )
+    Assert-Match $PatchText '(?m)^-\s+if\( lpMode->xRes < 640 \|\| lpMode->yRes < 480 \)\r?$' (
+        'The patch must remove the upstream unconditional low-resolution guard.'
+    )
+    Assert-NotMatch $PatchText '(?m)^\+\s+if\( lpMode->xRes < 640 \|\| lpMode->yRes < 480 \)\r?$' (
+        'The patch must not add an unconditional low-resolution guard.'
+    )
+
+    $modeRows = [regex]::Matches(
+        $InfText,
+        '(?m)^HKR,"MODES\\(?<bpp>[0-9]+)\\(?<x>[0-9]+),(?<y>[0-9]+)"(?<tail>[^\r\n]*)\r?$'
+    )
+    if ($modeRows.Count -ne 88) {
+        throw "The INF must contain the prior 87 modes plus one low mode; found $($modeRows.Count)."
+    }
+    $lowRows = @(
+        foreach ($row in $modeRows) {
+            if (
+                [int]$row.Groups['x'].Value -lt 640 -or
+                [int]$row.Groups['y'].Value -lt 480
+            ) {
+                $row
+            }
+        }
+    )
+    if ($lowRows.Count -ne 1) {
+        throw "The INF must contain exactly one low mode; found $($lowRows.Count)."
+    }
+    $lowRow = $lowRows[0]
+    if (
+        [int]$lowRow.Groups['bpp'].Value -ne 8 -or
+        [int]$lowRow.Groups['x'].Value -ne 320 -or
+        [int]$lowRow.Groups['y'].Value -ne 240 -or
+        $lowRow.Groups['tail'].Value -cne ''
+    ) {
+        throw 'The INF low-mode inventory must contain only the bare 8\320,240 row.'
+    }
+}
+
+function Test-GswFixModeInfoAccepted {
+    param([int]$X, [int]$Y, [int]$Bpp)
+
+    $supportedBpp = $Bpp -in @(8, 16, 24, 32)
+    $normalizedBpp = if ($supportedBpp) { $Bpp } else { 8 }
+    $lowModeRejected = (
+        ($X -ne 320 -or $Y -ne 240 -or $normalizedBpp -ne 8) -and
+        ($X -lt 640 -or $Y -lt 480)
+    )
+    return $supportedBpp -and -not $lowModeRejected
+}
+
+function Assert-GswLowModeMutationRejected {
+    param([string]$PatchText, [string]$InfText, [string]$Message)
+
+    try {
+        Assert-GswLowModeSourceContract -PatchText $PatchText -InfText $InfText
+    } catch {
+        return
+    }
+    throw $Message
+}
+
+function Assert-GswScreenSwitchReentryContract {
+    param([string]$PatchText)
+
+    $changedFiles = @(
+        [regex]::Matches($PatchText, '(?m)^diff --git a/(?<path>[^ ]+) b/[^\r\n]+\r?$') |
+            ForEach-Object { $_.Groups['path'].Value }
+    )
+    if (($changedFiles -join ',') -cne 'enable.c,minidrv.h,scrsw.c') {
+        throw "Screen-switch re-entry must change only enable.c, minidrv.h, and scrsw.c; found $($changedFiles -join ',')."
+    }
+    Assert-Match $PatchText '(?m)^\+        bRestoreSwitchHooks = !bReEnabling \|\| !Int2FhHooked\(\);\r?$' (
+        'Re-entry must restore switch state only for normal Enable or a missing INT 2Fh hook.'
+    )
+    Assert-Match $PatchText '(?m)^\+        if\( bRestoreSwitchHooks \) \{\r?\n^             int_2Fh\( STOP_IO_TRAP \);\r?\n^         \}\r?$' (
+        'The re-entry decision must guard STOP_IO_TRAP directly.'
+    )
+    Assert-Match $PatchText '(?m)^\+        if\( bRestoreSwitchHooks \) \{\r?\n^             HookInt2Fh\(\);\r?\n^         \}\r?$' (
+        'The re-entry decision must guard HookInt2Fh directly.'
+    )
+    Assert-Match $PatchText '(?m)^\+extern BOOL Int2FhHooked\( void \);\r?$' (
+        'The re-entry decision must use one read-only screen-switch hook query.'
+    )
+    Assert-Match $PatchText '(?m)^\+BOOL Int2FhHooked\( void \)\r?\n^\+\{\r?\n^\+    return\( \(SwitchFlags & INT_2F_HOOKED\) != 0 \);\r?\n^\+\}\r?$' (
+        'The hook query must be read-only and report only the existing INT 2Fh ownership bit.'
+    )
+    Assert-Match $PatchText '(?m)^\+#define INT_2F_SAVED\s+0x02\s+/\* Previous INT 2Fh vector is saved\. \*/\r?$' (
+        'Screen-switch state must distinguish a saved chain target from active hook ownership.'
+    )
+    Assert-Match $PatchText 'if\( SwitchFlags & INT_2F_HOOKED \)\s*\r?\n\+        return;[\s\S]+if\( !\(SwitchFlags & INT_2F_SAVED\) \)[\s\S]+DOSGetIntVec\( 0x2F \)[\s\S]+SwitchFlags \|= INT_2F_SAVED;[\s\S]+DOSSetIntVec\( 0x2F, SWHook \);[\s\S]+SwitchFlags \|= INT_2F_HOOKED;' (
+        'Hook installation must be idempotent and preserve the first stable INT 2Fh chain target across re-entry.'
+    )
+    Assert-NotMatch $PatchText '(?m)^\+.*SwitchFlags\s*&=\s*~(?:INT_2F_SAVED|\([^\r\n]*INT_2F_SAVED)' (
+        'Disable must not discard the stable INT 2Fh chain target needed by later ReEnable.'
+    )
+    Assert-NotMatch $PatchText '(?m)^\+.*(?:bReEnabling\s*=|START_IO_TRAP|UnhookInt2Fh|VDD_DRIVER_(?:REGISTER|UNREGISTER))' (
+        'The re-entry patch must not alter the established ReEnable, Disable, or VDD registration state machine.'
+    )
+}
+
+function Assert-GswScreenSwitchReentryMutationRejected {
+    param([string]$PatchText, [string]$Message)
+
+    try {
+        Assert-GswScreenSwitchReentryContract -PatchText $PatchText
+    } catch {
+        return
+    }
+    throw $Message
+}
+
 function Get-SimpleFunctionBody {
     param([string]$Text, [string]$Signature)
     $match = [regex]::Match(
@@ -34,6 +160,14 @@ $ddraw = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_ddraw.c')
 $ioctl3d = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw3d_ioctl.c')
 $header = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_transport.h')
 $shutdownTrace = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_shutdown_trace.h')
+$modePatch = Get-Content -Raw -LiteralPath (
+    Join-Path $root 'patches\0011-gsw-320x240x8-mode.patch'
+)
+$reentryPatch = Get-Content -Raw -LiteralPath (
+    Join-Path $root 'patches\0012-gsw-win16-screen-switch-reentry.patch'
+)
+$inf = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gswmini.inf')
+$versionResource = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\res\gswmini.rc')
 $shutdownPatch = Get-Content -Raw -LiteralPath (
     Join-Path $root 'patches\0010-gsw-process-shutdown.patch'
 )
@@ -45,6 +179,123 @@ $lifecycle = Get-Content -Raw -LiteralPath (
 )
 $halDdraw = Get-Content -Raw -LiteralPath (Join-Path $halRoot 'overlay\gsw_ddraw.c')
 $halBackend = Get-Content -Raw -LiteralPath (Join-Path $halRoot 'overlay\gsw_backend.c')
+
+Assert-GswLowModeSourceContract -PatchText $modePatch -InfText $inf
+Assert-GswScreenSwitchReentryContract -PatchText $reentryPatch
+Assert-Match $inf '(?m)^DriverVer=07/26/2026,0\.2\.0\.8\r?$' (
+    'The PnP package must advertise driver version 0.2.0.8 dated 07/26/2026.'
+)
+Assert-Match $versionResource '(?m)^FILEVERSION 0,2,0,8\r?$' (
+    'The Win16 file version must be 0.2.0.8.'
+)
+Assert-Match $versionResource '(?m)^PRODUCTVERSION 0,2,0,8\r?$' (
+    'The Win16 product version must be 0.2.0.8.'
+)
+Assert-Match $versionResource 'VALUE "FileVersion", "0\.2\.0\.8\\0"' (
+    'The Win16 string file version must be 0.2.0.8.'
+)
+Assert-Match $versionResource 'VALUE "ProductVersion", "0\.2\.0\.8\\0"' (
+    'The Win16 string product version must be 0.2.0.8.'
+)
+Assert-NotMatch ($inf + $versionResource) '0\.2\.0\.6|0,2,0,6' (
+    'The 0.2.0.6 version must not remain in the new package metadata.'
+)
+
+$newlyAdmitted = @(
+    foreach ($x in @(1, 319, 320, 321, 400, 512, 639, 640, 641)) {
+        foreach ($y in @(1, 200, 239, 240, 241, 300, 384, 479, 480, 481)) {
+            foreach ($bpp in @(0, 7, 8, 15, 16, 24, 32, 64)) {
+                $oldAccepted = $bpp -in @(8, 16, 24, 32) -and $x -ge 640 -and $y -ge 480
+                $newAccepted = Test-GswFixModeInfoAccepted -X $x -Y $y -Bpp $bpp
+                if ($oldAccepted -and -not $newAccepted) {
+                    throw "The low-mode exception rejected an existing mode: ${x}x${y}x${bpp}."
+                }
+                if (-not $oldAccepted -and $newAccepted) {
+                    "${x}x${y}x${bpp}"
+                }
+            }
+        }
+    }
+)
+if (($newlyAdmitted -join ',') -cne '320x240x8') {
+    throw "Only 320x240x8 may be newly admitted; found: $($newlyAdmitted -join ',')."
+}
+
+$patchMutations = @(
+    $modePatch.Replace(' || lpMode->bpp != 8', ''),
+    $modePatch.Replace(') &&', ') ||'),
+    $modePatch.Replace(
+        'lpMode->xRes != 320 || lpMode->yRes != 240',
+        'lpMode->xRes != 320 && lpMode->yRes != 240'
+    )
+)
+foreach ($mutation in $patchMutations) {
+    if ($mutation -ceq $modePatch) { throw 'A low-mode patch mutation did not alter its fixture.' }
+    Assert-GswLowModeMutationRejected -PatchText $mutation -InfText $inf (
+        'A broadened low-mode source guard was accepted.'
+    )
+}
+$infMutations = @(
+    $inf.Replace('HKR,"MODES\8\640,480"', "HKR,`"MODES\8\400,300`"`r`nHKR,`"MODES\8\640,480`""),
+    $inf.Replace('HKR,"MODES\8\320,240"', "HKR,`"MODES\8\320,240`"`r`nHKR,`"MODES\16\320,240`"")
+)
+foreach ($mutation in $infMutations) {
+    if ($mutation -ceq $inf) { throw 'A low-mode INF mutation did not alter its fixture.' }
+    Assert-GswLowModeMutationRejected -PatchText $modePatch -InfText $mutation (
+        'A broadened low-mode INF inventory was accepted.'
+    )
+}
+
+$reentryCases = @(
+    [pscustomobject]@{ ReEnabling = $false; Hooked = $false; Restore = $true },
+    [pscustomobject]@{ ReEnabling = $false; Hooked = $true; Restore = $true },
+    [pscustomobject]@{ ReEnabling = $true; Hooked = $false; Restore = $true },
+    [pscustomobject]@{ ReEnabling = $true; Hooked = $true; Restore = $false }
+)
+foreach ($case in $reentryCases) {
+    $observed = -not $case.ReEnabling -or -not $case.Hooked
+    if ($observed -ne $case.Restore) {
+        throw "Unexpected screen-switch re-entry decision for ReEnabling=$($case.ReEnabling) Hooked=$($case.Hooked)."
+    }
+}
+$reentryFixture = $reentryPatch.Replace("`r`n", "`n")
+$readOnlyMutation = $reentryFixture.Replace(
+    "+{`n+    return( (SwitchFlags & INT_2F_HOOKED) != 0 );",
+    "+{`n+    SwitchFlags |= INT_2F_HOOKED;`n+    return( (SwitchFlags & INT_2F_HOOKED) != 0 );"
+)
+$unguardedCallsMutation = $reentryFixture.Replace(
+    "+        if( bRestoreSwitchHooks ) {`n             int_2Fh( STOP_IO_TRAP );`n         }",
+    "+        if( bRestoreSwitchHooks ) {`n+        }`n             int_2Fh( STOP_IO_TRAP );`n-        }"
+).Replace(
+    "+        if( bRestoreSwitchHooks ) {`n             HookInt2Fh();`n         }",
+    "+        if( bRestoreSwitchHooks ) {`n+        }`n             HookInt2Fh();`n-        }"
+)
+$recaptureMutation = $reentryFixture.Replace(
+    'if( !(SwitchFlags & INT_2F_SAVED) ) {',
+    'if( SwitchFlags & INT_2F_SAVED ) {'
+)
+$clearSavedMutation = $reentryFixture.Replace(
+    'SwitchFlags |= INT_2F_SAVED;',
+    'SwitchFlags &= ~INT_2F_SAVED;'
+)
+$reentryMutations = @(
+    $reentryFixture.Replace('!bReEnabling || !Int2FhHooked()', '!bReEnabling && !Int2FhHooked()'),
+    $reentryFixture.Replace(' || !Int2FhHooked()', ''),
+    $reentryFixture.Replace('(SwitchFlags & INT_2F_HOOKED) != 0', '(SwitchFlags & INT_2F_HOOKED) == 0'),
+    $reentryFixture.Replace('if( bRestoreSwitchHooks ) {', 'if( !bReEnabling ) {'),
+    $readOnlyMutation,
+    $unguardedCallsMutation,
+    $recaptureMutation,
+    $clearSavedMutation
+)
+foreach ($mutation in $reentryMutations) {
+    if ($mutation -ceq $reentryFixture) {
+        throw 'A screen-switch re-entry mutation did not alter its fixture.'
+    }
+    Assert-GswScreenSwitchReentryMutationRejected -PatchText $mutation (
+        'A weakened screen-switch re-entry contract was accepted.'
+    )
+}
 
 Assert-Match $transport '#define GSW_PCI_COMMAND_REQUIRED 0x0006' (
     'The transport must require memory decode and bus mastering without claiming I/O decode.'
@@ -279,3 +530,5 @@ Write-Host 'PASS GSW-VGA blocks PnP BIOS mode sets while preserving explicit VGA
 Write-Host 'PASS GSW-VGA installs and removes its V86 INT 10h hook with fail-closed unload semantics.'
 Write-Host 'PASS GSW-VGA DirectDraw and 3D resources carry process ownership for lifecycle cleanup.'
 Write-Host 'PASS GSW-VGA DirectDraw defers surface registration until runtime allocation.'
+Write-Host 'PASS GSW-VGA derived, PnP, mode-return, and negative contracts admit only 320x240x8.'
+Write-Host 'PASS GSW-VGA restores screen-switch ownership only when ReEnable follows a full Disable.'

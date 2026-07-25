@@ -199,31 +199,28 @@ Preparation applies any ordered, hash-pinned patches and complete tree-pinned
 overlays after source materialization, verifies the exact combined output-tree
 descriptor, and publishes only after final source and tree checks.
 
-`build-plan.json` schema 3 is currently blocked because the VMHAL DirectDraw
-surface-allocation callback changed and fresh deterministic DLL hashes have not
-been authorized and reviewed. In its ready form, the plan links the source
-plan, upstream lock, and both toolchain locks by SHA-256. It runs the pinned
+`build-plan.json` schema 3 is ready and links the source plan, upstream lock,
+and both toolchain locks by SHA-256. It runs the pinned
 tools with literal arguments, restores inherited mixed-case environment
 variables, normalizes only the Win16 version-date fields declared for
 `gswmini.drv`, validates every output, and atomically publishes the completed
-two-recipe build. The command below refuses to build while the plan is blocked.
+two-recipe build.
 
 ```powershell
 .\scripts\build-win98-driver-sources.ps1 `
     -SourceRoot D:\src\retvrn99-win98 `
     -ToolchainRoot D:\src\retvrn99-win98\toolchains `
-    -OutputRoot D:\src\retvrn99-win98\proof\gsw-vga-a
+    -OutputRoot V:\tmp\retvrn99-gsw-vga-build-a
 ```
 
-The last verified pre-change package payloads, retained only for provenance
-until the plan is rebound, are:
+The current independently reproduced package payloads are:
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `gswmini.drv` | 16,922 | `9748b9feeebfaa4b4597f63a17fd8699ddfa01bce1aba6fc8ecc8ec7542fb13d` |
+| `gswmini.drv` | 16,988 | `2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0` |
 | `gswmini.vxd` | 39,341 | `61edea1973a7ce17fde3725d930c75495dd1ce2eeeb87fa799b8289cf534d876` |
-| `gswmini.inf` | 3,188 | `952c2a18697a363944879b64031872266505d34ac50fca7080663bfa54783dea` |
-| `gswhal9x.dll` | 46,592 | `8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38` |
+| `gswmini.inf` | 3,210 | `5b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea` |
+| `gswhal9x.dll` | 46,080 | `918b943a7ab49ef9568004c0c2a0d4591e75ac44ca3eeab9b8acb0d75d0a98a8` |
 | `gswdd32.dll` | 32,256 | `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4` |
 
 The DLL identity is GSW-specific. `gswhal9x.dll` is the DirectDraw HAL and
@@ -233,7 +230,7 @@ The mini-VDD contains the capability-gated GSW3D guest transport, but it exposes
 no usable 3D path unless the host explicitly advertises the guarded proof
 backend.
 
-GSW-VGA 0.2.0.5 also provides capability-gated screen and offscreen VRAM GDI
+GSW-VGA 0.2.0.8 also provides capability-gated screen and offscreen VRAM GDI
 `BitBlt` acceleration for packed 8-, 16-, 24-, and 32-bit modes. Its private
 pointer-free command supports all 256 ROP3 truth tables with solid or opaque
 native-color 8x8 brushes. Unsupported surfaces, brushes, formats, and failed
@@ -242,7 +239,7 @@ The synchronous GDI hot path uses a separately negotiated shared-memory
 completion cookie, reducing successful submissions to one MMIO doorbell while
 retaining the two-exit and generic fenced paths for older hosts.
 
-Version 0.2.0.5 revalidates PCI BARs and decode state across ConfigMgr
+Version 0.2.0.8 revalidates PCI BARs and decode state across ConfigMgr
 re-enumeration, updates the existing Win16 framebuffer selector after a BAR
 move, reconnects a resident Win16 driver to a dynamically reloaded mini-VDD,
 and balances VDD mode-change notifications on every restore outcome. While
@@ -250,8 +247,14 @@ Windows owns high-resolution mode, the mini-VDD rejects BIOS standard and VBE
 mode-set probes and swallows direct Bochs VBE register access. Mode 13h remains
 available for fullscreen Win32 software renderers, and explicit VDD transitions
 release the guard. The required V86 hook has checked installation and removal,
-and a failed unhook rejects dynamic unload. Per-process teardown releases all
-owned 2D surfaces and guarded 3D contexts before Windows completes driver exit.
+  and a failed unhook rejects dynamic unload. If a full display-driver Disable
+  is followed by ReEnable, the Win16 driver restores the removed screen-switch
+  hook and matching I/O-trap state; ordinary in-place ReEnable remains
+  unchanged. Per-process teardown releases all owned 2D surfaces and guarded 3D
+  contexts before Windows completes driver exit. Its source and INF contracts
+  add exactly one low-resolution exception, 320x240x8. Guest discovery and
+  runtime acceptance remain separate required gates before that mode can be
+  promoted.
 
 ## GSW-Sound deferred native package
 

@@ -156,6 +156,71 @@ vgabios_test_boot_floppy :: proc() -> []u8 {
 		0xA3,
 		0x0E,
 		0x05, // mov [050Eh], ax
+		0xB8,
+		0x13,
+		0x00, // mov ax, 0013h
+		0xCD,
+		0x10, // int 10h
+		0xB4,
+		0x0F, // mov ah, 0fh
+		0xCD,
+		0x10, // int 10h
+		0xA3,
+		0x10,
+		0x05, // mov [0510h], ax
+		0xB8,
+		0x02,
+		0x4F, // mov ax, 4f02h
+		0xBB,
+		0x51,
+		0x81, // mov bx, 8151h
+		0xCD,
+		0x10, // int 10h
+		0xA3,
+		0x12,
+		0x05, // mov [0512h], ax
+		0xB8,
+		0x13,
+		0x00, // mov ax, 0013h
+		0xCD,
+		0x10, // int 10h
+		0xB4,
+		0x0F, // mov ah, 0fh
+		0xCD,
+		0x10, // int 10h
+		0xA3,
+		0x14,
+		0x05, // mov [0514h], ax
+		0xB8,
+		0x02,
+		0x4F, // mov ax, 4f02h
+		0xBB,
+		0x51,
+		0x81, // mov bx, 8151h
+		0xCD,
+		0x10, // int 10h
+		0xA3,
+		0x16,
+		0x05, // mov [0516h], ax
+		0xB8,
+		0x00,
+		0xA0, // mov ax, a000h
+		0x8E,
+		0xC0, // mov es, ax
+		0x31,
+		0xFF, // xor di, di
+		0xB8,
+		0x0F,
+		0x0F, // mov ax, 0f0fh
+		0xB9,
+		0x00,
+		0x08, // mov cx, 0800h
+		0xF3,
+		0xAB, // rep stosw
+		0x31,
+		0xC0, // xor ax, ax
+		0x8E,
+		0xC0, // mov es, ax
 		0xC6,
 		0x06,
 		0x06,
@@ -290,6 +355,10 @@ test_machine_boots_bochs_vgabios_and_sets_vbe_mode :: proc(t: ^testing.T) {
 	testing.expect_value(t, ddc_caps_bx, u16(0x0202))
 	testing.expect_value(t, ddc_read_ax, u16(0x004F))
 	testing.expect_value(t, u16(m.vm.ram[0x050E]) | u16(m.vm.ram[0x050F]) << 8, u16(0x004F))
+	testing.expect_value(t, m.vm.ram[0x0510] & 0x7F, u8(0x13))
+	testing.expect_value(t, u16(m.vm.ram[0x0512]) | u16(m.vm.ram[0x0513]) << 8, u16(0x004F))
+	testing.expect_value(t, m.vm.ram[0x0514] & 0x7F, u8(0x13))
+	testing.expect_value(t, u16(m.vm.ram[0x0516]) | u16(m.vm.ram[0x0517]) << 8, u16(0x004F))
 	for value, i in video.VGA_EDID_BLOCK0 {
 		testing.expect_value(t, m.vm.ram[0x0700 + i], value)
 	}

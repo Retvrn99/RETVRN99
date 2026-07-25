@@ -1,0 +1,97 @@
+diff --git a/enable.c b/enable.c
+index 95d18dc..405e219 100644
+--- a/enable.c
++++ b/enable.c
+@@ -183,6 +183,7 @@ UINT WINAPI __loadds Enable( LPVOID lpDevice, UINT style, LPSTR lpDeviceType,
+         LPDIBENGINE     lpEng = lpDevice;
+         LPBITMAPINFO    lpInfo;
+         WORD            wFlags;
++        BOOL            bRestoreSwitchHooks;
+ 
+         /* Initialize the PDEVICE. */
+         lpDriverPDevice = lpDevice;
+@@ -191,7 +192,8 @@ UINT WINAPI __loadds Enable( LPVOID lpDevice, UINT style, LPSTR lpDeviceType,
+             dbg_printf( "Enable: PhysicalEnable failed!\n" );
+             return( 0 );
+         }
+-        if( !bReEnabling ) {
++        bRestoreSwitchHooks = !bReEnabling || !Int2FhHooked();
++        if( bRestoreSwitchHooks ) {
+             int_2Fh( STOP_IO_TRAP );
+         }
+ 
+@@ -307,7 +309,7 @@ UINT WINAPI __loadds Enable( LPVOID lpDevice, UINT style, LPSTR lpDeviceType,
+             SetRAMDAC_far( 0, wPalCnt, lpColorTable );
+         }
+ 
+-        if( !bReEnabling ) {
++        if( bRestoreSwitchHooks ) {
+             HookInt2Fh();
+         }
+         
+diff --git a/minidrv.h b/minidrv.h
+index efc3c33..d570260 100644
+--- a/minidrv.h
++++ b/minidrv.h
+@@ -55,6 +55,7 @@ extern void ReadDisplayConfig( void );
+ #endif
+ extern void FAR RestoreDesktopMode( void );
+ extern FARPROC RepaintFunc;
++extern BOOL Int2FhHooked( void );
+ extern void HookInt2Fh( void );
+ extern void UnhookInt2Fh( void );
+ 
+diff --git a/scrsw.c b/scrsw.c
+index 5e3d576..ee64fc3 100644
+--- a/scrsw.c
++++ b/scrsw.c
+@@ -33,6 +33,7 @@ THE SOFTWARE.
+ /* SwitchFlags bits. */
+ #define PREVENT_SWITCH  0x80    /* Don't allow screen switching. */
+ #define INT_2F_HOOKED   0x01    /* INT 2Fh is hooked. */
++#define INT_2F_SAVED    0x02    /* Previous INT 2Fh vector is saved. */
+ 
+ /* Accessed from sswhook.asm. */
+ BYTE SwitchFlags = 0;           /* Screen switch flags, see above. */
+@@ -82,6 +83,11 @@ extern void __far * __based( __segname( "_TEXT" ) ) OldInt2Fh;
+  */
+ extern UINT WINAPI AllocCStoDSAlias( UINT selCode );
+ 
++BOOL Int2FhHooked( void )
++{
++    return( (SwitchFlags & INT_2F_HOOKED) != 0 );
++}
++
+ /* Internal function to install INT 2Fh hook. */
+ void HookInt2Fh( void )
+ {
+@@ -97,19 +103,17 @@ void HookInt2Fh( void )
+     }
+     dbg_printf( "HookInt2Fh: RepaintFunc=%WP\n", RepaintFunc );
+ 
+-    /* Now hook INT 2Fh. Since the address of the previous INT 2Fh handler
+-     * is in the code segment, we have to create a writable alias. Just
+-     * a little tricky.
+-     */
+-    selAlias = AllocCStoDSAlias( (__segment)&OldInt2Fh );
+-
+-    SwitchFlags |= INT_2F_HOOKED;
+-    /* Build a pointer to OldInt2Fh using the aliased selector. */
+-    OldInt2FhAlias = selAlias :> (WORD)&OldInt2Fh;
+-    *OldInt2FhAlias = DOSGetIntVec( 0x2F );
++    if( SwitchFlags & INT_2F_HOOKED )
++        return;
++    if( !(SwitchFlags & INT_2F_SAVED) ) {
++        selAlias = AllocCStoDSAlias( (__segment)&OldInt2Fh );
++        OldInt2FhAlias = selAlias :> (WORD)&OldInt2Fh;
++        *OldInt2FhAlias = DOSGetIntVec( 0x2F );
++        FreeSelector( selAlias );
++        SwitchFlags |= INT_2F_SAVED;
++    }
+     DOSSetIntVec( 0x2F, SWHook );
+-
+-    FreeSelector( selAlias );
++    SwitchFlags |= INT_2F_HOOKED;
+ }
+ 
+ /* Internal function to unhook INT 2Fh. */

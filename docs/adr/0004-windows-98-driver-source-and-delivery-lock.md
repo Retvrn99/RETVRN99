@@ -105,12 +105,9 @@ the tree. Draft mode cannot publish an output or be consumed by the builder.
 `-DescribeTree` similarly emits a double-scanned descriptor for an existing
 overlay without changing it.
 
-`drivers/win98/build-plan.json` is currently `blocked` because the
-VMHAL9x-derived GSW DirectDraw HAL changed its surface-allocation boundary and
-fresh deterministic DLL hashes have not been authorized and reviewed. The
-blocked form contains no executable toolchain or build step. Once rebound, the
-schema-3 ready plan pins the ready derived-source plan, both toolchain locks,
-and upstream lock. The builder snapshots those exact linked bytes and every
+`drivers/win98/build-plan.json` is a schema-3 ready plan that pins the ready
+derived-source plan, both toolchain locks, and upstream lock. The builder
+snapshots those exact linked bytes and every
 lock-linked component manifest at its canonical relative path before use, and
 rejects an alternate upstream-lock path. It names a hash-verified local
 toolchain executable, a literal argument array, a derived-recipe working
@@ -124,14 +121,13 @@ scratch, installs only the selected child environment, and launches pinned
 `wmake.exe` or `mingw32-make.exe` with literal arguments. It restores inherited
 mixed-case environment variables and never mutates the caller's PATH. It
 validates every normalized output before atomic publication, performs no
-network operation, and cannot consume a `reference-only` source row. The last
-verified pre-change GSW-VGA payloads, retained only for provenance until the
-plan is rebound, are:
+network operation, and cannot consume a `reference-only` source row. The
+current independently reproduced GSW-VGA payloads are:
 
-- `gswmini.drv`: 16,922 bytes, `9748b9feeebfaa4b4597f63a17fd8699ddfa01bce1aba6fc8ecc8ec7542fb13d`.
+- `gswmini.drv`: 16,988 bytes, `2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0`.
 - `gswmini.vxd`: 39,341 bytes, `61edea1973a7ce17fde3725d930c75495dd1ce2eeeb87fa799b8289cf534d876`.
-- `gswmini.inf`: 3,188 bytes, `952c2a18697a363944879b64031872266505d34ac50fca7080663bfa54783dea`.
-- `gswhal9x.dll`: 46,592 bytes, `8668d85be8d2fc8b3d32253aa7e04c9104a2713494f9b309c2d4404f1ae12b38`.
+- `gswmini.inf`: 3,210 bytes, `5b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea`.
+- `gswhal9x.dll`: 46,080 bytes, `918b943a7ab49ef9568004c0c2a0d4591e75ac44ca3eeab9b8acb0d75d0a98a8`.
 - `gswdd32.dll`: 32,256 bytes, `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4`.
 
 This proof covers deterministic derivation and compilation, not Windows 98
