@@ -25,9 +25,15 @@ VBE_W_START_SET :: 26
 VBE_W_START_GET :: 28
 VBE_W_WINDOW_SET :: 34
 VBE_W_WINDOW_GET :: 36
-VBE_W_SCANLINE_ODD :: 40
-VBE_W_BOUNDS_SET :: 48
-VBE_W_BOUNDS_GET :: 50
+VBE_W_RETRACE_SET :: 40
+VBE_W_RETRACE_GET :: 42
+VBE_W_SCANLINE_ODD :: 48
+VBE_W_BOUNDS_SET :: 56
+VBE_W_BOUNDS_GET :: 58
+
+// Applied by the retrace request while the widened logical line still leaves
+// room to pan.
+VBE_RETRACE_SCANLINE :: 32
 
 // Not a multiple of the mode width. At 8 bits per pixel every byte pitch is
 // addressable, so this must be honoured exactly rather than rounded.
@@ -125,6 +131,23 @@ vbe_window_boot_floppy :: proc() -> ([]u8, bool) {
 	vgabios_probe_emit(&code, 0xCD, 0x10) // int 10h
 	vbe_window_emit_status(&code, base + VBE_W_WINDOW_GET)
 	vbe_window_emit_word(&code, VBE_FROM_DX, base + VBE_W_WINDOW_GET + 2)
+
+	// 4F07h BL=80h applies the same start during vertical retrace. This runs
+	// while the logical line is still 800 pixels wide, so the pan window has
+	// room for the requested pixel.
+	vgabios_probe_emit(&code, 0xB8, 0x07, 0x4F) // mov ax, 4f07h
+	vgabios_probe_emit(&code, 0xBB, 0x80, 0x00) // mov bx, 0080h
+	vgabios_probe_emit(&code, 0xB9, u8(VBE_START_PIXEL & 0xFF), u8(VBE_START_PIXEL >> 8)) // mov cx, pixel
+	vgabios_probe_emit(&code, 0xBA, u8(VBE_RETRACE_SCANLINE & 0xFF), u8(VBE_RETRACE_SCANLINE >> 8)) // mov dx, scanline
+	vgabios_probe_emit(&code, 0xCD, 0x10) // int 10h
+	vbe_window_emit_status(&code, base + VBE_W_RETRACE_SET)
+
+	vgabios_probe_emit(&code, 0xB8, 0x07, 0x4F) // mov ax, 4f07h
+	vgabios_probe_emit(&code, 0xBB, 0x01, 0x00) // mov bx, 1
+	vgabios_probe_emit(&code, 0xCD, 0x10) // int 10h
+	vbe_window_emit_status(&code, base + VBE_W_RETRACE_GET)
+	vbe_window_emit_word(&code, VBE_FROM_CX, base + VBE_W_RETRACE_GET + 2)
+	vbe_window_emit_word(&code, VBE_FROM_DX, base + VBE_W_RETRACE_GET + 4)
 
 	// A logical width that is not a multiple of the mode width.
 	vgabios_probe_emit(&code, 0xB8, 0x06, 0x4F) // mov ax, 4f06h
@@ -234,6 +257,12 @@ test_machine_vbe_window_scanline_and_display_start :: proc(t: ^testing.T) {
 	vbe_window_expect_ok(t, m, VBE_W_WINDOW_SET, "4F05h set")
 	vbe_window_expect_ok(t, m, VBE_W_WINDOW_GET, "4F05h get")
 	testing.expect_value(t, vbe_window_word(m, VBE_W_WINDOW_GET + 2), u16(VBE_WINDOW_POSITION))
+
+	// 4F07h BL=80h must apply the start exactly, like the immediate form.
+	vbe_window_expect_ok(t, m, VBE_W_RETRACE_SET, "4F07h retrace set")
+	vbe_window_expect_ok(t, m, VBE_W_RETRACE_GET, "4F07h retrace get")
+	testing.expect_value(t, vbe_window_word(m, VBE_W_RETRACE_GET + 2), u16(VBE_START_PIXEL))
+	testing.expect_value(t, vbe_window_word(m, VBE_W_RETRACE_GET + 4), u16(VBE_RETRACE_SCANLINE))
 
 	// A width that is not a multiple of the mode width must still be honoured
 	// exactly at 8 bits per pixel, where any byte pitch is addressable, and the

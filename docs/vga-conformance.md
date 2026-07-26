@@ -153,6 +153,18 @@ and the CRT Controller geometry to all return to their saved values.
 
 ## VBE 2.0 and Bochs DISPI
 
+DISPI models `X_OFFSET` and `Y_OFFSET` as the origin of the visible screen part
+within a larger virtual screen, so a display start is only valid while
+`x_offset + XRes` fits the virtual width. Two consequences are intentional and
+covered by `vga_test_dispi_virtual_pitch_and_offsets`: narrowing the logical
+scan line length clamps any existing offset into the new window, and an offset
+that no longer fits is rejected outright.
+
+INT 10h 4F07h reports success unconditionally because the pinned firmware never
+checks the DISPI write result, so a rejected pixel offset still returns
+AL=4Fh with AH=00h. Order matters when testing this: set the logical scan line
+length before the display start, as guests do.
+
 | Contract | Reference | Status | Implementation | Executable proof |
 | --- | --- | --- | --- | --- |
 | 4F00h controller information and mode-list termination | VBE 2.0 4.3 | Conformant | Pinned VGABIOS | `test_machine_vbe_controller_mode_information_and_round_trip` checks the VESA signature, version, memory, capabilities, and a terminated mode list |
@@ -162,7 +174,7 @@ and the CRT Controller geometry to all return to their saved values.
 | 4F04h save/restore state | VBE 2.0 4.7 | Partial | Pinned VGABIOS | Query/save/mutate/restore test required |
 | 4F05h display window control and direct entry | VBE 2.0 4.8 | Partial | DISPI bank register | `test_machine_vbe_window_scanline_and_display_start` proves the BH=00h/01h window set and get round-trip; the `WindowFuncPtr` direct far-call entry remains untested |
 | 4F06h logical scanline length and achievable-width adjustment | VBE 2.0 4.9 | Partial | `src/vga/vbe.odin` adjusts virtual width and clamps offsets | `test_machine_vbe_window_scanline_and_display_start` proves get, set in pixels, persistence, byte pitch tracking, and the recomputed addressable scan line count; the rounding path is still unexercised because every byte pitch is achievable at 8 bits per pixel, so it needs a mode whose pitch is forced to align |
-| 4F07h display start, including retrace request | VBE 2.0 4.10 | Partial | DISPI offsets | `test_machine_vbe_window_scanline_and_display_start` proves the BL=00h/01h round-trip and that an out-of-range scan line is rejected without mutating the current start. The BL=80h retrace request is unproven and currently suspect: setting CX=8 with DX=32 reads back CX=1 while DX is correct, which resembles a divide by 8 on the pixel field. Investigate before this row is closed |
+| 4F07h display start, including retrace request | VBE 2.0 4.10 | Conformant | DISPI offsets | `test_machine_vbe_window_scanline_and_display_start` proves the immediate BL=00h and the BL=80h retrace request both round-trip through BL=01h, and that an out-of-range scan line is rejected without mutating the current start |
 | 4F08h DAC palette format | VBE 2.0 4.11 | Partial | DISPI 8-bit DAC flag | 6/8-bit round-trip test required |
 | 4F09h palette data | VBE 2.0 4.12 | Partial | VGA DAC ports through firmware | Set/get and retrace-request tests required |
 | 4F0Ah protected-mode interface | VBE 2.0 4.13 | Partial | Pinned VGABIOS | Table and callable window/display/palette entry tests required |
