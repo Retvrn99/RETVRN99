@@ -27,7 +27,7 @@ not implicit capability claims.
 
 | Contract | Reference | Status | Implementation | Executable proof |
 | --- | --- | --- | --- | --- |
-| Miscellaneous Output 3C2h/3CCh: I/O select, RAM enable, clock select, sync polarity, reserved bits | IBM 2-42 to 2-43 | Partial | `src/vga/ports.odin`, `src/vga/timing.odin` | `test_vga_io_decode_follows_misc_output` plus reserved-bit and clock tests required |
+| Miscellaneous Output 3C2h/3CCh: I/O select, RAM enable, clock select, sync polarity, reserved bits | IBM 2-42 to 2-43 | Partial | `src/vga/ports.odin`, `src/vga/timing.odin` | `test_vga_io_decode_follows_misc_output` and `test_machine_vgabios_int10_mode_matrix` cover I/O select and per-mode clock and sync polarity across five firmware values; reserved-bit tests remain |
 | Input Status 0 3C2h: switch sense and pending CRT interrupt | IBM 2-44 | Conformant | `src/vga/legacy_beam.odin`, `src/vga/timing.odin` | `vga_test_status0_switch_sense_and_retrace`, `vga_test_vertical_interrupt_latch_and_callback` |
 | Input Status 1 3BAh/3DAh: display enable, vertical retrace, Attribute flip-flop reset | IBM 2-45 | Partial | `src/vga/legacy_beam.odin`, `src/vga/timing.odin`, `src/vga/ports.odin` | Absolute timing and public CRTC reset tests cover blank/retrace; full CGA/MDA matrix remains |
 | Feature Control 3BAh/3DAh and 3CAh reserved behavior | IBM 2-46 | Partial | `src/vga/ports.odin` retains two undocumented bits | Reserved read/write test required |
@@ -111,20 +111,31 @@ not implicit capability claims.
 
 ## BIOS mode contracts
 
+`test_machine_vgabios_int10_mode_matrix` boots the pinned Bochs VGABIOS on the
+production machine and walks every mode below through a real-mode probe. For
+each mode it asserts the mode echoed by INT 10h AH=0Fh, the reported column
+count and active page, the BIOS Data Area mode, columns, row count, and
+character height, and the Miscellaneous Output and CRT Controller display-end
+registers read back through public ports.
+
+BIOS text columns and CRT Controller character clocks are separate contracts and
+are asserted separately: mode 13h reports 40 columns while programming 80
+character clocks.
+
 | INT 10h mode | Expected contract | Status | Executable proof |
 | --- | --- | --- | --- |
-| 00h, 01h | 40-column color text | Partial | Real VGABIOS mode matrix required |
-| 02h, 03h | 80-column color text | Partial | Real VGABIOS mode matrix required |
-| 04h, 05h | 320x200 CGA-compatible 4-color | Partial | Real VGABIOS mode matrix required |
-| 06h | 640x200 CGA-compatible monochrome | Partial | Real VGABIOS mode matrix required |
-| 07h | 80-column monochrome text | Partial | Real VGABIOS mode matrix required |
-| 0Dh | 320x200x16 planar | Partial | Real VGABIOS mode matrix required |
-| 0Eh | 640x200x16 planar | Partial | Real VGABIOS mode matrix required |
-| 0Fh | 640x350 monochrome planar | Partial | Real VGABIOS mode matrix required |
-| 10h | 640x350x16 planar | Partial | Real VGABIOS mode matrix required |
-| 11h | 640x480 monochrome planar | Partial | Real VGABIOS mode matrix required |
-| 12h | 640x480x16 planar | Partial | Existing VGABIOS integration reaches mode 12h; full assertions required |
-| 13h | 320x200x256 chain-4 | Partial | Core test exists; real VGABIOS proof required |
+| 00h, 01h | 40-column color text | Conformant | `test_machine_vgabios_int10_mode_matrix` |
+| 02h, 03h | 80-column color text | Conformant | `test_machine_vgabios_int10_mode_matrix` |
+| 04h, 05h | 320x200 CGA-compatible 4-color | Conformant | `test_machine_vgabios_int10_mode_matrix` |
+| 06h | 640x200 CGA-compatible monochrome | Conformant | `test_machine_vgabios_int10_mode_matrix` |
+| 07h | 80-column monochrome text | Conformant | `test_machine_vgabios_int10_mode_matrix` covers the 3B4h monochrome CRTC address |
+| 0Dh | 320x200x16 planar | Conformant | `test_machine_vgabios_int10_mode_matrix` |
+| 0Eh | 640x200x16 planar | Conformant | `test_machine_vgabios_int10_mode_matrix` |
+| 0Fh | 640x350 monochrome planar | Conformant | `test_machine_vgabios_int10_mode_matrix` |
+| 10h | 640x350x16 planar | Conformant | `test_machine_vgabios_int10_mode_matrix` |
+| 11h | 640x480 monochrome planar | Conformant | `test_machine_vgabios_int10_mode_matrix` |
+| 12h | 640x480x16 planar | Conformant | `test_machine_vgabios_int10_mode_matrix` plus `test_machine_boots_bochs_vgabios_and_sets_vbe_mode` |
+| 13h | 320x200x256 chain-4 | Conformant | `test_machine_vgabios_int10_mode_matrix` plus the full-size mode 13h scanout test |
 | Font services supporting 8x8 and 8x16 43/50-row text | IBM INT 10h AH=11h | Partial | Firmware path exists; dynamic snapshot/host proof required |
 | Save/restore VGA hardware, BIOS, DAC, and register state | IBM INT 10h AH=1Ch | Partial | Firmware path exists; round-trip integration test required |
 
