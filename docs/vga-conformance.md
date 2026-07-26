@@ -51,14 +51,14 @@ instead. Neither matched the reference, and both are corrected.
 | --- | --- | --- | --- | --- |
 | 00h Horizontal Total | IBM 2-56 | Conformant | `src/vga/timing.odin` | Timing total tests |
 | 01h Horizontal Display Enable End | IBM 2-57 | Conformant | `src/vga/timing.odin`, `src/vga/scanout.odin` | Mode geometry tests |
-| 02h Start Horizontal Blanking | IBM 2-57 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Status 1 blank-window tests exist; per-mode public-port matrix remains |
-| 03h End Horizontal Blanking and display-enable skew | IBM 2-58 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped blank-end exists; display-enable skew remains out of proof |
-| 04h Start Horizontal Retrace | IBM 2-59 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Status 1 vertical-retrace proof exists; horizontal-retrace proof remains |
-| 05h End Horizontal Retrace, delay, and blank bit 5 | IBM 2-60 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped retrace exists; blank-bit proof remains |
+| 02h Start Horizontal Blanking | IBM 2-57 | Conformant | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Status 1 blank-window tests plus `test_machine_vgabios_int10_mode_matrix`, which reads the register back per mode and requires blanking to begin after the display ends |
+| 03h End Horizontal Blanking and display-enable skew | IBM 2-58 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped blank-end exists and `test_machine_vgabios_int10_mode_matrix` requires bit 7 set in every mode; the display-enable skew field is captured but its effect remains out of proof |
+| 04h Start Horizontal Retrace | IBM 2-59 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | `test_machine_vgabios_int10_mode_matrix` proves the register is programmed inside the blanking period in every mode; the retrace signal itself is still unobserved, so the timing half remains |
+| 05h End Horizontal Retrace, delay, and blank bit 5 | IBM 2-60 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped retrace exists and `test_machine_vgabios_int10_mode_matrix` captures the register per mode; the delay field and the blank-end bit 5 extension remain unproven |
 | 06h Vertical Total | IBM 2-61 | Conformant | `src/vga/timing.odin` | Timing total tests |
-| 07h Overflow fields and protected line-compare exception | IBM 2-62 | Partial | Geometry, blanking, and protection fields exist | Public-port overflow/protection matrix remains |
+| 07h Overflow fields and protected line-compare exception | IBM 2-62 | Partial | Geometry, blanking, and protection fields exist | `test_machine_vgabios_int10_mode_matrix` reads Overflow back per mode and uses bits 1, 3, and 6 to reconstruct the ten-bit vertical display end and blanking start against known 350, 400, and 480 line geometry; the protected line-compare exception remains |
 | 08h Preset Row Scan and byte panning | IBM 2-63 | Conformant | `src/vga/legacy_addressing.odin` | `src/vga/legacy_addressing_tests.odin` |
-| 09h Maximum Scan Line, double scan, line compare, vertical blank bit 9 | IBM 2-64 | Partial | Blanking bit participates; maximum scan and double scan are not multiplied | Combined scan-factor test required |
+| 09h Maximum Scan Line, double scan, line compare, vertical blank bit 9 | IBM 2-64 | Partial | Blanking bit participates; maximum scan and double scan are not multiplied | `test_machine_vgabios_int10_mode_matrix` proves the register is programmed correctly per mode, including that modes 04h, 05h, 06h, 0Dh, and 0Eh reach 400 lines through the scan-doubling bit while mode 13h uses a maximum scan line of 1 instead. Scanout still does not multiply the two, so the combined scan-factor contract remains |
 | 0Ah Cursor Start and cursor off | IBM 2-65 | Conformant | `src/vga/scanout.odin` | `vga_test_text_cursor_start_and_end_matrix`, `vga_test_text_cursor_off_bit_overrides_range` |
 | 0Bh Cursor End and cursor skew | IBM 2-66 | Conformant | `src/vga/scanout.odin` | `vga_test_text_cursor_start_and_end_matrix`, `vga_test_text_cursor_skew_shifts_the_addressed_cell` |
 | 0Ch/0Dh Start Address and vertical-retrace latch | IBM 2-67 and 2-99 | Partial | Pending/retrace latch exists; scheduler and mid-frame proof are incomplete | Start-latch and deferred scanout tests required |
@@ -68,8 +68,8 @@ instead. Neither matched the reference, and both are corrected.
 | 12h Vertical Display Enable End | IBM 2-71 | Conformant | `src/vga/timing.odin` | Mode geometry tests |
 | 13h Offset | IBM 2-71 | Conformant | `src/vga/legacy_addressing.odin` | Pitch/address tests |
 | 14h Underline Location, count-by-4, doubleword mode | IBM 2-72 | Partial | Address bits exist; text underline is absent | Underline and addressing tests required |
-| 15h Start Vertical Blanking | IBM 2-73 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Status/IRQ timing uses programmed vblank start; public-port matrix remains |
-| 16h End Vertical Blanking | IBM 2-73 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped blank-end exists; per-mode proof remains |
+| 15h Start Vertical Blanking | IBM 2-73 | Conformant | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Status and IRQ timing use the programmed start, and `test_machine_vgabios_int10_mode_matrix` reconstructs the ten-bit value per mode from Overflow and Maximum Scan Line and requires it to follow the display end |
+| 16h End Vertical Blanking | IBM 2-73 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin` | Wrapped blank-end exists and `test_machine_vgabios_int10_mode_matrix` captures the register per mode; the wrapped end value itself is still unasserted |
 | 17h reset, word/byte mode, address wrap, count-by-2, row-scan select | IBM 2-74 to 2-76 | Partial | Address mapping exists; reset and horizontal-row clock behavior are absent | Address and reset tests required |
 | 18h Line Compare and split screen | IBM 2-77 and 2-102 | Conformant | `src/vga/legacy_addressing.odin` | Split and panning tests |
 
