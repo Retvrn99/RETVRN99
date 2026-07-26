@@ -40,6 +40,13 @@ not implicit capability claims.
 
 ## CRT Controller registers
 
+The cursor is driven from a latch rather than a range compare: it sets at
+Cursor Start and clears at Cursor End or at the last scan line of the character
+cell. An end below the start therefore runs to the bottom of the cell. An
+earlier note here claimed such a range should hide the cursor; that was an
+unverified assumption and the implementation wrapped into the top of the cell
+instead. Neither matched the reference, and both are corrected.
+
 | Register contract | Reference | Status | Implementation | Executable proof |
 | --- | --- | --- | --- | --- |
 | 00h Horizontal Total | IBM 2-56 | Conformant | `src/vga/timing.odin` | Timing total tests |
@@ -52,8 +59,8 @@ not implicit capability claims.
 | 07h Overflow fields and protected line-compare exception | IBM 2-62 | Partial | Geometry, blanking, and protection fields exist | Public-port overflow/protection matrix remains |
 | 08h Preset Row Scan and byte panning | IBM 2-63 | Conformant | `src/vga/legacy_addressing.odin` | `src/vga/legacy_addressing_tests.odin` |
 | 09h Maximum Scan Line, double scan, line compare, vertical blank bit 9 | IBM 2-64 | Partial | Blanking bit participates; maximum scan and double scan are not multiplied | Combined scan-factor test required |
-| 0Ah Cursor Start and cursor off | IBM 2-65 | Partial | Cursor off exists; shape edge cases need correction | Text cursor matrix required |
-| 0Bh Cursor End and cursor skew | IBM 2-66 | Partial | End-before-start incorrectly wraps instead of hiding | Text cursor matrix required |
+| 0Ah Cursor Start and cursor off | IBM 2-65 | Conformant | `src/vga/scanout.odin` | `vga_test_text_cursor_start_and_end_matrix`, `vga_test_text_cursor_off_bit_overrides_range` |
+| 0Bh Cursor End and cursor skew | IBM 2-66 | Conformant | `src/vga/scanout.odin` | `vga_test_text_cursor_start_and_end_matrix`, `vga_test_text_cursor_skew_shifts_the_addressed_cell` |
 | 0Ch/0Dh Start Address and vertical-retrace latch | IBM 2-67 and 2-99 | Partial | Pending/retrace latch exists; scheduler and mid-frame proof are incomplete | Start-latch and deferred scanout tests required |
 | 0Eh/0Fh Cursor Location | IBM 2-68 | Conformant | `src/vga/scanout.odin` | Cursor location tests |
 | 10h Vertical Retrace Start | IBM 2-69 | Partial | `src/vga/timing.odin`, `src/vga/legacy_beam.odin`, `src/machine/machine.odin` | `vga_test_vertical_interrupt_latch_and_callback` and IRQ2 source tests exist; halted-guest proof remains |

@@ -289,8 +289,12 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y, x0, x1: i
 	cursor_raw := cursor * 2
 	cursor_start := int(v.crtc[0x0A] & 0x1F)
 	cursor_end := int(v.crtc[0x0B] & 0x1F)
-	cursor_line := glyph_y >= cursor_start && glyph_y <= cursor_end
-	if cursor_start > cursor_end {cursor_line = glyph_y >= cursor_start || glyph_y <= cursor_end}
+	// The CRT Controller drives the cursor from a latch rather than a range
+	// compare. It sets at Cursor Start and clears at Cursor End or at the last
+	// scan line of the character cell, so an end below the start runs to the
+	// bottom of the cell instead of wrapping into the top of it.
+	cursor_line :=
+		glyph_y >= cursor_start && (cursor_end < cursor_start || glyph_y <= cursor_end)
 	for column in 0 ..= columns {
 		cell_origin := column * character_width - pan
 		if cell_origin + character_width <= x0 || cell_origin >= x1 {continue}
