@@ -12,6 +12,14 @@ import "core:time"
 // Shared scaffolding for real-mode VGA BIOS probes. A probe is a boot sector
 // that drives INT 10h, records results into low memory, and halts after
 // storing the sentinel.
+//
+// Order stateful calls the way a guest would. Several VBE functions change
+// state that later functions depend on, and a probe-only ordering produces
+// results that look exactly like emulation defects. The known trap is setting
+// a logical scan line length after a display start: DISPI treats the offsets
+// as the origin of the visible screen part, so narrowing the virtual width
+// clamps the existing offset and makes later wider offsets fail validation,
+// while INT 10h still reports success. Set the scan line length first.
 VGABIOS_PROBE_SENTINEL_ADDRESS :: 0x0500
 VGABIOS_PROBE_SENTINEL :: 0xD7
 VGABIOS_PROBE_RESULT_BASE :: 0x0520
