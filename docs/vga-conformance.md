@@ -155,10 +155,10 @@ and the CRT Controller geometry to all return to their saved values.
 
 | Contract | Reference | Status | Implementation | Executable proof |
 | --- | --- | --- | --- | --- |
-| 4F00h controller information and mode-list termination | VBE 2.0 4.3 | Partial | Pinned VGABIOS | Existing signature check; full field/mode-list test required |
-| 4F01h mode information | VBE 2.0 4.4 | Partial | Pinned VGABIOS and DISPI capability reads | Per-mode field tests required |
-| 4F02h set mode, banked/LFB and clear/preserve | VBE 2.0 4.5 | Partial | `src/vga/vbe.odin` and pinned VGABIOS | Existing 101h and 151h banked proof; LFB firmware matrix required |
-| 4F03h return exact current mode and flags | VBE 2.0 4.6 | Partial | Pinned VGABIOS | Set/get round-trip required |
+| 4F00h controller information and mode-list termination | VBE 2.0 4.3 | Conformant | Pinned VGABIOS | `test_machine_vbe_controller_mode_information_and_round_trip` checks the VESA signature, version, memory, capabilities, and a terminated mode list |
+| 4F01h mode information | VBE 2.0 4.4 | Conformant | Pinned VGABIOS and DISPI capability reads | `test_machine_vbe_controller_mode_information_and_round_trip` asserts attributes, geometry, depth, memory model, pitch, and physical base across packed and direct colour modes |
+| 4F02h set mode, banked/LFB and clear/preserve | VBE 2.0 4.5 | Partial | `src/vga/vbe.odin` and pinned VGABIOS | Banked 101h and 151h proofs exist, and `test_machine_vbe_controller_mode_information_and_round_trip` proves a firmware linear set that the device agrees with; the clear/preserve D15 matrix remains |
+| 4F03h return exact current mode and flags | VBE 2.0 4.6 | Partial | Pinned VGABIOS | `test_machine_vbe_controller_mode_information_and_round_trip` proves the mode number round-trips exactly; the pinned firmware masks the stored mode with 0x1FF, so the D14 and D15 flags are never returned and that half of the contract is unreachable without a firmware change |
 | 4F04h save/restore state | VBE 2.0 4.7 | Partial | Pinned VGABIOS | Query/save/mutate/restore test required |
 | 4F05h display window control and direct entry | VBE 2.0 4.8 | Partial | DISPI bank register | Read/write bank and direct-call tests required |
 | 4F06h logical scanline length and achievable-width adjustment | VBE 2.0 4.9 | Partial | `src/vga/vbe.odin` adjusts virtual width and clamps offsets | Device-level adjustment proof exists; firmware function matrix remains |
