@@ -1025,3 +1025,27 @@ process_adapter_test_invalid_machine_enums_have_no_server_side_effects :: proc(t
 	protocol_frame_destroy(&close_response, context.temp_allocator)
 	testing.expect(t, process_test_wait(t, impl, 0))
 }
+
+// Every Process adapter test needs the helper beside the running binary. When
+// it is absent they all fail with a bare Helper_Missing code and no cause, so
+// this names the exact path and the fix once.
+@(test)
+process_adapter_test_helper_is_adjacent_to_the_running_binary :: proc(t: ^testing.T) {
+	helper, helper_error := process_helper_path(context.temp_allocator)
+	if helper_error.code == .None {
+		testing.expect(t, os.exists(helper))
+		return
+	}
+	diagnostic := helper_error.diagnostic
+	info, info_error := os.current_process_info({.Executable_Path}, context.temp_allocator)
+	binary := info_error == nil ? info.executable_path : "the test binary"
+	testing.expectf(
+		t,
+		false,
+		"%s is not beside %s, so every Process adapter test will report Helper_Missing. Build it there with: odin build src\\fat32_helper -out:<dir>\\%s  [%s]",
+		HELPER_EXECUTABLE,
+		binary,
+		HELPER_EXECUTABLE,
+		string(diagnostic[:helper_error.diagnostic_length]),
+	)
+}

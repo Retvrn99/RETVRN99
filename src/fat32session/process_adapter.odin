@@ -106,15 +106,15 @@ process_helper_path :: proc(allocator: runtime.Allocator) -> (string, Session_Er
 		allocator,
 	)
 	if path_error != nil || !os.exists(path) {
-		delete(path, allocator)
-		return "", error_make(
-			.Helper_Missing,
-			false,
-			.Not_Started,
-			0,
-			0,
-			"RETVRN99-FAT32 is missing beside RETVRN99",
+		// Name the exact path that was searched. The helper must sit beside
+		// whichever executable opened the session, including test binaries.
+		detail := fmt.tprintf(
+			"RETVRN99-FAT32 is missing beside RETVRN99; expected %s\\%s",
+			filepath.dir(info.executable_path),
+			HELPER_EXECUTABLE,
 		)
+		delete(path, allocator)
+		return "", error_make(.Helper_Missing, false, .Not_Started, 0, 0, detail)
 	}
 	return path, {}
 }
