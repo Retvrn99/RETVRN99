@@ -43,7 +43,11 @@ vga_test_dispi_width_and_capabilities :: proc(t: ^testing.T) {
 	testing.expect_value(t, test_dispi_read(&v, DISPI_INDEX_YRES), u16(DISPI_MAX_YRES))
 	testing.expect_value(t, test_dispi_read(&v, DISPI_INDEX_BPP), u16(32))
 	testing.expect_value(t, test_dispi_read(&v, DISPI_INDEX_BANK), u16(0x1000))
-	testing.expect_value(t, test_dispi_read(&v, DISPI_INDEX_VIDEO_MEMORY_64K), u16(512))
+	testing.expect_value(
+		t,
+		test_dispi_read(&v, DISPI_INDEX_VIDEO_MEMORY_64K),
+		u16(VRAM_SIZE / 65536),
+	)
 }
 
 @(test)
@@ -137,7 +141,11 @@ vga_test_dispi_virtual_pitch_and_offsets :: proc(t: ^testing.T) {
 	defer vga_destroy(&v)
 	testing.expect(t, test_set_vbe_mode(&v, 320, 200, 16))
 	testing.expect_value(t, vga_vbe_pitch(&v), 640)
-	testing.expect_value(t, dispi_read_register(&v, DISPI_INDEX_VIRT_HEIGHT), u16(VRAM_SIZE / 640))
+	testing.expect_value(
+		t,
+		dispi_read_register(&v, DISPI_INDEX_VIRT_HEIGHT),
+		u16(min(VRAM_SIZE / 640, 0xFFFF)),
+	)
 	testing.expect(t, dispi_write_register(&v, DISPI_INDEX_VIRT_WIDTH, 640))
 	testing.expect_value(t, vga_vbe_pitch(&v), 1280)
 	testing.expect(t, dispi_write_register(&v, DISPI_INDEX_X_OFFSET, 320))

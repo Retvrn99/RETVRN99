@@ -200,8 +200,10 @@ test_machine_vbe_controller_mode_information_and_round_trip :: proc(t: ^testing.
 	testing.expect_value(t, signature, "VESA")
 	version := vbe_word(m, VBE_CONTROLLER_BLOCK + VBE_VERSION_OFFSET)
 	testing.expect(t, version >= 0x0200)
+	// The firmware sources this from DISPI index 0Ah, so it must agree with the
+	// persona exactly. This is the pinned-firmware half of the ID5 contract.
 	total_memory := vbe_word(m, VBE_CONTROLLER_BLOCK + VBE_TOTAL_MEMORY_OFFSET)
-	testing.expect(t, total_memory > 0)
+	testing.expect_value(t, total_memory, u16(video.VRAM_SIZE / 65536))
 	log.infof(
 		"VBE %d.%d, %d KiB reported, capabilities %08X",
 		version >> 8,

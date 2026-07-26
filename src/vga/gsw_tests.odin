@@ -305,7 +305,7 @@ gsw_vga_test_v2_blt_stretches_and_honors_color_key :: proc(t: ^testing.T) {
 @(test)
 gsw_vga_test_persona_and_control_identity :: proc(t: ^testing.T) {
 	vram_mib, core_mhz, agp := gsw_vga_persona()
-	testing.expect_value(t, vram_mib, u32(32))
+	testing.expect_value(t, vram_mib, u32(VRAM_SIZE / (1024 * 1024)))
 	testing.expect_value(t, core_mhz, u32(150))
 	testing.expect_value(t, agp, u32(4))
 	g: Gsw_Vga

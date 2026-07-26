@@ -2,6 +2,7 @@
 package machine
 
 import hv "../hv"
+import video "../vga"
 import "core:log"
 import "core:testing"
 import "core:time"
@@ -10,7 +11,7 @@ import "core:time"
 VBE_WINDOW_MODE :: 0x0101
 VBE_WINDOW_WIDTH :: 640
 VBE_WINDOW_HEIGHT :: 480
-VBE_WIDENED_PIXELS :: 800
+VBE_WIDENED_PIXELS :: 1600
 VBE_START_PIXEL :: 8
 VBE_START_SCANLINE :: 16
 VBE_WINDOW_POSITION :: 3
@@ -36,8 +37,10 @@ VBE_W_BOUNDS_GET :: 58
 VBE_RETRACE_SCANLINE :: 32
 
 // Not a multiple of the mode width. At 8 bits per pixel every byte pitch is
-// addressable, so this must be honoured exactly rather than rounded.
-VBE_ODD_PIXELS :: 641
+// addressable, so this must be honoured exactly rather than rounded. Both
+// widened widths stay above 1024 bytes so the addressable scan line count
+// remains below the 16-bit ceiling and stays comparable.
+VBE_ODD_PIXELS :: 1281
 // Far beyond the addressable scan lines at any supported pitch.
 VBE_OUT_OF_RANGE_SCANLINE :: 65000
 
@@ -186,6 +189,14 @@ vbe_window_boot_floppy :: proc() -> ([]u8, bool) {
 	return vgabios_probe_image(code[:])
 }
 
+// Addressable scan lines at eight bits per pixel, saturated to the 16-bit
+// register. Derived from the persona so a VRAM change cannot silently
+// invalidate the expectation.
+@(private = "file")
+vbe_expected_scan_lines :: proc(pixels: int) -> u16 {
+	return u16(min(video.VRAM_SIZE / pixels, 0xFFFF))
+}
+
 @(private = "file")
 vbe_window_word :: proc(m: ^Machine, offset: int) -> u16 {
 	address := VGABIOS_PROBE_RESULT_BASE + offset
@@ -230,7 +241,11 @@ test_machine_vbe_window_scanline_and_display_start :: proc(t: ^testing.T) {
 	vbe_window_expect_ok(t, m, VBE_W_SCANLINE_GET, "4F06h get")
 	testing.expect_value(t, vbe_window_word(m, VBE_W_SCANLINE_GET + 2), u16(VBE_WINDOW_WIDTH))
 	testing.expect_value(t, vbe_window_word(m, VBE_W_SCANLINE_GET + 4), u16(VBE_WINDOW_WIDTH))
-	testing.expect(t, vbe_window_word(m, VBE_W_SCANLINE_GET + 6) >= VBE_WINDOW_HEIGHT)
+	testing.expect_value(
+		t,
+		vbe_window_word(m, VBE_W_SCANLINE_GET + 6),
+		vbe_expected_scan_lines(VBE_WINDOW_WIDTH),
+	)
 
 	vbe_window_expect_ok(t, m, VBE_W_SCANLINE_SET, "4F06h set")
 	testing.expect_value(t, vbe_window_word(m, VBE_W_SCANLINE_SET + 2), u16(VBE_WIDENED_PIXELS))
@@ -240,7 +255,13 @@ test_machine_vbe_window_scanline_and_display_start :: proc(t: ^testing.T) {
 	vbe_window_expect_ok(t, m, VBE_W_SCANLINE_REGET, "4F06h re-get")
 	testing.expect_value(t, vbe_window_word(m, VBE_W_SCANLINE_REGET + 2), u16(VBE_WIDENED_PIXELS))
 	testing.expect_value(t, vbe_window_word(m, VBE_W_SCANLINE_REGET + 4), u16(VBE_WIDENED_PIXELS))
-	// A wider logical line must reduce the addressable scan line count.
+	// A wider logical line must reduce the addressable scan line count, and the
+	// reported count must be exactly VRAM divided by the byte pitch.
+	testing.expect_value(
+		t,
+		vbe_window_word(m, VBE_W_SCANLINE_REGET + 6),
+		vbe_expected_scan_lines(VBE_WIDENED_PIXELS),
+	)
 	testing.expect(
 		t,
 		vbe_window_word(m, VBE_W_SCANLINE_REGET + 6) <

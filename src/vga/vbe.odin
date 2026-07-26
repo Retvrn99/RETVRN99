@@ -150,8 +150,14 @@ dispi_index_available :: proc(v: ^Vga, index: u16) -> bool {
 	     DISPI_INDEX_X_OFFSET,
 	     DISPI_INDEX_Y_OFFSET:
 		return id >= DISPI_ID1
-	case DISPI_INDEX_VIDEO_MEMORY_64K, DISPI_INDEX_DDC:
+	case DISPI_INDEX_DDC:
 		return id >= DISPI_ID5
+	case DISPI_INDEX_VIDEO_MEMORY_64K:
+		// The selected ID gates features, never capacity. The memory-size
+		// register stays readable at every ID so a guest that negotiates an
+		// older feature level can still discover the true size instead of
+		// reading open bus. See ADR 0011.
+		return true
 	}
 	return false
 }

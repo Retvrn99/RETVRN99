@@ -183,8 +183,8 @@ length before the display start, as guests do.
 | DISPI ID1 virtual geometry and offsets | Bochs B0C1 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_id_gates_features_and_bpp_zero`, `vga_test_dispi_virtual_pitch_and_offsets` |
 | DISPI ID2 BPP values, BPP zero compatibility, LFB and no-clear | Bochs B0C2 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_id_gates_features_and_bpp_zero` |
 | DISPI ID3 GETCAPS and 8-bit DAC | Bochs B0C3 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_width_and_capabilities`, `vga_test_dispi_id_gates_features_and_bpp_zero` |
-| DISPI ID4 8 MiB memory contract | Bochs B0C4 | Partial | Device exposes the shared 32 MiB VRAM regardless selected ID | Version/memory test and documented compatibility policy required |
-| DISPI ID5 16 MiB plus memory-size register | Bochs B0C5 | Partial | Device reports 32 MiB through index 0Ah | Pinned-firmware compatibility test required |
+| DISPI ID0 to ID5 feature ladder and identifier range | Bochs B0C0 to B0C5 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_feature_ladder_follows_selected_id`, `vga_test_dispi_id_range_is_bounded` |
+| DISPI index 0Ah memory-size register | Bochs B0C5 | Conformant | `src/vga/vbe.odin` reports the persona aperture | `vga_test_dispi_memory_size_is_reported_at_every_id`, `vga_test_dispi_memory_size_register_rejects_writes`, and the pinned-firmware total in `test_machine_vbe_controller_mode_information_and_round_trip` |
 | Mode 150h 320x200x8 banked and LFB | Pinned Bochs mode table | Partial | Mode exists | Real firmware read/write/render test required |
 | Mode 151h 320x240x8 banked and LFB | Pinned Bochs mode table | Partial | Pinned VGABIOS and `src/vga/vbe.odin` | Real firmware banked read/write/render proof exists; LFB firmware proof remains |
 
@@ -197,4 +197,5 @@ length before the display start, as guests do.
 | Standalone Hercules hardware | Out of target | VGA monochrome compatibility mode is in target; Hercules registers are not |
 | Clone-specific undocumented VGA/SVGA quirks | Out of target | IBM VGA and pinned Bochs contracts are normative |
 | VBE 3.0 custom CRTC timings | Out of target | Legacy firmware contract is VBE 2.0 |
+| Bochs per-identifier video memory ceilings, 8 MiB at ID4 and 16 MiB at ID5 | Out of target | DISPI identifiers gate capability, never capacity. The full persona aperture is exposed at every level and index 0Ah reports the true size, one level earlier than Bochs exposed it. See ADR 0011 |
 | DirectDraw, Direct3D, or OpenGL acceleration changes | Out of target | Existing GSW-VGA 2D and guarded 3D Interfaces remain unchanged |

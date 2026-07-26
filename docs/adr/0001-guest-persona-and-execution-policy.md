@@ -15,7 +15,7 @@ whole-machine work.
 ## Decision
 
 Guest persona values describe capability and identity only. PC133 memory,
-UDMA/66 storage, 52x CD, 10x DVD, a 150 MHz graphics core, AGP 4x, and 32 MiB
+UDMA/66 storage, 52x CD, 10x DVD, a 150 MHz graphics core, AGP 4x, and 64 MiB
 of video memory must not cap host memory, storage, optical, or graphics work.
 
 RTC, PIT, retrace, audio, and CDDA remain tied to VM-active host time because

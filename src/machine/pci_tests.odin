@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import persona "../persona"
 import "core:testing"
 
 @(test)
@@ -553,7 +554,12 @@ pci_test_gsw_vga_identity_bars_and_persona :: proc(t: ^testing.T) {
 	pci_out(&p, 0xCF8, 4, 0x8000_1014)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), GSW_VGA_FRAMEBUFFER_BAR)
 	pci_out(&p, 0xCFC, 4, 0xFFFF_FFFF)
-	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0xFE00_0000))
+	// The framebuffer BAR advertises the whole persona aperture.
+	testing.expect_value(
+		t,
+		pci_in(&p, 0xCFC, 4),
+		u32(0xFFFF_FFFF) & ~u32(persona.GUEST_PERSONA.vram_bytes - 1),
+	)
 	pci_out(&p, 0xCFC, 4, 0xD123_4567)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(0xD000_0000))
 
@@ -566,7 +572,11 @@ pci_test_gsw_vga_identity_bars_and_persona :: proc(t: ^testing.T) {
 		u32(GSW_VGA_CAPABILITY_LENGTH) << 16 | u32(GSW_VGA_CAPABILITY_VERSION),
 	)
 	pci_out(&p, 0xCF8, 4, 0x8000_1048)
-	testing.expect_value(t, pci_in(&p, 0xCFC, 4), u32(150) << 16 | 32)
+	testing.expect_value(
+		t,
+		pci_in(&p, 0xCFC, 4),
+		u32(150) << 16 | u32(persona.GUEST_PERSONA.vram_bytes / (1024 * 1024)),
+	)
 	pci_out(&p, 0xCF8, 4, 0x8000_104C)
 	testing.expect_value(t, pci_in(&p, 0xCFC, 4) & 0x00FF_FFFF, u32(0x0003_0204))
 }

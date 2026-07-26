@@ -239,7 +239,7 @@ pci_init :: proc(p: ^Pci, expose_gsw_sound := GSW_SOUND_PCI_EXPOSED_BY_DEFAULT) 
 		graphics.cfg[0x14 + i] = u8(GSW_VGA_FRAMEBUFFER_BAR >> (8 * uint(i)))
 	}
 	graphics.bar_size_mask[0] = 0xFFFF_F000
-	graphics.bar_size_mask[1] = 0xFE00_0000
+	graphics.bar_size_mask[1] = 0xFC00_0000
 	graphics.write_mask[0x11] = 0xF0
 	graphics.write_mask[0x12] = 0xFF
 	graphics.write_mask[0x13] = 0xFF

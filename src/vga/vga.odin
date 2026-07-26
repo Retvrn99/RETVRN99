@@ -299,7 +299,7 @@ vga_reset :: proc(v: ^Vga) {
 	v.dispi[DISPI_INDEX_YRES] = 480
 	v.dispi[DISPI_INDEX_BPP] = 8
 	v.dispi[DISPI_INDEX_VIRT_WIDTH] = 640
-	v.dispi[DISPI_INDEX_VIRT_HEIGHT] = u16(VRAM_SIZE / 640)
+	v.dispi[DISPI_INDEX_VIRT_HEIGHT] = u16(min(VRAM_SIZE / 640, 0xFFFF))
 	v.dispi[DISPI_INDEX_VIDEO_MEMORY_64K] = u16(VRAM_SIZE / 65536)
 	ddc_reset(v)
 	v.latched_start = 0

@@ -22,7 +22,7 @@ GUEST_PERSONA :: Guest_Persona {
 	max_udma_mode      = 4,
 	cd_speed           = 52,
 	dvd_speed          = 10,
-	vram_bytes         = 32 * 1024 * 1024,
+	vram_bytes         = 64 * 1024 * 1024,
 	graphics_core_mhz  = 150,
 	graphics_agp_rate  = 4,
 }
