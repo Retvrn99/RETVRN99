@@ -122,6 +122,18 @@ BIOS text columns and CRT Controller character clocks are separate contracts and
 are asserted separately: mode 13h reports 40 columns while programming 80
 character clocks.
 
+`test_machine_vgabios_int10_font_services` drives AH=11h through the same
+harness. It asserts that AL=30h reports the on-screen font geometry rather than
+the requested block, that BH selects distinct ROM font addresses, and that
+AL=11h, AL=12h, and AL=14h recalculate to 28, 50, and 25 rows. Combined with
+the 350 scan line select it also reaches the 43-row geometry, and the host text
+snapshot is asserted to follow at 80x43.
+
+`test_machine_vgabios_int10_state_save_restore_round_trip` drives AH=1Ch. It
+sizes the state buffer, marks a DAC entry, saves, changes mode and overwrites
+the entry, restores, and then requires the DAC entry, the BIOS data area mode,
+and the CRT Controller geometry to all return to their saved values.
+
 | INT 10h mode | Expected contract | Status | Executable proof |
 | --- | --- | --- | --- |
 | 00h, 01h | 40-column color text | Conformant | `test_machine_vgabios_int10_mode_matrix` |
@@ -136,8 +148,8 @@ character clocks.
 | 11h | 640x480 monochrome planar | Conformant | `test_machine_vgabios_int10_mode_matrix` |
 | 12h | 640x480x16 planar | Conformant | `test_machine_vgabios_int10_mode_matrix` plus `test_machine_boots_bochs_vgabios_and_sets_vbe_mode` |
 | 13h | 320x200x256 chain-4 | Conformant | `test_machine_vgabios_int10_mode_matrix` plus the full-size mode 13h scanout test |
-| Font services supporting 8x8 and 8x16 43/50-row text | IBM INT 10h AH=11h | Partial | Firmware path exists; dynamic snapshot/host proof required |
-| Save/restore VGA hardware, BIOS, DAC, and register state | IBM INT 10h AH=1Ch | Partial | Firmware path exists; round-trip integration test required |
+| Font services supporting 8x8 and 8x16 43/50-row text | IBM INT 10h AH=11h | Conformant | `test_machine_vgabios_int10_font_services` |
+| Save/restore VGA hardware, BIOS, DAC, and register state | IBM INT 10h AH=1Ch | Conformant | `test_machine_vgabios_int10_state_save_restore_round_trip` |
 
 ## VBE 2.0 and Bochs DISPI
 

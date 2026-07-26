@@ -10,10 +10,7 @@ import "core:thread"
 import "core:time"
 
 // The probe records one fixed-size record per INT 10h mode into low memory.
-MODE_MATRIX_RESULT_BASE :: 0x0520
 MODE_MATRIX_RECORD_BYTES :: 11
-MODE_MATRIX_SENTINEL_ADDRESS :: 0x0500
-MODE_MATRIX_SENTINEL :: 0xD7
 
 Mode_Matrix_Field :: enum {
 	Requested_Mode,
@@ -69,11 +66,6 @@ MODE_MATRIX_CASES := [?]Mode_Matrix_Case {
 	{0x13, 40, 24, 8, 0x63, 79, 0x8F},
 }
 
-@(private = "file")
-mode_matrix_emit :: proc(code: ^[dynamic]u8, bytes: ..u8) {
-	for value in bytes {append(code, value)}
-}
-
 // Builds a 16-bit real-mode boot sector that walks a mode table, sets each
 // mode through INT 10h AH=00h, and records BIOS and public-port state.
 @(private = "file")
@@ -81,130 +73,88 @@ mode_matrix_boot_floppy :: proc(cases: []Mode_Matrix_Case) -> ([]u8, bool) {
 	code := make([dynamic]u8, 0, 512)
 	defer delete(code)
 
-	mode_matrix_emit(&code, 0xFA) // cli
-	mode_matrix_emit(&code, 0x31, 0xC0) // xor ax, ax
-	mode_matrix_emit(&code, 0x8E, 0xD8) // mov ds, ax
-	mode_matrix_emit(&code, 0x8E, 0xC0) // mov es, ax
-	mode_matrix_emit(&code, 0x8E, 0xD0) // mov ss, ax
-	mode_matrix_emit(&code, 0xBC, 0x00, 0x7C) // mov sp, 7c00h
-	mode_matrix_emit(&code, 0xFB) // sti
-	mode_matrix_emit(&code, 0xBE, 0x00, 0x00) // mov si, table (patched)
+	vgabios_probe_emit_prologue(&code)
+	vgabios_probe_emit(&code, 0xBE, 0x00, 0x00) // mov si, table (patched)
 	table_immediate := len(code) - 2
-	mode_matrix_emit(
+	vgabios_probe_emit(
 		&code,
 		0xBF,
-		u8(MODE_MATRIX_RESULT_BASE & 0xFF),
-		u8(MODE_MATRIX_RESULT_BASE >> 8),
+		u8(VGABIOS_PROBE_RESULT_BASE & 0xFF),
+		u8(VGABIOS_PROBE_RESULT_BASE >> 8),
 	) // mov di, results
 
 	loop_start := len(code)
-	mode_matrix_emit(&code, 0xAC) // lodsb
-	mode_matrix_emit(&code, 0x3C, 0xFF) // cmp al, 0ffh
-	mode_matrix_emit(&code, 0x74, 0x00) // je done (patched)
+	vgabios_probe_emit(&code, 0xAC) // lodsb
+	vgabios_probe_emit(&code, 0x3C, 0xFF) // cmp al, 0ffh
+	vgabios_probe_emit(&code, 0x74, 0x00) // je done (patched)
 	done_displacement := len(code) - 1
 
-	mode_matrix_emit(&code, 0x88, 0xC3) // mov bl, al
-	mode_matrix_emit(&code, 0x56, 0x57) // push si / push di
-	mode_matrix_emit(&code, 0x30, 0xE4) // xor ah, ah
-	mode_matrix_emit(&code, 0xCD, 0x10) // int 10h
-	mode_matrix_emit(&code, 0x5F, 0x5E) // pop di / pop si
-	mode_matrix_emit(&code, 0x88, 0xD8) // mov al, bl
-	mode_matrix_emit(&code, 0xAA) // stosb requested mode
+	vgabios_probe_emit(&code, 0x88, 0xC3) // mov bl, al
+	vgabios_probe_emit(&code, 0x56, 0x57) // push si / push di
+	vgabios_probe_emit(&code, 0x30, 0xE4) // xor ah, ah
+	vgabios_probe_emit(&code, 0xCD, 0x10) // int 10h
+	vgabios_probe_emit(&code, 0x5F, 0x5E) // pop di / pop si
+	vgabios_probe_emit(&code, 0x88, 0xD8) // mov al, bl
+	vgabios_probe_emit(&code, 0xAA) // stosb requested mode
 
-	mode_matrix_emit(&code, 0x56, 0x57) // push si / push di
-	mode_matrix_emit(&code, 0xB4, 0x0F) // mov ah, 0fh
-	mode_matrix_emit(&code, 0xCD, 0x10) // int 10h
-	mode_matrix_emit(&code, 0x5F, 0x5E) // pop di / pop si
-	mode_matrix_emit(&code, 0x89, 0xC1) // mov cx, ax
-	mode_matrix_emit(&code, 0x88, 0xFA) // mov dl, bh
-	mode_matrix_emit(&code, 0x88, 0xC8, 0xAA) // mov al, cl / stosb
-	mode_matrix_emit(&code, 0x88, 0xE8, 0xAA) // mov al, ch / stosb
-	mode_matrix_emit(&code, 0x88, 0xD0, 0xAA) // mov al, dl / stosb
+	vgabios_probe_emit(&code, 0x56, 0x57) // push si / push di
+	vgabios_probe_emit(&code, 0xB4, 0x0F) // mov ah, 0fh
+	vgabios_probe_emit(&code, 0xCD, 0x10) // int 10h
+	vgabios_probe_emit(&code, 0x5F, 0x5E) // pop di / pop si
+	vgabios_probe_emit(&code, 0x89, 0xC1) // mov cx, ax
+	vgabios_probe_emit(&code, 0x88, 0xFA) // mov dl, bh
+	vgabios_probe_emit(&code, 0x88, 0xC8, 0xAA) // mov al, cl / stosb
+	vgabios_probe_emit(&code, 0x88, 0xE8, 0xAA) // mov al, ch / stosb
+	vgabios_probe_emit(&code, 0x88, 0xD0, 0xAA) // mov al, dl / stosb
 
-	mode_matrix_emit(&code, 0xA0, 0x49, 0x04, 0xAA) // mov al, [0449h] / stosb
-	mode_matrix_emit(&code, 0xA0, 0x4A, 0x04, 0xAA) // mov al, [044Ah] / stosb
-	mode_matrix_emit(&code, 0xA0, 0x84, 0x04, 0xAA) // mov al, [0484h] / stosb
-	mode_matrix_emit(&code, 0xA0, 0x85, 0x04, 0xAA) // mov al, [0485h] / stosb
+	vgabios_probe_emit(&code, 0xA0, 0x49, 0x04, 0xAA) // mov al, [0449h] / stosb
+	vgabios_probe_emit(&code, 0xA0, 0x4A, 0x04, 0xAA) // mov al, [044Ah] / stosb
+	vgabios_probe_emit(&code, 0xA0, 0x84, 0x04, 0xAA) // mov al, [0484h] / stosb
+	vgabios_probe_emit(&code, 0xA0, 0x85, 0x04, 0xAA) // mov al, [0485h] / stosb
 
-	mode_matrix_emit(&code, 0xBA, 0xCC, 0x03) // mov dx, 03cch
-	mode_matrix_emit(&code, 0xEC, 0xAA) // in al, dx / stosb
+	vgabios_probe_emit(&code, 0xBA, 0xCC, 0x03) // mov dx, 03cch
+	vgabios_probe_emit(&code, 0xEC, 0xAA) // in al, dx / stosb
 
 	// The CRT Controller address follows Miscellaneous Output bit 0.
-	mode_matrix_emit(&code, 0xBA, 0xB4, 0x03) // mov dx, 03b4h
-	mode_matrix_emit(&code, 0x24, 0x01) // and al, 1
-	mode_matrix_emit(&code, 0xB4, 0x20) // mov ah, 20h
-	mode_matrix_emit(&code, 0xF6, 0xE4) // mul ah
-	mode_matrix_emit(&code, 0x01, 0xC2) // add dx, ax
+	vgabios_probe_emit(&code, 0xBA, 0xB4, 0x03) // mov dx, 03b4h
+	vgabios_probe_emit(&code, 0x24, 0x01) // and al, 1
+	vgabios_probe_emit(&code, 0xB4, 0x20) // mov ah, 20h
+	vgabios_probe_emit(&code, 0xF6, 0xE4) // mul ah
+	vgabios_probe_emit(&code, 0x01, 0xC2) // add dx, ax
 
-	mode_matrix_emit(&code, 0xB0, 0x01, 0xEE) // mov al, 1 / out dx, al
-	mode_matrix_emit(&code, 0x42, 0xEC, 0xAA) // inc dx / in al, dx / stosb
-	mode_matrix_emit(&code, 0x4A) // dec dx
-	mode_matrix_emit(&code, 0xB0, 0x12, 0xEE) // mov al, 12h / out dx, al
-	mode_matrix_emit(&code, 0x42, 0xEC, 0xAA) // inc dx / in al, dx / stosb
+	vgabios_probe_emit(&code, 0xB0, 0x01, 0xEE) // mov al, 1 / out dx, al
+	vgabios_probe_emit(&code, 0x42, 0xEC, 0xAA) // inc dx / in al, dx / stosb
+	vgabios_probe_emit(&code, 0x4A) // dec dx
+	vgabios_probe_emit(&code, 0xB0, 0x12, 0xEE) // mov al, 12h / out dx, al
+	vgabios_probe_emit(&code, 0x42, 0xEC, 0xAA) // inc dx / in al, dx / stosb
 
 	back := loop_start - (len(code) + 2)
 	if back < -128 {return nil, false}
-	mode_matrix_emit(&code, 0xEB, u8(i8(back))) // jmp loop_start
+	vgabios_probe_emit(&code, 0xEB, u8(i8(back))) // jmp loop_start
 
 	forward := len(code) - (done_displacement + 1)
 	if forward > 127 {return nil, false}
 	code[done_displacement] = u8(i8(forward))
 
-	mode_matrix_emit(
-		&code,
-		0xC6,
-		0x06,
-		u8(MODE_MATRIX_SENTINEL_ADDRESS & 0xFF),
-		u8(MODE_MATRIX_SENTINEL_ADDRESS >> 8),
-		MODE_MATRIX_SENTINEL,
-	) // mov byte [0500h], 0d7h
-	mode_matrix_emit(&code, 0xFA, 0xF4, 0xEB, 0xFD) // cli / hlt / jmp hlt
+	vgabios_probe_emit_halt(&code)
 
 	table := len(code)
 	for entry in cases {
 		if entry.mode == 0xFF {return nil, false}
-		mode_matrix_emit(&code, entry.mode)
+		vgabios_probe_emit(&code, entry.mode)
 	}
-	mode_matrix_emit(&code, 0xFF)
+	vgabios_probe_emit(&code, 0xFF)
 
 	linear := 0x7C00 + table
 	code[table_immediate] = u8(linear & 0xFF)
 	code[table_immediate + 1] = u8(linear >> 8)
 
-	if len(code) > 510 {return nil, false}
-
-	image := make([]u8, disk.FLOPPY_144_SIZE)
-	copy(image, code[:])
-	image[510] = 0x55
-	image[511] = 0xAA
-	return image, true
-}
-
-@(private = "file")
-mode_matrix_start_watchdog :: proc(w: ^Vgabios_Test_Watchdog) -> ^thread.Thread {
-	return thread.create_and_start_with_poly_data(w, proc(ctx: ^Vgabios_Test_Watchdog) {
-		for {
-			time.sleep(2 * time.Millisecond)
-			sync.lock(&ctx.mu)
-			stop := ctx.stop
-			if !stop {hv.cancel(ctx.vm)}
-			sync.unlock(&ctx.mu)
-			if stop {return}
-		}
-	})
-}
-
-@(private = "file")
-mode_matrix_stop_watchdog :: proc(w: ^Vgabios_Test_Watchdog, th: ^thread.Thread) {
-	sync.lock(&w.mu)
-	w.stop = true
-	sync.unlock(&w.mu)
-	thread.destroy(th)
+	return vgabios_probe_image(code[:])
 }
 
 @(private = "file")
 mode_matrix_field :: proc(m: ^Machine, index: int, field: Mode_Matrix_Field) -> u8 {
-	return m.vm.ram[MODE_MATRIX_RESULT_BASE + index * MODE_MATRIX_RECORD_BYTES + int(field)]
+	return m.vm.ram[VGABIOS_PROBE_RESULT_BASE + index * MODE_MATRIX_RECORD_BYTES + int(field)]
 }
 
 @(test)
@@ -225,36 +175,7 @@ test_machine_vgabios_int10_mode_matrix :: proc(t: ^testing.T) {
 	floppy, built := mode_matrix_boot_floppy(cases)
 	if !testing.expect(t, built) {return}
 	defer delete(floppy)
-	if !testing.expect(t, machine_mount_floppy(m, floppy)) {return}
-	m.cmos.ram[0x3D] = 0x01
-	fwcfg_add_file(&m.fwcfg, "etc/show-boot-menu", []u8{0, 0, 0, 0}, 0x0022)
-
-	watchdog := Vgabios_Test_Watchdog {
-		vm = &m.vm,
-	}
-	watchdog_thread := mode_matrix_start_watchdog(&watchdog)
-	defer mode_matrix_stop_watchdog(&watchdog, watchdog_thread)
-
-	start := time.tick_now()
-	for time.tick_since(start) < 45 * time.Second &&
-	    m.vm.ram[MODE_MATRIX_SENTINEL_ADDRESS] != MODE_MATRIX_SENTINEL {
-		if !step(m) {break}
-	}
-	if m.vm.ram[MODE_MATRIX_SENTINEL_ADDRESS] != MODE_MATRIX_SENTINEL {
-		r := hv.get_regs(&m.vm)
-		log.errorf(
-			"VGA BIOS mode matrix timeout CS:IP=%04x:%04x exits=%d",
-			r.cs_sel,
-			r.rip,
-			m.exit_count,
-		)
-	}
-	if !testing.expect_value(t, m.bus.freeze_msg, "") {return}
-	if !testing.expect_value(
-		t,
-		m.vm.ram[MODE_MATRIX_SENTINEL_ADDRESS],
-		u8(MODE_MATRIX_SENTINEL),
-	) {return}
+	if !vgabios_probe_run(t, m, floppy, 45 * time.Second) {return}
 
 	for entry, index in cases {
 		expected := [Mode_Matrix_Field]u8 {
