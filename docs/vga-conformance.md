@@ -32,7 +32,7 @@ not implicit capability claims.
 | Input Status 1 3BAh/3DAh: display enable, vertical retrace, Attribute flip-flop reset | IBM 2-45 | Partial | `src/vga/legacy_beam.odin`, `src/vga/timing.odin`, `src/vga/ports.odin` | Absolute timing and public CRTC reset tests cover blank/retrace; full CGA/MDA matrix remains |
 | Feature Control 3BAh/3DAh and 3CAh reserved behavior | IBM 2-46 | Partial | `src/vga/ports.odin` retains two undocumented bits | Reserved read/write test required |
 | Video Subsystem Enable 3C3h decode behavior | IBM 2-46 and INT 10h AH=12h BL=32h | Partial | `src/vga/legacy_control.odin` | BIOS disable/enable integration test required |
-| Sequencer 00h synchronous/asynchronous reset | IBM 2-48 | Missing | Stored but does not gate sequencer/display state | Port-programmed reset test required |
+| Sequencer 00h synchronous/asynchronous reset | IBM 2-48 | Conformant | `src/vga/ports.odin`, `src/vga/scanout.odin` | `vga_test_sequencer_reset_public_port_matrix_preserves_state`, `vga_test_sequencer_reset_and_screen_off_are_independent`, `vga_test_sequencer_reset_drives_damage_generation_and_descriptor_restore`, `test_machine_vga_sequencer_reset_crosses_io_and_restores_scanout` |
 | Sequencer 01h clocking mode: 8/9 dots, shift load, dot-clock divide, shift-4, screen off | IBM 2-49 to 2-50 | Partial | Dot width, divide, and screen off exist; serializer load controls are inert | Serializer and screen-off tests required |
 | Sequencer 02h map mask | IBM 2-51 | Conformant | `src/vga/memory.odin` | `src/vga/memory_tests.odin` map-mask cases |
 | Sequencer 03h character map select | IBM 2-52 to 2-53 | Conformant | `src/vga/scanout.odin` | `test_vga_text_uses_selected_character_maps` |

@@ -502,10 +502,11 @@ display_geometry :: proc(v: ^Vga) -> (Display_Kind, int, int) {
 @(private = "package")
 video_output_enabled :: proc(v: ^Vga) -> bool {
 	if !legacy_video_subsystem_enabled(v) {return false}
+	if v.seq[0] & 3 != 3 {return false}
 	if v.cga.active && !vga_vbe_enabled(v) {
 		return v.cga.mode_control & CGA_MODE_VIDEO_ENABLE != 0
 	}
-	return v.video_on && v.seq[0] & 3 == 3 && v.seq[1] & 0x20 == 0
+	return v.video_on && v.seq[1] & 0x20 == 0
 }
 
 @(private = "file")
