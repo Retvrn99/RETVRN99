@@ -13,6 +13,7 @@
 #define MODE_CAP 160
 #define WARMUP_TICKS (CLOCKS_PER_SEC / 2)
 #define MEASURE_TICKS (CLOCKS_PER_SEC * 3)
+#define VBE_MODE_NO_CLEAR 0x8000
 
 #pragma pack(push, 1)
 typedef struct VBE_INFO {
@@ -156,7 +157,7 @@ static int bios_set(unsigned short mode)
 	union REGS registers;
 	memset(&registers, 0, sizeof(registers));
 	registers.w.ax = mode <= 0x13 ? mode : 0x4F02;
-	if(mode > 0x13) registers.w.bx = mode;
+	if(mode > 0x13) registers.w.bx = mode | VBE_MODE_NO_CLEAR;
 	int386(0x10, &registers, &registers);
 	if(mode <= 0x13) return bios_mode() == mode;
 	if(registers.w.ax != 0x004F) return 0;
@@ -641,13 +642,26 @@ int main(int argc, char **argv)
 {
 	FILE *file;
 	unsigned char original = bios_mode();
-	int exhaustive = argc > 1 && strcmp(argv[1], "/exhaustive") == 0;
+	int exhaustive = 0;
+	int preboot = 0;
 	int success;
+	int index;
+	for(index = 1; index < argc; index++)
+	{
+		if(strcmp(argv[index], "/exhaustive") == 0) exhaustive = 1;
+		else if(strcmp(argv[index], "/preboot") == 0) preboot = 1;
+	}
 	remove(VBE_HANDOFF);
 	file = fopen(VBE_HANDOFF, "wb");
 	if(file == NULL) return 2;
 	run_vga(file, original);
-	success = run_vbe(file, exhaustive);
+	if(preboot)
+	{
+		emit_row(file, "VBE", 0, 0, 0, 0, "NONE", "UNAVAILABLE", 0,
+			NULL, 0, "PREBOOT_VBE_UNBOUNDED");
+		success = 1;
+	}
+	else success = run_vbe(file, exhaustive);
 	bios_set(original);
 	if(fclose(file) != 0) success = 0;
 	if(!success) return 1;

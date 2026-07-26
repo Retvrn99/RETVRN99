@@ -7,9 +7,12 @@ typedef HRESULT (WINAPI *GSW_DDRAW_CREATE)(GUID *, LPDIRECTDRAW *, IUnknown *);
 
 typedef struct GSW_DDRAW_STATE {
 	HMODULE library;
-	LPDIRECTDRAW7 draw;
-	LPDIRECTDRAWSURFACE7 primary;
-	LPDIRECTDRAWSURFACE7 back;
+	LPDIRECTDRAW7 draw7;
+	LPDIRECTDRAW4 draw4;
+	LPDIRECTDRAWSURFACE7 primary7;
+	LPDIRECTDRAWSURFACE7 back7;
+	LPDIRECTDRAWSURFACE4 primary4;
+	LPDIRECTDRAWSURFACE4 back4;
 	LPDIRECTDRAWPALETTE palette;
 	GSW_SESSION *session;
 	GSW_MODE mode;
@@ -28,14 +31,18 @@ typedef struct GSW_DDRAW_ENUM {
 static HRESULT gsw_ddraw_open(GSW_DDRAW_STATE *state)
 {
 	FARPROC address;
+	HRESULT result = E_NOINTERFACE;
+	BOOL force4 = state->session != NULL && state->session->options.ddraw4;
 	state->library = LoadLibraryA("DDRAW.DLL");
 	if(state->library == NULL) return (HRESULT)(0x80070000UL | GetLastError());
 	address = GetProcAddress(state->library, "DirectDrawCreateEx");
-	if(address != NULL)
+	if(address != NULL && !force4)
 	{
 		union { FARPROC raw; GSW_DDRAW_CREATE_EX typed; } create;
 		create.raw = address;
-		return create.typed(NULL, (LPVOID *)&state->draw, &IID_IDirectDraw7, NULL);
+		result = create.typed(NULL, (LPVOID *)&state->draw7, &IID_IDirectDraw7, NULL);
+		if(result == DD_OK && state->draw7 != NULL) return result;
+		state->draw7 = NULL;
 	}
 	address = GetProcAddress(state->library, "DirectDrawCreate");
 	if(address != NULL)
@@ -47,12 +54,18 @@ static HRESULT gsw_ddraw_open(GSW_DDRAW_STATE *state)
 		result = create.typed(NULL, &draw1, NULL);
 		if(result == DD_OK && draw1 != NULL)
 		{
-			result = IDirectDraw_QueryInterface(draw1, &IID_IDirectDraw7, (LPVOID *)&state->draw);
+			if(!force4)
+				result = IDirectDraw_QueryInterface(draw1, &IID_IDirectDraw7, (LPVOID *)&state->draw7);
+			if(force4 || result != DD_OK || state->draw7 == NULL)
+			{
+				state->draw7 = NULL;
+				result = IDirectDraw_QueryInterface(draw1, &IID_IDirectDraw4, (LPVOID *)&state->draw4);
+			}
 			IDirectDraw_Release(draw1);
 		}
 		return result;
 	}
-	return E_NOINTERFACE;
+	return result;
 }
 
 static HRESULT CALLBACK gsw_ddraw_enum_callback(LPDDSURFACEDESC2 description, LPVOID value)
@@ -71,13 +84,21 @@ static HRESULT CALLBACK gsw_ddraw_enum_callback(LPDDSURFACEDESC2 description, LP
 static void gsw_ddraw_close(GSW_DDRAW_STATE *state)
 {
 	if(state->palette != NULL) IDirectDrawPalette_Release(state->palette);
-	if(state->back != NULL) IDirectDrawSurface7_Release(state->back);
-	if(state->primary != NULL) IDirectDrawSurface7_Release(state->primary);
-	if(state->draw != NULL)
+	if(state->back7 != NULL) IDirectDrawSurface7_Release(state->back7);
+	if(state->primary7 != NULL) IDirectDrawSurface7_Release(state->primary7);
+	if(state->back4 != NULL) IDirectDrawSurface4_Release(state->back4);
+	if(state->primary4 != NULL) IDirectDrawSurface4_Release(state->primary4);
+	if(state->draw7 != NULL)
 	{
-		if(state->mode_set) IDirectDraw7_RestoreDisplayMode(state->draw);
-		if(state->exclusive) IDirectDraw7_SetCooperativeLevel(state->draw, state->session->window, DDSCL_NORMAL);
-		IDirectDraw7_Release(state->draw);
+		if(state->mode_set) IDirectDraw7_RestoreDisplayMode(state->draw7);
+		if(state->exclusive) IDirectDraw7_SetCooperativeLevel(state->draw7, state->session->window, DDSCL_NORMAL);
+		IDirectDraw7_Release(state->draw7);
+	}
+	if(state->draw4 != NULL)
+	{
+		if(state->mode_set) IDirectDraw4_RestoreDisplayMode(state->draw4);
+		if(state->exclusive) IDirectDraw4_SetCooperativeLevel(state->draw4, state->session->window, DDSCL_NORMAL);
+		IDirectDraw4_Release(state->draw4);
 	}
 	if(state->library != NULL) FreeLibrary(state->library);
 	gsw_pattern_release(state->patterns[0]);
@@ -97,7 +118,9 @@ static BOOL gsw_ddraw_enumerate(GSW_SESSION *session, GSW_ADAPTER *adapter)
 	if(result == DD_OK)
 	{
 		enumeration.modes = &adapter->modes;
-		result = IDirectDraw7_EnumDisplayModes(state.draw, 0, NULL, &enumeration, gsw_ddraw_enum_callback);
+		if(state.draw7 != NULL)
+			result = IDirectDraw7_EnumDisplayModes(state.draw7, 0, NULL, &enumeration, gsw_ddraw_enum_callback);
+		else result = IDirectDraw4_EnumDisplayModes(state.draw4, 0, NULL, &enumeration, gsw_ddraw_enum_callback);
 	}
 	adapter->available = result == DD_OK && adapter->modes.count != 0 && !adapter->modes.overflow;
 	gsw_ddraw_close(&state);
@@ -114,16 +137,22 @@ static BOOL gsw_ddraw_setup(GSW_DDRAW_STATE *state, GSW_SESSION *session, const 
 	state->mode = *mode;
 	result = gsw_ddraw_open(state);
 	if(result != DD_OK) goto fail;
-	result = IDirectDraw7_SetCooperativeLevel(state->draw, session->window,
+	if(state->draw7 != NULL)
+		result = IDirectDraw7_SetCooperativeLevel(state->draw7, session->window,
+			DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN | DDSCL_ALLOWREBOOT);
+	else result = IDirectDraw4_SetCooperativeLevel(state->draw4, session->window,
 		DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN | DDSCL_ALLOWREBOOT);
 	if(result != DD_OK) goto fail;
 	state->exclusive = TRUE;
-	result = IDirectDraw7_SetDisplayMode(state->draw, mode->width, mode->height, mode->bpp, mode->hz, 0);
+	if(state->draw7 != NULL)
+		result = IDirectDraw7_SetDisplayMode(state->draw7, mode->width, mode->height, mode->bpp, mode->hz, 0);
+	else result = IDirectDraw4_SetDisplayMode(state->draw4, mode->width, mode->height, mode->bpp, mode->hz, 0);
 	if(result != DD_OK) goto fail;
 	state->mode_set = TRUE;
 	gsw_zero(&description, sizeof(description));
 	description.dwSize = sizeof(description);
-	result = IDirectDraw7_GetDisplayMode(state->draw, &description);
+	if(state->draw7 != NULL) result = IDirectDraw7_GetDisplayMode(state->draw7, &description);
+	else result = IDirectDraw4_GetDisplayMode(state->draw4, &description);
 	if(result != DD_OK) goto fail;
 	if(description.dwWidth != mode->width || description.dwHeight != mode->height ||
 	   description.ddpfPixelFormat.dwRGBBitCount != mode->bpp ||
@@ -137,11 +166,15 @@ static BOOL gsw_ddraw_setup(GSW_DDRAW_STATE *state, GSW_SESSION *session, const 
 	description.dwFlags = DDSD_CAPS | DDSD_BACKBUFFERCOUNT;
 	description.ddsCaps.dwCaps = DDSCAPS_PRIMARYSURFACE | DDSCAPS_FLIP | DDSCAPS_COMPLEX;
 	description.dwBackBufferCount = 1;
-	result = IDirectDraw7_CreateSurface(state->draw, &description, &state->primary, NULL);
+	if(state->draw7 != NULL)
+		result = IDirectDraw7_CreateSurface(state->draw7, &description, &state->primary7, NULL);
+	else result = IDirectDraw4_CreateSurface(state->draw4, &description, &state->primary4, NULL);
 	if(result != DD_OK) goto fail;
 	gsw_zero(&caps, sizeof(caps));
 	caps.dwCaps = DDSCAPS_BACKBUFFER;
-	result = IDirectDrawSurface7_GetAttachedSurface(state->primary, &caps, &state->back);
+	if(state->draw7 != NULL)
+		result = IDirectDrawSurface7_GetAttachedSurface(state->primary7, &caps, &state->back7);
+	else result = IDirectDrawSurface4_GetAttachedSurface(state->primary4, &caps, &state->back4);
 	if(result != DD_OK) goto fail;
 	if(mode->bpp == 8)
 	{
@@ -154,10 +187,14 @@ static BOOL gsw_ddraw_setup(GSW_DDRAW_STATE *state, GSW_SESSION *session, const 
 			entries[index].peBlue = (BYTE)((index & 3) * 255 / 3);
 			entries[index].peFlags = 0;
 		}
-		result = IDirectDraw7_CreatePalette(state->draw, DDPCAPS_8BIT | DDPCAPS_ALLOW256,
+		if(state->draw7 != NULL)
+			result = IDirectDraw7_CreatePalette(state->draw7, DDPCAPS_8BIT | DDPCAPS_ALLOW256,
+				entries, &state->palette, NULL);
+		else result = IDirectDraw4_CreatePalette(state->draw4, DDPCAPS_8BIT | DDPCAPS_ALLOW256,
 			entries, &state->palette, NULL);
 		if(result != DD_OK) goto fail;
-		result = IDirectDrawSurface7_SetPalette(state->primary, state->palette);
+		if(state->draw7 != NULL) result = IDirectDrawSurface7_SetPalette(state->primary7, state->palette);
+		else result = IDirectDrawSurface4_SetPalette(state->primary4, state->palette);
 		if(result != DD_OK) goto fail;
 	}
 	if(!gsw_pattern_allocate(mode->width, mode->height, mode->bpp, &state->patterns[0], &state->pitch) ||
@@ -187,20 +224,25 @@ static HRESULT gsw_ddraw_present_once(GSW_DDRAW_STATE *state, DWORD frame, DWORD
 	DWORD row_bytes = state->mode.width * ((state->mode.bpp + 7) / 8);
 	gsw_zero(&locked, sizeof(locked));
 	locked.dwSize = sizeof(locked);
-	result = IDirectDrawSurface7_Lock(state->back, NULL, &locked, DDLOCK_WAIT, NULL);
+	if(state->draw7 != NULL)
+		result = IDirectDrawSurface7_Lock(state->back7, NULL, &locked, DDLOCK_WAIT, NULL);
+	else result = IDirectDrawSurface4_Lock(state->back4, NULL, &locked, DDLOCK_WAIT, NULL);
 	if(result != DD_OK) return result;
 	if(locked.lpSurface == NULL || locked.lPitch == 0 ||
 	   (locked.lPitch > 0 && (DWORD)locked.lPitch < row_bytes))
 	{
-		IDirectDrawSurface7_Unlock(state->back, NULL);
+		if(state->draw7 != NULL) IDirectDrawSurface7_Unlock(state->back7, NULL);
+		else IDirectDrawSurface4_Unlock(state->back4, NULL);
 		return DDERR_INVALIDPARAMS;
 	}
 	for(y = 0; y < state->mode.height; y++)
 		gsw_copy((BYTE *)locked.lpSurface + (LONG)y * locked.lPitch,
 			state->patterns[pattern] + y * state->pitch, row_bytes);
-	result = IDirectDrawSurface7_Unlock(state->back, NULL);
+	if(state->draw7 != NULL) result = IDirectDrawSurface7_Unlock(state->back7, NULL);
+	else result = IDirectDrawSurface4_Unlock(state->back4, NULL);
 	if(result != DD_OK) return result;
-	result = IDirectDrawSurface7_Flip(state->primary, NULL, DDFLIP_WAIT);
+	if(state->draw7 != NULL) result = IDirectDrawSurface7_Flip(state->primary7, NULL, DDFLIP_WAIT);
+	else result = IDirectDrawSurface4_Flip(state->primary4, NULL, DDFLIP_WAIT);
 	if(crc32 != NULL) *crc32 = state->crc[pattern];
 	return result;
 }
@@ -215,8 +257,13 @@ static BOOL gsw_ddraw_frame(void *value, DWORD frame, DWORD *crc32)
 		if(result == DD_OK) return TRUE;
 		if(result != DDERR_SURFACELOST || attempt == GSW_SURFACE_RECOVERY_MAX) return FALSE;
 		state->recoveries++;
-		if(IDirectDrawSurface7_Restore(state->primary) != DD_OK ||
-		   IDirectDrawSurface7_Restore(state->back) != DD_OK) return FALSE;
+		if(state->draw7 != NULL)
+		{
+			if(IDirectDrawSurface7_Restore(state->primary7) != DD_OK ||
+			   IDirectDrawSurface7_Restore(state->back7) != DD_OK) return FALSE;
+		}
+		else if(IDirectDrawSurface4_Restore(state->primary4) != DD_OK ||
+		   IDirectDrawSurface4_Restore(state->back4) != DD_OK) return FALSE;
 	}
 	return FALSE;
 }

@@ -96,6 +96,12 @@ typedef struct GSW_OPTIONS {
 	BOOL exhaustive;
 	BOOL self_test;
 	BOOL host_report;
+	BOOL import_vbe;
+	BOOL gdi_only;
+	BOOL ddraw_only;
+	BOOL d3d_only;
+	BOOL ddraw4;
+	BOOL bounded;
 } GSW_OPTIONS;
 
 typedef struct GSW_REPORT {

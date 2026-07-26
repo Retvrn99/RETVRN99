@@ -48,15 +48,17 @@ smoke and benchmark.
 The VBE Adapter enumerates the controller and mode records through BIOS calls
 `4F00h` and `4F01h`. It exercises every usable advertised graphics mode through
 `4F02h`, verifies the active mode through `4F03h`, and uses banked and linear
-framebuffer paths when the mode advertises them.
+framebuffer paths when the mode advertises them. Mode-set requests preserve
+display memory because the probe immediately writes and verifies its own
+patterns; it does not rely on the BIOS bulk-clear path.
 
 The GDI Adapter deduplicates exact `width/height/bpp/hz` tuples, tests and sets
 each mode without updating the registry, reads the resulting mode back,
 presents a DIB, and restores the original desktop.
 
-The DirectDraw Adapter dynamically selects the highest public interface it can
-create, enumerates modes, uses an exact fullscreen flipping chain, bounds
-surface-loss recovery, releases ownership, and restores the desktop.
+The DirectDraw Adapter attempts DirectDraw 7 first and DirectDraw 4 as a
+Windows 98 fallback, enumerates modes, uses an exact fullscreen flipping chain,
+bounds surface-loss recovery, releases ownership, and restores the desktop.
 
 The Direct3D Adapter attempts Direct3D 7 first and Direct3D 3 as a fallback. It
 enumerates public HAL and HEL devices and renders a pretransformed colored
@@ -81,7 +83,18 @@ DirectDraw mode for the selected HAL and HEL devices.
 `/self-test` verifies metrics, TSV formatting, pattern CRC, and report transport
 without changing a display mode. `/host-report` requires the Guest test device
 and host artifacts, publishes the report, draws the final summary after desktop
-restoration, and issues semantic Exit.
+restoration, and issues semantic Exit. `/import-vbe` consumes a companion
+handoff created before Windows starts instead of launching a DOS session from
+Windows. `/gdi-only`, `/ddraw-only`, and `/d3d-only` retain the same Adapter
+contract while isolating one Windows path for diagnostic reruns; without those
+switches all three Windows Adapters run.
+`/ddraw4` selects the public DirectDraw 4 compatibility path from creation time
+instead of accepting DirectDraw 7 first.
+`/bounded` runs the GDI Adapter but records DirectDraw and Direct3D as
+`UNAVAILABLE` without entering those interfaces. This is the fail-closed guest
+profile when the public DirectDraw entry points cannot be bounded by the
+controller process. Any unavailable coverage makes the terminal result at
+least `WARN`; it cannot become `PASS`.
 
 Each benchmark warms up for 500 ms, then measures complete generation, copy,
 and presentation cycles continuously for 3,000 ms without sleeping. The timer
@@ -100,11 +113,18 @@ restoration, timer, companion, or reporting errors do fail it.
 
 ### DOS companion handoff
 
-The controller launches `GSWVBE.EXE` before the Windows Adapters. The companion
+By default, the controller launches `GSWVBE.EXE` before the Windows Adapters.
+For guests where a full-screen DOS session cannot return safely to the Windows
+desktop, the explicit `/import-vbe` path requires `GSWVBE.EXE` to run before
+Windows starts. The companion's `/preboot` profile completes the VGA BIOS
+checks, records VBE as `UNAVAILABLE` when VBE BIOS work cannot be isolated or
+timed out safely, and always returns control to the boot sequence. The full VBE
+matrix remains available outside that bounded boot profile. The companion
 writes bounded canonical records to `C:\GSWGFX\VBE.TMP`. The controller parses
-the file and deletes it only after successful parsing. This file is a local
-handoff, is never authoritative evidence, and is never extracted from the disk
-image.
+the file and deletes it only after successful parsing. Absence, malformed
+content, or a companion failure remains a failed diagnostic. This file is a
+local handoff, is never authoritative evidence, and is never extracted from the
+disk image.
 
 ### Guest test device report Interface
 

@@ -179,7 +179,8 @@ BOOL gsw_report_import_rows(GSW_REPORT *report, const BYTE *bytes, DWORD length)
 		   bytes[offset++] != 'D' || bytes[offset++] != 'E' || bytes[offset++] != '\t') return FALSE;
 		while(offset + 1 < length && !(bytes[offset] == '\r' && bytes[offset + 1] == '\n'))
 		{
-			if(bytes[offset] < 0x20 || bytes[offset] > 0x7E) return FALSE;
+			if((bytes[offset] < 0x20 && bytes[offset] != '\t') || bytes[offset] > 0x7E)
+				return FALSE;
 			offset++;
 		}
 		if(offset + 1 >= length) return FALSE;

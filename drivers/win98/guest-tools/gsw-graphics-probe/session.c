@@ -154,14 +154,27 @@ DWORD gsw_run(void)
 			gsw_record(&session, &row); completed = FALSE;
 		}
 		gsw_gdi_adapter(&adapters[0]); gsw_ddraw_adapter(&adapters[1]); gsw_d3d_adapter(&adapters[2]);
-		for(index = 0; index < 3; index++) if(!gsw_adapter_run(&session, &adapters[index])) completed = FALSE;
+		for(index = 0; index < 3; index++)
+		{
+			BOOL selected = (!session.options.gdi_only && !session.options.ddraw_only &&
+				!session.options.d3d_only) || (index == 0 && session.options.gdi_only) ||
+				(index == 1 && session.options.ddraw_only) || (index == 2 && session.options.d3d_only);
+			if(!selected) continue;
+			if(session.options.bounded && index != 0)
+			{
+				if(!gsw_unavailable(&session, adapters[index].name,
+				   "BOUNDED_GUEST_ADAPTER")) completed = FALSE;
+			}
+			else if(!gsw_adapter_run(&session, &adapters[index])) completed = FALSE;
+		}
 	}
 	if(!session.options.self_test && !gsw_restore_desktop(&session))
 	{
 		session.restore_failed = TRUE; completed = FALSE;
 	}
 	overall = !completed || session.failed != 0 || session.restore_failed || session.report_failed ?
-		GSW_STATUS_FAIL : session.warnings != 0 ? GSW_STATUS_WARN : GSW_STATUS_PASS;
+		GSW_STATUS_FAIL : session.warnings != 0 || session.unavailable != 0 ?
+		GSW_STATUS_WARN : GSW_STATUS_PASS;
 	if(!gsw_report_run(&session, overall, 0, overall == GSW_STATUS_FAIL ? "FAILED" : "COMPLETE"))
 	{
 		session.report_failed = TRUE; overall = GSW_STATUS_FAIL;

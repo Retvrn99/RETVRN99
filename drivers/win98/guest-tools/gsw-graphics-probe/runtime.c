@@ -143,6 +143,12 @@ BOOL gsw_parse_options(GSW_OPTIONS *options)
 	options->exhaustive = gsw_argument("/exhaustive");
 	options->self_test = gsw_argument("/self-test");
 	options->host_report = gsw_argument("/host-report");
+	options->import_vbe = gsw_argument("/import-vbe");
+	options->gdi_only = gsw_argument("/gdi-only");
+	options->ddraw_only = gsw_argument("/ddraw-only");
+	options->d3d_only = gsw_argument("/d3d-only");
+	options->ddraw4 = gsw_argument("/ddraw4");
+	options->bounded = gsw_argument("/bounded");
 	return TRUE;
 }
 

@@ -242,7 +242,9 @@ $header = 'schema sequence record adapter mode width height bpp hz path status a
     'warnings unavailable crc32 detail'
 $header = $header.Replace(' ', "\t") + "\r\n"
 foreach ($token in @('GSWGFX_RESULT_V2', $header, '/exhaustive', '/self-test',
-    '/host-report', 'GSWVBE.EXE', 'C:\\GSWGFX\\VBE.TMP', 'GSW_SAMPLE_CAP',
+    '/host-report', '/import-vbe', '/gdi-only', '/ddraw-only', '/d3d-only',
+    '/ddraw4', '/bounded', 'BOUNDED_GUEST_ADAPTER', 'GSWVBE.EXE',
+    'C:\\GSWGFX\\VBE.TMP', 'GSW_SAMPLE_CAP',
     'GSW_WARMUP_MS', 'GSW_MEASURE_MS', 'GSW_STATUS_UNAVAILABLE')) {
     Assert-Gswgfx ($sourceText.IndexOf($token, [StringComparison]::Ordinal) -ge 0) `
         "GSWGFX observable source Interface lost '$token'."
@@ -251,6 +253,31 @@ foreach ($adapter in @('VGA', 'VBE', 'GDI', 'DDRAW', 'D3D7', 'D3D3')) {
     Assert-Gswgfx ($sourceText.IndexOf($adapter, [StringComparison]::OrdinalIgnoreCase) -ge 0) `
         "GSWGFX source lost the $adapter Adapter."
 }
+$vbeText = [IO.File]::ReadAllText((Join-Path $sourcePath 'vbe_import.c'))
+foreach ($token in @('session->options.import_vbe', 'CreateProcessA', 'OPEN_EXISTING')) {
+    Assert-Gswgfx ($vbeText.IndexOf($token, [StringComparison]::Ordinal) -ge 0) `
+        "GSWGFX explicit VBE handoff lost '$token'."
+}
+$reportText = [IO.File]::ReadAllText((Join-Path $sourcePath 'report.c'))
+Assert-Gswgfx ($reportText.IndexOf("bytes[offset] != '\t'", [StringComparison]::Ordinal) -ge 0) `
+    'GSWGFX imported-row parser no longer permits canonical TSV separators.'
+$vbeCompanionText = [IO.File]::ReadAllText((Join-Path $sourcePath 'gswvbe.c'))
+foreach ($token in @('VBE_MODE_NO_CLEAR', 'mode | VBE_MODE_NO_CLEAR', '/preboot',
+    'PREBOOT_VBE_UNBOUNDED')) {
+    Assert-Gswgfx ($vbeCompanionText.IndexOf($token, [StringComparison]::Ordinal) -ge 0) `
+        "GSWVBE bounded mode-set path lost '$token'."
+}
+$ddrawText = [IO.File]::ReadAllText((Join-Path $sourcePath 'backend_ddraw.c'))
+foreach ($token in @('DirectDrawCreateEx', 'DirectDrawCreate', 'IID_IDirectDraw7',
+    'IID_IDirectDraw4', 'IDirectDraw4_EnumDisplayModes',
+    'IDirectDrawSurface4_Flip', 'options.ddraw4')) {
+    Assert-Gswgfx ($ddrawText.IndexOf($token, [StringComparison]::Ordinal) -ge 0) `
+        "GSWGFX DirectDraw compatibility fallback lost '$token'."
+}
+$sessionText = [IO.File]::ReadAllText((Join-Path $sourcePath 'session.c'))
+Assert-Gswgfx ($sessionText.IndexOf('session.unavailable != 0',
+    [StringComparison]::Ordinal) -ge 0) `
+    'GSWGFX unavailable coverage no longer forces at least WARN.'
 Write-Output 'PASS GSWGFX source is licensed and exposes dynamic mode, benchmark, report, and Adapter Interfaces.'
 
 $recipeOutput = Join-Path $payloadPath ([string]$recipe.destination_directory)

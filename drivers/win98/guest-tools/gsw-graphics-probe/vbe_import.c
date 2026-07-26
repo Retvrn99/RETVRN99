@@ -43,14 +43,17 @@ BOOL gsw_vbe_import(GSW_SESSION *session)
 	BOOL success = FALSE;
 	if(session == NULL) return FALSE;
 	command = session->options.exhaustive ? exhaustive_command : normal_command;
-	DeleteFileA(GSW_VBE_PATH);
 	gsw_zero(&startup, sizeof(startup));
 	gsw_zero(&process, sizeof(process));
-	startup.cb = sizeof(startup);
-	if(!CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, "C:\\GSWGFX", &startup, &process))
-		return FALSE;
-	if(WaitForSingleObject(process.hProcess, 120000UL) != WAIT_OBJECT_0) goto cleanup;
-	if(!GetExitCodeProcess(process.hProcess, &exit_code) || exit_code != 0) goto cleanup;
+	if(!session->options.import_vbe)
+	{
+		DeleteFileA(GSW_VBE_PATH);
+		startup.cb = sizeof(startup);
+		if(!CreateProcessA(NULL, command, NULL, NULL, FALSE, 0, NULL, "C:\\GSWGFX", &startup, &process))
+			return FALSE;
+		if(WaitForSingleObject(process.hProcess, 120000UL) != WAIT_OBJECT_0) goto cleanup;
+		if(!GetExitCodeProcess(process.hProcess, &exit_code) || exit_code != 0) goto cleanup;
+	}
 	file = CreateFileA(GSW_VBE_PATH, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
 		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
 	if(file == INVALID_HANDLE_VALUE) goto cleanup;
