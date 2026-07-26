@@ -4,6 +4,9 @@ package host
 import contract "../presentation"
 import vga "../vga"
 import "core:testing"
+
+// A border colour distinct from black so the surround is observable.
+HOST_TEST_OVERSCAN :: u32(0xFF20_50A0)
 import sdl3 "vendor:sdl3"
 
 host_presentation_test_mode_key :: proc(width: u32 = 640, height: u32 = 480) -> contract.Mode_Key {
@@ -49,6 +52,7 @@ host_presentation_test_legacy :: proc(
 			interval = 0,
 			source_kind = .Legacy_Snapshot,
 			ownership = .Mailbox_Descriptor,
+			overscan = HOST_TEST_OVERSCAN,
 		},
 	}
 }
@@ -893,6 +897,9 @@ host_presentation_test_cross_mode_teardown_restores_legacy_desktop :: proc(t: ^t
 		testing.expect_value(t, h.aspect_width, 640)
 		testing.expect_value(t, h.aspect_height, 480)
 		testing.expect(t, h.has_frame)
+		// The border colour published by the device reaches the host, which
+		// paints the surround with it instead of a fixed black.
+		testing.expect_value(t, h.overscan, u32(HOST_TEST_OVERSCAN))
 	}
 }
 

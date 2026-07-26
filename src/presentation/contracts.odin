@@ -97,6 +97,9 @@ Header :: struct {
 	completion:           Completion_Identity,
 	source_kind:          Source_Kind,
 	ownership:            Ownership,
+	// Border colour outside the canvas, as BGRA. Presentation paints the
+	// surround with it instead of a fixed black.
+	overscan:             u32,
 }
 
 Legacy_Frame_Update :: struct {

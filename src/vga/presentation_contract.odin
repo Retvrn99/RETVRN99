@@ -93,6 +93,7 @@ vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
 			format = .Bgra_8888,
 			surface_extent = extent,
 			canvas_extent = extent,
+			overscan = overscan_color(v),
 			source = full,
 			destination = full,
 			dirty = damage.rects,

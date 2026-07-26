@@ -84,6 +84,7 @@ vga_display_frame :: proc(v: ^Vga) -> ^Display_Frame {
 	v.frame.text = {}
 	v.frame.dirty = contract.rect_set_full({u32(width), u32(height)})
 	v.frame.updated_pixels = u64(needed)
+	v.frame.overscan = overscan_color(v)
 	if !output_enabled {return &v.frame}
 	switch kind {
 	case .Text:
@@ -223,6 +224,7 @@ scanout_finalize :: proc(v: ^Vga) {
 	v.frame.guest_activity_generation = v.guest_activity_generation
 	v.frame.pixels = v.frame_pixels
 	v.frame.text = v.raster_kind == .Text ? vga_text_snapshot(v) : Text_Snapshot{}
+	v.frame.overscan = overscan_color(v)
 	v.frame_valid = true
 	v.raster_valid = false
 }
@@ -577,6 +579,19 @@ attribute_palette_index :: proc(v: ^Vga, color: u8) -> u8 {
 @(private = "file")
 attribute_color :: proc(v: ^Vga, color: u8) -> u32 {
 	return dac_color(v, attribute_palette_index(v, color))
+}
+
+// The border colour the display shows outside the active image. The CGA
+// persona takes it from the colour-select register; every other persona takes
+// it from Attribute Controller 11h. A blanked or reset subsystem shows black.
+@(private = "package")
+overscan_color :: proc(v: ^Vga) -> u32 {
+	if !video_output_enabled(v) {return 0xFF00_0000}
+	if v.cga.active && !vga_vbe_enabled(v) {
+		return CGA_COLORS[int(v.cga.color_select & 0x0F)]
+	}
+	if vga_vbe_enabled(v) {return 0xFF00_0000}
+	return attribute_color(v, v.attr[0x11])
 }
 
 @(private = "file")

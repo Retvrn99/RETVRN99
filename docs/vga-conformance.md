@@ -89,7 +89,7 @@ instead. Neither matched the reference, and both are corrected.
 | Attribute address/data flip-flop and IPAS palette gating | IBM 2-89 to 2-90 | Conformant | `src/vga/ports.odin` | `vga_test_attribute_flip_flop_and_dac` |
 | Attribute 00h-0Fh internal palette | IBM 2-90 to 2-91 | Partial | Palette and color-select path exist; access gating and some 256-color semantics are incomplete | Palette path tests required |
 | Attribute 10h mode control: graphics, mono, line graphics, blink, PEL width, pan compatibility | IBM 2-92 to 2-93 | Partial | Several fields are consumed; monochrome and 256-color distinctions are incomplete | Text, indexed, and split tests required |
-| Attribute 11h overscan color | IBM 2-94 | Missing | Stored but never scanned out | Border test required |
+| Attribute 11h overscan color | IBM 2-94 | Conformant | `src/vga/scanout.odin` resolves it through the palette and DAC onto the frame and the legacy presentation header; `src/host/render.odin` paints the surround with it | `vga_test_overscan_color_follows_attribute_11h_through_public_ports`, `vga_test_overscan_is_black_while_output_is_disabled`, `vga_test_overscan_uses_cga_color_select_in_cga_modes`, `vga_test_legacy_frame_header_publishes_the_overscan_color` |
 | Attribute 12h color plane enable and status mux | IBM 2-94 | Partial | Plane masking exists; status mux coverage is incomplete outside graphics modes | Plane and status tests required |
 | Attribute 13h horizontal PEL panning | IBM 2-95 | Partial | Text/planar path exists; mode 13h value mapping is incorrect | Mode 13h and Mode X pan tests required |
 | Attribute 14h color select | IBM 2-96 | Conformant | `src/vga/scanout.odin` | Palette-selection tests |
@@ -112,7 +112,7 @@ instead. Neither matched the reference, and both are corrected.
 | Chain-4 256-color mode 13h scanout | IBM mode 13h | Conformant | `src/vga/scanout.odin` | Full-size mode 13h test |
 | Unchained 256-color Mode X scanout | IBM register model plus documented compatible programming | Partial | Implementation and synthetic tests exist; real 320x240 tuple is unproven | Port-programmed 320x240 test required |
 | Start address, byte pan, PEL pan, and line-compare split | IBM 2-95 and 2-102 to 2-103 | Partial | Core paths exist; mode-specific and deferred proofs are incomplete | Combined public-port tests required |
-| Horizontal/vertical overscan and blank output | IBM 2-13 and 2-57 to 2-73 | Missing | Active image only | Border/blank frame tests required |
+| Horizontal/vertical overscan and blank output | IBM 2-13 and 2-57 to 2-73 | Partial | The border colour now reaches presentation and is painted around the canvas, and output-disable blanks it; the frame still carries only the active image | True border extents derived from the display-end and blank-start registers require a presentation-model change, since the frame would become larger than the active image. Design that alongside the scanline-ordered raster row |
 | Scanline-ordered register, palette, and aperture changes | IBM programming considerations | Missing | Deferred production path discards raster changes | Descriptor journal tests required |
 | Descriptor contains only explicit raw scanout state | ADR 0001 and `CONTEXT.md` | Conformant | `src/vga/scanout_descriptor.odin` | `scanout_descriptor_test_uses_explicit_state_without_source_vga_lifetime` |
 

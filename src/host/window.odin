@@ -44,6 +44,7 @@ Host :: struct {
 	tex_height:             int,
 	aspect_width:           int,
 	aspect_height:          int,
+	overscan:               u32,
 	window_scale:           int,
 	fullscreen:             bool,
 	menu_reveal:            f32,

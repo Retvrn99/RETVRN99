@@ -264,7 +264,13 @@ host_render_resident_composition :: proc(h: ^Host, guest_view: sdl3.FRect) -> bo
 
 host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 	if h == nil || !sdl3.IsMainThread() {return false}
-	ok := sdl3.SetRenderDrawColor(h.ren, 0, 0, 0, 255)
+	// The surround outside the guest canvas shows the border colour the
+	// Attribute Controller selected, not a fixed black.
+	red := u8(h.overscan >> 16)
+	green := u8(h.overscan >> 8)
+	blue := u8(h.overscan)
+	if !machine_running || !h.has_frame {red, green, blue = 0, 0, 0}
+	ok := sdl3.SetRenderDrawColor(h.ren, red, green, blue, 255)
 	ok = sdl3.RenderClear(h.ren) && ok
 	output_width, output_height := WIN_W, WIN_H
 	w, hh: c.int

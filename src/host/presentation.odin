@@ -986,6 +986,7 @@ host_presentation_commit_legacy_staged :: proc(
 		h.gpu_present = {}
 		h.aspect_width = int(admission.legacy.header.canvas_extent.width)
 		h.aspect_height = int(admission.legacy.header.canvas_extent.height)
+		h.overscan = admission.legacy.header.overscan
 		h.has_frame = true
 	}
 	if host_presentation_full_update(admission.legacy.header) {
@@ -1328,6 +1329,7 @@ host_presentation_apply_invalidation :: proc(
 		legacy := state.legacy.header
 		h.aspect_width = int(legacy.canvas_extent.width)
 		h.aspect_height = int(legacy.canvas_extent.height)
+		h.overscan = legacy.overscan
 		h.has_frame = true
 		host_presentation_metric_add(&h.presentation_metrics.last_good_restorations, 1)
 	} else if result.action == .Restore_Gsw {

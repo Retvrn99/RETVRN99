@@ -93,6 +93,10 @@ Display_Frame :: struct {
 	text:                      Text_Snapshot,
 	dirty:                     contract.Rect_Set,
 	updated_pixels:            u64,
+	// Attribute Controller 11h resolved through the palette and DAC. The
+	// border is outside the active image, so presentation paints the surround
+	// with it rather than a fixed black.
+	overscan:                  u32,
 }
 
 Legacy_Irq_Proc :: proc(ctx: rawptr, asserted: bool)
