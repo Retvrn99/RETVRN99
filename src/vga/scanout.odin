@@ -312,6 +312,11 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y, x0, x1: i
 	// bottom of the cell instead of wrapping into the top of it.
 	cursor_line :=
 		glyph_y >= cursor_start && (cursor_end < cursor_start || glyph_y <= cursor_end)
+	// Attribute Controller 10h bit 1 reinterprets the attribute byte with
+	// monochrome semantics, which is also the only mode in which the underline
+	// attribute exists. CRT Controller 14h names the scan line it lands on.
+	monochrome := !v.cga.active && v.attr[0x10] & 0x02 != 0
+	underline_row := int(v.crtc[0x14] & 0x1F)
 	for column in 0 ..= columns {
 		cell_origin := column * character_width - pan
 		if cell_origin + character_width <= x0 || cell_origin >= x1 {continue}
@@ -326,7 +331,12 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y, x0, x1: i
 		background := attribute >> 4
 		blink_enabled :=
 			v.cga.active ? v.cga.mode_control & CGA_MODE_BLINK != 0 : v.attr[0x10] & 0x08 != 0
-		if blink_enabled {
+		if monochrome {
+			// Bit 3 intensifies here even when a second font block is loaded, which
+			// is why the colour path's font-select masking above is left behind.
+			foreground, background = legacy_monochrome_attribute(attribute)
+			if blink_enabled && attribute & 0x80 != 0 && !blink_on {foreground = background}
+		} else if blink_enabled {
 			background &= 7
 			if attribute & 0x80 != 0 && !blink_on {foreground = background}
 		}
@@ -335,6 +345,10 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y, x0, x1: i
 		cursor_here := v.crtc[0x0A] & 0x20 == 0 && blink_on && cursor_line && raw == cursor_raw
 		if cursor_here {temporary := fg; fg = bg; bg = temporary}
 		bits := plane_byte(v, 2, font_base + int(character) * 32 + min(glyph_y, 31))
+		// The underline runs the full width of the cell, ninth dot included, and
+		// blinks with the character because it is drawn in the foreground the blink
+		// already resolved.
+		underline := monochrome && glyph_y == underline_row && attribute & 0x07 == 0x01
 		for glyph_x in 0 ..< character_width {
 			x := cell_origin + glyph_x
 			if x < x0 || x >= x1 {continue}
@@ -343,9 +357,28 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y, x0, x1: i
 			   character >= 0xC0 &&
 			   character <= 0xDF &&
 			   v.attr[0x10] & 0x04 != 0 {set = bits & 1 != 0}
-			pixels[y * width + x] = set ? fg : bg
+			pixels[y * width + x] = set || underline ? fg : bg
 		}
 	}
+}
+
+// IBM 2-15 to 2-17. A monochrome attribute carries no colour. Bits 0-2 and 4-6
+// select one of three cell forms, bit 3 intensifies the foreground and bit 7
+// blinks it, and the resulting index still resolves through the internal palette
+// and the DAC like any other. Everything with foreground and background both
+// blank is invisible, the one reverse-video combination puts a blank foreground
+// on a bright background, and every other combination is foreground on blank.
+// Behaviour derived from the 86Box EGA text renderer; see 86BOX_NOTICE.md.
+@(private = "file")
+legacy_monochrome_attribute :: proc(attribute: u8) -> (foreground, background: u8) {
+	intense := attribute & 0x08 != 0 ? u8(15) : u8(7)
+	switch attribute & 0x77 {
+	case 0x00:
+		return 0, 0
+	case 0x70:
+		return attribute & 0x08 != 0 ? 7 : 0, 15
+	}
+	return intense, 0
 }
 
 @(private = "file")
