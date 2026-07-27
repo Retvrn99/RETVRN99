@@ -319,11 +319,14 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y, x0, x1: i
 	// attribute exists. CRT Controller 14h names the scan line it lands on.
 	monochrome := !v.cga.active && v.attr[0x10] & 0x02 != 0
 	underline_row := int(v.crtc[0x14] & 0x1F)
+	// The CGA compatibility persona owns one 16 KiB page and its display counter
+	// wraps inside it instead of running on into the rest of video memory.
+	page_mask := v.cga.active ? 0x3fff : 0x7fff
 	for column in 0 ..= columns {
 		cell_origin := column * character_width - pan
 		if cell_origin + character_width <= x0 || cell_origin >= x1 {continue}
-		cell := (start + row * pitch + column) & 0x3fff
-		raw := (cell * 2 + byte_pan) & 0x7fff
+		cell := (start + row * pitch + column) & (page_mask >> 1)
+		raw := (cell * 2 + byte_pan) & page_mask
 		character := legacy_text_byte(v, raw)
 		attribute := legacy_text_byte(v, raw + 1)
 		foreground := attribute & 0x0F
@@ -480,7 +483,7 @@ render_cga_scanline :: proc(v: ^Vga, pixels: []u32, width, y, x0, x1: int) {
 	start := int(display_start(v)) * 2
 	row := (y & 1) * 0x2000 + (y >> 1) * pitch
 	for x in x0 ..< x1 {
-		value := legacy_linear_byte(v, start + row + x / 4)
+		value := legacy_linear_byte(v, (start + row + x / 4) & 0x3fff)
 		shift := uint(6 - (x & 3) * 2)
 		pixel := (value >> shift) & 3
 		pixels[y * width + x] = v.cga.active ? cga_color(v, pixel) : attribute_color(v, pixel)
@@ -772,7 +775,7 @@ render_cga_1_scanline :: proc(v: ^Vga, pixels: []u32, width, y, x0, x1: int) {
 	start := int(display_start(v)) * 2
 	row := (y & 1) * 0x2000 + (y >> 1) * pitch
 	for x in x0 ..< x1 {
-		value := legacy_linear_byte(v, start + row + x / 8)
+		value := legacy_linear_byte(v, (start + row + x / 8) & 0x3fff)
 		index := value & (u8(0x80) >> uint(x & 7)) != 0 ? u8(1) : u8(0)
 		pixels[y * width + x] = v.cga.active ? cga_color(v, index) : attribute_color(v, index)
 	}

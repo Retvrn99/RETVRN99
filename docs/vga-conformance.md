@@ -103,9 +103,9 @@ instead. Neither matched the reference, and both are corrected.
 | A0000h/B0000h/B8000h aperture selection and decode disable | IBM 2-24 to 2-38 and 2-86 | Conformant | `src/vga/memory.odin` | Aperture-map and PCI decode tests |
 | Plane latches and read modes 0/1 | IBM 2-35 to 2-40 | Conformant | `src/vga/memory.odin` | Latch/read-mode tests |
 | Write modes 0-3 | IBM 2-35 to 2-40 and 2-85 | Conformant | `src/vga/memory.odin` | Write-mode matrix |
-| Chain-4 and odd/even addressing combinations | IBM 2-24 to 2-34 and 2-54 | Partial | Main combinations exist; exhaustive boundary/wrap matrix is incomplete | Expanded transaction tests required |
+| Chain-4 and odd/even addressing combinations | IBM 2-24 to 2-34 and 2-54 | Conformant | `src/vga/memory.odin` routes both directions | `vga_test_chain4_and_odd_even_route_reads_and_writes` drives the Sequencer and Graphics chain bits through their ports and reads the planes back for chain-4, for odd/even paired with the read map, and for the unchained linear case. `vga_test_aperture_windows_bound_the_legacy_decode` walks all four Graphics 06h windows, requires the first and last byte of each to decode and the bytes either side not to, and requires Miscellaneous Output bit 1 to gate the lot |
 | Multi-byte aperture transactions preserve byte-cycle VGA semantics | IBM memory data flow | Conformant | `src/vga/memory.odin`, `src/machine/machine.odin` | `vga_test_aperture_slice_access_is_one_visible_transaction`, `test_machine_vga_legacy_aperture_batches_mmio_transaction` |
-| CGA 16 KiB page/address wrapping | IBM CGA compatibility modes | Partial | Dedicated CGA persona exists; full wrap matrix is unproven | Public-port CGA tests required |
+| CGA 16 KiB page/address wrapping | IBM CGA compatibility modes | Conformant | `src/vga/scanout.odin` bounds the persona's display counter to one 16 KiB page in both the graphics and the text fetch | `vga_test_cga_graphics_wraps_inside_its_page` and `vga_test_cga_text_wraps_inside_its_page` enter the persona through 3D8h, write both sides of the page boundary through the aperture, and move the start address through the 6845 registers until the counter wraps. The text case also pins the glyph to the top of its cell: register 8 of a 6845 selects interlace, and reading it as a VGA preset row scan used to push every CGA text row two scan lines down |
 | Text modes 40/80 columns and 25/43/50 rows | IBM BIOS modes and font services | Conformant | `src/vga/scanout.odin`, `src/host/render.odin` | `vga_test_text_snapshot_variable_geometry`, `host_test_render_snapshot_uses_snapshot_geometry` |
 | Text underline, monochrome attributes, blink, line graphics, and cursor shape | IBM 2-15 to 2-17 and CRTC/Attribute sections | Conformant | `src/vga/scanout.odin` carries monochrome attributes, the underline they drive, blink, line graphics, and cursor shape | Monochrome attributes and the underline are proven by the tests on the Attribute 10h and CRT Controller 14h rows, blink by `vga_test_monochrome_blink_carries_the_underline`, and cursor shape by the 0Ah and 0Bh rows. `vga_test_line_graphics_duplicates_the_eighth_dot` covers line graphics: it programs the enable through 3C0h and requires the ninth dot to follow the eighth for a character inside C0h-DFh, to fall back to the background once the enable is cleared, and never to duplicate for a character outside the range |
 | Planar 16-color scanout | IBM modes 0Dh-12h | Conformant | `src/vga/scanout.odin` | Mode and planar scanout tests |
@@ -202,12 +202,10 @@ rows it closes, so this section is a view of the matrix rather than a second
 source of truth. An entry disappears when its rows read `Conformant` or when the
 row records a deliberate limit instead.
 
-1. **CGA and chain-4 wrap matrices.** The 16 KiB page wrap through the public
-   CGA ports and the exhaustive chain-4 and odd/even boundary cases.
-2. **Reserved and firmware-gated bits.** Miscellaneous Output reserved bits,
+1. **Reserved and firmware-gated bits.** Miscellaneous Output reserved bits,
    Feature Control, Video Subsystem Enable through the BIOS, and the DAC's
    firmware proof.
-3. **VBE surface.** 4F05h direct window entry, 4F06h and 4F07h remainders, the
+2. **VBE surface.** 4F05h direct window entry, 4F06h and 4F07h remainders, the
    protected-mode interface table, and LFB proofs for modes 150h and 151h.
 
 GDI and DirectDraw conformance is carried by the GSWGFX guest suite rather than

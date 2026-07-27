@@ -79,8 +79,12 @@ legacy_byte_pan :: proc(v: ^Vga, below_split: bool) -> int {
 	return int((v.crtc[0x08] >> 5) & 3)
 }
 
+// The CGA persona drives a 6845, whose register 8 selects interlace rather than
+// a preset row scan, and `cga_seed_crtc` programs it as one. Reading it as a VGA
+// preset row would push every CGA text row two scan lines down its cell.
 @(private = "package")
 legacy_preset_row :: proc(v: ^Vga, below_split: bool) -> int {
+	if v.cga.active {return 0}
 	return below_split ? 0 : int(v.crtc[0x08] & 0x1f)
 }
 
