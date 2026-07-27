@@ -2410,6 +2410,8 @@ console_main :: proc(
 		hardware_detection_at = start
 		hardware_detection_seen = true
 	}
+	composed: []u32
+	defer delete(composed)
 	stress_queue: host.Host_Input_Queue
 	stress_next := start
 	stress_phase: u64
@@ -2578,13 +2580,30 @@ console_main :: proc(
 		case .Snapshot:
 			if options.artifacts != "" {
 				frame := machine.machine_display_frame(m)
+				label := machine.machine_test_device_snapshot_index(m)
 				_ = acceptance.artifact_write_snapshot(
 					options.artifacts,
-					machine.machine_test_device_snapshot_index(m),
+					label,
 					frame.pixels,
 					frame.width,
 					frame.height,
 				)
+				console_note_capture(options.artifacts, "canvas", label, m, frame)
+			}
+		case .Composed_Snapshot:
+			if options.artifacts != "" {
+				frame := machine.machine_display_frame(m)
+				label := machine.machine_test_device_snapshot_index(m)
+				if console_compose_frame(&composed, frame) {
+					_ = acceptance.artifact_write_composed(
+						options.artifacts,
+						label,
+						composed,
+						host.WIN_W,
+						host.WIN_H,
+					)
+					console_note_capture(options.artifacts, "composed", label, m, frame)
+				}
 			}
 		case .Exit:
 			run_result.stop_reason = .Test_Exit
@@ -3023,6 +3042,53 @@ console_main :: proc(
 }
 
 @(private)
+// The composed buffer is the default window client area, so a capture shows the
+// same letterboxing and border proportion a freshly opened window would.
+console_compose_frame :: proc(buffer: ^[]u32, frame: ^vga.Display_Frame) -> bool {
+	if frame == nil {return false}
+	needed := host.host_composite_size(host.WIN_W, host.WIN_H)
+	if needed == 0 {return false}
+	if len(buffer^) != needed {
+		if buffer^ != nil {delete(buffer^)}
+		buffer^ = make([]u32, needed)
+	}
+	return host.host_composite_guest_view(
+		buffer^,
+		host.WIN_W,
+		host.WIN_H,
+		frame.pixels,
+		frame.width,
+		frame.height,
+		host.host_border_from_contract(frame.border),
+		frame.overscan,
+	)
+}
+
+console_note_capture :: proc(
+	directory: string,
+	kind: string,
+	label: u8,
+	m: ^machine.Machine,
+	frame: ^vga.Display_Frame,
+) {
+	if frame == nil {return}
+	_ = acceptance.artifact_append_capture(
+		directory,
+		{
+			kind = kind,
+			label = label,
+			time_ns = machine.machine_active_ns(m),
+			canvas_width = frame.width,
+			canvas_height = frame.height,
+			left = frame.border.left,
+			right = frame.border.right,
+			top = frame.border.top,
+			bottom = frame.border.bottom,
+			overscan = frame.overscan,
+		},
+	)
+}
+
 console_dump_frame :: proc(path: string, frame: ^vga.Display_Frame) {
 	if frame == nil {return}
 	diagnostic := acceptance.artifact_write_frame(path, frame.pixels, frame.width, frame.height)

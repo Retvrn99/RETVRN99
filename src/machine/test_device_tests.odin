@@ -100,7 +100,17 @@ machine_test_device_snapshot_label_round_trips :: proc(t: ^testing.T) {
 	test_device_write(&device, TEST_DEVICE_DATA_PORT, 99)
 	testing.expect_value(t, test_device_snapshot_index(&device), u8(12))
 
-	// The command still arrives through the command port unchanged.
+	// The command still arrives through the command port unchanged, and so does
+	// the composed variant, which sits on the upper bound of the accepted range.
 	test_device_write(&device, TEST_DEVICE_COMMAND_PORT, u8(Test_Device_Command.Snapshot))
 	testing.expect_value(t, test_device_take_command(&device), Test_Device_Command.Snapshot)
+	test_device_write(&device, TEST_DEVICE_COMMAND_PORT, 8)
+	testing.expect_value(
+		t,
+		test_device_take_command(&device),
+		Test_Device_Command.Composed_Snapshot,
+	)
+	// One past it is still refused, so widening the range did not open it up.
+	test_device_write(&device, TEST_DEVICE_COMMAND_PORT, 9)
+	testing.expect_value(t, test_device_take_command(&device), Test_Device_Command.None)
 }

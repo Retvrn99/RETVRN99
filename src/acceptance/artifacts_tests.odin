@@ -3,6 +3,7 @@ package acceptance
 
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
 import "core:testing"
 
 @(test)
@@ -180,4 +181,49 @@ acceptance_artifacts_test_snapshot_clears_a_stale_label :: proc(t: ^testing.T) {
 	testing.expect(t, os.exists(path))
 	testing.expect_value(t, artifact_write_snapshot(dir, 3, nil, 0, 0), Artifact_Diagnostic.None)
 	testing.expect(t, !os.exists(path))
+}
+
+// The manifest is what makes a run readable without opening an image, and what
+// places each capture on the master timeline beside the hardware trace.
+@(test)
+acceptance_artifacts_test_capture_manifest_appends_rows :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	base, _ := os.temp_directory(context.temp_allocator)
+	dir, _ := os.make_directory_temp(base, "retvrn99_manifest_*", context.temp_allocator)
+	defer acceptance_test_remove_tree(dir)
+	testing.expect_value(
+		t,
+		artifact_append_capture(
+			dir,
+			{
+				kind = "canvas",
+				label = 4,
+				time_ns = 1234,
+				canvas_width = 640,
+				canvas_height = 480,
+				left = 16,
+				top = 9,
+				bottom = 8,
+				overscan = 0xFF102030,
+			},
+		),
+		Artifact_Diagnostic.None,
+	)
+	testing.expect_value(
+		t,
+		artifact_append_capture(dir, {kind = "composed", label = 5, time_ns = 5678}),
+		Artifact_Diagnostic.None,
+	)
+
+	path, _ := filepath.join({dir, ARTIFACT_CAPTURE_MANIFEST})
+	body, _ := os.read_entire_file(path, context.temp_allocator)
+	lines := strings.split_lines(string(body), context.temp_allocator)
+	// Header, two rows, and the trailing empty piece after the final newline.
+	testing.expect_value(t, len(lines), 4)
+	testing.expect(t, strings.has_prefix(lines[0], "kind\tlabel\ttime_ns"))
+	testing.expect(t, strings.has_prefix(lines[1], "canvas\t4\t1234\t640\t480\t16\t0\t9\t8\t"))
+	testing.expect(t, strings.has_suffix(lines[1], "0xFF102030"))
+	testing.expect(t, strings.has_prefix(lines[2], "composed\t5\t5678\t"))
+	// The header is written once, not per row.
+	testing.expect_value(t, strings.count(string(body), "kind\tlabel"), 1)
 }

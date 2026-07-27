@@ -636,6 +636,12 @@ machine_test_device_frame_crc :: proc(m: ^Machine) -> u32 {
 	return crc
 }
 
+// The master timeline in nanoseconds, which is what a capture is stamped with
+// so it lands beside the hardware trace rather than beside host wall clock.
+machine_active_ns :: proc(m: ^Machine) -> u64 {
+	return m == nil ? 0 : m.active_ns
+}
+
 machine_test_device_snapshot_index :: proc(m: ^Machine) -> u8 {
 	if m == nil || !m.test_device_enabled {return 0}
 	return test_device_snapshot_index(&m.test_device)

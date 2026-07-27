@@ -97,6 +97,9 @@ Display_Frame :: struct {
 	// border is outside the active image, so presentation paints the surround
 	// with it rather than a fixed black.
 	overscan:                  u32,
+	// How far that border reaches on each side, in image pixels. The frame
+	// never contains border pixels; a consumer paints them around it.
+	border:                    contract.Border,
 }
 
 Legacy_Irq_Proc :: proc(ctx: rawptr, asserted: bool)

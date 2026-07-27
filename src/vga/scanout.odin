@@ -93,6 +93,7 @@ vga_display_frame_replay :: proc(v: ^Vga, journal: ^Raster_Journal) -> ^Display_
 	v.frame.dirty = contract.rect_set_full({u32(width), u32(height)})
 	v.frame.updated_pixels = u64(needed)
 	v.frame.overscan = overscan_color(v)
+	v.frame.border = vga_frame_border(v)
 	if !output_enabled {return &v.frame}
 	if replay {
 		raster_journal_render(v, journal, v.frame_pixels, kind, width, height)
@@ -240,6 +241,7 @@ scanout_finalize :: proc(v: ^Vga) {
 	v.frame.pixels = v.frame_pixels
 	v.frame.text = v.raster_kind == .Text ? vga_text_snapshot(v) : Text_Snapshot{}
 	v.frame.overscan = overscan_color(v)
+	v.frame.border = vga_frame_border(v)
 	v.frame_valid = true
 	v.raster_valid = false
 }
@@ -640,6 +642,13 @@ overscan_color :: proc(v: ^Vga) -> u32 {
 	}
 	if vga_vbe_enabled(v) {return 0xFF00_0000}
 	return attribute_color(v, v.attr[0x11])
+}
+
+// The published border in the shape a frame carries it.
+@(private = "file")
+vga_frame_border :: proc(v: ^Vga) -> contract.Border {
+	left, right, top, bottom := border_extents(v)
+	return {u32(left), u32(right), u32(top), u32(bottom)}
 }
 
 // The border the display shows around the active image, in image pixels per side

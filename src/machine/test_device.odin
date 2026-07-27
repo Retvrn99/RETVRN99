@@ -39,6 +39,9 @@ Test_Device_Command :: enum u8 {
 	Append_Report = 5,
 	Commit_Report = 6,
 	Abort_Report  = 7,
+	// The window composition rather than the canvas: same frame, placed and
+	// scaled the way a window would place it, with the border around it.
+	Composed_Snapshot = 8,
 }
 
 Test_Device_Rect :: struct {
@@ -81,7 +84,7 @@ test_device_write :: proc(device: ^Test_Device, port: u16, value: u8) -> bool {
 		device.index = u8((u16(device.index) + 1) % TEST_DEVICE_REGISTER_COUNT)
 		return true
 	case TEST_DEVICE_COMMAND_PORT:
-		if command := Test_Device_Command(value); command >= .Crc && command <= .Abort_Report {
+		if command := Test_Device_Command(value); command >= .Crc && command <= .Composed_Snapshot {
 			device.pending = command
 		} else {
 			device.pending = .None

@@ -123,7 +123,6 @@ guest_view_rect_insets :: proc(
 	return {left + (area_w - w) * 0.5, top + (area_h - h) * 0.5, w, h}
 }
 
-@(private = "package")
 host_border_from_contract :: proc(border: contract.Border) -> Host_Border {
 	return {int(border.left), int(border.right), int(border.top), int(border.bottom)}
 }
@@ -134,17 +133,35 @@ host_border_from_contract :: proc(border: contract.Border) -> Host_Border {
 // the active image inside it is the part that is no longer exactly 4:3, which is
 // what the hardware does.
 host_guest_canvas_rect :: proc(h: ^Host, output_width, output_height: int) -> sdl3.FRect {
-	rect := guest_view_rect_insets(
+	return guest_canvas_rect(
 		h.aspect_width,
 		h.aspect_height,
+		h.border,
 		output_width,
 		output_height,
 		host_client_insets(h),
 	)
-	border := h.border
+}
+
+// Taken apart from the Host so the offscreen compositor can reach the same
+// arithmetic. Host is far too large to place on a stack just to ask it where the
+// canvas goes.
+guest_canvas_rect :: proc(
+	aspect_width, aspect_height: int,
+	border: Host_Border,
+	output_width, output_height: int,
+	insets: Host_Client_Insets,
+) -> sdl3.FRect {
+	rect := guest_view_rect_insets(
+		aspect_width,
+		aspect_height,
+		output_width,
+		output_height,
+		insets,
+	)
 	if border == {} {return rect}
-	total_width := max(h.aspect_width + border.left + border.right, 1)
-	total_height := max(h.aspect_height + border.top + border.bottom, 1)
+	total_width := max(aspect_width + border.left + border.right, 1)
+	total_height := max(aspect_height + border.top + border.bottom, 1)
 	left := rect.w * f32(max(border.left, 0)) / f32(total_width)
 	right := rect.w * f32(max(border.right, 0)) / f32(total_width)
 	top := rect.h * f32(max(border.top, 0)) / f32(total_height)
