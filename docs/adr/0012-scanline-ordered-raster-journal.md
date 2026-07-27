@@ -94,3 +94,24 @@ should not be deleted.
 ADR 0001 continues to govern the separation of guest persona from execution
 policy; this decision concerns how a frame is described, not what the guest is
 told about the hardware.
+
+## Amendments
+
+### The display-start pair leaves the whitelist
+
+The whitelist above named the display-start pair as something software changes
+mid-frame. Building the panning slice showed that it is not. CRT Controller 0Ch
+and 0Dh load into the address counter at vertical retrace, so a write partway
+down the frame cannot move the frame it lands in, and RETVRN99 already models
+that with a pending value and a retrace latch. Journalling the pair would have
+made expansion less faithful, not more.
+
+Mid-frame vertical movement on this hardware comes from the line-compare split,
+which is a register the frame is already expanded against, not from a mid-frame
+start-address write. Horizontal movement comes from Attribute Controller 13h and
+CRT Controller 08h, which do take effect where they are written and are
+journalled.
+
+`raster_journal_test_display_start_write_waits_for_vertical_retrace` pins both
+halves through the public CRT Controller ports and the deferred descriptor path:
+the current frame does not move and the next one does.

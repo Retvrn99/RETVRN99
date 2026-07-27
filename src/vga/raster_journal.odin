@@ -14,9 +14,14 @@ RASTER_JOURNAL_MAX_ENTRIES :: 2048
 
 Raster_Delta_Kind :: enum u8 {
 	Dac_Entry,
+	// Attribute Controller 13h horizontal PEL panning.
+	Pel_Pan,
+	// CRT Controller 08h. Preset row scan shares the byte and travels with it.
+	Byte_Pan,
 }
 
-// index is a DAC byte index, so entry n component c is n * 3 + c. previous is
+// index is a DAC byte index, so entry n component c is n * 3 + c. It is unused
+// by the single-register kinds, which carry the whole byte in value. previous is
 // the value the write replaced; it lets the host wind the state back to its
 // frame-start value without the journal carrying a register snapshot.
 Raster_Delta :: struct {
@@ -63,11 +68,26 @@ raster_journal_line :: proc(v: ^Vga) -> (int, bool) {
 	return line, true
 }
 
+// Only a delta the current mode can show is worth carrying. Panning reaches the
+// legacy address generator alone, which VBE and the CGA persona both bypass.
+@(private = "file")
+raster_delta_observable :: proc(v: ^Vga, kind: Raster_Delta_Kind) -> bool {
+	switch kind {
+	case .Dac_Entry:
+		return vga_damage_uses_palette(v)
+	case .Pel_Pan, .Byte_Pan:
+		if vga_vbe_enabled(v) || v.cga.active {return false}
+		mode, _, _ := display_geometry(v)
+		return mode == .Text || mode == .Planar_4 || mode == .Indexed_8
+	}
+	return false
+}
+
 @(private = "package")
 raster_journal_record :: proc(v: ^Vga, kind: Raster_Delta_Kind, index: u16, previous, value: u8) {
 	if v == nil || previous == value {return}
 	line, inside := raster_journal_line(v)
-	if !inside || !vga_damage_uses_palette(v) {return}
+	if !inside || !raster_delta_observable(v, kind) {return}
 	journal := &v.raster_journal
 	frame := raster_journal_frame(v)
 	if journal.frame != frame {
@@ -117,6 +137,10 @@ raster_delta_apply :: proc(v: ^Vga, delta: Raster_Delta, value: u8) {
 	switch delta.kind {
 	case .Dac_Entry:
 		if int(delta.index) < len(v.dac) {v.dac[delta.index] = value}
+	case .Pel_Pan:
+		v.attr[0x13] = value
+	case .Byte_Pan:
+		v.crtc[0x08] = value
 	}
 }
 

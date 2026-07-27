@@ -139,8 +139,10 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 				return false
 			}
 			masked := value & ATTR_MASKS[v.attr_ix]
-			changed := v.attr[v.attr_ix] != masked
+			previous := v.attr[v.attr_ix]
+			changed := previous != masked
 			v.attr[v.attr_ix] = masked
+			if v.attr_ix == 0x13 {raster_journal_record(v, .Pel_Pan, 0, previous, masked)}
 			vga_recalculate_timing(v)
 			v.attr_flip = false
 			palette_register := v.attr_ix < 0x10 || v.attr_ix == 0x12 || v.attr_ix == 0x14
@@ -308,8 +310,10 @@ crtc_write :: proc(v: ^Vga, index, value: u8) -> bool {
 		}
 		return false
 	}
-	changed := v.crtc[index] != value
+	previous := v.crtc[index]
+	changed := previous != value
 	v.crtc[index] = value
+	if index == 0x08 {raster_journal_record(v, .Byte_Pan, 0, previous, value)}
 	if index == 0x0C || index == 0x0D {
 		v.pending_start = u16(v.crtc[0x0C]) << 8 | u16(v.crtc[0x0D])
 		v.start_pending = true

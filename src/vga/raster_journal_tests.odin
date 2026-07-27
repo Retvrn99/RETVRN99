@@ -34,6 +34,37 @@ raster_journal_test_surface :: proc(t: ^testing.T, v: ^Vga) -> bool {
 	return true
 }
 
+// Planar 640x480 with the line-compare split parked past the last row, so the
+// only split in play is the one the journal introduces.
+@(private = "file")
+raster_journal_test_planar :: proc(v: ^Vga) {
+	test_bochs_legacy_mode(v, 0x12)
+	vga_set_deferred_scanout(v, true)
+}
+
+// Pixel (x, y) reads plane bit 0x80 >> ((x + pel) & 7) at byte
+// y * 80 + byte_pan + (x + pel) / 8, which is what the stripes below rely on.
+@(private = "file")
+raster_journal_test_planar_row :: proc(v: ^Vga, row, byte_offset: int, bits: u8) {
+	set_plane_byte(v, 0, row * 80 + byte_offset, bits)
+}
+
+// Software that pans mid-frame writes the index with bit 5 set. Clearing it
+// turns off the Palette Address Source and blanks the display, which would
+// swallow the very rows the split is meant to move.
+@(private = "file")
+raster_journal_test_attribute :: proc(v: ^Vga, now_ns: u64, index, value: u8) {
+	_ = vga_in(v, 0x3DA)
+	raster_journal_test_out(v, now_ns, 0x3C0, index | 0x20)
+	raster_journal_test_out(v, now_ns, 0x3C0, value)
+}
+
+@(private = "file")
+raster_journal_test_crtc :: proc(v: ^Vga, now_ns: u64, index, value: u8) {
+	raster_journal_test_out(v, now_ns, 0x3D4, index)
+	raster_journal_test_out(v, now_ns, 0x3D5, value)
+}
+
 @(private = "file")
 raster_journal_test_line_ns :: proc(v: ^Vga, line: u64) -> u64 {
 	return line * v.timing.line_period_ns + v.timing.line_period_ns / 2
@@ -234,4 +265,127 @@ raster_journal_test_stale_journal_is_dropped_after_one_frame :: proc(t: ^testing
 	vga_note_content_change(&v)
 	testing.expect(t, scanout_descriptor_capture(&descriptor, &v))
 	testing.expect_value(t, descriptor.journal.count, u32(0))
+}
+
+// IBM 2-95. Attribute Controller 13h shifts the image horizontally and takes
+// effect where it is written, so rows above the split keep the old pan.
+@(test)
+raster_journal_test_pel_pan_split_shifts_only_the_rows_below_it :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	raster_journal_test_planar(&v)
+	// A four-pixel stripe at x=4..7 on both sample rows.
+	raster_journal_test_planar_row(&v, 4, 0, 0x0F)
+	raster_journal_test_planar_row(&v, 24, 0, 0x0F)
+	vga_note_content_change(&v)
+
+	raster_journal_test_attribute(&v, raster_journal_test_line_ns(&v, 12), 0x13, 0x04)
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect_value(t, descriptor.journal.count, u32(1)) {return}
+	testing.expect_value(
+		t,
+		descriptor.journal.entries[0],
+		Raster_Delta{line = 12, index = 0, kind = .Pel_Pan, value = 0x04, previous = 0x00},
+	)
+
+	frame := scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	above_left := frame.pixels[4 * 640 + 0]
+	above_stripe := frame.pixels[4 * 640 + 4]
+	below_left := frame.pixels[24 * 640 + 0]
+	below_stripe := frame.pixels[24 * 640 + 4]
+	// The stripe is where it was written above the split.
+	testing.expect(t, above_left != above_stripe)
+	// Panning by four pulls it four pixels left below the split.
+	testing.expect_value(t, below_left, above_stripe)
+	testing.expect_value(t, below_stripe, above_left)
+}
+
+// IBM 2-63. CRT Controller 08h byte panning moves the row start, and the same
+// split rule applies.
+@(test)
+raster_journal_test_byte_pan_split_moves_only_the_rows_below_it :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	raster_journal_test_planar(&v)
+	// Above the split the stripe sits at x=4..7; below it, one byte further on,
+	// so a byte pan of one lands it at x=0..3.
+	raster_journal_test_planar_row(&v, 4, 0, 0x0F)
+	raster_journal_test_planar_row(&v, 24, 1, 0xF0)
+	vga_note_content_change(&v)
+
+	raster_journal_test_crtc(&v, raster_journal_test_line_ns(&v, 12), 0x08, 0x20)
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect_value(t, descriptor.journal.count, u32(1)) {return}
+	testing.expect_value(
+		t,
+		descriptor.journal.entries[0],
+		Raster_Delta{line = 12, index = 0, kind = .Byte_Pan, value = 0x20, previous = 0x00},
+	)
+
+	frame := scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	above_left := frame.pixels[4 * 640 + 0]
+	above_stripe := frame.pixels[4 * 640 + 4]
+	testing.expect(t, above_left != above_stripe)
+	testing.expect_value(t, frame.pixels[24 * 640 + 0], above_stripe)
+	testing.expect_value(t, frame.pixels[24 * 640 + 4], above_left)
+}
+
+// IBM 2-67 and 2-99. The Start Address pair loads into the address counter at
+// vertical retrace, so a mid-frame write is not a mid-frame effect and is
+// deliberately not journalled. This pins both halves of that.
+@(test)
+raster_journal_test_display_start_write_waits_for_vertical_retrace :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	raster_journal_test_planar(&v)
+	// Pixel (0,0) reads plane 0 at the start address, so two starts give two
+	// different colour indices.
+	set_plane_byte(&v, 0, 0, 0x80)
+	set_plane_byte(&v, 1, 100, 0x80)
+	vga_note_content_change(&v)
+	// Leave time zero, where a pending start is still taken as the live one.
+	vga_advance(&v, raster_journal_test_line_ns(&v, 4))
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	frame := scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	before := frame.pixels[0]
+
+	split := v.timing.frame_period_ns + raster_journal_test_line_ns(&v, 12)
+	raster_journal_test_crtc(&v, split, 0x0C, 0x00)
+	raster_journal_test_crtc(&v, split, 0x0D, 100)
+	testing.expect(t, v.start_pending)
+	testing.expect_value(t, v.latched_start, u16(0))
+	vga_note_content_change(&v)
+
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	testing.expect_value(t, descriptor.journal.count, u32(0))
+	frame = scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect_value(t, frame.pixels[0], before)
+
+	// Past vertical retrace the new start is live and the image moves.
+	vga_advance(&v, v.timing.frame_period_ns + raster_journal_test_line_ns(&v, 495))
+	testing.expect_value(t, v.latched_start, u16(100))
+	testing.expect(t, !v.start_pending)
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	frame = scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect(t, frame.pixels[0] != before)
 }
