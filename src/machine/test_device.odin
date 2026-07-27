@@ -17,14 +17,16 @@ TEST_DEVICE_REG_WIDTH      :: 4
 TEST_DEVICE_REG_HEIGHT     :: 6
 TEST_DEVICE_REG_CRC        :: 8
 TEST_DEVICE_REG_EXIT       :: 12
-// The label a guest snapshot is written under. Report payloads share registers
-// 0 to 29, so a guest sets this immediately before issuing the command, exactly
-// as it must for the CRC rectangle.
-TEST_DEVICE_REG_SNAPSHOT   :: 13
 TEST_DEVICE_REG_SELECTOR   :: 16
 TEST_DEVICE_REG_ITERATIONS :: 17
 TEST_DEVICE_REG_AUX        :: 21
 TEST_DEVICE_REG_STATUS     :: 25
+// The label a guest snapshot is written under. It sits clear of 12 to 15, which
+// a guest already fills with its exit code, and of every other register with a
+// standing meaning. Report payloads still share 0 to 29, so a guest sets this
+// immediately before issuing the command, exactly as it must for the CRC
+// rectangle.
+TEST_DEVICE_REG_SNAPSHOT   :: 29
 TEST_DEVICE_REG_REPORT_LENGTH :: 30
 TEST_DEVICE_REG_REPORT_STATUS :: 31
 

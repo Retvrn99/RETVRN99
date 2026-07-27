@@ -2578,33 +2578,44 @@ console_main :: proc(
 		case .Crc:
 			_ = machine.machine_test_device_frame_crc(m)
 		case .Snapshot:
+			taken := false
 			if options.artifacts != "" {
 				frame := machine.machine_display_frame(m)
 				label := machine.machine_test_device_snapshot_index(m)
-				_ = acceptance.artifact_write_snapshot(
-					options.artifacts,
-					label,
-					frame.pixels,
-					frame.width,
-					frame.height,
-				)
+				taken =
+					acceptance.artifact_write_snapshot(
+						options.artifacts,
+						label,
+						frame.pixels,
+						frame.width,
+						frame.height,
+					) ==
+					.None
 				console_note_capture(options.artifacts, "canvas", label, m, frame)
 			}
+			// A guest that waits for this is still standing where it asked, so the
+			// frame it captured is the one it meant. One that does not wait races
+			// its own next mode change.
+			machine.machine_test_device_set_report_status(m, taken ? 1 : 2)
 		case .Composed_Snapshot:
+			taken := false
 			if options.artifacts != "" {
 				frame := machine.machine_display_frame(m)
 				label := machine.machine_test_device_snapshot_index(m)
 				if console_compose_frame(&composed, frame) {
-					_ = acceptance.artifact_write_composed(
-						options.artifacts,
-						label,
-						composed,
-						host.WIN_W,
-						host.WIN_H,
-					)
+					taken =
+						acceptance.artifact_write_composed(
+							options.artifacts,
+							label,
+							composed,
+							host.WIN_W,
+							host.WIN_H,
+						) ==
+						.None
 					console_note_capture(options.artifacts, "composed", label, m, frame)
 				}
 			}
+			machine.machine_test_device_set_report_status(m, taken ? 1 : 2)
 		case .Exit:
 			run_result.stop_reason = .Test_Exit
 			run_result.test_exit_code = machine.machine_test_device_exit_code(m)
