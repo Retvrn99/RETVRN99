@@ -344,7 +344,7 @@ vga_damage_pixel_sources :: proc(
 		return 4
 	case .Indexed_8:
 		geometry := legacy_graphics_row(v, kind, y)
-		source_x := x + (legacy_pel_pan(v, geometry.below_split) & 3)
+		source_x := x + legacy_indexed_pel_pan(v, geometry.below_split)
 		plane := source_x & 3
 		offset := int(geometry.row_base + u32(source_x / 4)) & (LEGACY_PLANE_SIZE - 1)
 		if v.seq[4] & 0x08 == 0 {

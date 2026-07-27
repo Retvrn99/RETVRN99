@@ -198,7 +198,12 @@ vga_test_mode_x_generalized_scanout_crc :: proc(t: ^testing.T) {
 	vga_test_seed_color_pattern(&v)
 	frame := vga_display_frame(&v)
 	testing.expect_value(t, frame.kind, Display_Kind.Indexed_8)
-	testing.expect_value(t, vga_test_pixels_crc32(frame.pixels), u32(0xecc7_ed03))
+	// This pin moved once, deliberately. It was recorded while 256-colour PEL
+	// panning read the register as a pixel count, which made half the values the
+	// hardware defines behave as no shift at all. The register counts dot clocks
+	// and a 256-colour pixel is two of them, so the 5 above now moves two pixels
+	// rather than one. See vga_test_indexed_pel_pan_shifts_by_half_the_programmed_value.
+	testing.expect_value(t, vga_test_pixels_crc32(frame.pixels), u32(0xcc2a_0582))
 }
 
 @(test)

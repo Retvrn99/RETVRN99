@@ -57,6 +57,16 @@ legacy_text_pel_pan :: proc(v: ^Vga, below_split: bool, character_width: int) ->
 	return min(pan, max(character_width - 1, 0))
 }
 
+// IBM 2-95. A 256-colour pixel occupies two dot clocks and panning is specified
+// in dot clocks, so only even register values are meaningful and the shift is
+// half the programmed value: 0h, 2h, 4h, and 6h move 0, 1, 2, and 3 pixels. The
+// same two-dots-per-pixel ratio is why display_geometry reports half the dot
+// count as the pixel width in these modes.
+@(private = "package")
+legacy_indexed_pel_pan :: proc(v: ^Vga, below_split: bool) -> int {
+	return (legacy_pel_pan(v, below_split) >> 1) & 3
+}
+
 @(private = "package")
 legacy_byte_pan :: proc(v: ^Vga, below_split: bool) -> int {
 	if legacy_pan_resets_below_split(v, below_split) {return 0}
