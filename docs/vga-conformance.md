@@ -176,15 +176,15 @@ length before the display start, as guests do.
 | --- | --- | --- | --- | --- |
 | 4F00h controller information and mode-list termination | VBE 2.0 4.3 | Conformant | Pinned VGABIOS | `test_machine_vbe_controller_mode_information_and_round_trip` checks the VESA signature, version, memory, capabilities, and a terminated mode list |
 | 4F01h mode information | VBE 2.0 4.4 | Conformant | Pinned VGABIOS and DISPI capability reads | `test_machine_vbe_controller_mode_information_and_round_trip` asserts attributes, geometry, depth, memory model, pitch, and physical base across packed and direct colour modes |
-| 4F02h set mode, banked/LFB and clear/preserve | VBE 2.0 4.5 | Partial | `src/vga/vbe.odin` and pinned VGABIOS | Banked 101h and 151h proofs exist, and `test_machine_vbe_controller_mode_information_and_round_trip` proves a firmware linear set that the device agrees with; the clear/preserve D15 matrix remains |
+| 4F02h set mode, banked/LFB and clear/preserve | VBE 2.0 4.5 | Conformant | `src/vga/vbe.odin` and pinned VGABIOS | Banked 101h and 151h proofs exist, and `test_machine_vbe_controller_mode_information_and_round_trip` proves a firmware linear set that the device agrees with. `test_machine_vbe_mode_set_clear_and_preserve` closes the D15 matrix: the same mode set twice without D15 clears display memory between the two, and with D15 it keeps what the guest wrote |
 | 4F03h return exact current mode and flags | VBE 2.0 4.6 | Partial | Pinned VGABIOS | `test_machine_vbe_controller_mode_information_and_round_trip` proves the mode number round-trips exactly; the pinned firmware masks the stored mode with 0x1FF, so the D14 and D15 flags are never returned and that half of the contract is unreachable without a firmware change |
 | 4F04h save/restore state | VBE 2.0 4.7 | Conformant | Pinned VGABIOS | `test_machine_vbe_state_and_palette_round_trip` sizes the buffer, saves, overwrites palette entries, restores, and requires the saved entries back |
-| 4F05h display window control and direct entry | VBE 2.0 4.8 | Partial | DISPI bank register | `test_machine_vbe_window_scanline_and_display_start` proves the BH=00h/01h window set and get round-trip; the `WindowFuncPtr` direct far-call entry remains untested |
-| 4F06h logical scanline length and achievable-width adjustment | VBE 2.0 4.9 | Partial | `src/vga/vbe.odin` adjusts virtual width and clamps offsets | `test_machine_vbe_window_scanline_and_display_start` proves get, set in pixels, persistence, byte pitch tracking, and the recomputed addressable scan line count; the rounding path is still unexercised because every byte pitch is achievable at 8 bits per pixel, so it needs a mode whose pitch is forced to align |
+| 4F05h display window control and direct entry | VBE 2.0 4.8 | Conformant | DISPI bank register | `test_machine_vbe_window_scanline_and_display_start` proves the BH=00h/01h window set and get round-trip, and `test_machine_vbe_window_entry_point_and_protected_mode_table` far-calls the `WindowFuncPtr` the ModeInfoBlock hands out and requires 4F05h to report the window that call moved |
+| 4F06h logical scanline length and achievable-width adjustment | VBE 2.0 4.9 | Conformant | `src/vga/vbe.odin` adjusts virtual width and clamps offsets | `test_machine_vbe_window_scanline_and_display_start` proves get, set in pixels, persistence, byte pitch tracking, and the recomputed addressable scan line count; `test_machine_vbe_scanline_length_rounds_up_to_an_achievable_width` closes the rounding path in mode 102h, where eight pixels share a byte: 1281 pixels is not achievable, so the width is raised to 1288 and the firmware answers 161 bytes. The device used to store the odd width as asked, which left the firmware's flooring pitch arithmetic a byte short of the layout `dispi_pitch` produces |
 | 4F07h display start, including retrace request | VBE 2.0 4.10 | Conformant | DISPI offsets | `test_machine_vbe_window_scanline_and_display_start` proves the immediate BL=00h and the BL=80h retrace request both round-trip through BL=01h, and that an out-of-range scan line is rejected without mutating the current start |
 | 4F08h DAC palette format | VBE 2.0 4.11 | Conformant | DISPI 8-bit DAC flag | `test_machine_vbe_state_and_palette_round_trip` proves the six to eight to six bit round-trip through BL=00h and BL=01h |
 | 4F09h palette data | VBE 2.0 4.12 | Conformant | VGA DAC ports through firmware | `test_machine_vbe_state_and_palette_round_trip` proves the BL=00h set, the BL=01h read back, and the BL=80h retrace request |
-| 4F0Ah protected-mode interface | VBE 2.0 4.13 | Partial | Pinned VGABIOS | Table and callable window/display/palette entry tests required |
+| 4F0Ah protected-mode interface | VBE 2.0 4.13 | Conformant | Pinned VGABIOS | `test_machine_vbe_window_entry_point_and_protected_mode_table` requires the call to return a table with a usable length and all three of the window, display-start and palette entry offsets landing inside it. The entries are position-independent real-mode code the firmware also reaches through 4F05h, which the same test calls directly |
 | 4F15h DDC capabilities and EDID block 0 | VBE supplemental DDC and pinned VGABIOS | Conformant | `src/vga/ddc.odin`, pinned VGABIOS | `vga_test_ddc2_reads_checksum_valid_edid`, `test_machine_boots_bochs_vgabios_and_sets_vbe_mode` |
 | DISPI ID0 feature set | Bochs B0C0 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_id_gates_features_and_bpp_zero` |
 | DISPI ID1 virtual geometry and offsets | Bochs B0C1 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_id_gates_features_and_bpp_zero`, `vga_test_dispi_virtual_pitch_and_offsets` |
@@ -192,8 +192,8 @@ length before the display start, as guests do.
 | DISPI ID3 GETCAPS and 8-bit DAC | Bochs B0C3 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_width_and_capabilities`, `vga_test_dispi_id_gates_features_and_bpp_zero` |
 | DISPI ID0 to ID5 feature ladder and identifier range | Bochs B0C0 to B0C5 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_feature_ladder_follows_selected_id`, `vga_test_dispi_id_range_is_bounded` |
 | DISPI index 0Ah memory-size register | Bochs B0C5 | Conformant | `src/vga/vbe.odin` reports the persona aperture | `vga_test_dispi_memory_size_is_reported_at_every_id`, `vga_test_dispi_memory_size_register_rejects_writes`, and the pinned-firmware total in `test_machine_vbe_controller_mode_information_and_round_trip` |
-| Mode 150h 320x200x8 banked and LFB | Pinned Bochs mode table | Partial | Mode exists | Real firmware read/write/render test required |
-| Mode 151h 320x240x8 banked and LFB | Pinned Bochs mode table | Partial | Pinned VGABIOS and `src/vga/vbe.odin` | Real firmware banked read/write/render proof exists; LFB firmware proof remains |
+| Mode 150h 320x200x8 banked and LFB | Pinned Bochs mode table | Partial | Mode exists | `test_machine_vbe_mode_set_clear_and_preserve` sets the mode from the firmware, writes through the banked window and requires the device to render the four bytes it wrote. `test_machine_vbe_linear_framebuffer_modes` sets it with D14 and reads PhysBasePtr back. The LFB half stays open for the reason on the row below |
+| Mode 151h 320x240x8 banked and LFB | Pinned Bochs mode table | Partial | Pinned VGABIOS and `src/vga/vbe.odin` | Real firmware banked read/write/render proof exists, and `test_machine_vbe_linear_framebuffer_modes` requires the firmware to come up with the LFB flag set and to advertise `VBE_LFB_BASE` in PhysBasePtr. It also measures why the guest-side half cannot close yet: the system firmware relocates the framebuffer BAR, in that run to F8000000, and the device decodes the framebuffer at the BAR, so the E0000000 the VBE ModeInfoBlock still advertises falls through to the tolerated PCIe mmconfig probe zone. A protected-mode guest that uses the BAR is unaffected; a real-mode VBE program that trusts PhysBasePtr is not. Routing the alias would claim an address range currently reserved for that probe zone, so it is recorded rather than changed |
 
 ## Roadmap
 
@@ -202,8 +202,14 @@ rows it closes, so this section is a view of the matrix rather than a second
 source of truth. An entry disappears when its rows read `Conformant` or when the
 row records a deliberate limit instead.
 
-1. **VBE surface.** 4F05h direct window entry, 4F06h and 4F07h remainders, the
-   protected-mode interface table, and LFB proofs for modes 150h and 151h.
+1. **The linear framebuffer alias.** The VBE ModeInfoBlock advertises
+   PhysBasePtr at `VBE_LFB_BASE`, but the framebuffer decodes at the PCI BAR
+   the system firmware programs, and nothing aliases the two once the BAR
+   moves. Deciding that is a routing question rather than a VGA one, because
+   the advertised address currently belongs to the tolerated PCIe mmconfig
+   probe zone. Modes 150h and 151h stay `Partial` until it is settled.
+2. **4F03h mode flags.** The pinned firmware masks the stored mode with 1FFh,
+   so D14 and D15 never come back. Reachable only by changing the firmware.
 
 GDI and DirectDraw conformance is carried by the GSWGFX guest suite rather than
 by this matrix; see `AGENTS.md` for the gate and its expected counts.

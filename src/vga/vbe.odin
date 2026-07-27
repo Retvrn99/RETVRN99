@@ -207,6 +207,12 @@ dispi_adjust_virtual_width :: proc(regs: ^[12]u16, requested: u16) -> u16 {
 	if max_width <= 0 {return requested}
 	width := int(requested)
 	if width == 0 || width < x {width = x}
+	// VBE 2.0 4.9 answers with the achievable width rather than the requested
+	// one. Eight pixels share a byte at four bits per pixel, so a width that is
+	// not a multiple of eight has no byte pitch: rounding it up here is what
+	// keeps the firmware's own pitch arithmetic, which floors, agreeing with the
+	// layout `dispi_pitch` lays down, which rounds up.
+	if bpp == 4 {width = (width + 7) / 8 * 8}
 	width = min(width, max_width, int(max(u16)))
 	return u16(width)
 }
