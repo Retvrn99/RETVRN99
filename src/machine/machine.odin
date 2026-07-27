@@ -636,6 +636,11 @@ machine_test_device_frame_crc :: proc(m: ^Machine) -> u32 {
 	return crc
 }
 
+machine_test_device_snapshot_index :: proc(m: ^Machine) -> u8 {
+	if m == nil || !m.test_device_enabled {return 0}
+	return test_device_snapshot_index(&m.test_device)
+}
+
 machine_test_device_exit_code :: proc(m: ^Machine) -> u8 {
 	if m == nil || !m.test_device_enabled {return 0}
 	return test_device_exit_code(&m.test_device)

@@ -2578,9 +2578,9 @@ console_main :: proc(
 		case .Snapshot:
 			if options.artifacts != "" {
 				frame := machine.machine_display_frame(m)
-				_ = acceptance.artifact_write_bundle(
+				_ = acceptance.artifact_write_snapshot(
 					options.artifacts,
-					"guest-requested snapshot\n",
+					machine.machine_test_device_snapshot_index(m),
 					frame.pixels,
 					frame.width,
 					frame.height,

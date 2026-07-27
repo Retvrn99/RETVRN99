@@ -73,15 +73,46 @@ artifact_write_bundle :: proc(
 	frame_path, path_err := filepath.join({directory, "final-frame.ppm"})
 	if path_err != nil {return .Path_Failed}
 	defer delete(frame_path)
+	return artifact_write_frame(frame_path, frame_pixels, frame_width, frame_height)
+}
+
+// A guest snapshot is a frame and nothing else. Routing it through the bundle
+// would rewrite the diagnostics text and delete the hardware trace on every
+// capture, and land every capture on the same file.
+artifact_write_snapshot :: proc(
+	directory: string,
+	index: u8,
+	frame_pixels: []u32,
+	frame_width: int,
+	frame_height: int,
+) -> Artifact_Diagnostic {
+	if directory == "" {return .Invalid_Path}
+	if os.make_directory_all(directory) != nil {return .Create_Directory_Failed}
+	name := fmt.tprintf("snapshot-%d.ppm", index)
+	path, path_err := filepath.join({directory, name})
+	if path_err != nil {return .Path_Failed}
+	defer delete(path)
+	return artifact_write_frame(path, frame_pixels, frame_width, frame_height)
+}
+
+// Geometry that cannot describe an image removes any stale file at the path
+// rather than leaving a mismatched one behind, and is not itself a failure.
+@(private = "file")
+artifact_write_frame :: proc(
+	path: string,
+	frame_pixels: []u32,
+	frame_width: int,
+	frame_height: int,
+) -> Artifact_Diagnostic {
 	if frame_width <= 0 ||
 	   frame_height <= 0 ||
 	   frame_width > ARTIFACT_FRAME_MAX_PIXELS / frame_height {
-		if !artifact_remove_if_present(frame_path) {return .Write_Failed}
+		if !artifact_remove_if_present(path) {return .Write_Failed}
 		return .None
 	}
 	pixel_count := frame_width * frame_height
 	if pixel_count > ARTIFACT_FRAME_MAX_PIXELS || len(frame_pixels) < pixel_count {
-		if !artifact_remove_if_present(frame_path) {return .Write_Failed}
+		if !artifact_remove_if_present(path) {return .Write_Failed}
 		return .None
 	}
 	header := fmt.tprintf("P6\n%d %d\n255\n", frame_width, frame_height)
@@ -95,6 +126,6 @@ artifact_write_bundle :: proc(
 		payload[offset + 2] = u8(pixel)
 		offset += 3
 	}
-	if os.write_entire_file(frame_path, payload) != nil {return .Write_Failed}
+	if os.write_entire_file(path, payload) != nil {return .Write_Failed}
 	return .None
 }

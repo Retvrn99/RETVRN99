@@ -17,6 +17,10 @@ TEST_DEVICE_REG_WIDTH      :: 4
 TEST_DEVICE_REG_HEIGHT     :: 6
 TEST_DEVICE_REG_CRC        :: 8
 TEST_DEVICE_REG_EXIT       :: 12
+// The label a guest snapshot is written under. Report payloads share registers
+// 0 to 29, so a guest sets this immediately before issuing the command, exactly
+// as it must for the CRC rectangle.
+TEST_DEVICE_REG_SNAPSHOT   :: 13
 TEST_DEVICE_REG_SELECTOR   :: 16
 TEST_DEVICE_REG_ITERATIONS :: 17
 TEST_DEVICE_REG_AUX        :: 21
@@ -108,6 +112,10 @@ test_device_rect :: proc(device: ^Test_Device) -> Test_Device_Rect {
 
 test_device_set_crc :: proc(device: ^Test_Device, value: u32) {
 	for i in 0 ..< 4 {device.regs[TEST_DEVICE_REG_CRC + i] = u8(value >> (8 * u32(i)))}
+}
+
+test_device_snapshot_index :: proc(device: ^Test_Device) -> u8 {
+	return device.regs[TEST_DEVICE_REG_SNAPSHOT]
 }
 
 test_device_exit_code :: proc(device: ^Test_Device) -> u8 {

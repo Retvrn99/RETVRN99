@@ -84,3 +84,23 @@ test_machine_test_device_is_opt_in_and_byte_decomposed :: proc(t: ^testing.T) {
 	testing.expect_value(t, m.test_device.regs[10], u8(0))
 	testing.expect_value(t, m.bus.modeled_count, u64(1))
 }
+
+// The snapshot label rides in a register the guest sets before issuing the
+// command, reached through the same index and data ports as everything else.
+@(test)
+machine_test_device_snapshot_label_round_trips :: proc(t: ^testing.T) {
+	device: Test_Device
+	testing.expect_value(t, test_device_snapshot_index(&device), u8(0))
+	test_device_write(&device, TEST_DEVICE_INDEX_PORT, TEST_DEVICE_REG_SNAPSHOT)
+	test_device_write(&device, TEST_DEVICE_DATA_PORT, 12)
+	testing.expect_value(t, test_device_snapshot_index(&device), u8(12))
+
+	// Writing the data port advances the index, so a second write lands on the
+	// next register and must not disturb the label.
+	test_device_write(&device, TEST_DEVICE_DATA_PORT, 99)
+	testing.expect_value(t, test_device_snapshot_index(&device), u8(12))
+
+	// The command still arrives through the command port unchanged.
+	test_device_write(&device, TEST_DEVICE_COMMAND_PORT, u8(Test_Device_Command.Snapshot))
+	testing.expect_value(t, test_device_take_command(&device), Test_Device_Command.Snapshot)
+}
