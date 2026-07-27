@@ -210,7 +210,25 @@ row records a deliberate limit instead.
    probe zone. Modes 150h and 151h stay `Partial` until it is settled.
 
 GDI and DirectDraw conformance is carried by the GSWGFX guest suite rather than
-by this matrix; see `AGENTS.md` for the gate and its expected counts.
+by this matrix; see `AGENTS.md` for the gate and its expected counts. Their state
+as measured on 2026-07-28:
+
+- **GDI passes.** A `/gdi-only` run publishes with host exit 0, `stop_reason`
+  `test_exit`, and Tested 50, Failed 0 across twelve modes smoked and
+  benchmarked. The one absent pair is 320x240x8, because GDI offers a mode only
+  if the display driver's class key carries it and the gate image was installed
+  with an INF that has no `MODES\8\320,240`. Importing the key alone hangs the
+  guest, so restoring the pair needs the current driver installed through its
+  INF rather than staged as files.
+- **DirectDraw does not run.** The accepted profile passes `/bounded`, which
+  records DirectDraw and Direct3D `UNAVAILABLE` without entering them. A
+  `/ddraw-only` run on the same image reaches a live Windows 98 desktop and then
+  publishes nothing for the full 600 seconds, twice, with unclassified I/O and
+  MMIO both zero. Staging the current `GSWMINI.DRV` and `GSWHAL9X.DLL` first
+  changes nothing, so it is not the driver-file staleness recorded earlier. The
+  `/gdi-only` control on that same image publishes normally, which puts the
+  fault inside the DirectDraw Adapter rather than in the launcher, the VBE
+  handoff, the image, or the host.
 
 ## Explicit exclusions
 
