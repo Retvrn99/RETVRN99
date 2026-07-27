@@ -186,3 +186,56 @@ vga_test_status_port_address_select_and_flip_flop_reset :: proc(t: ^testing.T) {
 	testing.expect_value(t, vga_in(&v, 0x3B4), u8(0x0F))
 	testing.expect_value(t, vga_in(&v, 0x3D4), u8(0xFF))
 }
+
+// IBM 2-42 to 2-43 and 2-46. Miscellaneous Output is a plain latch, so the
+// reserved bit round-trips through 3CCh without disturbing anything the rest of
+// the register drives. Feature Control keeps its two undocumented bits, drops
+// the rest, and is written at whichever address the same bit 0 selects.
+@(test)
+vga_test_misc_reserved_bits_and_feature_control_round_trip :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	tiny_text_geometry(&v)
+	dots := v.timing.total_dots
+	lines := v.timing.total_lines
+	line_ns := v.timing.line_period_ns
+
+	// Bit 4 is reserved and bit 5 is the odd/even page select no firmware mode
+	// leaves clear. Both read back exactly as written.
+	vga_out(&v, 0x3C2, 0xF3)
+	testing.expect_value(t, vga_in(&v, 0x3CC), u8(0xF3))
+	testing.expect_value(t, v.timing.total_dots, dots)
+	testing.expect_value(t, v.timing.total_lines, lines)
+	testing.expect_value(t, v.timing.line_period_ns, line_ns)
+
+	// The clock select beside them is not inert: value 1 picks 28.322 MHz.
+	vga_out(&v, 0x3C2, 0xF7)
+	testing.expect_value(t, vga_in(&v, 0x3CC), u8(0xF7))
+	testing.expect(t, v.timing.line_period_ns < line_ns)
+	vga_out(&v, 0x3C2, 0xE3)
+
+	// Feature Control keeps bits 0 and 1 only.
+	vga_out(&v, 0x3DA, 0xFF)
+	testing.expect_value(t, vga_in(&v, 0x3CA), u8(0x03))
+	vga_out(&v, 0x3DA, 0x02)
+	testing.expect_value(t, vga_in(&v, 0x3CA), u8(0x02))
+	// The monochrome address is not decoded while bit 0 selects colour.
+	vga_out(&v, 0x3BA, 0x01)
+	testing.expect_value(t, vga_in(&v, 0x3CA), u8(0x02))
+	vga_out(&v, 0x3C2, 0xE2)
+	vga_out(&v, 0x3BA, 0x01)
+	testing.expect_value(t, vga_in(&v, 0x3CA), u8(0x01))
+
+	// Video Subsystem Enable gates the whole adapter's output without moving
+	// the raster it would have drawn.
+	vga_out(&v, 0x3C2, 0xE3)
+	testing.expect_value(t, vga_in(&v, 0x3C3), u8(0x01))
+	vga_out(&v, 0x3C3, 0x00)
+	testing.expect_value(t, vga_in(&v, 0x3C3), u8(0x00))
+	testing.expect(t, !video_output_enabled(&v))
+	testing.expect_value(t, v.timing.total_dots, dots)
+	vga_out(&v, 0x3C3, 0x01)
+	testing.expect(t, video_output_enabled(&v))
+}

@@ -225,7 +225,9 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 			return false
 		}
 	case 0x3DA, 0x3BA:
-		v.feature = value & 3
+		// Feature Control is written at the same address Input Status 1 is read
+		// from, so it follows Miscellaneous Output bit 0 too.
+		if port == active_status_port(v) {v.feature = value & 3}
 	case 0x3D8:
 		return cga_set_mode_control(v, value)
 	case 0x3D9:
