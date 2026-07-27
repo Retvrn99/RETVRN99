@@ -33,12 +33,12 @@ The virtual machine currently exposes:
   compatible ports at `388h` plus the Sound Blaster FM aliases. Deterministic
   host-side tests cover the audio timeline, PC-speaker response, DSP formats,
   DMA/IRQ behavior, and preserved OPL3 synthesis captures. Cold-DOS, real-DOS-
-  mode, and audible game gates have not passed, so these remain compatibility
+  mode, and audible in-game checks have not passed, so these remain compatibility
   targets rather than game-ready claims. The native PCI PCM Interface and a
   reproducible Windows 98 SE VxD package exist as developer work, but repeated
   guest binding tests did not produce a working device. The default machine
   therefore hides `FFFE:0003` and does not ship or inject that package. The
-  next Windows gate is a clean-guest attempt to add the inbox Creative SB16
+  next attempt is a clean-guest install of the inbox Creative SB16
   driver as a separate legacy device; it must show `220h`/`388h`, IRQ5, DMA1,
   and DMA5, never a PCI MMIO range. The first global-detection attempt ended at
   a persistent black text screen with a blinking cursor, so no successful
@@ -88,7 +88,7 @@ Run `odin run tools\gsw3d-proof-smoke -thread-count:8` to render the proof
 through Vulkan at 640x480 and 1600x1200, exercise mixed-size frames in flight,
 download the idle offscreen targets, and validate repeated CRCs plus orientation
 and channel-order anchors. The 640x480 path also crosses the SDL compositor.
-This developer gate is the only GSW3D texture readback path; normal presentation
+This developer-only check is the sole GSW3D texture readback path; normal presentation
 remains host-resident.
 
 For repeatable GUI guest input without host keyboard or mouse focus, build the
@@ -276,7 +276,7 @@ binutils, Make, and Python 3. Bochs VGABIOS also requires dev86 (`bcc` and
 .\build.ps1 -Firmware -WslDistro Debian
 ```
 
-Run package tests and then the root integration and workload gates. Automated
+Run the package tests, then the integration and workload suites. Automated
 installation runs require a pre-created, selected test image; they never create
 one implicitly.
 
