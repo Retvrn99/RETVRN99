@@ -364,6 +364,60 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y, x0, x1: i
 	}
 }
 
+// The status multiplexer wants the Attribute Controller output for a single
+// pixel rather than a whole scan line, so it resolves one cell here. Everything
+// character-specific uses the same helpers render_text_scanline does.
+@(private = "file")
+text_palette_index :: proc(v: ^Vga, x, y: int) -> u8 {
+	character_width := v.seq[1] & 1 != 0 ? 8 : 9
+	character_height := max(int(v.crtc[9] & 0x1F) + 1, 1)
+	first_line := legacy_split_first_line(v, .Text)
+	below_split := y >= first_line
+	origin_line := below_split ? first_line : 0
+	start := below_split ? 0 : int(display_start(v))
+	effective_line := y - origin_line + legacy_preset_row(v, below_split)
+	row := effective_line / character_height
+	glyph_y := effective_line % character_height
+	panned := x + legacy_text_pel_pan(v, below_split, character_width)
+	column := panned / character_width
+	glyph_x := panned % character_width
+	cell := (start + row * int(v.crtc[0x13]) * 2 + column) & 0x3fff
+	raw := (cell * 2 + legacy_byte_pan(v, below_split)) & 0x7fff
+	character := legacy_text_byte(v, raw)
+	attribute := legacy_text_byte(v, raw + 1)
+	font_a, font_b := font_blocks(v)
+	font_base := (attribute & 0x08 != 0 ? font_b : font_a) * 8192
+	foreground := attribute & 0x0F
+	if font_a != font_b {foreground &= 7}
+	background := attribute >> 4
+	blink_enabled := v.attr[0x10] & 0x08 != 0
+	blink_on := (v.timing.elapsed_ns / 500_000_000) & 1 == 0
+	if v.attr[0x10] & 0x02 != 0 {
+		foreground, background = legacy_monochrome_attribute(attribute)
+		if blink_enabled && attribute & 0x80 != 0 && !blink_on {foreground = background}
+	} else if blink_enabled {
+		background &= 7
+		if attribute & 0x80 != 0 && !blink_on {foreground = background}
+	}
+	cursor := int(v.crtc[0x0E]) << 8 | int(v.crtc[0x0F])
+	cursor = (cursor + int(v.crtc[0x0B] >> 5 & 3)) & 0x3fff
+	cursor_start := int(v.crtc[0x0A] & 0x1F)
+	cursor_end := int(v.crtc[0x0B] & 0x1F)
+	cursor_line :=
+		glyph_y >= cursor_start && (cursor_end < cursor_start || glyph_y <= cursor_end)
+	if v.crtc[0x0A] & 0x20 == 0 && blink_on && cursor_line && raw == cursor * 2 {
+		foreground, background = background, foreground
+	}
+	bits := plane_byte(v, 2, font_base + int(character) * 32 + min(glyph_y, 31))
+	set := glyph_x < 8 && bits & (u8(0x80) >> uint(glyph_x)) != 0
+	if glyph_x == 8 && character >= 0xC0 && character <= 0xDF && v.attr[0x10] & 0x04 != 0 {
+		set = bits & 1 != 0
+	}
+	underline := v.attr[0x10] & 0x02 != 0 && glyph_y == int(v.crtc[0x14] & 0x1F) &&
+		attribute & 0x07 == 0x01
+	return attribute_palette_index(v, set || underline ? foreground : background)
+}
+
 // IBM 2-15 to 2-17. A monochrome attribute carries no colour. Bits 0-2 and 4-6
 // select one of three cell forms, bit 3 intensifies the foreground and bit 7
 // blinks it, and the resulting index still resolves through the internal palette
@@ -755,6 +809,8 @@ vga_status_mux_bits :: proc(v: ^Vga, physical_line, physical_dot: int) -> u8 {
 			offset = legacy_display_offset(v, address, geometry.row_scan)
 		}
 		color = plane_byte(v, plane, offset) & v.pel_mask
+	case .Text:
+		color = text_palette_index(v, x, y)
 	case:
 		return 0
 	}

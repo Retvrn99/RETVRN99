@@ -25,7 +25,9 @@ ATTR_MASKS := [32]u8 {
 	0x3F,
 	0xFF,
 	0x3F,
-	0x0F,
+	// IBM 2-94. Bits 4 and 5 select the Video Status multiplexer and must reach
+	// the register; only bits 6 and 7 are reserved.
+	0x3F,
 	0x0F,
 	0x0F,
 	0x00,
