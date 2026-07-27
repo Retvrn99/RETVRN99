@@ -28,6 +28,9 @@ Vga_Mode_Observability :: struct {
 	bank_write_change_count:               u64,
 	io_write_count:                        u64,
 	io_write_bytes:                        u64,
+	raster_journal_entries:                u32,
+	raster_journal_truncated:              bool,
+	raster_journal_truncations:            u64,
 }
 
 vga_mode_observability :: proc(v: ^Vga) -> Vga_Mode_Observability {
@@ -60,6 +63,9 @@ vga_mode_observability :: proc(v: ^Vga) -> Vga_Mode_Observability {
 		bank_write_change_count               = v.bank_write_change_count,
 		io_write_count                        = v.io_write_count,
 		io_write_bytes                        = v.io_write_bytes,
+		raster_journal_entries                = v.raster_journal.count,
+		raster_journal_truncated              = v.raster_journal.truncated,
+		raster_journal_truncations            = v.raster_journal_truncations,
 	}
 	if !result.vbe_enabled || pitch <= 0 {return result}
 	x := u64(result.vbe_x_offset_raw)

@@ -33,6 +33,7 @@ Scanout_State :: struct {
 Scanout_Descriptor :: struct {
 	allocator:          runtime.Allocator,
 	state:              Scanout_State,
+	journal:            Raster_Journal,
 	mode_observability: Vga_Mode_Observability,
 	vram:               []u8,
 	frame_pixels:       []u32,
@@ -143,6 +144,7 @@ scanout_descriptor_capture :: proc(descriptor: ^Scanout_Descriptor, source: ^Vga
 		descriptor.vram = make([]u8, VRAM_SIZE, descriptor.allocator)
 	}
 	scanout_state_capture(&descriptor.state, source)
+	raster_journal_capture(&descriptor.journal, source)
 	descriptor.mode_observability = vga_mode_observability(source)
 	descriptor.legacy_update = vga_legacy_frame_update(source)
 	descriptor.frame = {}
@@ -161,7 +163,7 @@ scanout_descriptor_capture :: proc(descriptor: ^Scanout_Descriptor, source: ^Vga
 			descriptor.frame_pixels,
 			descriptor.allocator,
 		)
-		frame := vga_display_frame(&state)
+		frame := vga_display_frame_replay(&state, &descriptor.journal)
 		if frame == nil || frame.width <= 0 || frame.height <= 0 {return false}
 		descriptor.frame_pixels = state.frame_pixels
 		descriptor.frame = frame^
@@ -230,7 +232,10 @@ scanout_descriptor_render :: proc(descriptor: ^Scanout_Descriptor) -> ^Display_F
 		if state.frame_pixels != nil {delete(state.frame_pixels, descriptor.allocator)}
 		state.frame_pixels = make([]u32, needed, descriptor.allocator)
 	}
+	// A replayed frame changes rows the damage rectangles never named, so the
+	// journal forces whole-frame expansion.
 	full :=
+		raster_journal_active(&descriptor.journal) ||
 		descriptor.legacy_update.full_reason != .None ||
 		(descriptor.legacy_update.header.dirty.count == 1 &&
 				contract.rect_equal(
@@ -238,7 +243,7 @@ scanout_descriptor_render :: proc(descriptor: ^Scanout_Descriptor) -> ^Display_F
 					descriptor.legacy_update.header.source,
 				))
 	if full {
-		frame := vga_display_frame(&state)
+		frame := vga_display_frame_replay(&state, &descriptor.journal)
 		descriptor.frame = frame^
 		descriptor.converted_pixels = u64(needed)
 	} else {

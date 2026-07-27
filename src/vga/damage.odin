@@ -84,7 +84,7 @@ vga_damage_record_full :: proc(
 	v.legacy_damage.write_serial = contract.generation_next(v.legacy_damage.write_serial)
 }
 
-@(private = "file")
+@(private = "package")
 vga_damage_uses_palette :: proc(v: ^Vga) -> bool {
 	if v == nil {return false}
 	kind, _, _ := display_geometry(v)

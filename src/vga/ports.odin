@@ -187,8 +187,10 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 		dac_value := value
 		if v.dispi[DISPI_INDEX_ENABLE] & DISPI_8BIT_DAC == 0 {dac_value &= 0x3F}
 		index := int(v.dac_write) * 3 + int(v.dac_sub)
-		changed := v.dac[index] != dac_value
+		previous := v.dac[index]
+		changed := previous != dac_value
 		v.dac[index] = dac_value
+		raster_journal_record(v, .Dac_Entry, u16(index), previous, dac_value)
 		v.dac_sub += 1
 		if v.dac_sub == 3 {
 			v.dac_sub = 0

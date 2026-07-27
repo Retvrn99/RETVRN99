@@ -54,8 +54,16 @@ vga_snapshot :: proc(v: ^Vga, guest_ram: []u8) -> Text_Snapshot {
 }
 
 vga_display_frame :: proc(v: ^Vga) -> ^Display_Frame {
+	return vga_display_frame_replay(v, nil)
+}
+
+// A nil or empty journal expands exactly as before; otherwise the mid-frame
+// deltas are replayed scan line by scan line as expansion passes them.
+@(private = "package")
+vga_display_frame_replay :: proc(v: ^Vga, journal: ^Raster_Journal) -> ^Display_Frame {
+	replay := raster_journal_active(journal)
 	output_enabled := video_output_enabled(v)
-	if v.frame_valid && output_enabled {return &v.frame}
+	if !replay && v.frame_valid && output_enabled {return &v.frame}
 	if !output_enabled {v.frame_valid = false}
 	kind, width, height := display_geometry(v)
 	if width <= 0 || height <= 0 || width > DISPI_MAX_XRES || height > DISPI_MAX_YRES {
@@ -86,6 +94,13 @@ vga_display_frame :: proc(v: ^Vga) -> ^Display_Frame {
 	v.frame.updated_pixels = u64(needed)
 	v.frame.overscan = overscan_color(v)
 	if !output_enabled {return &v.frame}
+	if replay {
+		raster_journal_render(v, journal, v.frame_pixels, kind, width, height)
+		if kind == .Text {v.frame.text = vga_text_snapshot(v)}
+		v.full_frame_renders += 1
+		v.frame_valid = true
+		return &v.frame
+	}
 	switch kind {
 	case .Text:
 		v.frame.text = vga_text_snapshot(v)

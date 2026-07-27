@@ -137,6 +137,8 @@ Vga :: struct {
 	raster_valid:                           bool,
 	raster_fallback:                        bool,
 	raster_change_frame:                    u64,
+	raster_journal:                         Raster_Journal,
+	raster_journal_truncations:             u64,
 	defer_scanout_conversion:               bool,
 	frame_valid:                            bool,
 	present_generation:                     u64,
@@ -311,6 +313,8 @@ vga_reset :: proc(v: ^Vga) {
 	v.vertical_interrupt_pending = false
 	v.timing = {}
 	v.legacy_damage = {}
+	v.raster_journal.count = 0
+	v.raster_journal.truncated = false
 	v.legacy_damage_batch_count = 0
 	v.legacy_damage_batches = {}
 	v.content_generation = 1
