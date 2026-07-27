@@ -3024,22 +3024,9 @@ console_main :: proc(
 
 @(private)
 console_dump_frame :: proc(path: string, frame: ^vga.Display_Frame) {
-	if frame == nil || frame.width <= 0 || frame.height <= 0 || len(frame.pixels) == 0 {
-		return
-	}
-	header := fmt.tprintf("P6\n%d %d\n255\n", frame.width, frame.height)
-	data := make([]u8, len(header) + frame.width * frame.height * 3, context.temp_allocator)
-	copy(data, header)
-	offset := len(header)
-	for pixel in frame.pixels[:frame.width * frame.height] {
-		data[offset] = u8(pixel >> 16)
-		data[offset + 1] = u8(pixel >> 8)
-		data[offset + 2] = u8(pixel)
-		offset += 3
-	}
-	if err := os.write_entire_file(path, data); err != nil {
-		fmt.eprintfln("frame dump failed: %v", err)
-	}
+	if frame == nil {return}
+	diagnostic := acceptance.artifact_write_frame(path, frame.pixels, frame.width, frame.height)
+	if diagnostic != .None {fmt.eprintfln("frame dump failed: %v", diagnostic)}
 }
 
 publish_cdrom_state :: proc(

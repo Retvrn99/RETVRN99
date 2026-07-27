@@ -20,7 +20,7 @@ acceptance_artifacts_test_bundle_is_fixed_name_and_bounded :: proc(t: ^testing.T
 		Artifact_Diagnostic.None,
 	)
 	diagnostics_path, _ := filepath.join({dir, "diagnostics.txt"})
-	frame_path, _ := filepath.join({dir, "final-frame.ppm"})
+	frame_path, _ := filepath.join({dir, "final-frame.png"})
 	trace_path, _ := filepath.join({dir, "hardware-trace.txt"})
 	diagnostics, _ := os.read_entire_file(diagnostics_path, context.temp_allocator)
 	frame, _ := os.read_entire_file(frame_path, context.temp_allocator)
@@ -85,7 +85,7 @@ acceptance_artifacts_test_reports_stale_frame_removal_failure :: proc(t: ^testin
 	base, _ := os.temp_directory(context.temp_allocator)
 	dir, _ := os.make_directory_temp(base, "retvrn99_frame_remove_*", context.temp_allocator)
 	defer acceptance_test_remove_tree(dir)
-	frame_path, _ := filepath.join({dir, "final-frame.ppm"})
+	frame_path, _ := filepath.join({dir, "final-frame.png"})
 	testing.expect(t, os.make_directory(frame_path) == nil)
 	child, _ := filepath.join({frame_path, "retained"})
 	testing.expect(t, os.write_entire_file(child, "retained") == nil)
@@ -119,7 +119,7 @@ acceptance_artifacts_test_snapshot_leaves_the_bundle_alone :: proc(t: ^testing.T
 
 	diagnostics_path, _ := filepath.join({dir, "diagnostics.txt"})
 	trace_path, _ := filepath.join({dir, "hardware-trace.txt"})
-	final_path, _ := filepath.join({dir, "final-frame.ppm"})
+	final_path, _ := filepath.join({dir, "final-frame.png"})
 	diagnostics, _ := os.read_entire_file(diagnostics_path, context.temp_allocator)
 	trace, _ := os.read_entire_file(trace_path, context.temp_allocator)
 	testing.expect_value(t, string(diagnostics), "run diagnostics")
@@ -149,16 +149,17 @@ acceptance_artifacts_test_snapshot_labels_do_not_collide :: proc(t: ^testing.T) 
 		Artifact_Diagnostic.None,
 	)
 
-	zero_path, _ := filepath.join({dir, "snapshot-0.ppm"})
-	seven_path, _ := filepath.join({dir, "snapshot-7.ppm"})
-	last_path, _ := filepath.join({dir, "snapshot-255.ppm"})
+	zero_path, _ := filepath.join({dir, "snapshot-0.png"})
+	seven_path, _ := filepath.join({dir, "snapshot-7.png"})
+	last_path, _ := filepath.join({dir, "snapshot-255.png"})
 	zero, _ := os.read_entire_file(zero_path, context.temp_allocator)
 	seven, _ := os.read_entire_file(seven_path, context.temp_allocator)
 	testing.expect(t, os.exists(last_path))
 	// The 2x2 capture is larger than the 2x1 one, so the labels really did keep
 	// their own images rather than one overwriting the other.
 	testing.expect(t, len(seven) > len(zero))
-	testing.expect_value(t, string(zero[:2]), "P6")
+	// PNG signature, so the file really is decodable rather than named as if it were.
+	testing.expect_value(t, string(zero[1:4]), "PNG")
 }
 
 // A label that names an unwritable geometry clears its own file and reports no
@@ -175,7 +176,7 @@ acceptance_artifacts_test_snapshot_clears_a_stale_label :: proc(t: ^testing.T) {
 		artifact_write_snapshot(dir, 3, pixels, 2, 1),
 		Artifact_Diagnostic.None,
 	)
-	path, _ := filepath.join({dir, "snapshot-3.ppm"})
+	path, _ := filepath.join({dir, "snapshot-3.png"})
 	testing.expect(t, os.exists(path))
 	testing.expect_value(t, artifact_write_snapshot(dir, 3, nil, 0, 0), Artifact_Diagnostic.None)
 	testing.expect(t, !os.exists(path))

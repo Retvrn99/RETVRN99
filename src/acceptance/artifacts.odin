@@ -4,6 +4,8 @@ package acceptance
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:strings"
+import stbi "vendor:stb/image"
 
 ARTIFACT_TEXT_MAX_BYTES :: 256 * 1024
 ARTIFACT_HARDWARE_TRACE_MAX_BYTES :: 512 * 1024
@@ -70,7 +72,7 @@ artifact_write_bundle :: proc(
 		trace_bytes = artifact_recent_text(trace_bytes, ARTIFACT_HARDWARE_TRACE_MAX_BYTES)
 		if os.write_entire_file(hardware_trace_path, trace_bytes) != nil {return .Write_Failed}
 	}
-	frame_path, path_err := filepath.join({directory, "final-frame.ppm"})
+	frame_path, path_err := filepath.join({directory, "final-frame.png"})
 	if path_err != nil {return .Path_Failed}
 	defer delete(frame_path)
 	return artifact_write_frame(frame_path, frame_pixels, frame_width, frame_height)
@@ -88,7 +90,7 @@ artifact_write_snapshot :: proc(
 ) -> Artifact_Diagnostic {
 	if directory == "" {return .Invalid_Path}
 	if os.make_directory_all(directory) != nil {return .Create_Directory_Failed}
-	name := fmt.tprintf("snapshot-%d.ppm", index)
+	name := fmt.tprintf("snapshot-%d.png", index)
 	path, path_err := filepath.join({directory, name})
 	if path_err != nil {return .Path_Failed}
 	defer delete(path)
@@ -97,7 +99,6 @@ artifact_write_snapshot :: proc(
 
 // Geometry that cannot describe an image removes any stale file at the path
 // rather than leaving a mismatched one behind, and is not itself a failure.
-@(private = "file")
 artifact_write_frame :: proc(
 	path: string,
 	frame_pixels: []u32,
@@ -115,17 +116,24 @@ artifact_write_frame :: proc(
 		if !artifact_remove_if_present(path) {return .Write_Failed}
 		return .None
 	}
-	header := fmt.tprintf("P6\n%d %d\n255\n", frame_width, frame_height)
-	payload := make([]u8, len(header) + pixel_count * 3)
+	payload := make([]u8, pixel_count * 3)
 	defer delete(payload)
-	copy(payload, header)
-	offset := len(header)
+	offset := 0
 	for pixel in frame_pixels[:pixel_count] {
 		payload[offset] = u8(pixel >> 16)
 		payload[offset + 1] = u8(pixel >> 8)
 		payload[offset + 2] = u8(pixel)
 		offset += 3
 	}
-	if os.write_entire_file(path, payload) != nil {return .Write_Failed}
+	path_c := strings.clone_to_cstring(path, context.temp_allocator)
+	written := stbi.write_png(
+		path_c,
+		i32(frame_width),
+		i32(frame_height),
+		3,
+		raw_data(payload),
+		i32(frame_width * 3),
+	)
+	if written == 0 {return .Write_Failed}
 	return .None
 }

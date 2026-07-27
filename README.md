@@ -91,7 +91,8 @@ reader polling it never sees a partly written image.
 This captures the rendered window, including the border painted around the
 guest canvas and the surrounding chrome, which is the part no guest-side capture
 can show. The console harness `--frame-dump:<path>` still writes the guest
-canvas on its own, and the two are not interchangeable.
+canvas on its own, and the two are not interchangeable. Every frame artefact
+is a PNG, including the one `--frame-dump` writes, whatever name you give it.
 
 Renderer developers can add `--gsw3d-proof` to attach the guarded
 POSITIONT/D3DCOLOR transport profile. It preserves the captured command and
