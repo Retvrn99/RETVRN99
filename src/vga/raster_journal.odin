@@ -18,6 +18,12 @@ Raster_Delta_Kind :: enum u8 {
 	Pel_Pan,
 	// CRT Controller 08h. Preset row scan shares the byte and travels with it.
 	Byte_Pan,
+	// Attribute Controller 00h-0Fh internal palette, index is the register.
+	Attribute_Palette,
+	// The Palette Address Source bit of the Attribute address register. Clearing
+	// it is what lets software reach the internal palette, and it blanks the
+	// display while clear, so the two kinds only make sense together.
+	Palette_Source,
 }
 
 // index is a DAC byte index, so entry n component c is n * 3 + c. It is unused
@@ -60,12 +66,20 @@ raster_journal_line :: proc(v: ^Vga) -> (int, bool) {
 	// state the descriptor already carries describes exactly. Past the last
 	// visible row the write belongs to the next frame.
 	if physical <= 0 || physical >= v.timing.visible_lines {return 0, false}
-	if !video_output_enabled(v) {return 0, false}
 	kind, width, height := display_geometry(v)
 	if kind == .Invalid || width <= 0 || height <= 0 {return 0, false}
 	line := physical * height / v.timing.visible_lines
 	if line <= 0 || line >= height {return 0, false}
 	return line, true
+}
+
+// Every legacy mode the Attribute Controller drives. VBE reads the DAC directly
+// and the CGA persona has its own colour path, so neither observes it.
+@(private = "file")
+raster_journal_attribute_mode :: proc(v: ^Vga) -> bool {
+	if vga_vbe_enabled(v) || v.cga.active {return false}
+	mode, _, _ := display_geometry(v)
+	return mode != .Invalid
 }
 
 // Only a delta the current mode can show is worth carrying. Panning reaches the
@@ -74,11 +88,17 @@ raster_journal_line :: proc(v: ^Vga) -> (int, bool) {
 raster_delta_observable :: proc(v: ^Vga, kind: Raster_Delta_Kind) -> bool {
 	switch kind {
 	case .Dac_Entry:
-		return vga_damage_uses_palette(v)
+		return video_output_enabled(v) && vga_damage_uses_palette(v)
 	case .Pel_Pan, .Byte_Pan:
-		if vga_vbe_enabled(v) || v.cga.active {return false}
+		if !video_output_enabled(v) || vga_vbe_enabled(v) || v.cga.active {return false}
 		mode, _, _ := display_geometry(v)
 		return mode == .Text || mode == .Planar_4 || mode == .Indexed_8
+	case .Attribute_Palette, .Palette_Source:
+		// These two are the only kinds allowed to land while output is disabled.
+		// Reaching the internal palette requires clearing the Palette Address
+		// Source, which blanks the display, so recording the blank is the point
+		// rather than something to filter out.
+		return raster_journal_attribute_mode(v)
 	}
 	return false
 }
@@ -141,6 +161,12 @@ raster_delta_apply :: proc(v: ^Vga, delta: Raster_Delta, value: u8) {
 		v.attr[0x13] = value
 	case .Byte_Pan:
 		v.crtc[0x08] = value
+	case .Attribute_Palette:
+		if int(delta.index) < 0x10 {v.attr[delta.index] = value}
+	case .Palette_Source:
+		// render_scanline_span already blanks a row whose output is disabled, so
+		// replaying the bit is all the blank band needs.
+		v.video_on = value != 0
 	}
 }
 

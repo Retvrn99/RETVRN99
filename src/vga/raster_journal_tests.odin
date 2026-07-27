@@ -389,3 +389,92 @@ raster_journal_test_display_start_write_waits_for_vertical_retrace :: proc(t: ^t
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect(t, frame.pixels[0] != before)
 }
+
+// IBM 2-89 to 2-91. Reaching Attribute 00h-0Fh means clearing the Palette
+// Address Source first, so a mid-frame palette change is really three writes.
+// Done inside one scan line it leaves no visible blank.
+@(test)
+raster_journal_test_attribute_palette_split_replays_below_the_split :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	raster_journal_test_planar(&v)
+	// Every sample row carries colour index 1 at x=0..3 and index 2 at x=4..7,
+	// including the split row itself, so a blank there is distinguishable from
+	// the ordinary black of an empty row.
+	for row in ([3]int{4, 12, 24}) {
+		set_plane_byte(&v, 0, row * 80, 0xF0)
+		set_plane_byte(&v, 1, row * 80, 0x0F)
+	}
+	vga_note_content_change(&v)
+
+	split := raster_journal_test_line_ns(&v, 12)
+	_ = vga_in(&v, 0x3DA)
+	raster_journal_test_out(&v, split, 0x3C0, 0x01)
+	raster_journal_test_out(&v, split, 0x3C0, 0x02)
+	raster_journal_test_out(&v, split, 0x3C0, 0x20)
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect_value(t, descriptor.journal.count, u32(3)) {return}
+	expected := [3]Raster_Delta {
+		{line = 12, index = 0, kind = .Palette_Source, value = 0, previous = 1},
+		{line = 12, index = 1, kind = .Attribute_Palette, value = 2, previous = 1},
+		{line = 12, index = 0, kind = .Palette_Source, value = 1, previous = 0},
+	}
+	for entry, i in expected {testing.expect_value(t, descriptor.journal.entries[i], entry)}
+
+	frame := scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	// Above the split the two indices still resolve differently.
+	testing.expect(t, frame.pixels[4 * 640 + 0] != frame.pixels[4 * 640 + 4])
+	// Below it index 1 resolves through the entry index 2 already used.
+	testing.expect_value(t, frame.pixels[24 * 640 + 0], frame.pixels[24 * 640 + 4])
+	testing.expect_value(t, frame.pixels[24 * 640 + 0], frame.pixels[4 * 640 + 4])
+	// The whole dance fits inside one scan line, so that row is not blanked and
+	// already shows the new palette.
+	testing.expect(t, frame.pixels[12 * 640 + 0] != 0xFF00_0000)
+	testing.expect_value(t, frame.pixels[12 * 640 + 0], frame.pixels[12 * 640 + 4])
+}
+
+// Held open across scan lines, the same dance blanks every row it covers, which
+// is what the hardware shows and why the Palette Address Source is journalled
+// alongside the palette itself.
+@(test)
+raster_journal_test_palette_source_blanks_the_rows_it_is_held_off_for :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	raster_journal_test_planar(&v)
+	for row in ([3]int{4, 16, 24}) {
+		set_plane_byte(&v, 0, row * 80, 0xF0)
+		set_plane_byte(&v, 1, row * 80, 0x0F)
+	}
+	vga_note_content_change(&v)
+
+	_ = vga_in(&v, 0x3DA)
+	raster_journal_test_out(&v, raster_journal_test_line_ns(&v, 12), 0x3C0, 0x01)
+	raster_journal_test_out(&v, raster_journal_test_line_ns(&v, 12), 0x3C0, 0x02)
+	raster_journal_test_out(&v, raster_journal_test_line_ns(&v, 20), 0x3C0, 0x20)
+
+	descriptor: Scanout_Descriptor
+	defer scanout_descriptor_destroy(&descriptor)
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect_value(t, descriptor.journal.count, u32(3)) {return}
+	testing.expect_value(t, descriptor.journal.entries[2].line, u16(20))
+
+	frame := scanout_descriptor_render(&descriptor)
+	if !testing.expect(t, frame != nil) {return}
+	// Before the source is cleared the old palette is still on screen.
+	testing.expect(t, frame.pixels[4 * 640 + 0] != frame.pixels[4 * 640 + 4])
+	testing.expect(t, frame.pixels[4 * 640 + 0] != 0xFF00_0000)
+	// While it is clear the display is blank, image content or not.
+	testing.expect_value(t, frame.pixels[16 * 640 + 0], u32(0xFF00_0000))
+	testing.expect_value(t, frame.pixels[16 * 640 + 4], u32(0xFF00_0000))
+	// Once restored the new palette is live.
+	testing.expect_value(t, frame.pixels[24 * 640 + 0], frame.pixels[24 * 640 + 4])
+	testing.expect_value(t, frame.pixels[24 * 640 + 0], frame.pixels[4 * 640 + 4])
+}

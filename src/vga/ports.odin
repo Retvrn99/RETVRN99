@@ -132,6 +132,13 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 			v.attr_ix = value & 0x1F
 			v.video_on = value & 0x20 != 0
 			v.attr_flip = true
+			raster_journal_record(
+				v,
+				.Palette_Source,
+				0,
+				old_video_on ? 1 : 0,
+				v.video_on ? 1 : 0,
+			)
 			return old_video_on != v.video_on
 		} else if int(v.attr_ix) < len(v.attr) {
 			if v.attr_ix < 0x10 && v.video_on {
@@ -143,6 +150,9 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 			changed := previous != masked
 			v.attr[v.attr_ix] = masked
 			if v.attr_ix == 0x13 {raster_journal_record(v, .Pel_Pan, 0, previous, masked)}
+			if v.attr_ix < 0x10 {
+				raster_journal_record(v, .Attribute_Palette, u16(v.attr_ix), previous, masked)
+			}
 			vga_recalculate_timing(v)
 			v.attr_flip = false
 			palette_register := v.attr_ix < 0x10 || v.attr_ix == 0x12 || v.attr_ix == 0x14

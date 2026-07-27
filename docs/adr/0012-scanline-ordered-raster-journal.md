@@ -115,3 +115,40 @@ journalled.
 `raster_journal_test_display_start_write_waits_for_vertical_retrace` pins both
 halves through the public CRT Controller ports and the deferred descriptor path:
 the current frame does not move and the next one does.
+
+### The internal palette needs the Palette Address Source with it
+
+Attribute 00h-0Fh cannot be reached while the Palette Address Source bit is set,
+so software changing the internal palette mid-frame must clear that bit, write,
+and set it again. Clearing it blanks the display. Journalling the palette write
+on its own would therefore render a clean split the hardware never produces.
+
+The bit travels as its own delta kind alongside the palette entries. Expansion
+already blanks a row whose output is disabled, so replaying the bit produces the
+blank band for free with no new rendering code. A dance completed inside one
+scan line leaves no visible band, which is the common case; one held open across
+scan lines blanks exactly the rows it covers.
+
+### The overscan colour waits for border extents
+
+The whitelist named the overscan colour, but a frame publishes one border colour
+resolved once, and the active image never reads Attribute 11h. A mid-frame
+overscan delta has nothing to change until the frame carries border extents, so
+it is deferred into that slice rather than landing as a delta that replays into
+no observable difference.
+
+### Aperture and bank select leave the whitelist
+
+Neither half survives contact with the expansion path. The bank registers are
+carried on the descriptor but no scanout or address-generation code reads them;
+they map guest processor access to the aperture, not scanout reads, so a
+mid-frame bank change cannot alter an expanded frame. The aperture map select
+does reach expansion, but only through `display_geometry`, where it participates
+in choosing the frame kind. Replaying it would resize the frame partway through
+the expansion loop, which is the same hazard that kept a general register delta
+kind out of the design.
+
+Three of the seven kinds this ADR originally whitelisted therefore do not
+belong. The whitelist was written before the expansion path had been read
+closely, and the remaining four are DAC entries, PEL panning, byte panning, and
+the internal palette with its address-source bit.
