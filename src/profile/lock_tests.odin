@@ -36,6 +36,19 @@ profile_test_lock_preserves_stale_owner_record :: proc(t: ^testing.T) {
 		for entry in entries {
 			if strings.has_prefix(entry.name, PROFILE_LOCK_FILE + ".stale.") {
 				stale_found = true
+				// The record is named from the owner pid and a nanosecond
+				// reading and nothing else. Formatting a struct with a numeric
+				// verb would leave the verb error text in the filename here.
+				suffix := entry.name[len(PROFILE_LOCK_FILE + ".stale."):]
+				plain := strings.count(suffix, ".") == 1
+				for character in suffix {
+					plain =
+						plain &&
+						(character == '.' ||
+								character == '-' ||
+								(character >= '0' && character <= '9'))
+				}
+				testing.expect(t, plain, entry.name)
 			}
 			os.file_info_delete(entry, context.temp_allocator)
 		}

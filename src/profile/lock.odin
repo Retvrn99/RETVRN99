@@ -69,7 +69,14 @@ lock_acquire :: proc(lock: ^Lock, root, session_id: string) -> Lock_Diagnostic {
 			delete(path)
 			return .Owned
 		}
-		stale_name := fmt.tprintf("%s.stale.%d.%d", PROFILE_LOCK_FILE, owner, time.tick_now())
+		// tick_now is a struct, so formatting it with %d writes the verb error
+		// text into the filename. Only its nanosecond reading disambiguates.
+		stale_name := fmt.tprintf(
+			"%s.stale.%d.%d",
+			PROFILE_LOCK_FILE,
+			owner,
+			time.tick_now()._nsec,
+		)
 		stale, stale_error := filepath.join({root, stale_name}, context.temp_allocator)
 		if stale_error != nil || os.rename(path, stale) != nil {
 			delete(path)
