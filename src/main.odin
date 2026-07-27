@@ -137,11 +137,7 @@ machine_session_nonce_ns :: proc(now: time.Tick) -> u64 {
 	return u64(max(i64(0), elapsed))
 }
 
-machine_session_id_text :: proc(
-	kind: Machine_Session_Kind,
-	pid: int,
-	nonce_ns: u64,
-) -> string {
+machine_session_id_text :: proc(kind: Machine_Session_Kind, pid: int, nonce_ns: u64) -> string {
 	prefix := "gui"
 	if kind == .Console {prefix = "console"}
 	return fmt.tprintf("%s-%d-%d", prefix, pid, nonce_ns)
@@ -167,6 +163,8 @@ run_main :: proc() -> int {
 	cdrom_path := ""
 	profile_root := ""
 	frame_dump_path := ""
+	screenshot_path := ""
+	screenshot_interval_ms := host.HOST_SCREENSHOT_DEFAULT_INTERVAL_MS
 	seconds_explicit := false
 	start_requested := false
 	gsw3d_proof := false
@@ -208,6 +206,12 @@ run_main :: proc() -> int {
 		if strings.has_prefix(a, "--frame-dump:") {
 			frame_dump_path = a[len("--frame-dump:"):]
 		}
+		if strings.has_prefix(a, "--screenshot:") {
+			screenshot_path = a[len("--screenshot:"):]
+		}
+		if strings.has_prefix(a, "--screenshot-every:") {
+			screenshot_interval_ms, _ = strconv.parse_int(a[len("--screenshot-every:"):])
+		}
 		if strings.has_prefix(a, "--control-script:") ||
 		   strings.has_prefix(a, "--control-script=") {
 			if control_script_seen {
@@ -234,6 +238,12 @@ run_main :: proc() -> int {
 	}
 	if console && graphics_trace {
 		fmt.eprintln("--graphics-trace is available only in the GUI host")
+		return 1
+	}
+	if console && screenshot_path != "" {
+		fmt.eprintln(
+			"--screenshot is available only in the GUI host; use --frame-dump for the guest canvas",
+		)
 		return 1
 	}
 	if control_script_path != "" && !RETVRN99_TEST_CONTROL {
@@ -380,6 +390,8 @@ run_main :: proc() -> int {
 		start_requested,
 		gsw3d_proof,
 		graphics_trace,
+		screenshot_path,
+		screenshot_interval_ms,
 		control_script_path,
 	)
 }
@@ -397,10 +409,16 @@ gui_main :: proc(
 	start_requested: bool,
 	gsw3d_proof: bool,
 	graphics_trace: bool,
+	screenshot_path: string,
+	screenshot_interval_ms: int,
 	control_script_path: string,
 ) -> (
 	result: int,
 ) {
+	screenshot := host.Host_Screenshot {
+		path        = screenshot_path,
+		interval_ms = screenshot_interval_ms,
+	}
 	input_control: Input_Control
 	defer input_control_destroy(&input_control)
 	input_control_exclusive := control_script_path != ""
@@ -1703,6 +1721,7 @@ gui_main :: proc(
 			}
 			graphics_frame_epoch_present_begin(&graphics_epoch, graphics_present_started)
 		}
+		host.host_screenshot_capture(&h, &screenshot, time.tick_now())
 		present_ok := sdl3.RenderPresent(h.ren)
 		graphics_presented := time.tick_now()
 		frame_mailbox_graphics_telemetry_note_present(

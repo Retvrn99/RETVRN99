@@ -78,6 +78,21 @@ to start the machine as soon as the window is ready:
 .\retvrn99.exe --start
 ```
 
+`--screenshot:<path>` writes what the window is showing to a PNG, replacing it
+about once a second. `--screenshot-every:<milliseconds>` changes that pace, and
+a value of zero captures every frame, which is expensive for anything but a
+short sequence. The file is written beside the target and moved onto it, so a
+reader polling it never sees a partly written image.
+
+```powershell
+.\retvrn99.exe --start --screenshot:shot.png --screenshot-every:250
+```
+
+This captures the rendered window, including the border painted around the
+guest canvas and the surrounding chrome, which is the part no guest-side capture
+can show. The console harness `--frame-dump:<path>` still writes the guest
+canvas on its own, and the two are not interchangeable.
+
 Renderer developers can add `--gsw3d-proof` to attach the guarded
 POSITIONT/D3DCOLOR transport profile. It preserves the captured command and
 fixed-function state grammar while allowing bounded target dimensions, clear
