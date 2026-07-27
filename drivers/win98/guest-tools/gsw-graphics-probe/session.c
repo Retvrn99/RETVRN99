@@ -64,8 +64,6 @@ static BOOL gsw_adapter_run(GSW_SESSION *session, GSW_ADAPTER *adapter)
 	{
 		GSW_ROW row;
 		BOOL success = adapter->smoke(session, adapter, &adapter->modes.items[index], &row);
-		if(session->options.host_report && session->options.capture)
-			(void)gsw_host_capture((BYTE)adapter->modes.items[index].id);
 		if(!adapter->restore(session, adapter)) { row.status = GSW_STATUS_FAIL; session->restore_failed = TRUE; }
 		if(!success) row.status = GSW_STATUS_FAIL;
 		if(!gsw_record(session, &row)) completed = FALSE;
@@ -81,6 +79,11 @@ static BOOL gsw_adapter_run(GSW_SESSION *session, GSW_ADAPTER *adapter)
 		   mode->width < 640) selected = FALSE;
 		if(!selected) continue;
 		success = adapter->benchmark(session, adapter, mode, &row);
+		/* Measured here rather than beside the smoke pass: a single frame does
+		 * not put the mode on screen where the host can see it, and captures
+		 * taken there record the desktop instead. */
+		if(session->options.host_report && session->options.capture)
+			(void)gsw_host_capture((BYTE)mode->id);
 		if(!adapter->restore(session, adapter)) { row.status = GSW_STATUS_FAIL; session->restore_failed = TRUE; }
 		if(!success) row.status = GSW_STATUS_FAIL;
 		if(!gsw_record(session, &row)) completed = FALSE;

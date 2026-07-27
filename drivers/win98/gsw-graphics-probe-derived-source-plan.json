@@ -19,11 +19,11 @@
             "file_count": 15,
             "directory_count": 0,
             "total_entries": 15,
-            "aggregate_bytes": 99401,
+            "aggregate_bytes": 99573,
             "maximum_file_bytes": 23239,
             "maximum_path_bytes": 15,
             "digest_algorithm": "retvrn99-file-tree-sha256-v1",
-            "sha256": "1e7e867ed791a200b31662011c67693903a1f3e87ce5b839901ac53d43974755"
+            "sha256": "41f56b476400cd35b2a028726a2739dbb97d3b8427c8890d367ed7911fb99300"
           }
         }
       ],
@@ -31,11 +31,11 @@
         "file_count": 154,
         "directory_count": 8,
         "total_entries": 162,
-        "aggregate_bytes": 1386798,
+        "aggregate_bytes": 1386970,
         "maximum_file_bytes": 113466,
         "maximum_path_bytes": 34,
         "digest_algorithm": "retvrn99-file-tree-sha256-v1",
-        "sha256": "b014a0ebc23b2fad937730e56ec58c60c260be5d3a05b2ec35314f029a05849a"
+        "sha256": "7a3c45a4883c1d8136c52b9e421eb09fcfdbe883cee840bb77df976e11e912f2"
       }
     }
   ]
