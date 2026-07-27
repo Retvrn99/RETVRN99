@@ -10,7 +10,7 @@ import "core:thread"
 import "core:time"
 
 // The probe records one fixed-size record per INT 10h mode into low memory.
-MODE_MATRIX_RECORD_BYTES :: 19
+MODE_MATRIX_RECORD_BYTES :: 21
 
 Mode_Matrix_Field :: enum {
 	Requested_Mode,
@@ -32,6 +32,8 @@ Mode_Matrix_Field :: enum {
 	Crtc_End_Vertical_Blanking,
 	Crtc_Overflow,
 	Crtc_Maximum_Scan_Line,
+	Seq_Clocking_Mode,
+	Seq_Memory_Mode,
 }
 
 // CRT Controller indices captured per mode, in the order the record stores
@@ -51,6 +53,8 @@ Mode_Matrix_Case :: struct {
 	display_lines:          u16,
 	maximum_scan_line:      u8,
 	scan_double:            bool,
+	nine_dot_characters:    bool,
+	dot_clock_divide:       bool,
 }
 
 // Expected state after a real VGABIOS mode set. Column counts, row counts, and
@@ -66,21 +70,21 @@ Mode_Matrix_Case :: struct {
 // contracts are asserted separately.
 @(private = "file")
 MODE_MATRIX_CASES := [?]Mode_Matrix_Case {
-	{0x00, 40, 24, 16, 0x67, 39, 0x8F, 400, 15, false},
-	{0x01, 40, 24, 16, 0x67, 39, 0x8F, 400, 15, false},
-	{0x02, 80, 24, 16, 0x67, 79, 0x8F, 400, 15, false},
-	{0x03, 80, 24, 16, 0x67, 79, 0x8F, 400, 15, false},
-	{0x04, 40, 24, 8, 0x63, 39, 0x8F, 400, 1, true},
-	{0x05, 40, 24, 8, 0x63, 39, 0x8F, 400, 1, true},
-	{0x06, 80, 24, 8, 0x63, 79, 0x8F, 400, 1, true},
-	{0x07, 80, 24, 16, 0x66, 79, 0x8F, 400, 15, false},
-	{0x0D, 40, 24, 8, 0x63, 39, 0x8F, 400, 0, true},
-	{0x0E, 80, 24, 8, 0x63, 79, 0x8F, 400, 0, true},
-	{0x0F, 80, 24, 14, 0xA3, 79, 0x5D, 350, 0, false},
-	{0x10, 80, 24, 14, 0xA3, 79, 0x5D, 350, 0, false},
-	{0x11, 80, 29, 16, 0xE3, 79, 0xDF, 480, 0, false},
-	{0x12, 80, 29, 16, 0xE3, 79, 0xDF, 480, 0, false},
-	{0x13, 40, 24, 8, 0x63, 79, 0x8F, 400, 1, false},
+	{0x00, 40, 24, 16, 0x67, 39, 0x8F, 400, 15, false, true, true},
+	{0x01, 40, 24, 16, 0x67, 39, 0x8F, 400, 15, false, true, true},
+	{0x02, 80, 24, 16, 0x67, 79, 0x8F, 400, 15, false, true, false},
+	{0x03, 80, 24, 16, 0x67, 79, 0x8F, 400, 15, false, true, false},
+	{0x04, 40, 24, 8, 0x63, 39, 0x8F, 400, 1, true, false, true},
+	{0x05, 40, 24, 8, 0x63, 39, 0x8F, 400, 1, true, false, true},
+	{0x06, 80, 24, 8, 0x63, 79, 0x8F, 400, 1, true, false, false},
+	{0x07, 80, 24, 16, 0x66, 79, 0x8F, 400, 15, false, true, false},
+	{0x0D, 40, 24, 8, 0x63, 39, 0x8F, 400, 0, true, false, true},
+	{0x0E, 80, 24, 8, 0x63, 79, 0x8F, 400, 0, true, false, false},
+	{0x0F, 80, 24, 14, 0xA3, 79, 0x5D, 350, 0, false, false, false},
+	{0x10, 80, 24, 14, 0xA3, 79, 0x5D, 350, 0, false, false, false},
+	{0x11, 80, 29, 16, 0xE3, 79, 0xDF, 480, 0, false, false, false},
+	{0x12, 80, 29, 16, 0xE3, 79, 0xDF, 480, 0, false, false, false},
+	{0x13, 40, 24, 8, 0x63, 79, 0x8F, 400, 1, false, false, false},
 }
 
 // Builds a 16-bit real-mode boot sector that walks a mode table, sets each
@@ -143,6 +147,15 @@ mode_matrix_boot_floppy :: proc(cases: []Mode_Matrix_Case) -> ([]u8, bool) {
 	vgabios_probe_emit(&code, 0x01, 0xC2) // add dx, ax
 
 	for index in MODE_MATRIX_CRTC_INDICES {
+		vgabios_probe_emit(&code, 0xB0, index, 0xEE) // mov al, index / out dx, al
+		vgabios_probe_emit(&code, 0x42, 0xEC, 0xAA) // inc dx / in al, dx / stosb
+		vgabios_probe_emit(&code, 0x4A) // dec dx
+	}
+
+	// The Sequencer sits at a fixed address and needs none of the Miscellaneous
+	// Output arithmetic above, so it is read after the CRT Controller sweep.
+	vgabios_probe_emit(&code, 0xBA, 0xC4, 0x03) // mov dx, 03c4h
+	for index in ([?]u8{0x01, 0x04}) {
 		vgabios_probe_emit(&code, 0xB0, index, 0xEE) // mov al, index / out dx, al
 		vgabios_probe_emit(&code, 0x42, 0xEC, 0xAA) // inc dx / in al, dx / stosb
 		vgabios_probe_emit(&code, 0x4A) // dec dx
@@ -222,6 +235,8 @@ test_machine_vgabios_int10_mode_matrix :: proc(t: ^testing.T) {
 			.Crtc_End_Vertical_Blanking = 0,
 			.Crtc_Overflow = 0,
 			.Crtc_Maximum_Scan_Line = 0,
+			.Seq_Clocking_Mode = 0,
+			.Seq_Memory_Mode = 0,
 		}
 		for field in Mode_Matrix_Field {
 			// Fields beyond the vertical display end carry relational rather
@@ -273,5 +288,23 @@ test_machine_vgabios_int10_mode_matrix :: proc(t: ^testing.T) {
 			mode_matrix_field(m, index, .Crtc_End_Horizontal_Blanking) & 0x80,
 			u8(0x80),
 		)
+
+		clocking := mode_matrix_field(m, index, .Seq_Clocking_Mode)
+		memory_mode := mode_matrix_field(m, index, .Seq_Memory_Mode)
+		log.infof(
+			"INT 10h mode %02Xh sequencer clocking=%02X memory=%02X",
+			entry.mode,
+			clocking,
+			memory_mode,
+		)
+		testing.expect_value(t, clocking & 0x01 == 0, entry.nine_dot_characters)
+		testing.expect_value(t, clocking & 0x08 != 0, entry.dot_clock_divide)
+		// The serializer load-rate controls stay at their reset value in every
+		// mode the firmware sets, which is why nothing consumes them.
+		testing.expect_value(t, clocking & 0x14, u8(0))
+		// A completed mode set never leaves the screen switched off.
+		testing.expect_value(t, clocking & 0x20, u8(0))
+		// Extended memory is enabled in every mode.
+		testing.expect_value(t, memory_mode & 0x02, u8(0x02))
 	}
 }

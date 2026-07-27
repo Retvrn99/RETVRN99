@@ -33,10 +33,10 @@ not implicit capability claims.
 | Feature Control 3BAh/3DAh and 3CAh reserved behavior | IBM 2-46 | Partial | `src/vga/ports.odin` retains two undocumented bits | Reserved read/write test required |
 | Video Subsystem Enable 3C3h decode behavior | IBM 2-46 and INT 10h AH=12h BL=32h | Partial | `src/vga/legacy_control.odin` | BIOS disable/enable integration test required |
 | Sequencer 00h synchronous/asynchronous reset | IBM 2-48 | Conformant | `src/vga/ports.odin`, `src/vga/scanout.odin` | `vga_test_sequencer_reset_public_port_matrix_preserves_state`, `vga_test_sequencer_reset_and_screen_off_are_independent`, `vga_test_sequencer_reset_drives_damage_generation_and_descriptor_restore`, `test_machine_vga_sequencer_reset_crosses_io_and_restores_scanout` |
-| Sequencer 01h clocking mode: 8/9 dots, shift load, dot-clock divide, shift-4, screen off | IBM 2-49 to 2-50 | Partial | Dot width, divide, and screen off exist; serializer load controls are inert | Serializer and screen-off tests required |
+| Sequencer 01h clocking mode: 8/9 dots, shift load, dot-clock divide, shift-4, screen off | IBM 2-49 to 2-50 | Conformant | `src/vga/timing.odin` takes the character width and the divider; `src/vga/scanout.odin` takes screen off | `vga_test_sequencer_clocking_mode_drives_width_clock_and_screen_off` drives all three through 3C4h/3C5h and requires the dot count, the line period, and both the rendered output and Input Status 1 to follow. `test_machine_vgabios_int10_mode_matrix` reads the register back after every firmware mode set and pins the character width and the divider per mode. The two serializer load-rate controls are an explicit exclusion below, and the same test requires the firmware to leave them at their reset value in all fifteen modes |
 | Sequencer 02h map mask | IBM 2-51 | Conformant | `src/vga/memory.odin` | `src/vga/memory_tests.odin` map-mask cases |
 | Sequencer 03h character map select | IBM 2-52 to 2-53 | Conformant | `src/vga/scanout.odin` | `test_vga_text_uses_selected_character_maps` |
-| Sequencer 04h extended memory, odd/even disable, chain-4 | IBM 2-54 | Partial | Odd/even and chain-4 exist; extended-memory gating is inert | Addressing matrix expansion required |
+| Sequencer 04h extended memory, odd/even disable, chain-4 | IBM 2-54 | Conformant | `src/vga/memory.odin` routes both chain-4 and odd/even | `vga_test_sequencer_memory_mode_routes_writes_through_the_ports` drives the register through 3C5h and reads the planes back for chain-4, for the map-mask path with chaining off, and for odd/even paired with the Graphics 06h chain bit. Extended-memory gating is an explicit exclusion below; `test_machine_vgabios_int10_mode_matrix` requires the firmware to enable it in all fifteen modes |
 
 ## CRT Controller registers
 
@@ -202,19 +202,15 @@ rows it closes, so this section is a view of the matrix rather than a second
 source of truth. An entry disappears when its rows read `Conformant` or when the
 row records a deliberate limit instead.
 
-1. **Sequencer inert fields.** 01h serializer load and screen off, 04h
-   extended-memory gating. These are the only two rows left naming inert
-   implementation rather than missing proof. Extended-memory gating can only
-   remove guest access, so it is measured before it is called an improvement.
-2. **Text and monochrome.** Line graphics ninth-dot duplication for C0h-DFh,
+1. **Text and monochrome.** Line graphics ninth-dot duplication for C0h-DFh,
    the Attribute 12h status multiplexer in text modes, and the Input Status 1
    CGA/MDA matrix.
-3. **CGA and chain-4 wrap matrices.** The 16 KiB page wrap through the public
+2. **CGA and chain-4 wrap matrices.** The 16 KiB page wrap through the public
    CGA ports and the exhaustive chain-4 and odd/even boundary cases.
-4. **Reserved and firmware-gated bits.** Miscellaneous Output reserved bits,
+3. **Reserved and firmware-gated bits.** Miscellaneous Output reserved bits,
    Feature Control, Video Subsystem Enable through the BIOS, and the DAC's
    firmware proof.
-5. **VBE surface.** 4F05h direct window entry, 4F06h and 4F07h remainders, the
+4. **VBE surface.** 4F05h direct window entry, 4F06h and 4F07h remainders, the
    protected-mode interface table, and LFB proofs for modes 150h and 151h.
 
 GDI and DirectDraw conformance is carried by the GSWGFX guest suite rather than
@@ -230,4 +226,6 @@ by this matrix; see `AGENTS.md` for the gate and its expected counts.
 | Clone-specific undocumented VGA/SVGA quirks | Out of target | IBM VGA and pinned Bochs contracts are normative |
 | VBE 3.0 custom CRTC timings | Out of target | Legacy firmware contract is VBE 2.0 |
 | Bochs per-identifier video memory ceilings, 8 MiB at ID4 and 16 MiB at ID5 | Out of target | DISPI identifiers gate capability, never capacity. The full persona aperture is exposed at every level and index 0Ah reports the true size, one level earlier than Bochs exposed it. See ADR 0011 |
+| Sequencer 01h serializer load rate, bits 2 and 4 | Out of target | Presentation is scanline ordered and has no serializer to reload, so the load rate has nothing to act on. `test_machine_vgabios_int10_mode_matrix` requires both bits to stay at their reset value across every firmware mode set |
+| Sequencer 04h extended-memory gating, bit 1 | Out of target | The same principle as ADR 0011: a capability bit never shrinks capacity. Clearing it on real hardware hides everything above 64 KiB, and honouring that could only take memory away from a guest. `test_machine_vgabios_int10_mode_matrix` requires the firmware to enable it in every mode, so no supported path depends on the restriction |
 | DirectDraw, Direct3D, or OpenGL acceleration changes | Out of target | Existing GSW-VGA 2D and guarded 3D Interfaces remain unchanged |
