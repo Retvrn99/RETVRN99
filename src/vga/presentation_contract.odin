@@ -82,6 +82,7 @@ vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
 	_ = vga_damage_seal_pending(v, v.legacy_presentation_sequence)
 	damage := vga_damage_snapshot(v)
 	if damage.kind == .Invalid || damage.rects.count == 0 {return {}}
+	border_left, border_right, border_top, border_bottom := border_extents(v)
 	return {
 		damage_kind = damage.kind,
 		full_reason = damage.full_reason,
@@ -94,6 +95,7 @@ vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
 			surface_extent = extent,
 			canvas_extent = extent,
 			overscan = overscan_color(v),
+			border = {u32(border_left), u32(border_right), u32(border_top), u32(border_bottom)},
 			source = full,
 			destination = full,
 			dirty = damage.rects,

@@ -987,6 +987,7 @@ host_presentation_commit_legacy_staged :: proc(
 		h.aspect_width = int(admission.legacy.header.canvas_extent.width)
 		h.aspect_height = int(admission.legacy.header.canvas_extent.height)
 		h.overscan = admission.legacy.header.overscan
+		h.border = host_border_from_contract(admission.legacy.header.border)
 		h.has_frame = true
 	}
 	if host_presentation_full_update(admission.legacy.header) {
@@ -1068,6 +1069,7 @@ host_presentation_commit_gsw_snapshot_staged :: proc(
 		h.gpu_present = {}
 		h.aspect_width = int(admission.gsw.header.canvas_extent.width)
 		h.aspect_height = int(admission.gsw.header.canvas_extent.height)
+		h.border = host_border_from_contract(admission.gsw.header.border)
 		h.has_frame = true
 	}
 	if host_presentation_full_update(admission.gsw.header) {
@@ -1172,6 +1174,7 @@ host_presentation_commit_resident :: proc(
 	h.gpu_present = present
 	h.aspect_width = int(admission.gsw.header.canvas_extent.width)
 	h.aspect_height = int(admission.gsw.header.canvas_extent.height)
+	h.border = host_border_from_contract(admission.gsw.header.border)
 	h.has_frame = true
 	h.gpu_direct_presents += 1
 	host_presentation_metric_add(&h.presentation_metrics.resident_presents, 1)
@@ -1330,6 +1333,7 @@ host_presentation_apply_invalidation :: proc(
 		h.aspect_width = int(legacy.canvas_extent.width)
 		h.aspect_height = int(legacy.canvas_extent.height)
 		h.overscan = legacy.overscan
+		h.border = host_border_from_contract(legacy.border)
 		h.has_frame = true
 		host_presentation_metric_add(&h.presentation_metrics.last_good_restorations, 1)
 	} else if result.action == .Restore_Gsw {
@@ -1339,6 +1343,7 @@ host_presentation_apply_invalidation :: proc(
 		gsw := state.gsw.header
 		h.aspect_width = int(gsw.canvas_extent.width)
 		h.aspect_height = int(gsw.canvas_extent.height)
+		h.border = host_border_from_contract(gsw.border)
 		h.has_frame = state.gsw_texture != nil
 		host_presentation_metric_add(&h.presentation_metrics.last_good_restorations, 1)
 	} else if result.action == .Clear {

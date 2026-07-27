@@ -17,6 +17,10 @@ Extent :: struct {
 	width, height: u32,
 }
 
+Border :: struct {
+	left, right, top, bottom: u32,
+}
+
 Rect_Set :: struct {
 	count: u32,
 	rects: [MAX_RECTS]Rect,
@@ -100,6 +104,10 @@ Header :: struct {
 	// Border colour outside the canvas, as BGRA. Presentation paints the
 	// surround with it instead of a fixed black.
 	overscan:             u32,
+	// Border thickness per side, in canvas pixels. The canvas never carries border
+	// pixels; presentation shrinks it inside its view rect so the surround shows a
+	// border of this proportion.
+	border:               Border,
 }
 
 Legacy_Frame_Update :: struct {

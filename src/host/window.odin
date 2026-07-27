@@ -14,6 +14,10 @@ WIN_H :: TEXT_H * DEFAULT_WINDOW_SCALE + MENU_BAR_H + STATUS_BAR_H
 HOST_GPU_DRIVER :: "vulkan"
 HOST_VULKAN_API_VERSION :: u32(0x0040_1000) // VK_MAKE_API_VERSION(0, 1, 1, 0)
 
+Host_Border :: struct {
+	left, right, top, bottom: int,
+}
+
 Host_Client_Insets :: struct {
 	top:    f32,
 	right:  f32,
@@ -45,6 +49,7 @@ Host :: struct {
 	aspect_width:           int,
 	aspect_height:          int,
 	overscan:               u32,
+	border:                 Host_Border, // canvas pixels of border per side
 	window_scale:           int,
 	fullscreen:             bool,
 	menu_reveal:            f32,

@@ -123,6 +123,40 @@ guest_view_rect_insets :: proc(
 	return {left + (area_w - w) * 0.5, top + (area_h - h) * 0.5, w, h}
 }
 
+@(private = "package")
+host_border_from_contract :: proc(border: contract.Border) -> Host_Border {
+	return {int(border.left), int(border.right), int(border.top), int(border.bottom)}
+}
+
+// The published border travels as a proportion rather than as pixels: the canvas
+// shrinks inside its view rect and the surround, already painted in the border
+// colour, shows through (ADR 0012). The whole raster keeps the display aspect, so
+// the active image inside it is the part that is no longer exactly 4:3, which is
+// what the hardware does.
+host_guest_canvas_rect :: proc(h: ^Host, output_width, output_height: int) -> sdl3.FRect {
+	rect := guest_view_rect_insets(
+		h.aspect_width,
+		h.aspect_height,
+		output_width,
+		output_height,
+		host_client_insets(h),
+	)
+	border := h.border
+	if border == {} {return rect}
+	total_width := max(h.aspect_width + border.left + border.right, 1)
+	total_height := max(h.aspect_height + border.top + border.bottom, 1)
+	left := rect.w * f32(max(border.left, 0)) / f32(total_width)
+	right := rect.w * f32(max(border.right, 0)) / f32(total_width)
+	top := rect.h * f32(max(border.top, 0)) / f32(total_height)
+	bottom := rect.h * f32(max(border.bottom, 0)) / f32(total_height)
+	return {
+		rect.x + left,
+		rect.y + top,
+		max(rect.w - left - right, 1),
+		max(rect.h - top - bottom, 1),
+	}
+}
+
 host_ensure_texture :: proc(h: ^Host, width, height: int) -> bool {
 	if width <= 0 || height <= 0 {return false}
 	if h.tex != nil && h.tex_width == width && h.tex_height == height {return true}
@@ -285,13 +319,7 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 	}
 	active := h.presentation_state.selector.active
 	if active.kind == .Gsw && active.source_kind == .Gsw_Resident && h.has_frame {
-		dst := guest_view_rect_insets(
-			h.aspect_width,
-			h.aspect_height,
-			output_width,
-			output_height,
-			host_client_insets(h),
-		)
+		dst := host_guest_canvas_rect(h, output_width, output_height)
 		return host_render_resident_composition(h, dst) && ok
 	}
 	texture, source, has_source, gpu_present := host_active_texture(h)
@@ -306,13 +334,7 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 				texture_height = int(surface.descriptor.height)
 			}
 		}
-		dst := guest_view_rect_insets(
-			h.aspect_width,
-			h.aspect_height,
-			output_width,
-			output_height,
-			host_client_insets(h),
-		)
+		dst := host_guest_canvas_rect(h, output_width, output_height)
 		if gpu_present != nil {
 			dst = host_gpu_present_destination(dst, gpu_present^)
 		} else {

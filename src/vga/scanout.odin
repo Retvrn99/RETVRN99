@@ -609,6 +609,35 @@ overscan_color :: proc(v: ^Vga) -> u32 {
 	return attribute_color(v, v.attr[0x11])
 }
 
+// The border the display shows around the active image, in image pixels per side
+// (ADR 0012). A raster line runs active, trailing border, blanking, then leading
+// border before the next line's active area, so the trailing side is the gap
+// between display end and blank start and the leading side is the gap between
+// blank end and the end of the line. The vertical axis works the same way.
+//
+// The pixel buffer never carries border pixels; presentation paints a border of
+// this proportion around the scaled canvas instead. Stock VGA modes program a few
+// pixels of it, so the common frame is very nearly unchanged.
+@(private = "package")
+border_extents :: proc(v: ^Vga) -> (left, right, top, bottom: int) {
+	if v == nil {return}
+	kind, width, height := display_geometry(v)
+	if kind == .Invalid || width <= 0 || height <= 0 {return}
+	dots := max(v.timing.visible_dots, 1)
+	lines := max(v.timing.visible_lines, 1)
+	// A border wider than the image it surrounds is a misprogrammed raster rather
+	// than an effect, so each side is clamped instead of being allowed to swallow
+	// the canvas the host scales into it.
+	side :: proc(span, visible, image: int) -> int {
+		return min(max(span, 0) * image / visible, image)
+	}
+	left = side(v.timing.total_dots - v.timing.hblank_end, dots, width)
+	right = side(v.timing.hblank_start - v.timing.visible_dots, dots, width)
+	top = side(v.timing.total_lines - v.timing.vblank_end, lines, height)
+	bottom = side(v.timing.vblank_start - v.timing.visible_lines, lines, height)
+	return
+}
+
 @(private = "file")
 render_text :: proc(v: ^Vga, pixels: []u32, width, height: int) {
 	for y in 0 ..< height {render_text_scanline(v, pixels, width, height, y, 0, width)}

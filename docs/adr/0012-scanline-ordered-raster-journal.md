@@ -152,3 +152,44 @@ Three of the seven kinds this ADR originally whitelisted therefore do not
 belong. The whitelist was written before the expansion path had been read
 closely, and the remaining four are DAC entries, PEL panning, byte panning, and
 the internal palette with its address-source bit.
+
+### The leading border comes from blank end, not from blank start
+
+The decision above derives border extents from "the display-end and blank-start
+registers", which describes only the trailing border. A raster line runs active
+display, trailing border, blanking, then leading border before the next line's
+active area begins, so the leading side is the gap between blank end and the end
+of the line. The vertical axis is the same, with vertical blank end against
+vertical total.
+
+Deriving one side and mirroring it would have been wrong rather than merely
+approximate. Stock mode 12h programs no trailing horizontal border at all and
+sixteen dot clocks of leading border, so a mirrored trailing extent publishes
+zero where the hardware shows a visible strip. All four sides are therefore
+published separately, which costs one struct and a slightly longer inset in the
+host.
+
+### The overscan colour leaves the whitelist as well
+
+The amendment above deferred the overscan delta into the border-extents slice
+because there was nothing for it to change until a frame carried a border. The
+border now exists, and the kind still does not belong.
+
+The border is not expanded into pixels. It is header metadata that the host
+paints around the scaled canvas, resolved once per frame from Attribute
+Controller 11h through the internal palette and the DAC. Making a mid-frame
+overscan write observable means publishing a list of scan-line-stamped border
+colours, and resolving each one exactly means replaying the DAC and internal
+palette deltas that may sit between them. That replay can happen in one of two
+places, and both are worse than the effect is worth. On the VM thread it puts
+palette reconstruction back where this ADR moved it out of. In host expansion it
+makes the border colour come from the expansion path for some frames and from
+the published header for the rest, which splits ownership of a single field.
+
+The effect bought by either is a colour band inside a border that stock modes
+make about sixteen pixels wide, driven by a technique this platform's software
+does not use. Four of the seven originally whitelisted kinds are therefore
+struck, and the journal carries DAC entries, PEL panning, byte panning, and the
+internal palette with its address-source bit. If a workload turns up that needs
+border bars, the band list is the design to build, and it should be built as its
+own decision rather than smuggled in under this one.

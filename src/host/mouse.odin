@@ -15,13 +15,7 @@ mouse_inside_guest :: proc(h: ^Host, x, y: f32) -> bool {
 		output_width = int(w)
 		output_height = int(hh)
 	}
-	r := guest_view_rect_insets(
-		h.aspect_width,
-		h.aspect_height,
-		output_width,
-		output_height,
-		host_client_insets(h),
-	)
+	r := host_guest_canvas_rect(h, output_width, output_height)
 	return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
 

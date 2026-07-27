@@ -173,3 +173,62 @@ host_test_stopped_logo_asset_decodes_at_native_size :: proc(t: ^testing.T) {
 	testing.expect_value(t, img.width, 460)
 	testing.expect_value(t, img.height, 222)
 }
+
+@(private = "file")
+expect_near :: proc(t: ^testing.T, actual, expected: f32, loc := #caller_location) {
+	testing.expectf(
+		t,
+		abs(actual - expected) < 0.001,
+		"expected %v, got %v",
+		expected,
+		actual,
+		loc = loc,
+	)
+}
+
+// The border travels as a proportion. A canvas with a published border keeps the
+// whole raster inside the view rect and paints the surround, already cleared to
+// the border colour, around it (ADR 0012).
+@(test)
+host_test_border_extents_shrink_the_guest_canvas :: proc(t: ^testing.T) {
+	h := Host {
+		aspect_width  = 640,
+		aspect_height = 480,
+	}
+	plain := host_guest_canvas_rect(&h, 800, 600)
+
+	// Eight border lines on each side of a 480-line image: the raster is 496
+	// lines and the image keeps 480/496 of the view rect's height.
+	h.border = {
+		top    = 8,
+		bottom = 8,
+	}
+	bordered := host_guest_canvas_rect(&h, 800, 600)
+	expect_near(t, bordered.x, plain.x)
+	expect_near(t, bordered.w, plain.w)
+	expect_near(t, bordered.h, plain.h * 480.0 / 496.0)
+	expect_near(t, bordered.y, plain.y + plain.h * 8.0 / 496.0)
+
+	// A border on both axes insets both, and the canvas stays centred.
+	h.border.left = 32
+	h.border.right = 32
+	both := host_guest_canvas_rect(&h, 800, 600)
+	expect_near(t, both.w, plain.w * 640.0 / 704.0)
+	expect_near(t, both.x + both.w / 2, plain.x + plain.w / 2)
+	expect_near(t, both.y + both.h / 2, plain.y + plain.h / 2)
+}
+
+// No published border must leave the destination byte-for-byte where it was, so
+// every frame that programs no border renders exactly as it did before.
+@(test)
+host_test_absent_border_leaves_the_canvas_rect_alone :: proc(t: ^testing.T) {
+	h := Host {
+		aspect_width  = 640,
+		aspect_height = 480,
+	}
+	for output_width in ([?]int{640, 800, 1024, 1440}) {
+		expected := guest_view_rect_insets(640, 480, output_width, 600, host_client_insets(&h))
+		actual := host_guest_canvas_rect(&h, output_width, 600)
+		testing.expect_value(t, actual, expected)
+	}
+}
