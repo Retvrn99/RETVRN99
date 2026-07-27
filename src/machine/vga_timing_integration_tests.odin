@@ -12,7 +12,15 @@ import "core:time"
 // derives from are written, and CRT Controller 11h goes first because bit 7 of
 // it write protects 00h through 07h.
 @(private = "file")
-vga_retrace_halt_program_mode :: proc(v: ^video.Vga) {
+vga_timing_test_enable_io :: proc(m: ^Machine, t: ^testing.T) -> bool {
+	pci_out(&m.pci, 0xCF8, 4, 0x8000_1004)
+	pci_out(&m.pci, 0xCFC, 2, 0x0003)
+	testing.expect(t, machine_sync_pci_devices(m))
+	return testing.expect(t, m.vga.pci_io_enabled)
+}
+
+@(private = "file")
+vga_timing_test_program_mode :: proc(v: ^video.Vga) {
 	video.vga_out(v, 0x3C2, 0xE3)
 	video.vga_out(v, 0x3C4, 0x01)
 	video.vga_out(v, 0x3C5, 0x01)
@@ -64,11 +72,8 @@ test_machine_halted_guest_wakes_on_vga_vertical_retrace :: proc(t: ^testing.T) {
 	defer free(m)
 	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
 	defer machine_destroy(m)
-	pci_out(&m.pci, 0xCF8, 4, 0x8000_1004)
-	pci_out(&m.pci, 0xCFC, 2, 0x0003)
-	testing.expect(t, machine_sync_pci_devices(m))
-	if !testing.expect(t, m.vga.pci_io_enabled) {return}
-	vga_retrace_halt_program_mode(&m.vga)
+	if !vga_timing_test_enable_io(m, t) {return}
+	vga_timing_test_program_mode(&m.vga)
 	testing.expect_value(t, m.vga.timing.total_lines, 525)
 	testing.expect_value(t, m.vga.timing.retrace_start, 490)
 	vga_retrace_halt_setup_irq9(&m.pic)
@@ -127,4 +132,34 @@ test_machine_halted_guest_wakes_on_vga_vertical_retrace :: proc(t: ^testing.T) {
 	testing.expect_value(t, seen, u32(0x42))
 	testing.expect_value(t, m.inj_count[0x71], u64(1))
 	testing.expect(t, !m.vga.vertical_interrupt_pending)
+}
+
+// IBM 2-67 and 2-99. The start address pair latches at vertical retrace, and
+// nothing the guest does afterwards is needed to reach it: writing the pair arms
+// a VGA deadline, and the scheduler advancing the master timeline across that
+// deadline is what carries the beam through retrace.
+@(test)
+test_machine_scheduler_latches_vga_start_address_at_retrace :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(m)
+	if !vga_timing_test_enable_io(m, t) {return}
+	vga_timing_test_program_mode(&m.vga)
+
+	video.vga_out(&m.vga, 0x3D4, 0x0C)
+	video.vga_out(&m.vga, 0x3D5, 0x10)
+	video.vga_out(&m.vga, 0x3D4, 0x0D)
+	video.vga_out(&m.vga, 0x3D5, 0x00)
+	testing.expect(t, m.vga.start_pending)
+	testing.expect_value(t, m.vga.latched_start, u16(0))
+
+	// A quarter of a frame is short of the retrace line at 490 of 525.
+	machine_advance_time_ns(m, 4_000_000)
+	testing.expect(t, m.vga.start_pending)
+	testing.expect_value(t, m.vga.latched_start, u16(0))
+
+	machine_advance_time_ns(m, 20_000_000)
+	testing.expect(t, !m.vga.start_pending)
+	testing.expect_value(t, m.vga.latched_start, u16(0x1000))
 }

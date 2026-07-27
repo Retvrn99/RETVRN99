@@ -19,11 +19,17 @@ legacy_line_compare :: proc(v: ^Vga) -> int {
 	return line
 }
 
+// IBM 2-75. Horizontal Retrace Select clocks the row scan counter at half the
+// horizontal rate, so every character row covers twice the scan lines. No stock
+// BIOS mode programs it; software that wants a doubled raster usually reaches
+// for the double-scan bit beside Maximum Scan Line instead.
 @(private = "package")
 legacy_graphics_scan_factor :: proc(v: ^Vga) -> int {
 	maximum_scan := int(v.crtc[0x09] & 0x1f) + 1
 	double_scan := v.crtc[0x09] & 0x80 != 0 ? 2 : 1
-	return max(maximum_scan, double_scan)
+	factor := max(maximum_scan, double_scan)
+	if v.crtc[0x17] & 0x04 != 0 {factor *= 2}
+	return factor
 }
 
 @(private = "file")
