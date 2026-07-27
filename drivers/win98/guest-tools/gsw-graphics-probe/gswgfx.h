@@ -102,6 +102,9 @@ typedef struct GSW_OPTIONS {
 	BOOL d3d_only;
 	BOOL ddraw4;
 	BOOL bounded;
+	/* Asks the host to write an image per mode. Off by default because the
+	 * round trip per capture is paid in the timings the run reports. */
+	BOOL capture;
 } GSW_OPTIONS;
 
 typedef struct GSW_REPORT {
@@ -172,6 +175,7 @@ BOOL gsw_report_mode(GSW_SESSION *session, const GSW_ROW *row);
 BOOL gsw_report_run(GSW_SESSION *session, GSW_STATUS status, DWORD api_code, const char *detail);
 BOOL gsw_report_import_rows(GSW_REPORT *report, const BYTE *bytes, DWORD length);
 BOOL gsw_host_publish(const GSW_REPORT *report);
+BOOL gsw_host_capture(BYTE label);
 void gsw_host_exit(DWORD code);
 
 BOOL gsw_pattern_allocate(DWORD width, DWORD height, DWORD bpp, BYTE **pixels, DWORD *pitch);

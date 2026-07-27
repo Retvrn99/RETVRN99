@@ -10,6 +10,8 @@
 #define GSW_REPORT_COMMIT 6
 #define GSW_REPORT_ABORT 7
 #define GSW_HOST_OK 1
+#define GSW_COMPOSED_SNAPSHOT 8
+#define GSW_REG_SNAPSHOT 29
 
 static void gsw_out8(WORD port, BYTE value)
 {
@@ -84,6 +86,16 @@ BOOL gsw_host_publish(const GSW_REPORT *report)
 		return FALSE;
 	}
 	return TRUE;
+}
+
+/* Asks the host to write what the window would be showing right now, under the
+ * given label, and waits for it. Waiting is the point: the host samples the
+ * display when it services the command, so a caller that returned immediately
+ * would race its own next mode change and capture whatever came after. */
+BOOL gsw_host_capture(BYTE label)
+{
+	gsw_register_write(GSW_REG_SNAPSHOT, label);
+	return gsw_command(GSW_COMPOSED_SNAPSHOT);
 }
 
 void gsw_host_exit(DWORD code)
