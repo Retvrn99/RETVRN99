@@ -130,6 +130,7 @@ raster_journal_record :: proc(v: ^Vga, kind: Raster_Delta_Kind, index: u16, prev
 		previous = previous,
 	}
 	journal.count += 1
+	v.raster_journal_deltas += 1
 }
 
 // Descriptor capture is not beam synchronized, so the journal of the frame

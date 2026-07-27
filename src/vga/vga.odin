@@ -138,6 +138,7 @@ Vga :: struct {
 	raster_fallback:                        bool,
 	raster_change_frame:                    u64,
 	raster_journal:                         Raster_Journal,
+	raster_journal_deltas:                  u64,
 	raster_journal_truncations:             u64,
 	defer_scanout_conversion:               bool,
 	frame_valid:                            bool,

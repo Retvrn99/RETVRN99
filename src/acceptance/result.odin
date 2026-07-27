@@ -82,6 +82,8 @@ Execution_Result :: struct {
 	scanout_copies:                      u64,
 	full_frame_renders:                  u64,
 	software_rendered_pixels:            u64,
+	raster_journal_deltas:               u64,
+	raster_journal_truncations:          u64,
 }
 
 Wake_Guard_Result :: struct {

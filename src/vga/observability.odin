@@ -30,6 +30,7 @@ Vga_Mode_Observability :: struct {
 	io_write_bytes:                        u64,
 	raster_journal_entries:                u32,
 	raster_journal_truncated:              bool,
+	raster_journal_deltas:                 u64,
 	raster_journal_truncations:            u64,
 }
 
@@ -65,6 +66,7 @@ vga_mode_observability :: proc(v: ^Vga) -> Vga_Mode_Observability {
 		io_write_bytes                        = v.io_write_bytes,
 		raster_journal_entries                = v.raster_journal.count,
 		raster_journal_truncated              = v.raster_journal.truncated,
+		raster_journal_deltas                 = v.raster_journal_deltas,
 		raster_journal_truncations            = v.raster_journal_truncations,
 	}
 	if !result.vbe_enabled || pitch <= 0 {return result}

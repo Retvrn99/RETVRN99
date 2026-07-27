@@ -724,6 +724,8 @@ Machine_Execution_Counters :: struct {
 	scanout_copies:                      u64,
 	full_frame_renders:                  u64,
 	software_rendered_pixels:            u64,
+	raster_journal_deltas:               u64,
+	raster_journal_truncations:          u64,
 }
 
 machine_execution_counters :: proc(m: ^Machine) -> Machine_Execution_Counters {
@@ -748,6 +750,8 @@ machine_execution_counters :: proc(m: ^Machine) -> Machine_Execution_Counters {
 		full_frame_renders = m.vga.full_frame_renders,
 		software_rendered_pixels = m.vga.raster_pixels_rendered +
 		m.gsw_vga.metrics.software_pixels,
+		raster_journal_deltas = m.vga.raster_journal_deltas,
+		raster_journal_truncations = m.vga.raster_journal_truncations,
 	}
 }
 

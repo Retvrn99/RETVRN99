@@ -417,6 +417,8 @@ console_result_accumulate_machine :: proc(result: ^acceptance.Result, m: ^machin
 	result.execution.scanout_copies += execution.scanout_copies
 	result.execution.full_frame_renders += execution.full_frame_renders
 	result.execution.software_rendered_pixels += execution.software_rendered_pixels
+	result.execution.raster_journal_deltas += execution.raster_journal_deltas
+	result.execution.raster_journal_truncations += execution.raster_journal_truncations
 	observability := machine.machine_audio_observability(m)
 	metrics := observability.output
 	result.audio.frames_produced += metrics.frames_produced
