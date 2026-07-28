@@ -213,3 +213,39 @@ test_machine_runtime_diagnostic_labels_bmide_only_failure_without_block_context 
 	testing.expect(t, strings.contains(message, "context=bmide-only"))
 	testing.expect(t, strings.contains(message, "block=0 detail=no-block-device-failure"))
 }
+
+@(test)
+test_machine_runtime_diagnostic_drain_between_incidents_reports_both :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	m.active_ns = 1
+	offer := Pic_Interrupt_Token {
+		kind      = .Slave,
+		slave_irq = 1,
+	}
+	for _ in 0 ..< MACHINE_VGA_IRQ_STORM_COUNT {
+		machine_runtime_diagnostic_note_irq(m, offer)
+	}
+
+	first, first_available := machine_take_runtime_diagnostic(m)
+	defer delete(first)
+	testing.expect(t, first_available)
+	testing.expect(t, strings.contains(first, "VGA IRQ9 storm"))
+
+	m.ide.first_failure = {
+		valid      = true,
+		reason     = .Dma_Write,
+		command    = 0xCA,
+		lba        = 1234,
+		byte_count = 4096,
+	}
+	machine_runtime_diagnostic_check_storage(m)
+
+	second, second_available := machine_take_runtime_diagnostic(m)
+	defer delete(second)
+	testing.expect(t, second_available)
+	testing.expect(t, strings.contains(second, "storage first failure"))
+
+	_, drained := machine_take_runtime_diagnostic(m)
+	testing.expect(t, !drained)
+}

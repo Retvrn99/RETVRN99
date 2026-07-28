@@ -240,6 +240,8 @@ machine_runtime_diagnostic_check_storage :: proc(m: ^Machine) {
 	machine_runtime_diagnostic_queue(m, .Storage_First_Failure)
 }
 
+// The returned string is allocated from context.allocator and owned by the
+// caller, who must delete it after use.
 machine_take_runtime_diagnostic :: proc(m: ^Machine) -> (string, bool) {
 	if m == nil || m.runtime_diagnostic.pending == .None {return "", false}
 	d := &m.runtime_diagnostic

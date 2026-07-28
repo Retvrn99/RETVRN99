@@ -2575,6 +2575,10 @@ console_main :: proc(
 			break loop
 		}
 		if options.artifacts != "" {console_drain_serial(options.artifacts, m)}
+		if diagnostic, available := machine.machine_take_runtime_diagnostic(m); available {
+			fmt.println(diagnostic)
+			delete(diagnostic)
+		}
 		switch command := machine.machine_test_device_take_command(m); command {
 		case .Crc:
 			_ = machine.machine_test_device_frame_crc(m)
