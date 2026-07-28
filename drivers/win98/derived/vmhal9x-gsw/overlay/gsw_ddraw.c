@@ -111,12 +111,16 @@ DDENTRY(Lock32, LPDDHAL_LOCKDATA, data)
 	VMDAHAL_t *hal;
 	DWORD surface_id;
 	RECTL rect;
+	GSWDD_trace(GSW_HAL_TRACE_LOCK);
 	if(data == NULL || data->lpDDSurface == NULL)
 		return DDHAL_DRIVER_NOTHANDLED;
 	hal = GetHAL(data->lpDD);
 	surface_id = GSWDD_surface(hal, data->lpDDSurface);
 	if(surface_id == 0)
+	{
+		GSWDD_trace(GSW_HAL_TRACE_LOCK_NO_SURFACE);
 		return DDHAL_DRIVER_NOTHANDLED;
+	}
 	if(data->bHasRect)
 		 rect = data->rArea;
 	else
@@ -129,8 +133,12 @@ DDENTRY(Lock32, LPDDHAL_LOCKDATA, data)
 	if(rect.left < 0 || rect.top < 0 || rect.right <= rect.left || rect.bottom <= rect.top ||
 		(DWORD)rect.right > data->lpDDSurface->lpGbl->wWidth ||
 		(DWORD)rect.bottom > data->lpDDSurface->lpGbl->wHeight)
+	{
+		GSWDD_trace(GSW_HAL_TRACE_LOCK_BAD_RECT);
 		return DDHAL_DRIVER_NOTHANDLED;
+	}
 	GSWDD_lock_rect(surface_id, &rect, (data->dwFlags & DDLOCK_READONLY) != 0);
+	GSWDD_trace(GSW_HAL_TRACE_LOCK_DONE);
 	return DDHAL_DRIVER_NOTHANDLED;
 }
 
@@ -138,6 +146,7 @@ DDENTRY(Unlock32, LPDDHAL_UNLOCKDATA, data)
 {
 	GSWDDDirty dirty;
 	DWORD surface_id;
+	GSWDD_trace(GSW_HAL_TRACE_UNLOCK);
 	if(data == NULL || data->lpDDSurface == NULL)
 		return DDHAL_DRIVER_NOTHANDLED;
 	surface_id = (DWORD)data->lpDDSurface->dwReserved1;
@@ -228,6 +237,7 @@ DDENTRY(Blt32, LPDDHAL_BLTDATA, data)
 DDENTRY(Flip32, LPDDHAL_FLIPDATA, data)
 {
 	DWORD surface_id;
+	GSWDD_trace(GSW_HAL_TRACE_FLIP);
 	if(data == NULL || data->lpSurfTarg == NULL)
 		return DDHAL_DRIVER_NOTHANDLED;
 	surface_id = GSWDD_surface(GetHAL(data->lpDD), data->lpSurfTarg);

@@ -233,8 +233,14 @@ as measured on 2026-07-28:
   read-back, the flippable primary, its attached back buffer and the palette all
   return, and the first back-buffer `Lock` never does. `DirectDrawCreateEx` is
   absent from this guest's DDRAW.DLL, so the DirectDraw 7 against 4 distinction
-  is not the variable; both paths reach the same Lock. Going deeper needs
-  tracing inside the display driver's own HAL.
+  is not the variable; both paths reach the same Lock. The HAL carries the same
+  kind of trace, and it names the call: `Lock32` registers a surface lazily on
+  first use, and that registration is a synchronous `DeviceIoControl` into
+  `GSWMINI.VXD` issued from inside a DirectDraw lock callback in exclusive
+  full-screen mode. It never returns. The same IOCTL path succeeds during driver
+  load, so the bridge works; what does not work is calling it from there. This
+  is RETVRN99's own guest bridge rather than the firmware, the image or the VGA
+  core, and it is the open item for DirectDraw.
 
 ## Explicit exclusions
 

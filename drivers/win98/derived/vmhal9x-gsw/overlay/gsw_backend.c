@@ -128,10 +128,12 @@ DWORD GSWDD_surface(VMDAHAL_t *hal, LPDDRAWI_DDRAWSURFACE_LCL surface)
 		(DDSCAPS_PRIMARYSURFACE | DDSCAPS_FRONTBUFFER | DDSCAPS_BACKBUFFER)) != 0 ?
 		GSW_DD_SURFACE_PRESENTABLE : 0;
 	request.surface_id = 0;
+	GSWDD_trace(GSW_HAL_TRACE_REGISTER);
 	if(!gsw.register_surface(&request) || request.surface_id == 0)
 	{
 		return 0;
 	}
+	GSWDD_trace(GSW_HAL_TRACE_REGISTER_DONE);
 	surface->dwReserved1 = request.surface_id;
 	return request.surface_id;
 }
@@ -182,6 +184,37 @@ void GSWDD_lock_rect(DWORD surface_id, const RECTL *rect, BOOL read_only)
 	record->dirty.y = (DWORD)rect->top;
 	record->dirty.width = (DWORD)(rect->right - rect->left);
 	record->dirty.height = (DWORD)(rect->bottom - rect->top);
+}
+
+static void gsw_out8(WORD port, BYTE value)
+{
+	__asm__ __volatile__("outb %0, %1" : : "a"(value), "Nd"(port));
+}
+
+static BYTE gsw_in8(WORD port)
+{
+	BYTE value;
+	__asm__ __volatile__("inb %1, %0" : "=a"(value) : "Nd"(port));
+	return value;
+}
+
+void GSWDD_trace(BYTE label)
+{
+	static int enabled = -1;
+	DWORD poll;
+	if(enabled < 0)
+		enabled = GetFileAttributesA(GSW_HAL_TRACE_MARKER) != 0xFFFFFFFFUL ? 1 : 0;
+	if(enabled == 0) return;
+	gsw_out8(0xE4, 29);
+	gsw_out8(0xE5, label);
+	gsw_out8(0xE4, 31);
+	gsw_out8(0xE5, 0);
+	gsw_out8(0xE6, 8);
+	for(poll = 0; poll < 2000; poll++)
+	{
+		gsw_out8(0xE4, 31);
+		if(gsw_in8(0xE5) != 0) return;
+	}
 }
 
 BOOL GSWDD_unlock_rect(DWORD surface_id, GSWDDDirty *dirty)

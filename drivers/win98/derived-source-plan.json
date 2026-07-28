@@ -39,10 +39,10 @@
         {"relative_path":"derived/vmhal9x-gsw/patches/0002-gsw-remove-wine-hook.patch","bytes":601,"sha256":"42a56f27ce164fd5e6a86e62cb8bd9f0dd96fb88e99d2167f4dc15b3dc1d17c9","normalize_lf_paths":["vmhal9x.c"]}
       ],
       "overlays": [
-        {"relative_path":"derived/vmhal9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":10,"directory_count":0,"total_entries":10,"aggregate_bytes":21568,"maximum_file_bytes":9412,"maximum_path_bytes":17,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"77f4405805bfb64b8278c39d8323ae40e38bcc621ee5957896d41ec827586cb5"}},
+        {"relative_path":"derived/vmhal9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":10,"directory_count":0,"total_entries":10,"aggregate_bytes":23172,"maximum_file_bytes":9657,"maximum_path_bytes":17,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"772900610b4140aab0cffce8291850190eb2b17f50bd990a78a26294710588b3"}},
         {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":3,"directory_count":0,"total_entries":3,"aggregate_bytes":10495,"maximum_file_bytes":5053,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"12a77ff5ae763ff469e9d734cabaafd24867f557b3415947680e8863d7ccd72f"}}
       ],
-      "output_tree": {"file_count":155,"directory_count":12,"total_entries":167,"aggregate_bytes":1402974,"maximum_file_bytes":201544,"maximum_path_bytes":33,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"daba78a4f2ac2b47f43d118371437327eef485b1ec8f9573d14f602c0b7b2dd1"}
+      "output_tree": {"file_count":155,"directory_count":12,"total_entries":167,"aggregate_bytes":1404578,"maximum_file_bytes":201544,"maximum_path_bytes":33,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"54b6288a719713e4592f4da5a074a65d72439268bdd0259e8a0091b269c14a7d"}
     }
   ]
 }
