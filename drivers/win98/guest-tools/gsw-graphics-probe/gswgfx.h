@@ -33,6 +33,31 @@
 #define GSW_MEASURE_MS 3000UL
 #define GSW_SURFACE_RECOVERY_MAX 2UL
 
+/* Capture labels the trace option uses. They start high so they cannot collide
+ * with the mode labels a captured run writes. */
+#define GSW_TRACE_DDRAW_ENTER 208
+#define GSW_TRACE_DDRAW_LIBRARY 209
+#define GSW_TRACE_DDRAW_CREATE_EX 210
+#define GSW_TRACE_DDRAW_CREATE_EX_DONE 211
+#define GSW_TRACE_DDRAW_CREATE 212
+#define GSW_TRACE_DDRAW_CREATE_DONE 213
+#define GSW_TRACE_DDRAW_ENUM 214
+#define GSW_TRACE_DDRAW_ENUM_DONE 215
+#define GSW_TRACE_DDRAW_CLOSED 216
+#define GSW_TRACE_DDRAW_SETUP 217
+#define GSW_TRACE_DDRAW_COOPERATIVE 218
+#define GSW_TRACE_DDRAW_DISPLAY_MODE 219
+#define GSW_TRACE_DDRAW_GET_MODE 220
+#define GSW_TRACE_DDRAW_PRIMARY 221
+#define GSW_TRACE_DDRAW_ATTACHED 222
+#define GSW_TRACE_DDRAW_PALETTE 223
+#define GSW_TRACE_DDRAW_SETUP_DONE 224
+#define GSW_TRACE_DDRAW_FRAME 225
+#define GSW_TRACE_DDRAW_LOCK 226
+#define GSW_TRACE_DDRAW_COPIED 227
+#define GSW_TRACE_DDRAW_UNLOCK 228
+#define GSW_TRACE_DDRAW_FLIP 229
+
 typedef enum GSW_STATUS {
 	GSW_STATUS_PASS = 0,
 	GSW_STATUS_WARN,
@@ -105,6 +130,10 @@ typedef struct GSW_OPTIONS {
 	/* Asks the host to write an image per mode. Off by default because the
 	 * round trip per capture is paid in the timings the run reports. */
 	BOOL capture;
+	/* Breadcrumbs each step of the DirectDraw entry through the host capture
+	 * command, so a run that dies before it can report anything still says how
+	 * far it reached. Off by default; the round trips are not free. */
+	BOOL trace;
 } GSW_OPTIONS;
 
 typedef struct GSW_REPORT {
@@ -176,6 +205,7 @@ BOOL gsw_report_run(GSW_SESSION *session, GSW_STATUS status, DWORD api_code, con
 BOOL gsw_report_import_rows(GSW_REPORT *report, const BYTE *bytes, DWORD length);
 BOOL gsw_host_publish(const GSW_REPORT *report);
 BOOL gsw_host_capture(BYTE label);
+void gsw_trace(const struct GSW_SESSION *session, BYTE label);
 void gsw_host_exit(DWORD code);
 
 BOOL gsw_pattern_allocate(DWORD width, DWORD height, DWORD bpp, BYTE **pixels, DWORD *pitch);

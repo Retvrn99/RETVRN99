@@ -98,6 +98,14 @@ BOOL gsw_host_capture(BYTE label)
 	return gsw_command(GSW_COMPOSED_SNAPSHOT);
 }
 
+/* A breadcrumb the host records as it services it, so a guest that dies later
+ * still leaves the last step it reached behind. */
+void gsw_trace(const GSW_SESSION *session, BYTE label)
+{
+	if(session == NULL || !session->options.trace) return;
+	gsw_host_capture(label);
+}
+
 void gsw_host_exit(DWORD code)
 {
 	gsw_register_write(12, (BYTE)code);

@@ -90,6 +90,10 @@ contract while isolating one Windows path for diagnostic reruns; without those
 switches all three Windows Adapters run.
 `/ddraw4` selects the public DirectDraw 4 compatibility path from creation time
 instead of accepting DirectDraw 7 first.
+`/trace` breadcrumbs each step of the DirectDraw entry through the host capture
+command, so a run that dies before it can publish still leaves a labelled,
+timestamped trail behind. Off by default; the round trips are not free, and they
+land in the timings a traced run reports.
 `/bounded` runs the GDI Adapter but records DirectDraw and Direct3D as
 `UNAVAILABLE` without entering those interfaces. This is the fail-closed guest
 profile when the public DirectDraw entry points cannot be bounded by the

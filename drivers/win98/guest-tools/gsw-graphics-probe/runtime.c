@@ -150,6 +150,7 @@ BOOL gsw_parse_options(GSW_OPTIONS *options)
 	options->ddraw4 = gsw_argument("/ddraw4");
 	options->bounded = gsw_argument("/bounded");
 	options->capture = gsw_argument("/capture");
+	options->trace = gsw_argument("/trace");
 	return TRUE;
 }
 

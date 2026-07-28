@@ -5,7 +5,7 @@
   "reason": "",
   "derived_source_plan": {
     "relative_path": "gsw-graphics-probe-derived-source-plan.json",
-    "sha256": "4f128b9c7ef921648539b7a83940d807cc8aa47f99c09d38c706e7c96303c2fe"
+    "sha256": "d3df78a3998641fc1110adb0f82c3470bb5e49783432588297da38777a38d546"
   },
   "toolchain_locks": [
     {
@@ -80,8 +80,8 @@
         {
           "relative_path": "gsw-graphics-probe/GSWGFX.EXE",
           "origin": "build",
-          "bytes": 47616,
-          "sha256": "96c5cd165dcc7cf4924d2433237e9a7f50394e9349695c26411bd227f14eb937"
+          "bytes": 48128,
+          "sha256": "3b2d7c23856e4df0a1cc2308796c066f7a795df71f7f543ece794f9de3bc16c3"
         }
       ]
     },

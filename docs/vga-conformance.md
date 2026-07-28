@@ -228,7 +228,13 @@ as measured on 2026-07-28:
   changes nothing, so it is not the driver-file staleness recorded earlier. The
   `/gdi-only` control on that same image publishes normally, which puts the
   fault inside the DirectDraw Adapter rather than in the launcher, the VBE
-  handoff, the image, or the host.
+  handoff, the image, or the host. GSWGFX's `/trace` option then narrowed it to
+  one call: creation, exclusive full-screen cooperation, the mode set and its
+  read-back, the flippable primary, its attached back buffer and the palette all
+  return, and the first back-buffer `Lock` never does. `DirectDrawCreateEx` is
+  absent from this guest's DDRAW.DLL, so the DirectDraw 7 against 4 distinction
+  is not the variable; both paths reach the same Lock. Going deeper needs
+  tracing inside the display driver's own HAL.
 
 ## Explicit exclusions
 
