@@ -1345,9 +1345,11 @@ edit_in_process_cancel_apply :: proc(ctx: rawptr) -> Session_Error {
 edit_in_process_discard :: proc(ctx: rawptr) -> Session_Error {
 	impl := (^Edit_In_Process_Implementation)(ctx)
 	if impl == nil ||
-	   impl.apply_active ||
-	   impl.job !=
-		   nil {return error_make(.Invalid_State, false, .Not_Started, 0, 0, "FAT32 Edit job must finish before Discard")}
+	   impl.apply_active {return error_make(.Invalid_State, false, .Not_Started, 0, 0, "FAT32 Edit Apply must finish before Discard")}
+	// Discard is the abort path: a registered job, failed or still pending,
+	// is cancelled here so a failed edit cannot strand the dirty image
+	// behind a session that refuses to finish.
+	if impl.job != nil {_ = edit_in_process_job_cancel(impl)}
 	discard_error := fat32edit.discard(&impl.edit)
 	if discard_error.code != .None {return edit_error_map(discard_error)}
 	if impl.owner.adopt_requested {
