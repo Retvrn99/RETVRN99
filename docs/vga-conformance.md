@@ -240,14 +240,18 @@ as measured on 2026-07-28:
   full-screen mode. It never returns. The same IOCTL path succeeds during driver
   load, so the bridge works; what does not work is calling it from there. This is
   RETVRN99's own guest bridge rather than the firmware, the image or the VGA
-  core, and it is the open item for DirectDraw. A comparison against upstream
-  vmdisp9x adds one concrete difference to look at: upstream's IOCTL handler
-  dereferences the caller's buffers directly and makes no VMM call on them,
-  while ours page-locks them and walks their page tables. Removing both does not
-  by itself make DirectDraw run, so the divergence is real but not proven to be
-  the cause. Attempts to trace inside the VxD are not yet trustworthy: the
-  breadcrumb used there does not preserve registers, which upstream's own inline
-  assembly is careful to do.
+  core, and it is the open item for DirectDraw. The driver's own debug channel,
+  captured through the new `serial1.log` artifact, names it: only the load-time
+  QUERY control code ever reaches the VxD, and the surface-registration one
+  never arrives, although the HAL breadcrumb immediately before the bridge call
+  does fire. So the request is lost in `GSWDD32.DLL` between
+  `GSWDD_register_surface` and `DeviceIoControl`, called from inside a
+  DirectDraw lock callback. Upstream makes the same kind of call from the same
+  place, but through a function returning `void`, so a failure there would go
+  unnoticed; ours needs the result. A separate divergence found on the way, and
+  worth fixing regardless, is that our IOCTL handler page-locks the caller's
+  buffers and walks their page tables where upstream dereferences them
+  directly.
 
 ## Explicit exclusions
 
