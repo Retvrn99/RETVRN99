@@ -238,7 +238,11 @@ as measured on 2026-07-28:
   first use, and that registration is a synchronous `DeviceIoControl` into
   `GSWMINI.VXD` issued from inside a DirectDraw lock callback in exclusive
   full-screen mode. It never returns. The same IOCTL path succeeds during driver
-  load, so the bridge works; what does not work is calling it from there. This
+  load, so the bridge works; what does not work is calling it from there. Tracing
+  the VxD as well narrows it to one line: `GSW_DD_ioctl` page-locks the caller's
+  buffers with `_LinPageLock`, and that never returns on a thread inside a
+  DirectDraw lock callback. The same page locks succeed for the query the driver
+  issues at load, so it is the calling context rather than the code path. This
   is RETVRN99's own guest bridge rather than the firmware, the image or the VGA
   core, and it is the open item for DirectDraw.
 
