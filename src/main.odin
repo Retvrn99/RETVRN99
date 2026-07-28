@@ -2574,6 +2574,7 @@ console_main :: proc(
 			run_result.exit_code = result
 			break loop
 		}
+		if options.artifacts != "" {console_drain_serial(options.artifacts, m)}
 		switch command := machine.machine_test_device_take_command(m); command {
 		case .Crc:
 			_ = machine.machine_test_device_frame_crc(m)
@@ -3073,6 +3074,15 @@ console_compose_frame :: proc(buffer: ^[]u32, frame: ^vga.Display_Frame) -> bool
 		host.host_border_from_contract(frame.border),
 		frame.overscan,
 	)
+}
+
+// Guest serial output is drained as the run goes rather than at the end, so a
+// guest that never reaches a clean exit still leaves its driver trace behind.
+console_drain_serial :: proc(directory: string, m: ^machine.Machine) {
+	bytes := machine.machine_take_serial_output(m)
+	if len(bytes) == 0 {return}
+	_ = acceptance.artifact_append_serial(directory, bytes)
+	machine.machine_clear_serial_output(m)
 }
 
 console_note_capture :: proc(

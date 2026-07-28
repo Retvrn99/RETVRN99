@@ -227,3 +227,34 @@ acceptance_artifacts_test_capture_manifest_appends_rows :: proc(t: ^testing.T) {
 	// The header is written once, not per row.
 	testing.expect_value(t, strings.count(string(body), "kind\tlabel"), 1)
 }
+
+// A guest driver's debug channel arrives as a byte stream across many drains, so
+// the artifact has to append rather than replace, and an empty drain must not
+// create a file at all.
+@(test)
+test_artifact_serial_log_appends_across_drains :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	base, _ := os.temp_directory(context.temp_allocator)
+	directory, _ := os.make_directory_temp(base, "retvrn99_serial_*", context.temp_allocator)
+	defer acceptance_test_remove_tree(directory)
+	path, _ := filepath.join({directory, ARTIFACT_SERIAL_LOG}, context.temp_allocator)
+
+	testing.expect_value(t, artifact_append_serial(directory, nil), Artifact_Diagnostic.None)
+	testing.expect(t, !os.exists(path))
+
+	testing.expect_value(
+		t,
+		artifact_append_serial(directory, transmute([]u8)string("GSW: lock ")),
+		Artifact_Diagnostic.None,
+	)
+	testing.expect_value(
+		t,
+		artifact_append_serial(directory, transmute([]u8)string("ioctl 47530002\n")),
+		Artifact_Diagnostic.None,
+	)
+	contents, read_error := os.read_entire_file(path, context.temp_allocator)
+	testing.expect(t, read_error == nil)
+	testing.expect_value(t, string(contents), "GSW: lock ioctl 47530002\n")
+
+	testing.expect_value(t, artifact_append_serial("", nil), Artifact_Diagnostic.Invalid_Path)
+}

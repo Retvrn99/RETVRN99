@@ -125,6 +125,7 @@ Artifact_Capture :: struct {
 	overscan:                 u32,
 }
 
+ARTIFACT_SERIAL_LOG :: "serial1.log"
 ARTIFACT_CAPTURE_MANIFEST :: "captures.tsv"
 ARTIFACT_CAPTURE_HEADER :: "kind\tlabel\ttime_ns\tcanvas_width\tcanvas_height\tborder_left\tborder_right\tborder_top\tborder_bottom\toverscan\n"
 
@@ -132,6 +133,26 @@ ARTIFACT_CAPTURE_HEADER :: "kind\tlabel\ttime_ns\tcanvas_width\tcanvas_height\tb
 // each image can be placed on the master timeline beside the hardware trace.
 // Rewrites the whole file per row, which is fine for the tens of captures a
 // guest test takes and would want revisiting for thousands.
+// Appends whatever the guest has written to COM1 since the last drain. A guest
+// driver's own debug channel is a byte stream rather than a sequence of events,
+// so it survives the two things a breadcrumb through the test device cannot: it
+// keeps its order when calls arrive faster than the host services them, and it
+// carries values rather than labels.
+artifact_append_serial :: proc(directory: string, bytes: []u8) -> Artifact_Diagnostic {
+	if directory == "" {return .Invalid_Path}
+	if len(bytes) == 0 {return .None}
+	if os.make_directory_all(directory) != nil {return .Create_Directory_Failed}
+	path, path_err := filepath.join({directory, ARTIFACT_SERIAL_LOG})
+	if path_err != nil {return .Path_Failed}
+	defer delete(path)
+	existing, _ := os.read_entire_file(path, context.temp_allocator)
+	payload := make([]u8, len(existing) + len(bytes), context.temp_allocator)
+	copy(payload, existing)
+	copy(payload[len(existing):], bytes)
+	if os.write_entire_file(path, payload) != nil {return .Write_Failed}
+	return .None
+}
+
 artifact_append_capture :: proc(
 	directory: string,
 	capture: Artifact_Capture,

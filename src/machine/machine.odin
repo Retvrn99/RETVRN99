@@ -965,6 +965,22 @@ machine_relative_ns_deadline :: proc(m: ^Machine, delta_ns: u64) -> u64 {
 	return now + min(max(delta, u64(1)), ~u64(0) - now)
 }
 
+// The guest's COM1 output since the last drain. A display driver built with its
+// debug channel enabled writes here, which is the only ordered, lossless trace
+// available from inside ring 0.
+machine_take_serial_output :: proc(m: ^Machine) -> []u8 {
+	if m == nil {return nil}
+	return uart_output(&m.serial1)
+}
+
+machine_clear_serial_output :: proc(m: ^Machine) {
+	if m != nil {uart_clear_output(&m.serial1)}
+}
+
+machine_serial_output_dropped :: proc(m: ^Machine) -> u64 {
+	return m == nil ? 0 : uart_output_dropped(&m.serial1)
+}
+
 @(private = "package")
 machine_scheduler_refresh :: proc(m: ^Machine) {
 	if m == nil {return}
