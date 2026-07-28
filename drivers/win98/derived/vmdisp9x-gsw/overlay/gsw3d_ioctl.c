@@ -5,17 +5,7 @@
 #include "vxd_lib.h"
 #include "gsw_transport.h"
 
-#define GSW3D_RING3_LIMIT 0x80000000UL
-#define GSW3D_PTE_PRESENT 0x00000001UL
-#define GSW3D_PTE_WRITE   0x00000002UL
-#define GSW3D_PTE_USER    0x00000004UL
 #define GSW3D_MAX_DIOC_INPUT (sizeof(GSW3DUploadRequest) + GSW3D_STAGING_BYTES)
-
-typedef struct GSW3DLockedRange {
-	DWORD page;
-	DWORD pages;
-	BOOL locked;
-} GSW3DLockedRange;
 
 typedef union GSW3DInput {
 	GSW3DContextRequest context;
@@ -25,49 +15,17 @@ typedef union GSW3DInput {
 	GSW3DFencePollRequest fence;
 } GSW3DInput;
 
-static BOOL gsw3d_ioctl_range_lock(
-	DWORD address, DWORD bytes, BOOL writable, GSW3DLockedRange *range
-)
+// Bounds a buffer VWIN32 handed us, without calling the memory manager. This is
+// the same shape gsw_ddraw.c arrived at, and for the same reasons: VWIN32 hands
+// a VxD the caller's DeviceIoControl buffers as flat linear addresses in the
+// shared arena at or above 80000000h, so a ring 3 limit here rejects every legal
+// request, and upstream vmdisp9x calls neither _LinPageLock nor _CopyPageTable
+// from an IOCTL at all. gsw3d_ioctl_shape has already bounded bytes.
+static BOOL gsw3d_ioctl_range_valid(DWORD address, DWORD bytes)
 {
-	DWORD page_table;
-	DWORD required;
-	DWORD span;
-	DWORD i;
-	if(range == NULL) return FALSE;
-	memset(range, 0, sizeof(*range));
 	if(bytes == 0) return TRUE;
-	if(address == 0 || address > 0xFFFFFFFFUL - (bytes - 1) ||
-	   address >= GSW3D_RING3_LIMIT || address + bytes > GSW3D_RING3_LIMIT)
-		return FALSE;
-	span = (address & 0xFFF) + bytes;
-	range->page = address >> 12;
-	range->pages = (span + 0xFFF) >> 12;
-	if(range->pages == 0 ||
-	   range->pages > RoundToPages(GSW3D_MAX_DIOC_INPUT + 0xFFFUL)) return FALSE;
-	if(_LinPageLock(range->page, range->pages, 0) == 0) return FALSE;
-	required = GSW3D_PTE_PRESENT | GSW3D_PTE_USER;
-	if(writable) required |= GSW3D_PTE_WRITE;
-	for(i = 0; i < range->pages; i++)
-	{
-		page_table = 0;
-		_CopyPageTable(range->page + i, 1, &page_table, 0);
-		if((page_table & required) != required)
-		{
-			_LinPageUnLock(range->page, range->pages, 0);
-			return FALSE;
-		}
-	}
-	range->locked = TRUE;
+	if(address == 0 || address > 0xFFFFFFFFUL - (bytes - 1)) return FALSE;
 	return TRUE;
-}
-
-static void gsw3d_ioctl_range_unlock(GSW3DLockedRange *range)
-{
-	if(range != NULL && range->locked)
-	{
-		_LinPageUnLock(range->page, range->pages, 0);
-		range->locked = FALSE;
-	}
 }
 
 static BOOL gsw3d_ioctl_shape(
@@ -112,8 +70,6 @@ BOOL GSW3D_ioctl(struct DIOCParams *params, DWORD *result)
 	GSW3DInput input;
 	GSW3DQuery query;
 	GSW3DResult output;
-	GSW3DLockedRange input_range;
-	GSW3DLockedRange output_range;
 	DWORD minimum_input;
 	DWORD output_bytes;
 	DWORD payload_bytes;
@@ -127,16 +83,8 @@ BOOL GSW3D_ioctl(struct DIOCParams *params, DWORD *result)
 	if(!gsw3d_ioctl_shape(params, &minimum_input, &output_bytes)) return recognized;
 	if((params->cbInBuffer != 0 && params->lpInBuffer == 0) ||
 	   params->lpOutBuffer == 0) return TRUE;
-	if(!gsw3d_ioctl_range_lock(
-		params->lpInBuffer, params->cbInBuffer, FALSE, &input_range
-	)) return TRUE;
-	if(!gsw3d_ioctl_range_lock(
-		params->lpOutBuffer, output_bytes, TRUE, &output_range
-	))
-	{
-		gsw3d_ioctl_range_unlock(&input_range);
-		return TRUE;
-	}
+	if(!gsw3d_ioctl_range_valid(params->lpInBuffer, params->cbInBuffer)) return TRUE;
+	if(!gsw3d_ioctl_range_valid(params->lpOutBuffer, output_bytes)) return TRUE;
 
 	memset(&input, 0, sizeof(input));
 	memset(&query, 0, sizeof(query));
@@ -197,8 +145,6 @@ BOOL GSW3D_ioctl(struct DIOCParams *params, DWORD *result)
 			break;
 	}
 
-	gsw3d_ioctl_range_unlock(&output_range);
-	gsw3d_ioctl_range_unlock(&input_range);
 	*result = 0;
 	return TRUE;
 }

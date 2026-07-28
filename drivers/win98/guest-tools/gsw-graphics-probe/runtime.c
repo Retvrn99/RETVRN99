@@ -149,6 +149,7 @@ BOOL gsw_parse_options(GSW_OPTIONS *options)
 	options->d3d_only = gsw_argument("/d3d-only");
 	options->ddraw4 = gsw_argument("/ddraw4");
 	options->bounded = gsw_argument("/bounded");
+	options->no_d3d = gsw_argument("/no-d3d");
 	options->capture = gsw_argument("/capture");
 	options->trace = gsw_argument("/trace");
 	return TRUE;

@@ -68,6 +68,12 @@ static BOOL gsw_adapter_run(GSW_SESSION *session, GSW_ADAPTER *adapter)
 		if(!success) row.status = GSW_STATUS_FAIL;
 		if(!gsw_record(session, &row)) completed = FALSE;
 		if(!success) completed = FALSE;
+		if(adapter->feature == NULL) continue;
+		success = adapter->feature(session, adapter, &adapter->modes.items[index], &row);
+		if(!adapter->restore(session, adapter)) { row.status = GSW_STATUS_FAIL; session->restore_failed = TRUE; }
+		if(!success) row.status = GSW_STATUS_FAIL;
+		if(!gsw_record(session, &row)) completed = FALSE;
+		if(!success) completed = FALSE;
 	}
 	for(index = 0; index < adapter->modes.count; index++)
 	{
@@ -165,7 +171,8 @@ DWORD gsw_run(void)
 				!session.options.d3d_only) || (index == 0 && session.options.gdi_only) ||
 				(index == 1 && session.options.ddraw_only) || (index == 2 && session.options.d3d_only);
 			if(!selected) continue;
-			if(session.options.bounded && index != 0)
+			if((session.options.bounded && index != 0) ||
+			   (session.options.no_d3d && index == 2))
 			{
 				if(!gsw_unavailable(&session, adapters[index].name,
 				   "BOUNDED_GUEST_ADAPTER")) completed = FALSE;

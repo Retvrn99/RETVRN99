@@ -243,7 +243,7 @@ $header = 'schema sequence record adapter mode width height bpp hz path status a
 $header = $header.Replace(' ', "\t") + "\r\n"
 foreach ($token in @('GSWGFX_RESULT_V2', $header, '/exhaustive', '/self-test',
     '/host-report', '/import-vbe', '/gdi-only', '/ddraw-only', '/d3d-only',
-    '/ddraw4', '/bounded', 'BOUNDED_GUEST_ADAPTER', 'GSWVBE.EXE',
+    '/ddraw4', '/bounded', '/no-d3d', 'BOUNDED_GUEST_ADAPTER', 'GSWVBE.EXE',
     'C:\\GSWGFX\\VBE.TMP', 'GSW_SAMPLE_CAP',
     'GSW_WARMUP_MS', 'GSW_MEASURE_MS', 'GSW_STATUS_UNAVAILABLE')) {
     Assert-Gswgfx ($sourceText.IndexOf($token, [StringComparison]::Ordinal) -ge 0) `

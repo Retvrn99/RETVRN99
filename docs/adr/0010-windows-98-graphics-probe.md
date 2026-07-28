@@ -60,6 +60,15 @@ The DirectDraw Adapter attempts DirectDraw 7 first and DirectDraw 4 as a
 Windows 98 fallback, enumerates modes, uses an exact fullscreen flipping chain,
 bounds surface-loss recovery, releases ownership, and restores the desktop.
 
+It is the one Adapter with a second unmeasured pass per mode, recorded as
+`BLT_FILL` beside the `FLIP` row. That pass fills the whole back buffer, fills a
+sub-rectangle in a second colour, Blts that rectangle to a third position, and
+reads four points back under one Lock: background, fill, blit, background. The
+flipping path never reaches colour fill or Blt, so without it the driver's fill
+and blit entries are shipped untested. A passing row proves the interface answers
+correctly at that depth; it does not prove which layer answered, because
+DirectDraw may satisfy either call from the HEL.
+
 The Direct3D Adapter attempts Direct3D 7 first and Direct3D 3 as a fallback. It
 enumerates public HAL and HEL devices and renders a pretransformed colored
 triangle. Missing Direct3D is an `UNAVAILABLE` diagnostic result, not a failed
@@ -99,6 +108,12 @@ land in the timings a traced run reports.
 profile when the public DirectDraw entry points cannot be bounded by the
 controller process. Any unavailable coverage makes the terminal result at
 least `WARN`; it cannot become `PASS`.
+`/no-d3d` bounds Direct3D alone, so GDI and DirectDraw both run and only
+Direct3D is recorded `UNAVAILABLE`. This is the accepted gate profile. It exists
+as its own switch rather than as a narrowing of `/bounded` because `/bounded`
+keeps a distinct meaning: it is the escape hatch for a guest whose DirectDraw
+entry cannot be bounded at all, and a gate profile that also had to serve that
+purpose could not be trusted to enter DirectDraw.
 
 Each benchmark warms up for 500 ms, then measures complete generation, copy,
 and presentation cycles continuously for 3,000 ms without sleeping. The timer

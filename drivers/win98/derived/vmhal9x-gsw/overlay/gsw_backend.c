@@ -171,27 +171,44 @@ DWORD GSWDD_surface(VMDAHAL_t *hal, LPDDRAWI_DDRAWSURFACE_LCL surface)
 	return request.surface_id;
 }
 
-BOOL GSWDD_unregister(DWORD surface_id)
+// Destroy is the one entry that reaches the bridge without a surface lookup
+// first, so it is the one that can be the first call a process makes and find
+// another process's pointers cached. Re-resolve here too. Every other entry is
+// preceded by GSWDD_surface on the same surface in the same call, but each still
+// refuses a null pointer rather than calling it: the pointers are shared state
+// with per-process validity, so "resolved" is never assumed.
+BOOL GSWDD_unregister(VMDAHAL_t *hal, DWORD surface_id)
 {
 	GSWDDUnregister request;
-	if(surface_id == 0) return FALSE;
+	if(surface_id == 0 || !gsw_interface_current(hal)) return FALSE;
 	request.cb = sizeof(request);
 	request.surface_id = surface_id;
 	return gsw.unregister_surface(&request);
 }
 
-BOOL GSWDD_fill(const GSWDDFill *request) { return gsw.fill(request); }
-BOOL GSWDD_blt(const GSWDDBlt *request) { return gsw.blt(request); }
+BOOL GSWDD_fill(const GSWDDFill *request)
+{
+	return gsw.fill == NULL ? FALSE : gsw.fill(request);
+}
+
+BOOL GSWDD_blt(const GSWDDBlt *request)
+{
+	return gsw.blt == NULL ? FALSE : gsw.blt(request);
+}
 
 BOOL GSWDD_present(DWORD surface_id)
 {
 	GSWDDPresent request;
+	if(gsw.present == NULL) return FALSE;
 	request.cb = sizeof(request);
 	request.surface_id = surface_id;
 	return gsw.present(&request);
 }
 
-BOOL GSWDD_dirty(const GSWDDDirty *request) { return gsw.dirty(request); }
+BOOL GSWDD_dirty(const GSWDDDirty *request)
+{
+	return gsw.dirty == NULL ? FALSE : gsw.dirty(request);
+}
 
 BOOL GSWDD_rop_supported(DWORD rop3)
 {

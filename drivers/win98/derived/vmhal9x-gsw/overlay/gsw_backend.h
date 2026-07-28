@@ -10,7 +10,7 @@
 
 BOOL GSWDD_load(VMDAHAL_t *hal);
 DWORD GSWDD_surface(VMDAHAL_t *hal, LPDDRAWI_DDRAWSURFACE_LCL surface);
-BOOL GSWDD_unregister(DWORD surface_id);
+BOOL GSWDD_unregister(VMDAHAL_t *hal, DWORD surface_id);
 BOOL GSWDD_fill(const GSWDDFill *request);
 BOOL GSWDD_blt(const GSWDDBlt *request);
 BOOL GSWDD_present(DWORD surface_id);

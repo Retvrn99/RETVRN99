@@ -322,6 +322,125 @@ static BOOL gsw_ddraw_run(GSW_SESSION *session, GSW_ADAPTER *adapter, const GSW_
 	return success;
 }
 
+/* The FLIP path is Lock, copy, Unlock, Flip and nothing else, so the colour
+ * fill, the surface Blt and the readback below were shipped in the HAL without
+ * any test at any layer reaching them. This checks the behaviour rather than the
+ * layer: DirectDraw may satisfy either call from the HEL, so a pass proves the
+ * interface answers correctly, not that the driver produced the answer. */
+static DWORD gsw_ddraw_pixel_mask(DWORD bytes)
+{
+	return bytes >= 4 ? 0xFFFFFFFFUL : (1UL << (bytes * 8)) - 1;
+}
+
+static BOOL gsw_ddraw_fill(GSW_DDRAW_STATE *state, RECT *area, DWORD colour)
+{
+	DDBLTFX effect;
+	gsw_zero(&effect, sizeof(effect));
+	effect.dwSize = sizeof(effect);
+	effect.dwFillColor = colour;
+	if(state->draw7 != NULL)
+		return IDirectDrawSurface7_Blt(state->back7, area, NULL, NULL,
+			DDBLT_COLORFILL | DDBLT_WAIT, &effect) == DD_OK;
+	return IDirectDrawSurface4_Blt(state->back4, area, NULL, NULL,
+		DDBLT_COLORFILL | DDBLT_WAIT, &effect) == DD_OK;
+}
+
+static BOOL gsw_ddraw_blt_rect(GSW_DDRAW_STATE *state, RECT *destination, RECT *source)
+{
+	if(state->draw7 != NULL)
+		return IDirectDrawSurface7_Blt(state->back7, destination, state->back7,
+			source, DDBLT_WAIT, NULL) == DD_OK;
+	return IDirectDrawSurface4_Blt(state->back4, destination, state->back4,
+		source, DDBLT_WAIT, NULL) == DD_OK;
+}
+
+static BOOL gsw_ddraw_blt_fill(GSW_DDRAW_STATE *state, DWORD *api_code, DWORD *crc32)
+{
+	DDSURFACEDESC2 locked;
+	RECT source;
+	RECT destination;
+	HRESULT result;
+	DWORD bytes = (state->mode.bpp + 7) / 8;
+	DWORD mask = gsw_ddraw_pixel_mask(bytes);
+	DWORD fill_a = 0x00243A5CUL & mask;
+	DWORD fill_b = 0x00DB7196UL & mask;
+	DWORD quarter_width = state->mode.width / 4;
+	DWORD quarter_height = state->mode.height / 4;
+	DWORD observed[4];
+	DWORD index;
+	DWORD points[4][2];
+	BOOL ok;
+
+	*api_code = (DWORD)DDERR_GENERIC;
+	if(quarter_width == 0 || quarter_height == 0) return FALSE;
+	source.left = (LONG)quarter_width; source.top = (LONG)quarter_height;
+	source.right = (LONG)(2 * quarter_width); source.bottom = (LONG)(2 * quarter_height);
+	destination.left = (LONG)(2 * quarter_width); destination.top = (LONG)quarter_height;
+	destination.right = (LONG)(3 * quarter_width); destination.bottom = (LONG)(2 * quarter_height);
+	if(!gsw_ddraw_fill(state, NULL, fill_a)) return FALSE;
+	if(!gsw_ddraw_fill(state, &source, fill_b)) return FALSE;
+	if(!gsw_ddraw_blt_rect(state, &destination, &source)) return FALSE;
+
+	points[0][0] = quarter_width / 2;                     points[0][1] = quarter_height / 2;
+	points[1][0] = quarter_width + quarter_width / 2;     points[1][1] = quarter_height + quarter_height / 2;
+	points[2][0] = 2 * quarter_width + quarter_width / 2; points[2][1] = quarter_height + quarter_height / 2;
+	points[3][0] = 3 * quarter_width + quarter_width / 2; points[3][1] = 2 * quarter_height + quarter_height / 2;
+
+	gsw_zero(&locked, sizeof(locked));
+	locked.dwSize = sizeof(locked);
+	if(state->draw7 != NULL)
+		result = IDirectDrawSurface7_Lock(state->back7, NULL, &locked, DDLOCK_WAIT, NULL);
+	else result = IDirectDrawSurface4_Lock(state->back4, NULL, &locked, DDLOCK_WAIT, NULL);
+	if(result != DD_OK) { *api_code = (DWORD)result; return FALSE; }
+	ok = locked.lpSurface != NULL && locked.lPitch > 0;
+	for(index = 0; ok && index < 4; index++)
+	{
+		const BYTE *pixel = (const BYTE *)locked.lpSurface +
+			(LONG)points[index][1] * locked.lPitch + points[index][0] * bytes;
+		DWORD value = 0;
+		DWORD byte_index;
+		for(byte_index = 0; byte_index < bytes; byte_index++)
+			value |= (DWORD)pixel[byte_index] << (byte_index * 8);
+		observed[index] = value;
+	}
+	if(state->draw7 != NULL) result = IDirectDrawSurface7_Unlock(state->back7, NULL);
+	else result = IDirectDrawSurface4_Unlock(state->back4, NULL);
+	if(!ok) { *api_code = (DWORD)DDERR_INVALIDPARAMS; return FALSE; }
+	if(result != DD_OK) { *api_code = (DWORD)result; return FALSE; }
+	if(crc32 != NULL) *crc32 = gsw_crc32((const BYTE *)observed, sizeof(observed));
+	if(observed[0] != fill_a || observed[1] != fill_b ||
+	   observed[2] != fill_b || observed[3] != fill_a)
+		return FALSE;
+	*api_code = DD_OK;
+	return TRUE;
+}
+
+static BOOL gsw_ddraw_feature(GSW_SESSION *session, GSW_ADAPTER *adapter, const GSW_MODE *mode, GSW_ROW *row)
+{
+	GSW_DDRAW_STATE state;
+	BOOL success;
+	(void)adapter;
+	gsw_zero(&state, sizeof(state));
+	gsw_zero(row, sizeof(*row));
+	gsw_text_copy(row->adapter, sizeof(row->adapter), "DIRECTDRAW");
+	gsw_text_copy(row->path, sizeof(row->path), "BLT_FILL");
+	row->mode = *mode;
+	if(!gsw_ddraw_setup(&state, session, mode, &row->api_code))
+	{
+		row->status = GSW_STATUS_FAIL;
+		gsw_text_copy(row->detail, sizeof(row->detail), "SETUP");
+		gsw_ddraw_close(&state);
+		return FALSE;
+	}
+	success = gsw_ddraw_blt_fill(&state, &row->api_code, &row->metrics.crc32);
+	row->metrics.frames = success ? 1 : 0;
+	row->status = success ? GSW_STATUS_PASS : GSW_STATUS_FAIL;
+	row->metrics.status = row->status;
+	gsw_text_copy(row->detail, sizeof(row->detail), success ? "COLORFILL_BLT_READBACK" : "COLORFILL_BLT_MISMATCH");
+	gsw_ddraw_close(&state);
+	return success;
+}
+
 static BOOL gsw_ddraw_smoke(GSW_SESSION *session, GSW_ADAPTER *adapter, const GSW_MODE *mode, GSW_ROW *row)
 {
 	return gsw_ddraw_run(session, adapter, mode, row, FALSE);
@@ -345,6 +464,7 @@ BOOL gsw_ddraw_adapter(GSW_ADAPTER *adapter)
 	adapter->name = "DIRECTDRAW";
 	adapter->enumerate = gsw_ddraw_enumerate;
 	adapter->smoke = gsw_ddraw_smoke;
+	adapter->feature = gsw_ddraw_feature;
 	adapter->benchmark = gsw_ddraw_benchmark;
 	adapter->restore = gsw_ddraw_restore;
 	return TRUE;

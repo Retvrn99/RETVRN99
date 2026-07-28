@@ -193,7 +193,7 @@ length before the display start, as guests do.
 | DISPI ID0 to ID5 feature ladder and identifier range | Bochs B0C0 to B0C5 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_feature_ladder_follows_selected_id`, `vga_test_dispi_id_range_is_bounded` |
 | DISPI index 0Ah memory-size register | Bochs B0C5 | Conformant | `src/vga/vbe.odin` reports the persona aperture | `vga_test_dispi_memory_size_is_reported_at_every_id`, `vga_test_dispi_memory_size_register_rejects_writes`, and the pinned-firmware total in `test_machine_vbe_controller_mode_information_and_round_trip` |
 | Mode 150h 320x200x8 banked and LFB | Pinned Bochs mode table | Partial | Mode exists | `test_machine_vbe_mode_set_clear_and_preserve` sets the mode from the firmware, writes through the banked window and requires the device to render the four bytes it wrote. `test_machine_vbe_linear_framebuffer_modes` sets it with D14 and reads PhysBasePtr back. The LFB half stays open for the reason on the row below |
-| Mode 151h 320x240x8 banked and LFB | Pinned Bochs mode table | Partial | Pinned VGABIOS and `src/vga/vbe.odin` | Real firmware banked read/write/render proof exists, and `test_machine_vbe_linear_framebuffer_modes` requires the firmware to come up with the LFB flag set and to advertise `VBE_LFB_BASE` in PhysBasePtr. It also measures why the guest-side half cannot close yet: the system firmware relocates the framebuffer BAR, in that run to F8000000, and the device decodes the framebuffer at the BAR, so the E0000000 the VBE ModeInfoBlock still advertises falls through to the tolerated PCIe mmconfig probe zone. A protected-mode guest that uses the BAR is unaffected; a real-mode VBE program that trusts PhysBasePtr is not. Routing the alias would claim an address range currently reserved for that probe zone, so it is recorded rather than changed |
+| Mode 151h 320x240x8 banked and LFB | Pinned Bochs mode table | Partial | Pinned VGABIOS and `src/vga/vbe.odin` | Real firmware banked read/write/render proof exists, and `test_machine_vbe_linear_framebuffer_modes` requires the firmware to come up with the LFB flag set and to advertise `VBE_LFB_BASE` in PhysBasePtr. It also measures why the guest-side half stays open: the system firmware relocates the framebuffer BAR, in that run to F8000000, and the device decodes the framebuffer at the BAR, so the E0000000 the VBE ModeInfoBlock still advertises falls through to the tolerated PCIe mmconfig probe zone. A protected-mode guest that uses the BAR is unaffected; a real-mode VBE program that trusts PhysBasePtr is not. That alias is now a deliberate limit in the exclusions table rather than a work item, because routing it would claim a range from a fail-closed boundary |
 
 ## Roadmap
 
@@ -202,28 +202,29 @@ rows it closes, so this section is a view of the matrix rather than a second
 source of truth. An entry disappears when its rows read `Conformant` or when the
 row records a deliberate limit instead.
 
-The VGA core, GDI and DirectDraw are all done. What remains:
-
-1. **The linear framebuffer alias.** The VBE ModeInfoBlock advertises
-   PhysBasePtr at `VBE_LFB_BASE`, but the framebuffer decodes at the PCI BAR
-   the system firmware programs, and nothing aliases the two once the BAR
-   moves. Deciding that is a routing question rather than a VGA one, because
-   the advertised address currently belongs to the tolerated PCIe mmconfig
-   probe zone. Modes 150h and 151h stay `Partial` until it is settled.
+Nothing remains. The VGA core, GDI and DirectDraw are all done, and the one
+open routing question has been decided rather than deferred: the linear
+framebuffer alias is now a recorded limit in the exclusions table below, because
+claiming `VBE_LFB_BASE` for the framebuffer would take a range away from the
+PCIe mmconfig probe zone the machine tolerates. Modes 150h and 151h stay
+`Partial` for that recorded reason and are not work items.
 
 GDI and DirectDraw conformance is carried by the GSWGFX guest suite rather than
 by this matrix; see `AGENTS.md` for the gate and its expected counts. Both pass
-as of 2026-07-28. The accepted `/bounded` profile still records DirectDraw and
-Direct3D `UNAVAILABLE` because it does not enter them; DirectDraw is proven by
-its own `/ddraw-only` run rather than by changing that profile.
+as of 2026-07-28, and both are now inside the accepted profile rather than
+beside it: the profile runs `/no-d3d`, which enters GDI and DirectDraw and
+records only Direct3D `UNAVAILABLE`.
 
-- **GDI passes.** A `/gdi-only` run publishes with host exit 0, `stop_reason`
-  `test_exit`, and Tested 50, Failed 0 across twelve modes smoked and
-  benchmarked. The one absent pair is 320x240x8, because GDI offers a mode only
-  if the display driver's class key carries it and the gate image was installed
-  with an INF that has no `MODES\8\320,240`. Importing the key alone hangs the
-  guest, so restoring the pair needs the current driver installed through its
-  INF rather than staged as files.
+- **GDI passes at every advertised mode, including 320x240x8.** That pair was
+  absent because GDI offers a mode only if the display driver's class key
+  carries it, and the gate image was installed with an INF predating
+  `MODES\8\320,240`. An earlier attempt to import the key was read as hanging
+  the guest; it had not. The registry file used for it carried single
+  backslashes in the launcher's `Run` value, so the value imported as
+  `C:GSWGFXGSWGFX.EXE` and the probe never started. Importing the same key from
+  a file derived by byte replacement from a known-good original works, and the
+  pair now smokes and benchmarks. The shipping INF already carries the mode, so
+  a freshly installed guest never needed the repair.
 - **DirectDraw took three defects in RETVRN99's own guest bridge.** All three
   were found by giving the guest a voice through `serial1.log` and reading what
   it printed, after several attempts to reason about it from the outside had to
@@ -233,8 +234,14 @@ its own `/ddraw-only` run rather than by changing that profile.
   identity the display driver has not published on the first pass, refusing the
   bridge permanently. Last, `gswdd32.dll` loads per process while the HAL keeps
   its state in the shared arena, so a module handle and entry points cached by
-  one process were being called from another. All three are fixed and both
-  profiles pass.
+  one process were being called from another. All three are fixed.
+- **DirectDraw now proves more than the flip chain.** Every enumerated mode also
+  runs a `BLT_FILL` row: a whole-surface colour fill, a sub-rectangle fill in a
+  second colour, a surface Blt of that rectangle to a third position, and a
+  locked readback of four points that must show fill, fill, blit and background
+  in the right places. That reaches the HAL's colour fill and Blt entries, which
+  no test at any layer touched before. It checks behaviour rather than which
+  layer produced it: DirectDraw may satisfy either call from the HEL.
 
 ## Explicit exclusions
 
@@ -253,3 +260,4 @@ its own `/ddraw-only` run rather than by changing that profile.
 | Sequencer 01h serializer load rate, bits 2 and 4 | Out of target | Presentation is scanline ordered and has no serializer to reload, so the load rate has nothing to act on. `test_machine_vgabios_int10_mode_matrix` requires both bits to stay at their reset value across every firmware mode set |
 | Sequencer 04h extended-memory gating, bit 1 | Out of target | The same principle as ADR 0011: a capability bit never shrinks capacity. Clearing it on real hardware hides everything above 64 KiB, and honouring that could only take memory away from a guest. `test_machine_vgabios_int10_mode_matrix` requires the firmware to enable it in every mode, so no supported path depends on the restriction |
 | DirectDraw, Direct3D, or OpenGL acceleration changes | Out of target | Existing GSW-VGA 2D and guarded 3D Interfaces remain unchanged |
+| A linear-framebuffer alias at `VBE_LFB_BASE` once the PCI BAR moves | Out of target | The framebuffer decodes at the BAR the system firmware programs, measured at F8000000, while the VBE ModeInfoBlock keeps advertising E0000000. Aliasing the two would claim E0000000 for the framebuffer, and that range currently belongs to the PCIe mmconfig probe zone the machine tolerates and ignores. Taking a range away from a fail-closed boundary to serve a real-mode VBE program that trusts PhysBasePtr is a worse trade than leaving the gap recorded: every protected-mode guest uses the BAR and is unaffected, which is why Windows has never noticed. Modes 150h and 151h stay `Partial` for this reason alone |

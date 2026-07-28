@@ -127,6 +127,10 @@ typedef struct GSW_OPTIONS {
 	BOOL d3d_only;
 	BOOL ddraw4;
 	BOOL bounded;
+	/* Bounds Direct3D alone, so GDI and DirectDraw both run. This is the gate
+	 * profile: /bounded keeps its own meaning as the fail-closed escape hatch
+	 * for a guest whose DirectDraw entry cannot be bounded at all. */
+	BOOL no_d3d;
 	/* Asks the host to write an image per mode. Off by default because the
 	 * round trip per capture is paid in the timings the run reports. */
 	BOOL capture;
@@ -154,6 +158,9 @@ struct GSW_ADAPTER {
 	GSW_MODE_LIST modes;
 	GSW_ENUMERATE enumerate;
 	GSW_MODE_OPERATION smoke;
+	/* Optional second unmeasured pass per mode, for interfaces the smoke path
+	 * does not reach. Only DirectDraw has one. */
+	GSW_MODE_OPERATION feature;
 	GSW_MODE_OPERATION benchmark;
 	GSW_ADAPTER_OPERATION restore;
 	void *state;

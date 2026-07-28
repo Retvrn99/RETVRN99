@@ -16,7 +16,7 @@
   ],
   "upstream_lock": {
     "relative_path": "upstream.lock.tsv",
-    "sha256": "e56b92f636fd677c9cb19709e11c514d388b3dc0bb9bad905f68341535f0dffb"
+    "sha256": "bda6eb95d28b9ef4a9e6ef5677557a30d9bcee88e6b2e8821c892cf65edbb5ed"
   },
   "toolchains": [
     {

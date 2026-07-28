@@ -99,7 +99,7 @@ DDENTRY(DestroySurface32, LPDDHAL_DESTROYSURFACEDATA, data)
 		return DDHAL_DRIVER_NOTHANDLED;
 	if(data->lpDDSurface->dwReserved1 != 0)
 	{
-		GSWDD_unregister((DWORD)data->lpDDSurface->dwReserved1);
+		GSWDD_unregister(GetHAL(data->lpDD), (DWORD)data->lpDDSurface->dwReserved1);
 		data->lpDDSurface->dwReserved1 = 0;
 	}
 	data->ddRVal = DD_OK;
