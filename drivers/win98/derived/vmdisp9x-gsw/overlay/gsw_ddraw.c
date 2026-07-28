@@ -10,7 +10,6 @@ typedef struct GSWLockedRange {
 	BOOL locked;
 } GSWLockedRange;
 
-#define GSW_RING3_LIMIT 0x80000000UL
 #define GSW_PTE_PRESENT 0x00000001UL
 #define GSW_PTE_WRITE   0x00000002UL
 #define GSW_PTE_USER    0x00000004UL
@@ -26,6 +25,14 @@ typedef union GSWDDPayload {
 	DWORD success;
 } GSWDDPayload;
 
+// VWIN32 hands a VxD the caller's DeviceIoControl buffers as flat linear
+// addresses, and they legitimately land in the shared arena above 80000000h: a
+// query's output buffer arrives at b00be1a0h. An earlier version of this refused
+// anything at or above that boundary as "not ring 3" and required the user bit
+// in the page table, which rejected every request the DirectDraw bridge made and
+// is why DirectDraw never worked. What is left is what can be checked without
+// assuming which half of the address space the caller lives in: no null, no
+// wrap, a bounded span, and pages that are present and writable when written.
 static BOOL gsw_dd_range_lock(
 	DWORD address,
 	DWORD bytes,
@@ -41,7 +48,6 @@ static BOOL gsw_dd_range_lock(
 	memset(range, 0, sizeof(*range));
 	if(bytes == 0) return TRUE;
 	if(address == 0 || address > 0xFFFFFFFFUL - (bytes - 1)) return FALSE;
-	if(address >= GSW_RING3_LIMIT || address + bytes > GSW_RING3_LIMIT) return FALSE;
 	span = (address & 0xFFF) + bytes;
 	range->page = address >> 12;
 	range->pages = (span + 0xFFF) >> 12;
@@ -49,7 +55,7 @@ static BOOL gsw_dd_range_lock(
 	if(_LinPageLock(range->page, range->pages, 0) == 0) return FALSE;
 	memset(page_table, 0, sizeof(page_table));
 	_CopyPageTable(range->page, range->pages, page_table, 0);
-	required = GSW_PTE_PRESENT | GSW_PTE_USER;
+	required = GSW_PTE_PRESENT;
 	if(writable) required |= GSW_PTE_WRITE;
 	for(i = 0; i < range->pages; i++)
 	{

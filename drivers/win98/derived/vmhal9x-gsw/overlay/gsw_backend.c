@@ -36,6 +36,13 @@ static GSWDDLockRecord locks[256];
 	gsw.name = (type)GetProcAddress(gsw.module, "GSWDD_" #name); \
 	if(gsw.name == NULL) return FALSE
 
+// The framebuffer identity is only comparable once the display driver has
+// published it. The first load runs before that, with vramLinear and vramSize
+// still zero, and requiring them to match the VxD there refused the bridge
+// permanently: DirectDraw's own initialisation takes that first path, so every
+// later surface registration was rejected before it was attempted. An
+// unpublished value is treated as "not yet known" rather than as a mismatch;
+// every other term of the check is unchanged.
 BOOL GSWDD_load(VMDAHAL_t *hal)
 {
 	if(hal == NULL || hal->pFBHDA32 == NULL)
@@ -55,13 +62,14 @@ BOOL GSWDD_load(VMDAHAL_t *hal)
 	GSW_LOAD(present, GSWDDPresentFn);
 	GSW_LOAD(dirty, GSWDDDirtyFn);
 	gsw.info.cb = sizeof(gsw.info);
-	if(!gsw.query(&gsw.info) || gsw.info.cb != sizeof(gsw.info) ||
+	if(!gsw.query(&gsw.info)) return FALSE;
+	if(gsw.info.cb != sizeof(gsw.info) ||
 		gsw.info.version != GSW_DD_ABI_VERSION ||
 		gsw.info.capabilities != (GSW_DD_CAP_SURFACE_IDS | GSW_DD_CAP_FILL |
 			GSW_DD_CAP_BLT | GSW_DD_CAP_PRESENT | GSW_DD_CAP_DIRTY_RECT |
 			GSW_DD_CAP_DST_COLOR_KEY) ||
-		gsw.info.framebuffer_linear != hal->vramLinear ||
-		gsw.info.framebuffer_bytes != hal->vramSize)
+		(hal->vramLinear != 0 && gsw.info.framebuffer_linear != hal->vramLinear) ||
+		(hal->vramSize != 0 && gsw.info.framebuffer_bytes != hal->vramSize))
 	{
 		return FALSE;
 	}
