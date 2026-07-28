@@ -202,6 +202,8 @@ rows it closes, so this section is a view of the matrix rather than a second
 source of truth. An entry disappears when its rows read `Conformant` or when the
 row records a deliberate limit instead.
 
+The VGA core, GDI and DirectDraw are all done. What remains:
+
 1. **The linear framebuffer alias.** The VBE ModeInfoBlock advertises
    PhysBasePtr at `VBE_LFB_BASE`, but the framebuffer decodes at the PCI BAR
    the system firmware programs, and nothing aliases the two once the BAR
@@ -210,8 +212,10 @@ row records a deliberate limit instead.
    probe zone. Modes 150h and 151h stay `Partial` until it is settled.
 
 GDI and DirectDraw conformance is carried by the GSWGFX guest suite rather than
-by this matrix; see `AGENTS.md` for the gate and its expected counts. Their state
-as measured on 2026-07-28:
+by this matrix; see `AGENTS.md` for the gate and its expected counts. Both pass
+as of 2026-07-28. The accepted `/bounded` profile still records DirectDraw and
+Direct3D `UNAVAILABLE` because it does not enter them; DirectDraw is proven by
+its own `/ddraw-only` run rather than by changing that profile.
 
 - **GDI passes.** A `/gdi-only` run publishes with host exit 0, `stop_reason`
   `test_exit`, and Tested 50, Failed 0 across twelve modes smoked and
@@ -220,36 +224,17 @@ as measured on 2026-07-28:
   with an INF that has no `MODES\8\320,240`. Importing the key alone hangs the
   guest, so restoring the pair needs the current driver installed through its
   INF rather than staged as files.
-- **DirectDraw does not run.** The accepted profile passes `/bounded`, which
-  records DirectDraw and Direct3D `UNAVAILABLE` without entering them. A
-  `/ddraw-only` run on the same image reaches a live Windows 98 desktop and then
-  publishes nothing for the full 600 seconds, twice, with unclassified I/O and
-  MMIO both zero. Staging the current `GSWMINI.DRV` and `GSWHAL9X.DLL` first
-  changes nothing, so it is not the driver-file staleness recorded earlier. The
-  `/gdi-only` control on that same image publishes normally, which puts the
-  fault inside the DirectDraw Adapter rather than in the launcher, the VBE
-  handoff, the image, or the host. GSWGFX's `/trace` option then narrowed it to
-  one call: creation, exclusive full-screen cooperation, the mode set and its
-  read-back, the flippable primary, its attached back buffer and the palette all
-  return, and the first back-buffer `Lock` never does. `DirectDrawCreateEx` is
-  absent from this guest's DDRAW.DLL, so the DirectDraw 7 against 4 distinction
-  is not the variable; both paths reach the same Lock. The HAL carries the same
-  kind of trace, and it names the call: `Lock32` registers a surface lazily on
-  first use, and that registration is a synchronous `DeviceIoControl` into
-  `GSWMINI.VXD` issued from inside a DirectDraw lock callback in exclusive
-  full-screen mode. It never returns. The same IOCTL path succeeds during driver
-  load, so the bridge works; what does not work is calling it from there. This is
-  RETVRN99's own guest bridge rather than the firmware, the image or the VGA
-  core. The driver's own debug channel, captured through the `serial1.log`
-  artifact, found two defects in it. The IOCTL handler refused any buffer at or
-  above 80000000h as "not ring 3", but VWIN32 hands a VxD the caller's buffers
-  as flat linear addresses in the shared arena, so every bridge request came
-  back as ERROR_INVALID_FUNCTION. With that answered, the load then compared a
-  framebuffer identity the display driver has not published yet, which refused
-  the bridge permanently. Both are fixed, and the accepted gate is unchanged.
-  DirectDraw still does not register a surface: `GSWDD_surface` rejects on one
-  of its own guards before reaching the bridge, which is the next question and
-  needs one run to answer.
+- **DirectDraw took three defects in RETVRN99's own guest bridge.** All three
+  were found by giving the guest a voice through `serial1.log` and reading what
+  it printed, after several attempts to reason about it from the outside had to
+  be withdrawn. The IOCTL handler refused any buffer at or above 80000000h as
+  "not ring 3", where VWIN32 legitimately places them, so every request came
+  back as ERROR_INVALID_FUNCTION. The bridge load then compared a framebuffer
+  identity the display driver has not published on the first pass, refusing the
+  bridge permanently. Last, `gswdd32.dll` loads per process while the HAL keeps
+  its state in the shared arena, so a module handle and entry points cached by
+  one process were being called from another. All three are fixed and both
+  profiles pass.
 
 ## Explicit exclusions
 
