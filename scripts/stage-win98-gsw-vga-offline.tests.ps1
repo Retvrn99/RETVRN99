@@ -187,8 +187,8 @@ try {
             'Adjacent RETVRN99-FAT32 executable was not built.'
 
         $alteredPriorPath = Join-Path $script:TestRoot 'altered-prior.tsv'
-        $reviewedHash = '5aa3b3a078ce3fb42ee80d1dec71f96b486a98e8c95bd085f8f7c9ede32e4e34'
-        $alteredHash = '8aa3b3a078ce3fb42ee80d1dec71f96b486a98e8c95bd085f8f7c9ede32e4e34'
+        $reviewedHash = '5b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea'
+        $alteredHash = '8b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea'
         $priorText = [IO.File]::ReadAllText($priorManifestPath)
         $alteredPriorText = $priorText.Replace($reviewedHash, $alteredHash)
         Assert-OfflineStageTestTrue ($alteredPriorText -cne $priorText) `

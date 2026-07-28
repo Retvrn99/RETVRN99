@@ -218,9 +218,9 @@ The current independently reproduced package payloads are:
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
 | `gswmini.drv` | 16,988 | `2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0` |
-| `gswmini.vxd` | 39,341 | `61edea1973a7ce17fde3725d930c75495dd1ce2eeeb87fa799b8289cf534d876` |
+| `gswmini.vxd` | 39,341 | `f03acc02b4c1a1d8908f4374380d2cf9f6ed1e08ec8f6920e92af673c5dfc58b` |
 | `gswmini.inf` | 3,210 | `5b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea` |
-| `gswhal9x.dll` | 46,080 | `918b943a7ab49ef9568004c0c2a0d4591e75ac44ca3eeab9b8acb0d75d0a98a8` |
+| `gswhal9x.dll` | 48,128 | `d1f8bf9402215ab45088fa7d92a1ead024c31de0861d74fb2582d3ade4915b8d` |
 | `gswdd32.dll` | 32,256 | `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4` |
 
 The DLL identity is GSW-specific. `gswhal9x.dll` is the DirectDraw HAL and
