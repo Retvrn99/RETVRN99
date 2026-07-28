@@ -293,7 +293,13 @@ machine_take_runtime_diagnostic :: proc(m: ^Machine) -> (string, bool) {
 		}
 	case .Mmio_Storm:
 		alias := hv.Device_Alias{}
-		if len(m.vm.device_aliases) > 0 {alias = m.vm.device_aliases[0]}
+		for candidate in m.vm.device_aliases {
+			if candidate.gpa == video.LEGACY_APERTURE_BASE {
+				alias = candidate
+				break
+			}
+		}
+		if alias.size == 0 && len(m.vm.device_aliases) > 0 {alias = m.vm.device_aliases[0]}
 		fmt.sbprintf(
 			&builder,
 			"diagnostic: MMIO exit storm fallbacks=%d scalar=%d string=%d vbe=%02x bpp=%d bank=%d/%d alias=%d pending=%d offset=%x requested=%x maps=%d unmaps=%d map_fail=%d dirty_q=%d dirty_fail=%d",

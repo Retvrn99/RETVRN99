@@ -191,7 +191,12 @@ whpx_reserve_memory :: proc(vm: ^Vm, gpa, size: u64, kind: Memory_Reservation_Ki
 		}
 	}
 	for mapping in vm.device_mappings {
-		if whpx_ranges_overlap(gpa, size, mapping.gpa, u64(mapping.size)) {
+		if mapping.mapped && whpx_ranges_overlap(gpa, size, mapping.gpa, u64(mapping.size)) {
+			return false
+		}
+		if mapping.request_pending &&
+		   mapping.requested_mapped &&
+		   whpx_ranges_overlap(gpa, size, mapping.requested_gpa, u64(mapping.size)) {
 			return false
 		}
 	}
@@ -310,7 +315,12 @@ whpx_map_device_memory_internal :: proc(
 		}
 	}
 	for mapping in vm.device_mappings {
-		if whpx_ranges_overlap(gpa, map_size, mapping.gpa, u64(mapping.size)) {
+		if mapping.mapped && whpx_ranges_overlap(gpa, map_size, mapping.gpa, u64(mapping.size)) {
+			return nil, false
+		}
+		if mapping.request_pending &&
+		   mapping.requested_mapped &&
+		   whpx_ranges_overlap(gpa, map_size, mapping.requested_gpa, u64(mapping.size)) {
 			return nil, false
 		}
 	}
@@ -366,6 +376,45 @@ whpx_map_device_memory :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 
 whpx_map_device_memory_tracked :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) {
 	return whpx_map_device_memory_internal(vm, gpa, size, true)
+}
+
+// Allocates dirty-tracked device memory with no guest address yet. The backing
+// joins mappings and aliases exactly like a mapped region; a later
+// set_device_memory_mapping call gives it one.
+whpx_create_device_memory_tracked :: proc(vm: ^Vm, size: int) -> ([]u8, bool) {
+	if vm == nil || vm.part == nil || size <= 0 || u64(size) & 0xFFF != 0 {
+		return nil, false
+	}
+	mem := win32.VirtualAlloc(
+		nil,
+		uint(size),
+		win32.MEM_COMMIT | win32.MEM_RESERVE,
+		win32.PAGE_READWRITE,
+	)
+	if mem == nil {
+		return nil, false
+	}
+	pages := u64(size) / 0x1000
+	words := int((pages + 63) / 64)
+	dirty_bitmap := make([]u64, words, runtime.heap_allocator())
+	if dirty_bitmap == nil {
+		win32.VirtualFree(mem, 0, win32.MEM_RELEASE)
+		return nil, false
+	}
+	append(
+		&vm.device_mappings,
+		Device_Mapping {
+			gpa = 0,
+			host = mem,
+			size = size,
+			track_dirty = true,
+			dirty_bitmap = dirty_bitmap,
+			mapped = false,
+			requested_gpa = 0,
+			requested_mapped = false,
+		},
+	)
+	return ([^]u8)(mem)[:size], true
 }
 
 @(private = "file")
@@ -580,7 +629,22 @@ whpx_device_alias_target_valid :: proc(vm: ^Vm, gpa, size: u64, ignore_index := 
 			break
 		}
 	}
-	if !contained {return false}
+	if !contained {
+		// A fixed aperture above guest RAM, validated the way device mappings
+		// are: it may not touch RAM, a reservation, a ROM, or a mapping.
+		if whpx_ranges_overlap(gpa, size, 0, u64(len(vm.ram))) {return false}
+		for reservation in vm.mmio_reservations {
+			if whpx_ranges_overlap(gpa, size, reservation.gpa, reservation.size) {return false}
+		}
+		for rom in vm.roms {
+			if whpx_ranges_overlap(gpa, size, rom.gpa, u64(rom.size)) {return false}
+		}
+		for mapping in vm.device_mappings {
+			if mapping.mapped && whpx_ranges_overlap(gpa, size, mapping.gpa, u64(mapping.size)) {
+				return false
+			}
+		}
+	}
 	for alias, i in vm.device_aliases {
 		if i == ignore_index {continue}
 		if whpx_ranges_overlap(gpa, size, alias.gpa, alias.size) {return false}
@@ -661,6 +725,9 @@ whpx_device_mapping_target_valid :: proc(vm: ^Vm, index: int, gpa: u64, enabled:
 		}
 	}
 
+	for alias in vm.device_aliases {
+		if whpx_ranges_overlap(gpa, size, alias.gpa, alias.size) {return false}
+	}
 	current := &vm.device_mappings[index]
 	if current.mapped && current.gpa != gpa && whpx_ranges_overlap(gpa, size, current.gpa, size) {
 		return false

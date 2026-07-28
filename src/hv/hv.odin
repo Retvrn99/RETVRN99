@@ -328,6 +328,12 @@ map_device_memory_tracked :: proc(vm: ^Vm, gpa: u64, size: int) -> ([]u8, bool) 
 	return whpx_map_device_memory_tracked(vm, gpa, size)
 }
 
+// Same storage and tracking, but with no guest address until a
+// set_device_memory_mapping call provides one.
+create_device_memory_tracked :: proc(vm: ^Vm, size: int) -> ([]u8, bool) {
+	return whpx_create_device_memory_tracked(vm, size)
+}
+
 query_device_memory_dirty :: proc(vm: ^Vm, backing: []u8) -> (dirty: bool, ok: bool) {
 	return whpx_query_device_memory_dirty(vm, backing)
 }

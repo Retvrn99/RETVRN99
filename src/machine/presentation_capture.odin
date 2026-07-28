@@ -24,13 +24,20 @@ machine_publish_vbe_writes :: proc(m: ^Machine) -> bool {
 		video.DISPI_BANK_SIZE,
 		&bank_pages,
 	)
-	if !lfb_ok || !bank_ok {
+	legacy_pages: hv.Dirty_Page_Set
+	legacy_ok := hv.query_device_memory_alias_dirty_page_set(
+		&m.vm,
+		video.VBE_LFB_BASE,
+		u64(video.VRAM_SIZE),
+		&legacy_pages,
+	)
+	if !lfb_ok || !bank_ok || !legacy_ok {
 		bus_freeze(&m.bus, "WHPX VGA dirty-page query failed")
 		return false
 	}
 	m.lfb_dirty_page_observations = machine_graphics_saturating_add(
 		m.lfb_dirty_page_observations,
-		u64(lfb_pages.count),
+		u64(lfb_pages.count) + u64(legacy_pages.count),
 	)
 	m.bank_alias_dirty_page_observations = machine_graphics_saturating_add(
 		m.bank_alias_dirty_page_observations,
@@ -38,13 +45,14 @@ machine_publish_vbe_writes :: proc(m: ^Machine) -> bool {
 	)
 	for page in 0 ..< hv.DEVICE_DIRTY_MAX_PAGES {
 		if !hv.dirty_page_set_contains(&lfb_pages, u32(page)) &&
-		   !hv.dirty_page_set_contains(&bank_pages, u32(page)) {continue}
+		   !hv.dirty_page_set_contains(&bank_pages, u32(page)) &&
+		   !hv.dirty_page_set_contains(&legacy_pages, u32(page)) {continue}
 		start := page * int(hv.DEVICE_DIRTY_PAGE_SIZE)
 		if start >= video.VRAM_SIZE {continue}
 		length := min(int(hv.DEVICE_DIRTY_PAGE_SIZE), video.VRAM_SIZE - start)
 		_ = video.vga_damage_record_backing_range(&m.vga, u32(start), u32(length))
 	}
-	dirty := lfb_pages.count != 0 || bank_pages.count != 0
+	dirty := lfb_pages.count != 0 || bank_pages.count != 0 || legacy_pages.count != 0
 	_ = video.vga_publish_external_backing_writes_paired(&m.vga, &m.gsw_vga, dirty)
 	return true
 }

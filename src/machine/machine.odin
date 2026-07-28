@@ -219,8 +219,20 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	) {
 		return false
 	}
-	vram, vram_ok := hv.map_device_memory_tracked(&m.vm, video.VBE_LFB_BASE, video.VRAM_SIZE)
+	vram, vram_ok := hv.create_device_memory_tracked(&m.vm, video.VRAM_SIZE)
 	if !vram_ok || !video.vga_init(&m.vga, vram) {
+		return false
+	}
+	// The legacy VBE aperture is fixed: E0000000 decodes the framebuffer for
+	// the machine's whole life, wherever the firmware later places the BAR.
+	if !hv.set_device_memory_alias(
+		&m.vm,
+		vram,
+		video.VBE_LFB_BASE,
+		0,
+		u64(video.VRAM_SIZE),
+		true,
+	) {
 		return false
 	}
 	video.vga_set_deferred_scanout(&m.vga, true)
@@ -2439,7 +2451,12 @@ machine_sync_pci_devices :: proc(m: ^Machine) -> bool {
 	framebuffer := video.vga_vram(&m.vga)
 	if m.vm.part != nil &&
 	   len(framebuffer) > 0 &&
-	   !hv.set_device_memory_mapping(&m.vm, framebuffer, framebuffer_base, vga_memory) {
+	   !hv.set_device_memory_mapping(
+		   &m.vm,
+		   framebuffer,
+		   framebuffer_base,
+		   vga_memory && framebuffer_base != video.VBE_LFB_BASE,
+	   ) {
 		return false
 	}
 	video.vga_set_pci_decode(&m.vga, vga_io, vga_memory, framebuffer_base)

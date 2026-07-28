@@ -192,8 +192,8 @@ length before the display start, as guests do.
 | DISPI ID3 GETCAPS and 8-bit DAC | Bochs B0C3 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_width_and_capabilities`, `vga_test_dispi_id_gates_features_and_bpp_zero` |
 | DISPI ID0 to ID5 feature ladder and identifier range | Bochs B0C0 to B0C5 | Conformant | `src/vga/vbe.odin` | `vga_test_dispi_feature_ladder_follows_selected_id`, `vga_test_dispi_id_range_is_bounded` |
 | DISPI index 0Ah memory-size register | Bochs B0C5 | Conformant | `src/vga/vbe.odin` reports the persona aperture | `vga_test_dispi_memory_size_is_reported_at_every_id`, `vga_test_dispi_memory_size_register_rejects_writes`, and the pinned-firmware total in `test_machine_vbe_controller_mode_information_and_round_trip` |
-| Mode 150h 320x200x8 banked and LFB | Pinned Bochs mode table | Partial | Mode exists | `test_machine_vbe_mode_set_clear_and_preserve` sets the mode from the firmware, writes through the banked window and requires the device to render the four bytes it wrote. `test_machine_vbe_linear_framebuffer_modes` sets it with D14 and reads PhysBasePtr back. The LFB half stays open for the reason on the row below |
-| Mode 151h 320x240x8 banked and LFB | Pinned Bochs mode table | Partial | Pinned VGABIOS and `src/vga/vbe.odin` | Real firmware banked read/write/render proof exists, and `test_machine_vbe_linear_framebuffer_modes` requires the firmware to come up with the LFB flag set and to advertise `VBE_LFB_BASE` in PhysBasePtr. It also measures why the guest-side half stays open: the system firmware relocates the framebuffer BAR, in that run to F8000000, and the device decodes the framebuffer at the BAR, so the E0000000 the VBE ModeInfoBlock still advertises falls through to the tolerated PCIe mmconfig probe zone. A protected-mode guest that uses the BAR is unaffected; a real-mode VBE program that trusts PhysBasePtr is not. That alias is now a deliberate limit in the exclusions table rather than a work item, because routing it would claim a range from a fail-closed boundary |
+| Mode 150h 320x200x8 banked and LFB | Pinned Bochs mode table | Conformant | Pinned VGABIOS, `src/vga/vbe.odin`, `src/machine/machine.odin` legacy alias | `test_machine_vbe_mode_set_clear_and_preserve` sets the mode from the firmware, writes through the banked window and requires the device to render the four bytes it wrote. `test_machine_vbe_linear_framebuffer_modes` sets it with D14 and reads PhysBasePtr back. The LFB write side shares the fixed aperture the row below proves |
+| Mode 151h 320x240x8 banked and LFB | Pinned Bochs mode table | Conformant | Pinned VGABIOS, `src/vga/vbe.odin`, `src/machine/machine.odin` legacy alias | Real firmware banked read/write/render proof exists, and `test_machine_vbe_linear_framebuffer_modes` requires the firmware to come up with the LFB flag set and to advertise `VBE_LFB_BASE` in PhysBasePtr. `test_machine_vbe_lfb_alias_decodes_after_bar_move` closes the LFB half from the guest side: a real-mode probe enters unreal mode, writes through the advertised E0000000 while the system firmware has the BAR at F8000000, reads its own bytes back through the alias, and the device renders them. The fixed aperture is a dirty-tracked alias of the framebuffer, so PhysBasePtr is honest wherever the BAR moves |
 
 ## Roadmap
 
@@ -203,11 +203,15 @@ source of truth. An entry disappears when its rows read `Conformant` or when the
 row records a deliberate limit instead.
 
 Nothing remains. The VGA core, GDI and DirectDraw are all done, and the one
-open routing question has been decided rather than deferred: the linear
-framebuffer alias is now a recorded limit in the exclusions table below, because
-claiming `VBE_LFB_BASE` for the framebuffer would take a range away from the
-PCIe mmconfig probe zone the machine tolerates. Modes 150h and 151h stay
-`Partial` for that recorded reason and are not work items.
+open routing question has been decided twice: first recorded as a limit, then
+reversed when it turned out to break real software. DOS-era VBE programs map
+the PhysBasePtr the ModeInfoBlock advertises and write every pixel through it,
+so with the BAR at F8000000 those writes fell into the tolerated mmconfig probe
+zone: a black screen at one MemoryAccess exit per store. E0000000 is now a
+fixed dirty-tracked alias of the framebuffer for the machine's whole life, no
+boot ever touched that range for mmconfig probing in any measured run, and the
+remaining E4000000 through F0000000 span keeps its tolerated-probe behavior.
+Modes 150h and 151h are `Conformant` with a guest-side unreal-mode proof.
 
 GDI and DirectDraw conformance is carried by the GSWGFX guest suite rather than
 by this matrix; see `AGENTS.md` for the gate and its expected counts. Both pass
@@ -260,4 +264,4 @@ records only Direct3D `UNAVAILABLE`.
 | Sequencer 01h serializer load rate, bits 2 and 4 | Out of target | Presentation is scanline ordered and has no serializer to reload, so the load rate has nothing to act on. `test_machine_vgabios_int10_mode_matrix` requires both bits to stay at their reset value across every firmware mode set |
 | Sequencer 04h extended-memory gating, bit 1 | Out of target | The same principle as ADR 0011: a capability bit never shrinks capacity. Clearing it on real hardware hides everything above 64 KiB, and honouring that could only take memory away from a guest. `test_machine_vgabios_int10_mode_matrix` requires the firmware to enable it in every mode, so no supported path depends on the restriction |
 | DirectDraw, Direct3D, or OpenGL acceleration changes | Out of target | Existing GSW-VGA 2D and guarded 3D Interfaces remain unchanged |
-| A linear-framebuffer alias at `VBE_LFB_BASE` once the PCI BAR moves | Out of target | The framebuffer decodes at the BAR the system firmware programs, measured at F8000000, while the VBE ModeInfoBlock keeps advertising E0000000. Aliasing the two would claim E0000000 for the framebuffer, and that range currently belongs to the PCIe mmconfig probe zone the machine tolerates and ignores. Taking a range away from a fail-closed boundary to serve a real-mode VBE program that trusts PhysBasePtr is a worse trade than leaving the gap recorded: every protected-mode guest uses the BAR and is unaffected, which is why Windows has never noticed. Modes 150h and 151h stay `Partial` for this reason alone |
+| PCIe mmconfig probe tolerance below `E4000000` | Out of target | The fixed legacy framebuffer alias claims E0000000 through E4000000, so a probe there now reads framebuffer bytes rather than FFh. No measured boot ever touched the range: SeaBIOS publishes no MCFG and the zone log stayed empty across every retained run. The rest of the zone, E4000000 through F0000000, keeps its tolerated-probe behavior unchanged |

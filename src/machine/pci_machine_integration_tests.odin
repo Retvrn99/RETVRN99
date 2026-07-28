@@ -237,23 +237,33 @@ test_machine_gsw_framebuffer_mapping_follows_bar1_and_mse :: proc(t: ^testing.T)
 
 	if !testing.expect_value(t, len(m.vm.device_mappings), 1) {return}
 	mapping := &m.vm.device_mappings[0]
-	testing.expect_value(t, mapping.gpa, u64(GSW_VGA_FRAMEBUFFER_BAR))
-	testing.expect(t, mapping.mapped && !mapping.request_pending)
+	// The fixed legacy alias owns E0000000 from power-on; the BAR mapping
+	// stays down while the BAR still points into that aperture.
+	testing.expect(t, !mapping.mapped)
+	lfb_alias: ^hv.Device_Alias
+	for &alias in m.vm.device_aliases {
+		if alias.gpa == video.VBE_LFB_BASE && alias.size == u64(video.VRAM_SIZE) {
+			lfb_alias = &alias
+		}
+	}
+	if !testing.expect(t, lfb_alias != nil) {return}
+	testing.expect(t, lfb_alias.requested_mapped)
 
 	pci_machine_test_write_live_config(m, 0x8000_1014, 4, 0xD000_0000)
 	testing.expect_value(t, video.vga_framebuffer_base(&m.vga), u64(0xD000_0000))
-	testing.expect_value(t, mapping.gpa, u64(GSW_VGA_FRAMEBUFFER_BAR))
 	testing.expect_value(t, mapping.requested_gpa, u64(0xD000_0000))
 	testing.expect(t, mapping.request_pending)
 	if !pci_machine_test_apply_mapping(t, m) {return}
 	testing.expect_value(t, mapping.gpa, u64(0xD000_0000))
 	testing.expect(t, mapping.mapped && !mapping.request_pending)
+	testing.expect(t, lfb_alias.mapped)
 
 	pci_machine_test_write_live_config(m, 0x8000_1004, 2, 0x0004)
 	testing.expect(t, !m.vga.pci_memory_enabled)
 	testing.expect(t, mapping.request_pending && !mapping.requested_mapped)
 	if !pci_machine_test_apply_mapping(t, m) {return}
 	testing.expect(t, !mapping.mapped && !mapping.request_pending)
+	testing.expect(t, lfb_alias.mapped)
 
 	pci_machine_test_write_live_config(m, 0x8000_1004, 2, 0x0006)
 	testing.expect(t, m.vga.pci_memory_enabled)
@@ -261,4 +271,13 @@ test_machine_gsw_framebuffer_mapping_follows_bar1_and_mse :: proc(t: ^testing.T)
 	if !pci_machine_test_apply_mapping(t, m) {return}
 	testing.expect_value(t, mapping.gpa, u64(0xD000_0000))
 	testing.expect(t, mapping.mapped && !mapping.request_pending)
+
+	// Moving the BAR back onto the legacy aperture keeps a single decode: the
+	// alias serves it and the BAR mapping stands down.
+	pci_machine_test_write_live_config(m, 0x8000_1014, 4, u32(video.VBE_LFB_BASE))
+	testing.expect_value(t, video.vga_framebuffer_base(&m.vga), video.VBE_LFB_BASE)
+	testing.expect(t, mapping.request_pending && !mapping.requested_mapped)
+	if !pci_machine_test_apply_mapping(t, m) {return}
+	testing.expect(t, !mapping.mapped && !mapping.request_pending)
+	testing.expect(t, lfb_alias.mapped)
 }
