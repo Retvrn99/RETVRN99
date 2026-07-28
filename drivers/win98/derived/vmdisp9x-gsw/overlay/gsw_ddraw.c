@@ -4,16 +4,6 @@
 #include "vxd_lib.h"
 #include "gsw_transport.h"
 
-typedef struct GSWLockedRange {
-	DWORD page;
-	DWORD pages;
-	BOOL locked;
-} GSWLockedRange;
-
-#define GSW_PTE_PRESENT 0x00000001UL
-#define GSW_PTE_WRITE   0x00000002UL
-#define GSW_PTE_USER    0x00000004UL
-
 typedef union GSWDDPayload {
 	GSWDDQuery query;
 	GSWDDRegister registration;
@@ -25,57 +15,25 @@ typedef union GSWDDPayload {
 	DWORD success;
 } GSWDDPayload;
 
-// VWIN32 hands a VxD the caller's DeviceIoControl buffers as flat linear
-// addresses, and they legitimately land in the shared arena above 80000000h: a
-// query's output buffer arrives at b00be1a0h. An earlier version of this refused
-// anything at or above that boundary as "not ring 3" and required the user bit
-// in the page table, which rejected every request the DirectDraw bridge made and
-// is why DirectDraw never worked. What is left is what can be checked without
-// assuming which half of the address space the caller lives in: no null, no
-// wrap, a bounded span, and pages that are present and writable when written.
-static BOOL gsw_dd_range_lock(
-	DWORD address,
-	DWORD bytes,
-	BOOL writable,
-	GSWLockedRange *range
-)
+// Bounds a buffer VWIN32 handed us, without calling the memory manager.
+//
+// DirectDraw calls this driver from inside its own Lock, and _LinPageLock and
+// _CopyPageTable both fail to return on that thread: the query, which runs at
+// driver load, answers through this same path, while the surface registration
+// issued from Lock never comes back. Upstream vmdisp9x dereferences DIOCParams
+// buffers directly and calls neither, and its own Lock32 issues an IOCTL from
+// exactly this context, which is the behaviour this matches.
+//
+// The address-space check that used to live here was worse than the locking: it
+// refused everything at or above 80000000h as "not ring 3", where VWIN32
+// legitimately places these buffers. What is left is what can be checked with
+// arithmetic alone.
+static BOOL gsw_dd_range_valid(DWORD address, DWORD bytes)
 {
-	DWORD span;
-	DWORD page_table[2];
-	DWORD required;
-	DWORD i;
-	if(range == NULL) return FALSE;
-	memset(range, 0, sizeof(*range));
 	if(bytes == 0) return TRUE;
 	if(address == 0 || address > 0xFFFFFFFFUL - (bytes - 1)) return FALSE;
-	span = (address & 0xFFF) + bytes;
-	range->page = address >> 12;
-	range->pages = (span + 0xFFF) >> 12;
-	if(range->pages > 2) return FALSE;
-	if(_LinPageLock(range->page, range->pages, 0) == 0) return FALSE;
-	memset(page_table, 0, sizeof(page_table));
-	_CopyPageTable(range->page, range->pages, page_table, 0);
-	required = GSW_PTE_PRESENT;
-	if(writable) required |= GSW_PTE_WRITE;
-	for(i = 0; i < range->pages; i++)
-	{
-		if((page_table[i] & required) != required)
-		{
-			_LinPageUnLock(range->page, range->pages, 0);
-			return FALSE;
-		}
-	}
-	range->locked = TRUE;
+	if((address & 0xFFF) + bytes > 2 * 4096) return FALSE;
 	return TRUE;
-}
-
-static void gsw_dd_range_unlock(GSWLockedRange *range)
-{
-	if(range != NULL && range->locked)
-	{
-		_LinPageUnLock(range->page, range->pages, 0);
-		range->locked = FALSE;
-	}
 }
 
 static BOOL gsw_dd_sizes(
@@ -113,8 +71,6 @@ BOOL GSW_DD_ioctl(struct DIOCParams *params, DWORD *result)
 {
 	GSWDDPayload input;
 	GSWDDPayload output;
-	GSWLockedRange input_range;
-	GSWLockedRange output_range;
 	DWORD input_bytes;
 	DWORD output_bytes;
 	DWORD success = 0;
@@ -124,12 +80,8 @@ BOOL GSW_DD_ioctl(struct DIOCParams *params, DWORD *result)
 	if(!gsw_dd_sizes(params, &input_bytes, &output_bytes))
 		return params->dwIoControlCode >= GSW_DD_IOCTL_QUERY &&
 			params->dwIoControlCode <= GSW_DD_IOCTL_DIRTY;
-	if(!gsw_dd_range_lock(params->lpInBuffer, input_bytes, FALSE, &input_range)) return TRUE;
-	if(!gsw_dd_range_lock(params->lpOutBuffer, output_bytes, TRUE, &output_range))
-	{
-		gsw_dd_range_unlock(&input_range);
-		return TRUE;
-	}
+	if(!gsw_dd_range_valid(params->lpInBuffer, input_bytes)) return TRUE;
+	if(!gsw_dd_range_valid(params->lpOutBuffer, output_bytes)) return TRUE;
 
 	memset(&input, 0, sizeof(input));
 	memset(&output, 0, sizeof(output));
@@ -184,8 +136,6 @@ BOOL GSW_DD_ioctl(struct DIOCParams *params, DWORD *result)
 	}
 
 	memcpy((void *)params->lpOutBuffer, &output, output_bytes);
-	gsw_dd_range_unlock(&output_range);
-	gsw_dd_range_unlock(&input_range);
 	*result = 0;
 	return TRUE;
 }

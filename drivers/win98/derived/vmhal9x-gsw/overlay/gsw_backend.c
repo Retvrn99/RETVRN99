@@ -87,6 +87,27 @@ DWORD GSWDD_surface_bpp(VMDAHAL_t *hal, LPDDRAWI_DDRAWSURFACE_LCL surface)
 	return hal == NULL ? 0 : hal->dwBpp;
 }
 
+// gswdd32.dll loads below 2 GiB, which on this platform means per process,
+// while this driver's own state sits in the shared arena where every process
+// sees the same copy. A module handle and entry points cached by whichever
+// process loaded first are therefore meaningless to the next one, and calling
+// them jumps somewhere unmapped. Re-resolve them whenever the cached module is
+// not the one this process has.
+static BOOL gsw_interface_current(VMDAHAL_t *hal)
+{
+	HMODULE current = GetModuleHandleA("gswdd32.dll");
+	if(gsw.module != NULL && current == gsw.module) return TRUE;
+	gsw.module = NULL;
+	gsw.query = NULL;
+	gsw.register_surface = NULL;
+	gsw.unregister_surface = NULL;
+	gsw.fill = NULL;
+	gsw.blt = NULL;
+	gsw.present = NULL;
+	gsw.dirty = NULL;
+	return GSWDD_load(hal);
+}
+
 DWORD GSWDD_surface(VMDAHAL_t *hal, LPDDRAWI_DDRAWSURFACE_LCL surface)
 {
 	GSWDDRegister request;
@@ -97,6 +118,10 @@ DWORD GSWDD_surface(VMDAHAL_t *hal, LPDDRAWI_DDRAWSURFACE_LCL surface)
 	DWORD bpp;
 
 	if(hal == NULL || surface == NULL || surface->lpGbl == NULL)
+	{
+		return 0;
+	}
+	if(!gsw_interface_current(hal))
 	{
 		return 0;
 	}
