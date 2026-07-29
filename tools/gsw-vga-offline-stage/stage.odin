@@ -323,11 +323,11 @@ stage_parse_manifest :: proc(path: string, contract: ^Stage_Contract) -> bool {
 
 stage_reviewed_current_contract :: proc() -> Stage_Contract {
 	contract := stage_contract_default()
-	bytes := [GSW_VGA_FILE_COUNT]u64{3210, 16988, 39353, 48128, 32256}
+	bytes := [GSW_VGA_FILE_COUNT]u64{3210, 16988, 39361, 48128, 32256}
 	hashes := [GSW_VGA_FILE_COUNT]string {
 		"5b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea",
 		"2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0",
-		"533b490ef9ca116e05a4e9de6d7185311c34fb07c24762283ec04a55d5111b86",
+		"fe51fe90fc986082b236fc3926341ed418cf97d8f7f514d985d8d294c6625ecb",
 		"c1b0dd934da52684886f01bcabb38fb812ad610bba147e65ead99cca2d980cc0",
 		"bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4",
 	}

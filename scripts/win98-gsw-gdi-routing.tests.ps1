@@ -131,7 +131,7 @@ Assert-Match $inf 'DriverVer=07/26/2026,0\.2\.0\.8' 'The fixed driver version mu
 Assert-Match $readme '16,988[^\r\n]+2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0' (
     'The documented Win16 driver identity must match the deterministic build.'
 )
-Assert-Match $readme '39,353[^\r\n]+533b490ef9ca116e05a4e9de6d7185311c34fb07c24762283ec04a55d5111b86' (
+Assert-Match $readme '39,361[^\r\n]+fe51fe90fc986082b236fc3926341ed418cf97d8f7f514d985d8d294c6625ecb' (
     'The documented VxD identity must match the deterministic build.'
 )
 Assert-Match $readme '48,128[^\r\n]+c1b0dd934da52684886f01bcabb38fb812ad610bba147e65ead99cca2d980cc0' (

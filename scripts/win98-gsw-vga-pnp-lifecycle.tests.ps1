@@ -469,8 +469,16 @@ Assert-Match $lifecycle 'BOOL Hook_V86_Int_Chain\(DWORD int_num, DWORD HookProc\
 Assert-Match $lifecycle 'BOOL Unhook_V86_Int_Chain\(DWORD int_num, DWORD HookProc\)[\s\S]+VMMCall\(Unhook_V86_Int_Chain\)[\s\S]+setnc al[\s\S]+return result;' (
     'The V86 interrupt unhook wrapper must preserve the VMM carry-clear success result.'
 )
-Assert-Match $lifecycle 'if\(gsw_windows_hires_active && !mode_changing\)[\s\S]+if\(ah == 0\)[\s\S]+if\(al == 0x13\)[\s\S]+gsw_windows_hires_active = FALSE;[\s\S]+return 0;[\s\S]+return 1;[\s\S]+ah == 0x4F && al == 0x02[\s\S]+0xFFFF0000UL\) \| 0x034FUL;[\s\S]+return 1;' (
+Assert-Match $lifecycle 'if\(gsw_windows_hires_active && !mode_changing\)[\s\S]+if\(ah == 0\)[\s\S]+if\(al == 0x13\)[\s\S]+gsw_windows_hires_active = FALSE;[\s\S]+return 0;[\s\S]+if\(vm == ThisVM && al == 0x03\)[^;]+return 0;[\s\S]+return 1;[\s\S]+ah == 0x4F && al == 0x02[\s\S]+0xFFFF0000UL\) \| 0x034FUL;[\s\S]+return 1;' (
     'PnP BIOS standard and VBE mode sets must be blocked only while Windows owns high-resolution mode.'
+)
+# The ownership term belongs to the mode 3 escape alone. Widening it to the
+# outer guard would stop swallowing the system-VM ConfigMgr probes the guard
+# exists for, so the literal outer condition above is asserted without it. The
+# escape carries no statement before its return, which pins the pass-through:
+# a DOS box asking for mode 3 must not disarm the hook for Windows.
+Assert-Match $lifecycle 'if\(vm == ThisVM && al == 0x03\)[^;]+return 0;' (
+    "Windows' own INT 10h return to text mode 3 must reach the BIOS without clearing high-resolution ownership."
 )
 Assert-Match $lifecycle 'if\(al == 0x13\)[\s\S]+gsw_windows_hires_active = FALSE;[\s\S]+return 0;' (
     'A WinQuake-style BIOS mode 13h request must release high-resolution ownership and continue to the VGA BIOS.'
