@@ -29,7 +29,18 @@ diff --git a/vmhal9x.c b/vmhal9x.c
  #ifndef DDHALINFO_ISPRIMARYDISPLAY
  #define DDHALINFO_ISPRIMARYDISPLAY 0x00000001l
  // indicates driver is primary display driver
-@@ -342,7 +346,11 @@ DWORD __stdcall DriverInit(LPVOID ptr)
+@@ -335,6 +339,10 @@ DWORD __stdcall DriverInit(LPVOID ptr)
+ 	{
+ 		globalHal->d3dhal_global = 0;
+ 		globalHal->d3dhal_callbacks = 0;
++#ifdef GSW_DDHAL
++		/* mirrors the D3DHAL arm: dddrv.c ORs cb32.flags into ddHALInfo.dwFlags */
++		globalHal->cb32.flags = DDHALINFO_ISPRIMARYDISPLAY;
++#endif
+ 		memset(&globalHal->d3dhal_exebuffcallbacks, 0, sizeof(DDHAL_DDEXEBUFCALLBACKS));
+ 		memset(&globalHal->d3dhal_flags, 0, sizeof(VMDAHAL_D3DCAPS_t));
+ 	}
+@@ -342,7 +350,11 @@ DWORD __stdcall DriverInit(LPVOID ptr)
  
  	globalHal->invalid = FALSE;
  	

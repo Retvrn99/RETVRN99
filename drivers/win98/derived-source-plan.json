@@ -24,10 +24,10 @@
         {"relative_path":"derived/vmdisp9x-gsw/patches/0012-gsw-win16-screen-switch-reentry.patch","bytes":3249,"sha256":"9db06ff67c8424bde267823902c4c50800c097400dfb515bdfd5aad0a60ad4e8","normalize_lf_paths":["enable.c","minidrv.h","scrsw.c"]}
       ],
       "overlays": [
-        {"relative_path":"derived/vmdisp9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":17,"directory_count":1,"total_entries":18,"aggregate_bytes":84031,"maximum_file_bytes":29560,"maximum_path_bytes":20,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"02f2a0e0ba9c4846910d0cd4629c525e496dbc9beb08513da8700811d1d9978e"}},
+        {"relative_path":"derived/vmdisp9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":17,"directory_count":1,"total_entries":18,"aggregate_bytes":84418,"maximum_file_bytes":29947,"maximum_path_bytes":20,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"149fef838777c21e3b666a96272b6bf0b3318f58f6bbf2848e13c0740ea64c6b"}},
         {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":3,"directory_count":0,"total_entries":3,"aggregate_bytes":10495,"maximum_file_bytes":5053,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"12a77ff5ae763ff469e9d734cabaafd24867f557b3415947680e8863d7ccd72f"}}
       ],
-      "output_tree": {"file_count":159,"directory_count":7,"total_entries":166,"aggregate_bytes":1384105,"maximum_file_bytes":113466,"maximum_path_bytes":26,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"3695c2e9015aa9a31a45c08675d0b8322c1fb4894f9d5e80cde9123ac77431bf"}
+      "output_tree": {"file_count":159,"directory_count":7,"total_entries":166,"aggregate_bytes":1384492,"maximum_file_bytes":113466,"maximum_path_bytes":26,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"9739a48892e2abf6058a5cab1f588323122143b1f64db2aebdf0175622bf6e4d"}
     },
     {
       "name": "vmhal9x-gsw",
@@ -35,14 +35,14 @@
       "source_directory": "vmhal9x",
       "destination_directory": "vmhal9x-gsw",
       "patches": [
-        {"relative_path":"derived/vmhal9x-gsw/patches/0001-gsw-bridge-and-fail-closed-hal.patch","bytes":947,"sha256":"333ff9518ccb0ef788e7ee4a40084f0885cddeed1ca71de704db3f5d49b9d041","normalize_lf_paths":["3d_accel.h","vmhal9x.c"]},
+        {"relative_path":"derived/vmhal9x-gsw/patches/0001-gsw-bridge-and-fail-closed-hal.patch","bytes":1395,"sha256":"e41841109b0e35e5a3140bf35e637110bde09fa3f095522dad0ef9cdf650c79b","normalize_lf_paths":["3d_accel.h","vmhal9x.c"]},
         {"relative_path":"derived/vmhal9x-gsw/patches/0002-gsw-remove-wine-hook.patch","bytes":601,"sha256":"42a56f27ce164fd5e6a86e62cb8bd9f0dd96fb88e99d2167f4dc15b3dc1d17c9","normalize_lf_paths":["vmhal9x.c"]}
       ],
       "overlays": [
-        {"relative_path":"derived/vmhal9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":10,"directory_count":0,"total_entries":10,"aggregate_bytes":25254,"maximum_file_bytes":9677,"maximum_path_bytes":17,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"cbc8f99c3b184e1a37d2f8ce6eecc16a1c3b28260f2559d2f678c028393ab002"}},
+        {"relative_path":"derived/vmhal9x-gsw/overlay","destination_relative_path":".","replace_existing":false,"tree":{"file_count":10,"directory_count":0,"total_entries":10,"aggregate_bytes":25638,"maximum_file_bytes":10061,"maximum_path_bytes":17,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"c029f393f21cb712250d4dad9a7d8ab8a618d64a72130ae2301ec81ba85f6c6f"}},
         {"relative_path":"derived/shared","destination_relative_path":".","replace_existing":false,"tree":{"file_count":3,"directory_count":0,"total_entries":3,"aggregate_bytes":10495,"maximum_file_bytes":5053,"maximum_path_bytes":15,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"12a77ff5ae763ff469e9d734cabaafd24867f557b3415947680e8863d7ccd72f"}}
       ],
-      "output_tree": {"file_count":155,"directory_count":12,"total_entries":167,"aggregate_bytes":1406660,"maximum_file_bytes":201544,"maximum_path_bytes":33,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"d0fbc5149ae08397ed82dcfedd6a65304f50f5f21c9dd5f159b738b191ab6580"}
+      "output_tree": {"file_count":155,"directory_count":12,"total_entries":167,"aggregate_bytes":1407200,"maximum_file_bytes":201544,"maximum_path_bytes":33,"digest_algorithm":"retvrn99-file-tree-sha256-v1","sha256":"c01638614261f4c80dfb8182a31d2490a5daee9b12c958d0fd258617ff5fc3de"}
     }
   ]
 }

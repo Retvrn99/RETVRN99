@@ -131,8 +131,11 @@ Assert-Match $inf 'DriverVer=07/26/2026,0\.2\.0\.8' 'The fixed driver version mu
 Assert-Match $readme '16,988[^\r\n]+2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0' (
     'The documented Win16 driver identity must match the deterministic build.'
 )
-Assert-Match $readme '39,341[^\r\n]+f03acc02b4c1a1d8908f4374380d2cf9f6ed1e08ec8f6920e92af673c5dfc58b' (
+Assert-Match $readme '39,353[^\r\n]+533b490ef9ca116e05a4e9de6d7185311c34fb07c24762283ec04a55d5111b86' (
     'The documented VxD identity must match the deterministic build.'
+)
+Assert-Match $readme '48,128[^\r\n]+c1b0dd934da52684886f01bcabb38fb812ad610bba147e65ead99cca2d980cc0' (
+    'The documented DirectDraw HAL identity must match the deterministic build.'
 )
 
 Write-Host 'PASS GSW GDI ABI is pointer-free, exact-size, and version frozen.'

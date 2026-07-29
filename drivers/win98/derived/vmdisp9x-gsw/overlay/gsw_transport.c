@@ -466,6 +466,17 @@ static BOOL gsw_transport_initialize(BOOL replace_ready_binding)
 		Signal_Semaphore(gsw_semaphore);
 		return TRUE;
 	}
+	/*
+	 * A rebind only has work when ConfigMgr actually moved the device.  Mode
+	 * sets run inside the screen-switch nested-execution window, where the
+	 * teardown's blocking VMM services must not run and the PCI command
+	 * decode toggle would blank the live framebuffer binding.
+	 */
+	if(gsw_is_ready && gsw_pci_mmio_current())
+	{
+		Signal_Semaphore(gsw_semaphore);
+		return TRUE;
+	}
 	if(gsw_is_ready || gsw_pci_address_valid || gsw_registers != NULL ||
 	   gsw_ring != NULL)
 		gsw_transport_shutdown_locked();

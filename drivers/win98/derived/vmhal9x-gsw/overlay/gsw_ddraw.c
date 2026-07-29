@@ -46,9 +46,10 @@ static BOOL gsw_pixel_format_supported(const DDPIXELFORMAT *format)
 	{
 		case 8:
 			return flags == (DDPF_RGB | DDPF_PALETTEINDEXED8);
-		case 15:
-			return flags == DDPF_RGB && format->dwRBitMask == 0x7C00 &&
-				format->dwGBitMask == 0x03E0 && format->dwBBitMask == 0x001F;
+		/*
+		 * No case 15: DirectDraw reports 5:5:5 with dwRGBBitCount == 16, and
+		 * InsertMode never publishes a 15bpp mode, so such an arm is dead code.
+		 */
 		case 16:
 			return flags == DDPF_RGB && format->dwRBitMask == 0xF800 &&
 				format->dwGBitMask == 0x07E0 && format->dwBBitMask == 0x001F;
@@ -66,20 +67,28 @@ DDENTRY(CanCreateSurface32, LPDDHAL_CANCREATESURFACEDATA, data)
 	DWORD caps;
 	if(data == NULL || data->lpDDSurfaceDesc == NULL)
 		return DDHAL_DRIVER_NOTHANDLED;
-	caps = data->lpDDSurfaceDesc->ddsCaps.dwCaps;
-	if((caps & (DDSCAPS_SYSTEMMEMORY | DDSCAPS_TEXTURE | DDSCAPS_ZBUFFER |
-		DDSCAPS_OVERLAY | DDSCAPS_EXECUTEBUFFER)) != 0)
+	/*
+	 * Order matters and follows upstream ddraw.c CanCreateSurface32: a surface
+	 * in the primary's own pixel format is always fine, and the surface classes
+	 * this HAL does not accelerate must come back DD_OK so DirectDraw hands
+	 * them to the HEL.  Returning DDHAL_DRIVER_HANDLED with a failing ddRVal
+	 * ends the application's call instead of falling back.
+	 */
+	if(!data->bIsDifferentPixelFormat)
 	{
-		data->ddRVal = DDERR_UNSUPPORTED;
+		data->ddRVal = DD_OK;
 		return DDHAL_DRIVER_HANDLED;
 	}
-	if(data->bIsDifferentPixelFormat)
+	caps = data->lpDDSurfaceDesc->ddsCaps.dwCaps;
+	if((caps & (DDSCAPS_TEXTURE | DDSCAPS_ZBUFFER | DDSCAPS_EXECUTEBUFFER)) != 0)
 	{
-		if(!gsw_pixel_format_supported(&data->lpDDSurfaceDesc->ddpfPixelFormat))
-		{
-			data->ddRVal = DDERR_INVALIDPIXELFORMAT;
-			return DDHAL_DRIVER_HANDLED;
-		}
+		data->ddRVal = DD_OK;
+		return DDHAL_DRIVER_HANDLED;
+	}
+	if(!gsw_pixel_format_supported(&data->lpDDSurfaceDesc->ddpfPixelFormat))
+	{
+		data->ddRVal = DDERR_INVALIDPIXELFORMAT;
+		return DDHAL_DRIVER_HANDLED;
 	}
 	data->ddRVal = DD_OK;
 	return DDHAL_DRIVER_HANDLED;
