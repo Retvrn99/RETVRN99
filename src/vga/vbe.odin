@@ -55,14 +55,41 @@ vga_vbe_lfb_enabled :: proc(v: ^Vga) -> bool {
 	return vga_vbe_enabled(v) && v.dispi[DISPI_INDEX_ENABLE] & DISPI_LFB_ENABLED != 0
 }
 
+// Chain 4 with an untouched graphics controller addresses video memory byte for
+// byte: `vga_planar_backing_range` resolves `(raw >> 2) * 4 + (raw & 3)`, which
+// is `raw`, and `write_mode_result` collapses to a copy of the stored value.
+// Every register named here is reached through a port write, and every port
+// write refreshes the alias, so the guest cannot leave the identity armed under
+// a configuration that no longer holds.
+@(private = "file")
+vga_chain4_identity_aperture :: proc(v: ^Vga) -> bool {
+	// Chain 4 on, and the window based at A0000h so the aperture offset is the
+	// backing offset. Map selects 2 and 3 move the window to B0000h/B8000h.
+	if v.seq[4] & 0x08 == 0 {return false}
+	if (v.gfx[6] >> 2) & 3 > 1 {return false}
+	// Every plane writable. Chain 4 narrows the map mask to the plane the address
+	// selects, so a cleared bit would drop one address in four: unlike VirtualBox,
+	// which checks two bits, all four have to be set.
+	if v.seq[2] & 0x0F != 0x0F {return false}
+	// Write mode 0 and read mode 0.
+	if v.gfx[5] & 0x03 != 0 || v.gfx[5] & 0x08 != 0 {return false}
+	// Set/reset off, no rotation, replace, full bit mask: the write reduces to the
+	// value the guest stored, with the latches unread.
+	if v.gfx[1] & 0x0F != 0 {return false}
+	if v.gfx[3] != 0 {return false}
+	if v.gfx[8] != 0xFF {return false}
+	return true
+}
+
 vga_vbe_bank_alias :: proc(v: ^Vga) -> (Vbe_Bank_Alias, bool) {
-	if v == nil ||
-	   v.vram == nil ||
-	   !v.pci_memory_enabled ||
-	   !legacy_video_memory_enabled(v) ||
-	   !vga_vbe_enabled(v) ||
-	   dispi_effective_bpp(v.dispi[DISPI_INDEX_BPP]) == 4 ||
-	   v.bank_read != v.bank_write {
+	if v == nil || v.vram == nil || !v.pci_memory_enabled || !legacy_video_memory_enabled(v) {
+		return {}, false
+	}
+	if !vga_vbe_enabled(v) {
+		if !vga_chain4_identity_aperture(v) || DISPI_BANK_SIZE > len(v.vram) {return {}, false}
+		return Vbe_Bank_Alias{offset = 0, size = DISPI_BANK_SIZE}, true
+	}
+	if dispi_effective_bpp(v.dispi[DISPI_INDEX_BPP]) == 4 || v.bank_read != v.bank_write {
 		return {}, false
 	}
 	offset := int(v.bank_read) * dispi_bank_granularity(v)
