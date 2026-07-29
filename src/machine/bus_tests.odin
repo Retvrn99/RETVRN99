@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package machine
 
+import hv "../hv"
 import "core:log"
 import "core:testing"
 
@@ -108,4 +109,41 @@ test_machine_unknown_mmio_is_open_bus_unless_strict :: proc(t: ^testing.T) {
 	machine_mmio(m, 0x4000_1000, true, data[:2])
 	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(2))
 	testing.expect(t, m.bus.frozen)
+}
+
+// A guest instruction against device memory that no decoder can execute is
+// contained like any other unclassified access: recorded on the same path and
+// frozen with the diagnostic intact, rather than lost as a host failure.
+@(test)
+test_undecodable_mmio_is_recorded_and_contained :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	bus_init(&m.bus)
+	defer bus_destroy(&m.bus)
+	bus_set_strict_io(&m.bus, false)
+	m.bus.diagnostic_tracing = true
+	context.logger = log.nil_logger()
+
+	detail := "MMIO emulation rip=0xffff gpa=0xae000 cs=[sel=0x9e9d] reject=unsupported MMIO opcode"
+	alive := machine_handle_exit(
+		m,
+		hv.Exit {
+			kind = .Mmio_Undecodable,
+			detail = detail,
+			cs = 0x9E9D,
+			rip = 0xFFFF,
+			gpa = 0xAE000,
+			size = 1,
+			write = false,
+		},
+	)
+
+	testing.expect(t, !alive)
+	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(1))
+	recorded := m.bus.unclassified_mmio_history[0]
+	testing.expect_value(t, recorded.gpa, u64(0xAE000))
+	testing.expect_value(t, recorded.size, u32(1))
+	testing.expect(t, !recorded.write)
+	testing.expect(t, m.bus.frozen)
+	testing.expect_value(t, m.bus.freeze_msg, detail)
 }

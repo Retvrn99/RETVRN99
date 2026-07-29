@@ -1136,7 +1136,17 @@ whpx_run :: proc(vm: ^Vm) -> Exit {
 		case .MemoryAccess:
 			if ok, detail := whpx_emulate_mmio(vm, &exit_ctx.VpContext, &exit_ctx.u.MemoryAccess);
 			   !ok {
-				return Exit{kind = .Failed, detail = detail}
+				mmio := &exit_ctx.u.MemoryAccess
+				return Exit {
+					kind = .Mmio_Undecodable,
+					detail = detail,
+					cs = exit_ctx.VpContext.Cs.Selector,
+					rip = exit_ctx.VpContext.Rip,
+					rflags = exit_ctx.VpContext.Rflags,
+					gpa = mmio.Gpa,
+					size = u8((mmio.AccessInfo >> 1) & 0x7),
+					write = mmio.AccessInfo & 1 != 0,
+				}
 			}
 			if vm.io_should_yield != nil && vm.io_should_yield(vm.io_ctx) {
 				return Exit{kind = .Io}

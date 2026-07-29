@@ -2,6 +2,7 @@
 package hv
 
 import "core:log"
+import "core:strings"
 import "core:testing"
 
 Whpx_Mmio_Fallback_Probe :: struct {
@@ -686,4 +687,33 @@ test_whpx_rep_movs_mmio_honors_width_direction_and_progress :: proc(t: ^testing.
 		testing.expect_value(t, regs.rip, u64(0x7002))
 		testing.expect_value(t, probe.written_len, 8)
 	}
+}
+
+// The rejection diagnostic is the only postmortem record of a guest
+// instruction the host cannot execute, so it must survive formatting: a
+// literal brace is a core:fmt directive and once ate the CS selector it named.
+@(test)
+test_whpx_mmio_diagnostic_names_cs_rip_without_brace_damage :: proc(t: ^testing.T) {
+	if !available() {log.warn("WHPX not available"); return}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	vp: WHV_VP_EXIT_CONTEXT
+	vp.Rip = 0xFFFF
+	vp.Cs.Selector = 0x9E9D
+	vp.Cs.Base = 0x9E9D0
+	vp.Cs.Attributes = 0x00F3
+	mmio: WHV_MEMORY_ACCESS_CONTEXT
+	mmio.Gpa = 0xAE000
+	bytes := [?]u8{0x66, 0xA5}
+
+	text := whpx_mmio_diagnostic(&vm, &vp, &mmio, 0, 2, 0, bytes[:], "unsupported MMIO opcode")
+
+	testing.expect(t, !strings.contains(text, "MISSING"))
+	testing.expect(t, strings.contains(text, "cs=[sel=0x9e9d"))
+	testing.expect(t, strings.contains(text, "rip=0xffff"))
+	testing.expect(t, strings.contains(text, "gpa=0xae000"))
+	testing.expect(t, strings.contains(text, "ins_linear=0xae9cf"))
+	testing.expect(t, strings.contains(text, "reject=unsupported MMIO opcode"))
 }

@@ -11,6 +11,10 @@ Exit_Kind :: enum {
 	Canceled,
 	Reset,
 	Failed,
+	// A guest instruction against device memory that neither the native
+	// emulator nor the fallback decoder can execute. This is guest
+	// misbehavior, not a host failure: the caller records and contains it.
+	Mmio_Undecodable,
 }
 
 Exit :: struct {
@@ -19,6 +23,9 @@ Exit :: struct {
 	cs:     u16,
 	rip:    u64,
 	rflags: u64,
+	gpa:    u64, // Mmio_Undecodable: the faulting device address
+	size:   u8,
+	write:  bool,
 }
 
 Interrupt_Injection_Result :: enum {

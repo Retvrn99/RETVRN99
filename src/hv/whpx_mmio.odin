@@ -35,7 +35,7 @@ whpx_mmio_isolated_internal_failure :: proc(status: u32) -> bool {
 	)
 }
 
-@(private = "file")
+@(private = "package")
 whpx_mmio_diagnostic :: proc(
 	vm: ^Vm,
 	vp: ^WHV_VP_EXIT_CONTEXT,
@@ -48,11 +48,14 @@ whpx_mmio_diagnostic :: proc(
 ) -> string {
 	state, _ := whpx_mmio_read_state(vm)
 	direction := mmio.AccessInfo & 1 != 0 ? "write" : "read"
+	// Braces are format directives to core:fmt: a literal "cs={sel=..." printed
+	// as "cs=%!(MISSING CLOSE BRACE)el=..." and lost the selector it was naming.
+	offset := vp.Cs.Attributes & 0x4000 != 0 ? vp.Rip & 0xFFFF_FFFF : vp.Rip & 0xFFFF
 	return fmt.tprintf(
 		"MMIO emulation rip=0x%x gva=0x%x gpa=0x%x direction=%s width=%d " +
-		"hr=0x%08x status=0x%08x ilen=%d cs={sel=0x%04x base=0x%x attr=0x%04x} " +
-		"ds={sel=0x%04x base=0x%x attr=0x%04x} es={sel=0x%04x base=0x%x attr=0x%04x} " +
-		"ss={sel=0x%04x base=0x%x attr=0x%04x} " +
+		"hr=0x%08x status=0x%08x ilen=%d ins_linear=0x%x cs=[sel=0x%04x base=0x%x attr=0x%04x] " +
+		"ds=[sel=0x%04x base=0x%x attr=0x%04x] es=[sel=0x%04x base=0x%x attr=0x%04x] " +
+		"ss=[sel=0x%04x base=0x%x attr=0x%04x] " +
 		"eax=0x%08x ecx=0x%08x edx=0x%08x ebx=0x%08x " +
 		"esp=0x%08x ebp=0x%08x esi=0x%08x edi=0x%08x ins=%02x reject=%s",
 		vp.Rip,
@@ -63,6 +66,7 @@ whpx_mmio_diagnostic :: proc(
 		u32(hr),
 		status,
 		vp.InstructionLengthCr8 & 0xF,
+		(vp.Cs.Base + offset) & 0xFFFF_FFFF,
 		vp.Cs.Selector,
 		vp.Cs.Base,
 		vp.Cs.Attributes,

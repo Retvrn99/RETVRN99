@@ -1441,6 +1441,19 @@ machine_handle_exit :: proc(m: ^Machine, ex: hv.Exit) -> bool {
 	case .Failed:
 		bus_freeze(&m.bus, ex.detail)
 		return false
+	case .Mmio_Undecodable:
+		// Guest misbehavior, recorded on the same path as any other
+		// unclassified device access so the postmortem carries it. The run
+		// still stops: without a trustworthy instruction length the access
+		// cannot be completed or skipped without silently altering guest
+		// state, so freezing is the honest containment. Artifacts are written
+		// either way, and the detail names CS:RIP and the instruction bytes.
+		bus_record_unclassified_mmio(
+			&m.bus,
+			Unclassified_Mmio{gpa = ex.gpa, size = u32(ex.size), write = ex.write},
+		)
+		bus_freeze(&m.bus, ex.detail)
+		return false
 	}
 	return !m.bus.frozen
 }
