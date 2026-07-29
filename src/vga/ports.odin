@@ -143,10 +143,10 @@ standard_port_write :: proc(v: ^Vga, port: u16, value: u8) -> bool {
 			)
 			return old_video_on != v.video_on
 		} else if int(v.attr_ix) < len(v.attr) {
-			if v.attr_ix < 0x10 && v.video_on {
-				v.attr_flip = false
-				return false
-			}
+			// Palette Address Source selects whether the CPU or the video
+			// hardware drives the palette address, and blanks the display while
+			// the CPU holds it. It does not gate register access: the shipped
+			// BIOS state restore writes indices 00h-13h with the bit set.
 			masked := value & ATTR_MASKS[v.attr_ix]
 			previous := v.attr[v.attr_ix]
 			changed := previous != masked
@@ -268,10 +268,8 @@ standard_port_read :: proc(v: ^Vga, port: u16) -> u8 {
 	case 0x3C0:
 		return v.attr_ix | (v.video_on ? 0x20 : 0)
 	case 0x3C1:
-		if int(v.attr_ix) < len(v.attr) {
-			if v.attr_ix < 0x10 && v.video_on {return 0xFF}
-			return v.attr[v.attr_ix]
-		}
+		// Readable regardless of Palette Address Source; see the write path.
+		if int(v.attr_ix) < len(v.attr) {return v.attr[v.attr_ix]}
 	case 0x3C2:
 		return vga_status_0(v)
 	case 0x3C3:

@@ -183,3 +183,119 @@ test_machine_vgabios_int10_state_save_restore_round_trip :: proc(t: ^testing.T) 
 	testing.expect_value(t, field(m, .Restored_Bda_Mode) & 0x7F, u8(0x03))
 	testing.expect_value(t, field(m, .Restored_Crtc_Vertical_Display_End), u8(0x8F))
 }
+
+// The Attribute Controller half of AH=1Ch. The firmware saves indices 00h-13h
+// with the caller's Palette Address Source and restores them with the bit
+// forced set (`rest_actl_loop` in vgabios.c does `or al, #0x20`), so a Palette
+// Address Source that gates port access instead of only blanking the display
+// makes every internal palette entry vanish across a round trip while AH=1Ch
+// still reports success.
+STATE_PALETTE_MARK_BASE :: 0x20
+STATE_PALETTE_CORRUPT_BASE :: 0x10
+STATE_PALETTE_SAVE_STATUS :: VGABIOS_PROBE_RESULT_BASE + 0
+STATE_PALETTE_RESTORE_STATUS :: VGABIOS_PROBE_RESULT_BASE + 1
+STATE_PALETTE_MUTATED :: VGABIOS_PROBE_RESULT_BASE + 2
+STATE_PALETTE_RESTORED :: VGABIOS_PROBE_RESULT_BASE + 18
+
+// Writes indices 00h-0Fh as `base | index` with the Palette Address Source
+// clear, the way a mode set does, then hands the address back to the video
+// hardware.
+@(private = "file")
+state_palette_emit_write :: proc(code: ^[dynamic]u8, base: u8) {
+	vgabios_probe_emit(code, 0xBA, 0xDA, 0x03) // mov dx, 03dah
+	vgabios_probe_emit(code, 0xEC) // in al, dx
+	vgabios_probe_emit(code, 0xBA, 0xC0, 0x03) // mov dx, 03c0h
+	for index in u8(0) ..< u8(16) {
+		vgabios_probe_emit(code, 0xB0, index, 0xEE) // mov al, index / out dx, al
+		vgabios_probe_emit(code, 0xB0, base | index, 0xEE) // mov al, value / out dx, al
+	}
+	vgabios_probe_emit(code, 0xB0, 0x20, 0xEE) // mov al, 20h / out dx, al
+}
+
+// Reads indices 00h-0Fh back through 3C1h with the Palette Address Source set,
+// which is the state a live display is in and the state the firmware itself
+// reads in. Sixteen unrolled copies do not fit in a boot sector, so this is a
+// counted loop.
+@(private = "file")
+state_palette_emit_read :: proc(code: ^[dynamic]u8, destination: int) {
+	vgabios_probe_emit(code, 0xFC) // cld
+	vgabios_probe_emit(code, 0x31, 0xC0) // xor ax, ax
+	vgabios_probe_emit(code, 0x8E, 0xC0) // mov es, ax
+	vgabios_probe_emit(code, 0xB1, 0x00) // mov cl, 0
+	vgabios_probe_emit(code, 0xBF, u8(destination & 0xFF), u8(destination >> 8)) // mov di, dest
+	body := len(code^)
+	vgabios_probe_emit(code, 0xBA, 0xDA, 0x03) // mov dx, 03dah
+	vgabios_probe_emit(code, 0xEC) // in al, dx
+	vgabios_probe_emit(code, 0xBA, 0xC0, 0x03) // mov dx, 03c0h
+	vgabios_probe_emit(code, 0x88, 0xC8) // mov al, cl
+	vgabios_probe_emit(code, 0x0C, 0x20) // or al, 20h
+	vgabios_probe_emit(code, 0xEE) // out dx, al
+	vgabios_probe_emit(code, 0x42) // inc dx
+	vgabios_probe_emit(code, 0xEC) // in al, dx
+	vgabios_probe_emit(code, 0xAA) // stosb
+	vgabios_probe_emit(code, 0xFE, 0xC1) // inc cl
+	vgabios_probe_emit(code, 0x80, 0xF9, 0x10) // cmp cl, 10h
+	vgabios_probe_emit(code, 0x72, u8(i8(body - (len(code^) + 2)))) // jb body
+}
+
+@(private = "file")
+state_palette_boot_floppy :: proc() -> ([]u8, bool) {
+	code := make([dynamic]u8, 0, 512)
+	defer delete(code)
+
+	vgabios_probe_emit_prologue(&code)
+	vgabios_probe_emit(&code, 0xB8, 0x03, 0x00) // mov ax, 0003h
+	vgabios_probe_emit(&code, 0xCD, 0x10) // int 10h
+
+	state_palette_emit_write(&code, STATE_PALETTE_MARK_BASE)
+	state_save_emit_call(&code, 0x01, STATE_PALETTE_SAVE_STATUS)
+
+	state_palette_emit_write(&code, STATE_PALETTE_CORRUPT_BASE)
+	state_palette_emit_read(&code, STATE_PALETTE_MUTATED)
+
+	state_save_emit_call(&code, 0x02, STATE_PALETTE_RESTORE_STATUS)
+	state_palette_emit_read(&code, STATE_PALETTE_RESTORED)
+
+	vgabios_probe_emit_halt(&code)
+	return vgabios_probe_image(code[:])
+}
+
+@(test)
+test_machine_vgabios_int10_state_save_restore_round_trips_the_palette :: proc(t: ^testing.T) {
+	if !hv.available() {
+		log.warn("WHPX not available")
+		return
+	}
+	testing.set_fail_timeout(t, 60 * time.Second)
+	m := new(Machine)
+	defer free(m)
+	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
+	defer machine_destroy(m)
+	machine_set_diagnostic_tracing(m, true)
+	if !testing.expect(t, load_roms(&m.vm)) {return}
+
+	floppy, built := state_palette_boot_floppy()
+	if !testing.expect(t, built) {return}
+	defer delete(floppy)
+	if !vgabios_probe_run(t, m, floppy, 45 * time.Second) {return}
+
+	testing.expect_value(t, m.vm.ram[STATE_PALETTE_SAVE_STATUS], u8(0x1C))
+	testing.expect_value(t, m.vm.ram[STATE_PALETTE_RESTORE_STATUS], u8(0x1C))
+
+	// The corruption must be visible through 3C1h with the Palette Address
+	// Source set, otherwise the round trip below proves nothing.
+	for index in 0 ..< 16 {
+		testing.expect_value(
+			t,
+			m.vm.ram[STATE_PALETTE_MUTATED + index],
+			u8(STATE_PALETTE_CORRUPT_BASE | index),
+		)
+	}
+	for index in 0 ..< 16 {
+		testing.expect_value(
+			t,
+			m.vm.ram[STATE_PALETTE_RESTORED + index],
+			u8(STATE_PALETTE_MARK_BASE | index),
+		)
+	}
+}
