@@ -182,10 +182,6 @@ vga_test_odd_even_and_chain_four :: proc(t: ^testing.T) {
 	for p in 0 ..< 4 {testing.expect_value(t, plane_byte(&v, p, 4), u8(0x20 + p))}
 }
 
-// This drives the aperture through the package directly. The register state it
-// sets up is the chain 4 identity, so on a live machine the hypervisor aliases
-// the window and these writes never arrive here at all: what the test pins is
-// the emulated path, not what the guest takes once the alias is armed.
 @(test)
 vga_test_aperture_slice_access_is_one_visible_transaction :: proc(t: ^testing.T) {
 	v: Vga
