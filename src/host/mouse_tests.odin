@@ -27,9 +27,13 @@ mouse_test_guest_view_hit :: proc(t: ^testing.T) {
 		has_frame     = true,
 		aspect_width  = 4,
 		aspect_height = 3,
+		canvas_width  = 320,
+		canvas_height = 200,
 		menu_reveal   = 1,
 	}
-	r := guest_view_rect_insets(4, 3, WIN_W, WIN_H, host_client_insets(&h))
+	r := host_guest_canvas_rect(&h, WIN_W, WIN_H)
+	testing.expect_value(t, r, guest_view_rect_insets(4, 3, WIN_W, WIN_H, host_client_insets(&h)))
+	testing.expect(t, r != guest_view_rect_insets(8, 5, WIN_W, WIN_H, host_client_insets(&h)))
 	testing.expect(t, mouse_inside_guest(&h, r.x + r.w * 0.5, r.y + r.h * 0.5))
 	testing.expect(t, !mouse_inside_guest(&h, r.x - 1, r.y))
 	testing.expect(t, !mouse_inside_guest(&h, r.x, r.y + r.h))

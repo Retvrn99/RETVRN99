@@ -63,6 +63,14 @@ scanout_test_expect_reference_equivalence :: proc(t: ^testing.T, source: ^Vga) {
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
 	if !testing.expect(t, scanout_descriptor_capture(&descriptor, source)) {return}
+	contract_aspect := descriptor.legacy_update.header.display_aspect
+	testing.expect_value(t, contract_aspect.width, u32(reference.aspect_width))
+	testing.expect_value(t, contract_aspect.height, u32(reference.aspect_height))
+	testing.expect_value(
+		t,
+		descriptor.legacy_update.header.mode_key.display_aspect,
+		contract_aspect,
+	)
 	raw_before := make([]u8, descriptor.bytes_copied, context.temp_allocator)
 	copy(raw_before, descriptor.vram[:descriptor.bytes_copied])
 	state_before := descriptor.state
@@ -108,6 +116,37 @@ scanout_test_expect_reference_equivalence :: proc(t: ^testing.T, source: ^Vga) {
 	testing.expect(t, descriptor.legacy_update == update_before)
 }
 
+scanout_test_expect_legacy_contract_aspect :: proc(
+	t: ^testing.T,
+	v: ^Vga,
+	wanted: contract.Aspect_Ratio,
+) {
+	vga_note_content_change(v)
+	update := vga_legacy_frame_update(v)
+	testing.expect_value(t, update.header.display_aspect, wanted)
+	testing.expect_value(t, update.header.mode_key.display_aspect, wanted)
+}
+
+@(test)
+scanout_descriptor_test_publishes_legacy_and_vbe_display_aspect :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+
+	scanout_test_expect_legacy_contract_aspect(t, &v, {4, 3})
+	if !testing.expect(t, test_set_vbe_mode(&v, 320, 200, 8)) {return}
+	scanout_test_expect_legacy_contract_aspect(t, &v, {4, 3})
+	if !testing.expect(t, test_set_vbe_mode(&v, 640, 400, 8)) {return}
+	scanout_test_expect_legacy_contract_aspect(t, &v, {4, 3})
+	if !testing.expect(t, test_set_vbe_mode(&v, 320, 240, 8)) {return}
+	scanout_test_expect_legacy_contract_aspect(t, &v, {4, 3})
+	if !testing.expect(t, test_set_vbe_mode(&v, 640, 480, 8)) {return}
+	scanout_test_expect_legacy_contract_aspect(t, &v, {4, 3})
+	if !testing.expect(t, test_set_vbe_mode(&v, 1280, 1024, 8)) {return}
+	scanout_test_expect_legacy_contract_aspect(t, &v, {5, 4})
+}
+
 scanout_descriptor_test_set_owned_gsw :: proc(
 	t: ^testing.T,
 	descriptor: ^Scanout_Descriptor,
@@ -127,6 +166,7 @@ scanout_descriptor_test_set_owned_gsw :: proc(
 	testing.expect(t, contract.rect_set_append(&clips, full))
 	mode_key := contract.Mode_Key {
 		format = format,
+		display_aspect = contract.aspect_ratio_make(width, height),
 		surface_extent = {width = width, height = height},
 		canvas_extent = {width = width, height = height},
 		source = full,
@@ -143,6 +183,7 @@ scanout_descriptor_test_set_owned_gsw :: proc(
 			device_generation = 4,
 			surface = {id = 5, generation = 6},
 			format = format,
+			display_aspect = mode_key.display_aspect,
 			surface_extent = mode_key.surface_extent,
 			canvas_extent = mode_key.canvas_extent,
 			source = full,

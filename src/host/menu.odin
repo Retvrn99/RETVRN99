@@ -58,6 +58,8 @@ Menu_Action :: enum {
 	Set_Cpu_Mode,
 	Set_Window_Scale,
 	Toggle_Fullscreen,
+	Set_Aspect_Policy,
+	Set_Scaling_Filter,
 	Set_Visual_Shader,
 	Set_Hotkeys,
 	Open_Documentation,
@@ -108,6 +110,8 @@ Menu_State :: struct {
 	window_scale:               int,
 	fullscreen:                 bool,
 	menu_reveal:                f32,
+	aspect_policy:              Aspect_Policy,
+	scaling_filter:             Scaling_Filter,
 	visual_shader:              Visual_Shader,
 	shaders_available:          bool,
 	show_hotkeys:               bool,
@@ -409,12 +413,44 @@ menu_draw :: proc(
 					menu_end()
 				}
 
-				if menu_begin("Scaling", menu_action_enabled(st, .Set_Window_Scale)) {
+				if menu_begin("Window Size", menu_action_enabled(st, .Set_Window_Scale)) {
 					for scale in 2 ..= 4 {
 						label: cstring = scale == 2 ? "2x" : scale == 3 ? "3x" : "4x"
 						if imgui.MenuItem(label, nil, st.window_scale == scale) {
 							st.window_scale = scale
 							action = .Set_Window_Scale
+						}
+					}
+					menu_end()
+				}
+
+				if menu_begin("Display Aspect") {
+					policies := []Aspect_Policy{.Auto, .Square_Pixels, .Force_4_3}
+					for policy in policies {
+						if imgui.MenuItem(
+							aspect_policy_name(policy),
+							nil,
+							st.aspect_policy == policy,
+						) {
+							st.aspect_policy = policy
+							action = .Set_Aspect_Policy
+						}
+					}
+					menu_end()
+				}
+
+				if menu_begin("Scaling Filter") {
+					filters := []Scaling_Filter{.Sharp, .Nearest, .Linear}
+					for filter in filters {
+						enabled := scaling_filter_available(filter, st.shaders_available)
+						if imgui.MenuItem(
+							scaling_filter_name(filter),
+							nil,
+							st.scaling_filter == filter,
+							enabled,
+						) {
+							st.scaling_filter = filter
+							action = .Set_Scaling_Filter
 						}
 					}
 					menu_end()

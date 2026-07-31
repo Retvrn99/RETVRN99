@@ -209,7 +209,7 @@ host_presentation_upload_create_texture :: proc(
 	}
 	texture := sdl3.CreateTexture(h.ren, .ARGB8888, .STREAMING, i32(width), i32(height))
 	if texture != nil {
-		_ = sdl3.SetTextureScaleMode(texture, h.visual_shader == .None ? .NEAREST : .LINEAR)
+		_ = sdl3.SetTextureScaleMode(texture, host_texture_scale_mode(h.scaling_filter))
 	}
 	return texture
 }

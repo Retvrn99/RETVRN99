@@ -19,6 +19,10 @@ host_test_theme_layout_invariant :: proc(t: ^testing.T) {
 	testing.expect_value(t, int(r.y + r.h + STATUS_BAR_H), WIN_H)
 
 	r = guest_view_rect_insets(4, 3, WIN_W, WIN_H, {top = MENU_BAR_H, bottom = STATUS_BAR_H})
+	testing.expect_value(t, r.x, f32(int(r.x)))
+	testing.expect_value(t, r.y, f32(int(r.y)))
+	testing.expect_value(t, r.w, f32(int(r.w)))
+	testing.expect_value(t, r.h, f32(int(r.h)))
 	testing.expect_value(t, int(r.x + 0.5), 187)
 	testing.expect_value(t, int(r.y), MENU_BAR_H)
 	testing.expect_value(t, int(r.w + 0.5), 1067)

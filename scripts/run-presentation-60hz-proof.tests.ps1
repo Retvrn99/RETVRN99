@@ -143,6 +143,11 @@ try {
         Get-PresentationProofP95Limit -Width 800 -Height 600
     } 'Only the 1024x768 and 1920x1080' `
         'An unnamed reference extent must fail closed.'
+
+    [UInt64[]]$rankValues = 1..600
+    $rankSummary = Get-PresentationProofTimingSummary -Values $rankValues
+    Assert-True ($rankSummary.p95_ns -eq 570) `
+        'Nearest-rank selection must not round the already-ceiled rank upward.'
     $adsFile = Join-Path $runRoot 'ads.txt'
     [IO.File]::WriteAllText($adsFile, 'ordinary', [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText($adsFile + ':proof', 'hidden', [Text.UTF8Encoding]::new($false))

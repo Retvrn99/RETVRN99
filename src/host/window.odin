@@ -46,11 +46,15 @@ Host :: struct {
 	tex_height:             int,
 	aspect_width:           int,
 	aspect_height:          int,
+	canvas_width:           int,
+	canvas_height:          int,
 	overscan:               u32,
 	border:                 Host_Border, // canvas pixels of border per side
 	window_scale:           int,
 	fullscreen:             bool,
 	menu_reveal:            f32,
+	aspect_policy:          Aspect_Policy,
+	scaling_filter:         Scaling_Filter,
 	visual_shader:          Visual_Shader,
 	storage_icons:          Storage_Icon_Textures,
 	stopped_logo:           Ui_Icon_Texture,
@@ -130,10 +134,15 @@ host_init :: proc(h: ^Host) -> (ok: bool) {
 	h.tex_height = TEXT_H
 	h.aspect_width = 4
 	h.aspect_height = 3
+	h.canvas_width = TEXT_W
+	h.canvas_height = TEXT_H
+	h.aspect_policy = .Auto
 	_ = host_presentation_start(h, 1)
 	if host_shader_init(h) {
+		_ = host_set_scaling_filter(h, .Sharp)
 		_ = host_set_visual_shader(h, .Subtle)
 	} else {
+		_ = host_set_scaling_filter(h, .Linear)
 		_ = host_set_visual_shader(h, .None)
 	}
 	return true

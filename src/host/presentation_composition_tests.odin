@@ -23,6 +23,7 @@ composition_test_active :: proc(header: contract.Header) -> contract.Active_Iden
 composition_test_windowed_resident :: proc() -> contract.Gsw_Present {
 	key := contract.Mode_Key {
 		format         = .Bgra_8888,
+		display_aspect = {1, 1},
 		surface_extent = {200, 100},
 		canvas_extent  = {100, 100},
 		source         = {20, 10, 80, 40},
@@ -40,6 +41,7 @@ composition_test_windowed_resident :: proc() -> contract.Gsw_Present {
 			device_generation = 7,
 			surface = {23, 5},
 			format = key.format,
+			display_aspect = key.display_aspect,
 			surface_extent = key.surface_extent,
 			canvas_extent = key.canvas_extent,
 			source = key.source,
@@ -55,6 +57,7 @@ composition_test_windowed_resident :: proc() -> contract.Gsw_Present {
 composition_test_background :: proc(sequence: u64 = 20) -> contract.Gsw_Present {
 	key := contract.Mode_Key {
 		format         = .Bgrx_8888,
+		display_aspect = {1, 1},
 		surface_extent = {100, 100},
 		canvas_extent  = {100, 100},
 		source         = {0, 0, 100, 100},
@@ -71,6 +74,7 @@ composition_test_background :: proc(sequence: u64 = 20) -> contract.Gsw_Present 
 			device_generation = 4,
 			surface = {9, 6},
 			format = key.format,
+			display_aspect = key.display_aspect,
 			surface_extent = key.surface_extent,
 			canvas_extent = key.canvas_extent,
 			source = key.source,

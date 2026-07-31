@@ -3,6 +3,9 @@
 - `retvrn99-crt.hlsl` adapts the CRT presentation formulas from IzarraVM
   commit `d930de57acccbc6a70cda8cc5a603173bf23cd1c`. Both projects license this
   code under GPL-3.0-only.
+- Its neutral scaler adapts Libretro's public-domain `sharp-bilinear-simple`
+  coordinate remapping:
+  <https://github.com/libretro/slang-shaders/blob/master/pixel-art-scaling/shaders/sharp-bilinear-simple.slang>.
 - `retvrn99-crt.spv` is the precompiled form of that source for SDL3's Vulkan
   GPU renderer.
 - `gsw3d-triangle.hlsl` is RETVRN99's GPL-3.0-only POSITIONT and D3DCOLOR proof

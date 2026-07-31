@@ -6,6 +6,7 @@ import "core:testing"
 test_mode_key :: proc(width: u32 = 640, height: u32 = 480) -> Mode_Key {
 	return {
 		format = .Bgrx_8888,
+		display_aspect = aspect_ratio_make(width, height),
 		surface_extent = {width, height},
 		canvas_extent = {width, height},
 		source = {0, 0, width, height},
@@ -34,6 +35,7 @@ test_legacy_update :: proc(
 			mode_key = key,
 			surface = {1, 1},
 			format = key.format,
+			display_aspect = key.display_aspect,
 			surface_extent = key.surface_extent,
 			canvas_extent = key.canvas_extent,
 			source = key.source,
@@ -63,6 +65,7 @@ test_gsw_snapshot :: proc(
 			device_generation = 3,
 			surface = {7, 4},
 			format = key.format,
+			display_aspect = key.display_aspect,
 			surface_extent = key.surface_extent,
 			canvas_extent = key.canvas_extent,
 			source = key.source,
@@ -139,6 +142,24 @@ contracts_test_accepts_valid_legacy_snapshot_and_resident_records :: proc(t: ^te
 	resident.header.format = .Rgb_555
 	resident.header.mode_key.format = .Rgb_555
 	testing.expect(t, diagnostic_valid(validate_gsw(resident, test_context(resident.header))))
+}
+
+@(test)
+contracts_test_rejects_missing_display_aspect :: proc(t: ^testing.T) {
+	legacy := test_legacy_update()
+	legacy.header.display_aspect = {}
+	legacy.header.mode_key.display_aspect = {}
+	current := test_context(legacy.header)
+	test_expect_code(t, validate_legacy(legacy, current), .Zero_Display_Aspect)
+}
+
+@(test)
+contracts_test_rejects_noncanonical_display_aspect :: proc(t: ^testing.T) {
+	legacy := test_legacy_update()
+	legacy.header.display_aspect = {8, 6}
+	legacy.header.mode_key.display_aspect = legacy.header.display_aspect
+	current := test_context(legacy.header)
+	test_expect_code(t, validate_legacy(legacy, current), .Noncanonical_Display_Aspect)
 }
 
 @(test)
@@ -317,6 +338,14 @@ contracts_test_rejects_missing_and_stale_lifecycle_and_mode_identity :: proc(t: 
 contracts_test_rejects_mode_key_divergence_from_header_geometry :: proc(t: ^testing.T) {
 	present := test_gsw_resident()
 	present.header.format = .Rgb_565
+	test_expect_code(
+		t,
+		validate_gsw(present, test_context(present.header)),
+		.Header_Mode_Key_Mismatch,
+	)
+
+	present = test_gsw_resident()
+	present.header.display_aspect = {16, 9}
 	test_expect_code(
 		t,
 		validate_gsw(present, test_context(present.header)),
@@ -566,6 +595,11 @@ contracts_test_mode_clock_changes_only_for_semantic_mode_changes :: proc(t: ^tes
 	changed_key.canvas_extent.width = 800
 	generation, changed = mode_clock_observe(&clock, .Gsw2d, changed_key)
 	testing.expect_value(t, generation, u64(3))
+	testing.expect(t, changed)
+
+	changed_key.display_aspect = {16, 9}
+	generation, changed = mode_clock_observe(&clock, .Gsw2d, changed_key)
+	testing.expect_value(t, generation, u64(4))
 	testing.expect(t, changed)
 
 	clock.generation = ~u64(0)

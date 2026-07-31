@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package videopresentation
 
-import "core:sync"
-import "core:testing"
-import "core:time"
 import host "../host"
 import machine "../machine"
 import contract "../presentation"
 import vga "../vga"
+import "core:sync"
+import "core:testing"
+import "core:time"
 
 frame_mailbox_test_pixel_hash :: proc(pixels: []u32) -> u64 {
 	hash := u64(14_695_981_039_346_656_037)
@@ -83,6 +83,7 @@ frame_mailbox_test_publish_gsw :: proc(
 	full := contract.Rect{0, 0, 3, 1}
 	mode_key := contract.Mode_Key {
 		format         = .Bgrx_8888,
+		display_aspect = {3, 1},
 		surface_extent = {3, 1},
 		canvas_extent  = {3, 1},
 		source         = full,
@@ -107,6 +108,7 @@ frame_mailbox_test_publish_gsw :: proc(
 				device_generation = 1,
 				surface = {1, 1},
 				format = .Bgrx_8888,
+				display_aspect = mode_key.display_aspect,
 				surface_extent = {3, 1},
 				canvas_extent = {3, 1},
 				source = full,
@@ -321,6 +323,7 @@ frame_mailbox_test_capture_failure_retains_completed_legacy_copy :: proc(t: ^tes
 			mode_generation = mode_generation,
 			mode_key = {
 				format = .Bgrx_8888,
+				display_aspect = {1, 1},
 				surface_extent = {2, 2},
 				canvas_extent = {2, 2},
 				source = full,
@@ -330,6 +333,7 @@ frame_mailbox_test_capture_failure_retains_completed_legacy_copy :: proc(t: ^tes
 			device_generation = m.gsw_vga.presentation_state.device_generation,
 			surface = {id = 7, generation = 1},
 			format = .Bgrx_8888,
+			display_aspect = {1, 1},
 			surface_extent = {2, 2},
 			canvas_extent = {2, 2},
 			source = full,

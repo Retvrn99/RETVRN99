@@ -4,8 +4,11 @@
 cbuffer Constants : register(b0, space3)
 {
     float2 source_size;
+    float2 output_scale;
+    float scaling_filter;
     float style;
     float time_seconds;
+    float padding;
 };
 
 Texture2D source_texture : register(t0, space2);
@@ -18,13 +21,24 @@ struct PSInput
     float4 position : SV_POSITION;
 };
 
-float3 sample_sharp(float2 uv, float sharp)
+float3 sample_sharp(float2 uv)
 {
-    float2 pixel = uv * source_size - 0.5;
-    float2 whole = floor(pixel);
-    float2 fraction = pixel - whole;
-    fraction = clamp((fraction - 0.5) * sharp + 0.5, 0.0, 1.0);
-    return source_texture.Sample(source_sampler, (whole + 0.5 + fraction) / source_size).rgb;
+    float2 prescale = max(floor(output_scale), 1.0);
+    float2 texel = uv * source_size;
+    float2 whole = floor(texel);
+    float2 center_distance = frac(texel) - 0.5;
+    float2 region = 0.5 - 0.5 / prescale;
+    float2 fraction = (center_distance - clamp(center_distance, -region, region)) * prescale + 0.5;
+    return source_texture.Sample(source_sampler, (whole + fraction) / source_size).rgb;
+}
+
+float3 sample_scaled(float2 uv)
+{
+    if (scaling_filter < 0.5)
+    {
+        return sample_sharp(uv);
+    }
+    return source_texture.Sample(source_sampler, uv).rgb;
 }
 
 float3 glow(float2 uv, float radius)
@@ -35,10 +49,9 @@ float3 glow(float2 uv, float radius)
     for (int i = 0; i < 8; ++i)
     {
         float angle = (float)i / 8.0 * 6.2832;
-        float3 sample_color = source_texture.Sample(
-            source_sampler,
+        float3 sample_color = sample_scaled(
             uv + float2(cos(angle), sin(angle)) * step_size
-        ).rgb;
+        );
         result += max(sample_color - 0.25, 0.0);
     }
     return result / 8.0;
@@ -79,8 +92,13 @@ float hash13(float3 value)
 
 float4 main(PSInput input) : SV_TARGET
 {
+    if (style < 0.5)
+    {
+        float3 color = sample_scaled(input.uv);
+        return float4(color, 1.0) * input.color;
+    }
+
     bool strong = style > 1.5;
-    float sharp = strong ? 2.2 : 2.5;
     float scan_depth = strong ? 0.288 : 0.015;
     float beam = strong ? 0.5 : 0.45;
     float mask_strength = strong ? 0.083 : 0.004;
@@ -103,7 +121,7 @@ float4 main(PSInput input) : SV_TARGET
         uv = clamp(warped, 0.0, 1.0);
     }
 
-    float3 color = sample_sharp(uv, sharp);
+    float3 color = sample_scaled(uv);
     float scan_y = frac(uv.y * source_size.y) - 0.5;
     float scanline = exp(-(scan_y * scan_y) / (2.0 * beam * beam));
     color *= lerp(1.0, scanline, scan_depth);

@@ -17,6 +17,10 @@ Extent :: struct {
 	width, height: u32,
 }
 
+Aspect_Ratio :: struct {
+	width, height: u32,
+}
+
 Border :: struct {
 	left, right, top, bottom: u32,
 }
@@ -92,6 +96,7 @@ Header :: struct {
 	device_generation:    u64,
 	surface:              Surface_Identity,
 	format:               Pixel_Format,
+	display_aspect:       Aspect_Ratio,
 	surface_extent:       Extent,
 	canvas_extent:        Extent,
 	source:               Rect,
@@ -179,6 +184,8 @@ Diagnostic_Code :: enum u16 {
 	Unsupported_Format,
 	Zero_Surface_Extent,
 	Zero_Canvas_Extent,
+	Zero_Display_Aspect,
+	Noncanonical_Display_Aspect,
 	Zero_Source_Rect,
 	Source_Rect_Overflow,
 	Source_Rect_Out_Of_Bounds,
@@ -235,6 +242,7 @@ Generation_Order :: enum u8 {
 
 Mode_Key :: struct {
 	format:         Pixel_Format,
+	display_aspect: Aspect_Ratio,
 	surface_extent: Extent,
 	canvas_extent:  Extent,
 	source:         Rect,
@@ -397,6 +405,17 @@ extent_equal :: proc(a, b: Extent) -> bool {
 	return a.width == b.width && a.height == b.height
 }
 
+aspect_ratio_equal :: proc(a, b: Aspect_Ratio) -> bool {
+	return a.width == b.width && a.height == b.height
+}
+
+aspect_ratio_make :: proc(width, height: u32) -> Aspect_Ratio {
+	if width == 0 || height == 0 {return {}}
+	a, b := width, height
+	for b != 0 {a, b = b, a % b}
+	return {width / a, height / a}
+}
+
 surface_identity_equal :: proc(a, b: Surface_Identity) -> bool {
 	return a.id == b.id && a.generation == b.generation
 }
@@ -423,6 +442,7 @@ rect_set_equal :: proc(a, b: Rect_Set) -> bool {
 mode_key_equal :: proc(a, b: Mode_Key) -> bool {
 	return(
 		a.format == b.format &&
+		aspect_ratio_equal(a.display_aspect, b.display_aspect) &&
 		extent_equal(a.surface_extent, b.surface_extent) &&
 		extent_equal(a.canvas_extent, b.canvas_extent) &&
 		rect_equal(a.source, b.source) &&
@@ -446,6 +466,7 @@ header_mode_key_matches :: proc(header: Header) -> bool {
 		header.mode_key,
 		{
 			format = header.format,
+			display_aspect = header.display_aspect,
 			surface_extent = header.surface_extent,
 			canvas_extent = header.canvas_extent,
 			source = header.source,
@@ -696,6 +717,15 @@ validate_common :: proc(header: Header, current: Validation_Context, gsw: bool) 
 	}
 	if !extent_valid(header.surface_extent) {return diagnostic_make(.Zero_Surface_Extent)}
 	if !extent_valid(header.canvas_extent) {return diagnostic_make(.Zero_Canvas_Extent)}
+	if header.display_aspect.width == 0 || header.display_aspect.height == 0 {
+		return diagnostic_make(.Zero_Display_Aspect)
+	}
+	if !aspect_ratio_equal(
+		header.display_aspect,
+		aspect_ratio_make(header.display_aspect.width, header.display_aspect.height),
+	) {
+		return diagnostic_make(.Noncanonical_Display_Aspect)
+	}
 	diagnostic := validate_rect(
 		header.source,
 		header.surface_extent,
@@ -908,6 +938,7 @@ header_equal :: proc(a, b: Header) -> bool {
 		a.device_generation == b.device_generation &&
 		surface_identity_equal(a.surface, b.surface) &&
 		a.format == b.format &&
+		aspect_ratio_equal(a.display_aspect, b.display_aspect) &&
 		extent_equal(a.surface_extent, b.surface_extent) &&
 		extent_equal(a.canvas_extent, b.canvas_extent) &&
 		rect_equal(a.source, b.source) &&

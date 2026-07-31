@@ -5,19 +5,34 @@ import contract "../presentation"
 
 LEGACY_PRESENTATION_SURFACE_ID :: u64(1)
 
-vga_presentation_mode_key :: proc(width, height: u32) -> contract.Mode_Key {
+vga_presentation_mode_key :: proc(
+	width, height: u32,
+	display_aspect: contract.Aspect_Ratio = {},
+) -> contract.Mode_Key {
 	extent := contract.Extent{width, height}
+	aspect := display_aspect
+	if aspect.width == 0 || aspect.height == 0 {
+		aspect = contract.aspect_ratio_make(width, height)
+	}
 	rect := contract.Rect {
 		width  = width,
 		height = height,
 	}
 	return {
 		format = .Bgra_8888,
+		display_aspect = aspect,
 		surface_extent = extent,
 		canvas_extent = extent,
 		source = rect,
 		destination = rect,
 	}
+}
+
+vga_legacy_display_aspect :: proc(v: ^Vga, width, height: u32) -> contract.Aspect_Ratio {
+	if !vga_vbe_enabled(v) || width == 320 && height == 200 || width == 640 && height == 400 {
+		return {4, 3}
+	}
+	return contract.aspect_ratio_make(width, height)
 }
 
 vga_presentation_mode_observe :: proc(
@@ -32,7 +47,12 @@ vga_presentation_mode_observe :: proc(
 
 vga_presentation_mode_generation :: proc(v: ^Vga, width, height: u32) -> u64 {
 	if width == 0 || height == 0 {return 0}
-	return vga_presentation_mode_observe(v, .Legacy, vga_presentation_mode_key(width, height))
+	aspect := vga_legacy_display_aspect(v, width, height)
+	return vga_presentation_mode_observe(
+		v,
+		.Legacy,
+		vga_presentation_mode_key(width, height, aspect),
+	)
 }
 
 @(private = "package")
@@ -40,7 +60,8 @@ vga_legacy_presentation_mode_generation :: proc(v: ^Vga, claim: bool = false) ->
 	if v == nil {return 0}
 	_, width, height := display_geometry(v)
 	if width <= 0 || height <= 0 {return 0}
-	key := vga_presentation_mode_key(u32(width), u32(height))
+	aspect := vga_legacy_display_aspect(v, u32(width), u32(height))
+	key := vga_presentation_mode_key(u32(width), u32(height), aspect)
 	clock := &v.presentation_mode_clock
 	generation := clock.generation
 	if claim ||
@@ -67,6 +88,7 @@ vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
 	_, width, height := display_geometry(v)
 	if width <= 0 || height <= 0 {return {}}
 	extent := contract.Extent{u32(width), u32(height)}
+	display_aspect := vga_legacy_display_aspect(v, extent.width, extent.height)
 	full := contract.Rect {
 		width  = extent.width,
 		height = extent.height,
@@ -76,7 +98,10 @@ vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
 	surface_generation := v.legacy_presentation_surface_generation
 	if mode_generation == 0 ||
 	   surface_generation == 0 ||
-	   !contract.mode_key_equal(mode_key, vga_presentation_mode_key(extent.width, extent.height)) {
+	   !contract.mode_key_equal(
+			   mode_key,
+			   vga_presentation_mode_key(extent.width, extent.height, display_aspect),
+		   ) {
 		return {}
 	}
 	_ = vga_damage_seal_pending(v, v.legacy_presentation_sequence)
@@ -92,6 +117,7 @@ vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
 			mode_key = mode_key,
 			surface = {id = LEGACY_PRESENTATION_SURFACE_ID, generation = surface_generation},
 			format = .Bgra_8888,
+			display_aspect = display_aspect,
 			surface_extent = extent,
 			canvas_extent = extent,
 			overscan = overscan_color(v),

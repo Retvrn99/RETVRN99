@@ -531,7 +531,7 @@ function Get-PresentationProofTimingSummary {
     $ordered = @($Values | Sort-Object)
     $index = {
         param([int]$Percentile)
-        return [int](($ordered.Count * $Percentile + 99) / 100) - 1
+        return [int][Math]::Ceiling(($ordered.Count * $Percentile) / 100.0) - 1
     }
     return [pscustomobject][ordered]@{
         p50_ns = [UInt64]$ordered[(& $index 50)]

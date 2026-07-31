@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package videopresentation
 
-import "core:testing"
-import "core:time"
 import host "../host"
 import presentation "../presentation"
-import sdl3 "vendor:sdl3"
 import vga "../vga"
+import "core:testing"
+import "core:time"
+import sdl3 "vendor:sdl3"
 
 Graphics_Frame_Consumer_Test_Stage_Probe :: struct {
 	mailbox:         ^Frame_Mailbox,
@@ -117,6 +117,7 @@ graphics_frame_consumer_test_legacy_update :: proc(
 			mode_generation = 1,
 			mode_key = {
 				format = .Bgra_8888,
+				display_aspect = presentation.aspect_ratio_make(extent.width, extent.height),
 				surface_extent = extent,
 				canvas_extent = extent,
 				source = full,
@@ -124,6 +125,7 @@ graphics_frame_consumer_test_legacy_update :: proc(
 			},
 			surface = {1, surface_generation},
 			format = .Bgra_8888,
+			display_aspect = presentation.aspect_ratio_make(extent.width, extent.height),
 			surface_extent = extent,
 			canvas_extent = extent,
 			source = full,
@@ -152,6 +154,7 @@ graphics_frame_consumer_test_gsw_present :: proc(
 			mode_generation = mode_generation,
 			mode_key = {
 				format = .Bgrx_8888,
+				display_aspect = {1, 1},
 				surface_extent = extent,
 				canvas_extent = extent,
 				source = full,
@@ -161,6 +164,7 @@ graphics_frame_consumer_test_gsw_present :: proc(
 			device_generation = 1,
 			surface = {2, 1},
 			format = .Bgrx_8888,
+			display_aspect = {1, 1},
 			surface_extent = extent,
 			canvas_extent = extent,
 			source = full,

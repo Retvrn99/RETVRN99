@@ -197,16 +197,17 @@ host_test_border_extents_shrink_the_guest_canvas :: proc(t: ^testing.T) {
 	bordered := host_guest_canvas_rect(&h, 800, 600)
 	expect_near(t, bordered.x, plain.x)
 	expect_near(t, bordered.w, plain.w)
-	expect_near(t, bordered.h, plain.h * 480.0 / 496.0)
-	expect_near(t, bordered.y, plain.y + plain.h * 8.0 / 496.0)
+	expect_near(t, bordered.h, 581)
+	expect_near(t, bordered.y, 10)
 
 	// A border on both axes insets both, and the canvas stays centred.
 	h.border.left = 32
 	h.border.right = 32
 	both := host_guest_canvas_rect(&h, 800, 600)
-	expect_near(t, both.w, plain.w * 640.0 / 704.0)
-	expect_near(t, both.x + both.w / 2, plain.x + plain.w / 2)
-	expect_near(t, both.y + both.h / 2, plain.y + plain.h / 2)
+	expect_near(t, both.w, 727)
+	expect_near(t, both.x, 36)
+	testing.expect(t, abs((both.x + both.w / 2) - (plain.x + plain.w / 2)) <= 1)
+	testing.expect(t, abs((both.y + both.h / 2) - (plain.y + plain.h / 2)) <= 1)
 }
 
 // No published border must leave the destination byte-for-byte where it was, so

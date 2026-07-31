@@ -679,6 +679,8 @@ gui_main :: proc(
 		window_scale        = h.window_scale,
 		fullscreen          = h.fullscreen,
 		menu_reveal         = 1,
+		aspect_policy       = h.aspect_policy,
+		scaling_filter      = h.scaling_filter,
 		visual_shader       = h.visual_shader,
 		shaders_available   = h.shader_state != nil,
 		hard_drive_path     = active_settings.hard_drive_path,
@@ -1164,7 +1166,10 @@ gui_main :: proc(
 			pending_hard_drive_dialog_active(hard_drive_dialog_pending)
 		st.window_scale = h.window_scale
 		st.fullscreen = h.fullscreen
+		st.aspect_policy = h.aspect_policy
+		st.scaling_filter = h.scaling_filter
 		st.visual_shader = h.visual_shader
+		st.shaders_available = h.shader_state != nil
 		menu_animation_now := time.tick_now()
 		if input_control_exclusive {
 			control_state := input_control_tick(
@@ -1495,6 +1500,12 @@ gui_main :: proc(
 		case .Toggle_Fullscreen:
 			_ = host.host_toggle_fullscreen(&h)
 			st.fullscreen = h.fullscreen
+		case .Set_Aspect_Policy:
+			_ = host.host_set_aspect_policy(&h, st.aspect_policy)
+			st.aspect_policy = h.aspect_policy
+		case .Set_Scaling_Filter:
+			_ = host.host_set_scaling_filter(&h, st.scaling_filter)
+			st.scaling_filter = h.scaling_filter
 		case .Set_Visual_Shader:
 			_ = host.host_set_visual_shader(&h, st.visual_shader)
 			st.visual_shader = h.visual_shader
@@ -2968,7 +2979,11 @@ console_main :: proc(
 				continue
 			}
 			firmware_log_host_flush(&firmware, nil)
-			fmt.printfln("VM frozen after %d iterations: %s", iterations, m.platform.bus.freeze_msg)
+			fmt.printfln(
+				"VM frozen after %d iterations: %s",
+				iterations,
+				m.platform.bus.freeze_msg,
+			)
 			dump_state(m)
 			print_grid(machine.machine_text_snapshot(m))
 			if options.strict_io &&
@@ -3208,7 +3223,11 @@ console_main :: proc(
 @(private)
 // The composed buffer is the default window client area, so a capture shows the
 // same letterboxing and border proportion a freshly opened window would.
-console_compose_frame :: proc(buffer: ^[]u32, frame: ^vga.Display_Frame) -> bool {
+console_compose_frame :: proc(
+	buffer: ^[]u32,
+	frame: ^vga.Display_Frame,
+	scaling_filter: host.Scaling_Filter = .Sharp,
+) -> bool {
 	if frame == nil {return false}
 	needed := host.host_composite_size(host.WIN_W, host.WIN_H)
 	if needed == 0 {return false}
@@ -3223,8 +3242,11 @@ console_compose_frame :: proc(buffer: ^[]u32, frame: ^vga.Display_Frame) -> bool
 		frame.pixels,
 		frame.width,
 		frame.height,
+		frame.aspect_width,
+		frame.aspect_height,
 		host.host_border_from_contract(frame.border),
 		frame.overscan,
+		scaling_filter,
 	)
 }
 

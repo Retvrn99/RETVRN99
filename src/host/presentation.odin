@@ -897,7 +897,8 @@ host_presentation_stage_gsw_snapshot :: proc(
 		return {}
 	}
 	if host_presentation_state(h).gsw_staging.texture != nil &&
-	   host_presentation_state(h).gsw_staging.texture == host_presentation_state(h).gsw_texture {return {}}
+	   host_presentation_state(h).gsw_staging.texture ==
+		   host_presentation_state(h).gsw_texture {return {}}
 	return host_presentation_stage_texture(
 		h,
 		&host_presentation_state(h).gsw_staging,
@@ -944,7 +945,8 @@ host_presentation_in_place_current :: proc(
 	header := admission.kind == .Legacy ? admission.legacy.header : admission.gsw.header
 	texture := admission.kind == .Legacy ? h.tex : host_presentation_state(h).gsw_texture
 	width := admission.kind == .Legacy ? h.tex_width : host_presentation_state(h).gsw_texture_width
-	height := admission.kind == .Legacy ? h.tex_height : host_presentation_state(h).gsw_texture_height
+	height :=
+		admission.kind == .Legacy ? h.tex_height : host_presentation_state(h).gsw_texture_height
 	resource_generation :=
 		admission.kind == .Legacy ? host_presentation_state(h).legacy_resource_generation : host_presentation_state(h).gsw_resource_generation
 	return(
@@ -1011,8 +1013,7 @@ host_presentation_commit_legacy_staged :: proc(
 	host_presentation_state(h).legacy = admission.legacy
 	if admission.result.action == .Present_Legacy {
 		h.gpu_present = {}
-		h.aspect_width = int(admission.legacy.header.canvas_extent.width)
-		h.aspect_height = int(admission.legacy.header.canvas_extent.height)
+		host_apply_display_aspect(h, admission.legacy.header)
 		h.overscan = admission.legacy.header.overscan
 		h.border = host_border_from_contract(admission.legacy.header.border)
 		h.has_frame = true
@@ -1094,8 +1095,7 @@ host_presentation_commit_gsw_snapshot_staged :: proc(
 		state.gsw_snapshot = admission.gsw
 		state.gsw_snapshot_source_mode_generation = admission.source_mode_generation
 		h.gpu_present = {}
-		h.aspect_width = int(admission.gsw.header.canvas_extent.width)
-		h.aspect_height = int(admission.gsw.header.canvas_extent.height)
+		host_apply_display_aspect(h, admission.gsw.header)
 		h.border = host_border_from_contract(admission.gsw.header.border)
 		h.has_frame = true
 	}
@@ -1199,8 +1199,7 @@ host_presentation_commit_resident :: proc(
 	host_presentation_commit_common(h, admission)
 	host_presentation_state(h).gsw = admission.gsw
 	h.gpu_present = present
-	h.aspect_width = int(admission.gsw.header.canvas_extent.width)
-	h.aspect_height = int(admission.gsw.header.canvas_extent.height)
+	host_apply_display_aspect(h, admission.gsw.header)
 	h.border = host_border_from_contract(admission.gsw.header.border)
 	h.has_frame = true
 	h.gpu_direct_presents += 1
@@ -1357,8 +1356,7 @@ host_presentation_apply_invalidation :: proc(
 		state.gsw_source_mode_generation = 0
 		state.legacy = next_selector.last_good_legacy
 		legacy := state.legacy.header
-		h.aspect_width = int(legacy.canvas_extent.width)
-		h.aspect_height = int(legacy.canvas_extent.height)
+		host_apply_display_aspect(h, legacy)
 		h.overscan = legacy.overscan
 		h.border = host_border_from_contract(legacy.border)
 		h.has_frame = true
@@ -1368,8 +1366,7 @@ host_presentation_apply_invalidation :: proc(
 		state.gsw_snapshot = next_selector.last_good_gsw
 		state.gsw_source_mode_generation = state.gsw_snapshot_source_mode_generation
 		gsw := state.gsw.header
-		h.aspect_width = int(gsw.canvas_extent.width)
-		h.aspect_height = int(gsw.canvas_extent.height)
+		host_apply_display_aspect(h, gsw)
 		h.border = host_border_from_contract(gsw.border)
 		h.has_frame = state.gsw_texture != nil
 		host_presentation_metric_add(&h.presentation_metrics.last_good_restorations, 1)
@@ -1389,7 +1386,8 @@ host_presentation_invalidate_active :: proc(
 	if h == nil ||
 	   expected_namespace == .Invalid ||
 	   host_presentation_state(h).selector.active.kind != .Gsw ||
-	   host_presentation_state(h).selector.active.identity_namespace != expected_namespace {return .None}
+	   host_presentation_state(h).selector.active.identity_namespace !=
+		   expected_namespace {return .None}
 	present := host_presentation_state(h).gsw.header
 	return host_presentation_apply_invalidation(
 		h,

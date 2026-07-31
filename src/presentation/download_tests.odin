@@ -6,6 +6,7 @@ import "core:testing"
 download_test_request :: proc() -> (Surface_Download_Request, Surface_Download_Context) {
 	key := Mode_Key {
 		format         = .Bgra_8888,
+		display_aspect = {4, 3},
 		surface_extent = {640, 480},
 		canvas_extent  = {640, 480},
 		source         = {0, 0, 640, 480},

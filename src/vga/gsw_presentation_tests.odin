@@ -723,6 +723,35 @@ gsw_presentation_content_only_represent_preserves_surface_and_mode :: proc(t: ^t
 }
 
 @(test)
+gsw_presentation_uses_square_pixel_display_aspect :: proc(t: ^testing.T) {
+	framebuffer: [160]u8
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer[:])
+	defer gsw_vga_destroy(&g)
+	cases := []struct {
+		width, height: u32,
+		aspect:        contract.Aspect_Ratio,
+	}{{4, 3, {4, 3}}, {5, 4, {5, 4}}, {16, 9, {16, 9}}, {16, 10, {8, 5}}}
+	for test_case in cases {
+		if !testing.expect(
+			t,
+			gsw_presentation_submit_raw(
+				&g,
+				0,
+				test_case.width,
+				test_case.height,
+				test_case.width,
+				.Indexed_8,
+				0,
+			),
+		) {continue}
+		snapshot := gsw_vga_presentation_snapshot(&g)
+		testing.expect_value(t, snapshot.active.header.display_aspect, test_case.aspect)
+		testing.expect_value(t, snapshot.active.header.mode_key.display_aspect, test_case.aspect)
+	}
+}
+
+@(test)
 vga_presentation_legacy_surface_clock_is_independent_from_visible_owner :: proc(t: ^testing.T) {
 	v: Vga
 	framebuffer := test_vga_init(t, &v)

@@ -229,6 +229,22 @@ host_test_visual_shader_menu_requires_gpu_except_for_none :: proc(t: ^testing.T)
 }
 
 @(test)
+host_test_scaling_and_visual_shader_availability_are_independent :: proc(t: ^testing.T) {
+	testing.expect(t, !scaling_filter_available(.Sharp, false))
+	testing.expect(t, scaling_filter_available(.Nearest, false))
+	testing.expect(t, scaling_filter_available(.Linear, false))
+	testing.expect(t, scaling_filter_available(.Sharp, true))
+	st := Menu_State {
+		aspect_policy  = .Square_Pixels,
+		scaling_filter = .Linear,
+		visual_shader  = .None,
+	}
+	testing.expect_value(t, st.aspect_policy, Aspect_Policy.Square_Pixels)
+	testing.expect_value(t, st.scaling_filter, Scaling_Filter.Linear)
+	testing.expect_value(t, st.visual_shader, Visual_Shader.None)
+}
+
+@(test)
 host_test_windows_super_hotkeys_map_to_host_actions :: proc(t: ^testing.T) {
 	gui := sdl3.Keymod{.LGUI, .LSHIFT}
 	testing.expect_value(t, host_hotkey_from_key(.F1, gui, true, false), Host_Hotkey.Release_Input)

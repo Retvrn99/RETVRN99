@@ -282,12 +282,13 @@ scanout_descriptor_expand_legacy :: proc(
 			}
 			converted_pixels += u64(rect.width) * u64(rect.height)
 		}
+		display_aspect := descriptor.legacy_update.header.display_aspect
 		frame^ = {
 			kind                      = kind,
 			width                     = width,
 			height                    = height,
-			aspect_width              = vga_vbe_enabled(&state) ? width : 4,
-			aspect_height             = vga_vbe_enabled(&state) ? height : 3,
+			aspect_width              = int(display_aspect.width),
+			aspect_height             = int(display_aspect.height),
 			generation                = state.timing.generation,
 			content_generation        = state.content_generation,
 			guest_activity_generation = state.guest_activity_generation,
@@ -427,8 +428,8 @@ scanout_descriptor_expand_gsw :: proc(
 		kind               = kind,
 		width              = width,
 		height             = height,
-		aspect_width       = int(present.header.canvas_extent.width),
-		aspect_height      = int(present.header.canvas_extent.height),
+		aspect_width       = int(present.header.display_aspect.width),
+		aspect_height      = int(present.header.display_aspect.height),
 		content_generation = present.header.sequence,
 		pixels             = frame_pixels^,
 		dirty              = present.header.dirty,

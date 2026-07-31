@@ -84,54 +84,54 @@ Presentation_Metrics_Evidence :: struct {
 }
 
 Presentation_Run_Result :: struct {
-	diagnostic:       Presentation_Run_Diagnostic,
-	output_width:     int,
-	output_height:    int,
-	vsync:            bool,
-	warmup_presented: u64,
-	stable:           Presentation_Phase_Result,
-	fps_milli:        u64,
-	metrics:          Presentation_Metrics_Evidence,
-	metrics_valid:    bool,
-	pipeline_timing:  Presentation_Timing_Summary,
-	present_timing:   Presentation_Timing_Summary,
-	gate_pass:        bool,
+	diagnostic:            Presentation_Run_Diagnostic,
+	output_width:          int,
+	output_height:         int,
+	vsync:                 bool,
+	warmup_presented:      u64,
+	stable:                Presentation_Phase_Result,
+	fps_milli:             u64,
+	metrics:               Presentation_Metrics_Evidence,
+	metrics_valid:         bool,
+	pipeline_timing:       Presentation_Timing_Summary,
+	present_timing:        Presentation_Timing_Summary,
+	gate_pass:             bool,
 	pipeline_p95_limit_ns: u64,
 }
 
 Presentation_Evidence :: struct {
-	schema:               u32 `json:"schema"`,
-	tool:                 string `json:"tool"`,
-	proof_scope:          string `json:"proof_scope"`,
-	synthetic_source:     string `json:"synthetic_source"`,
-	presentation_path:    string `json:"presentation_path"`,
-	target_hz:            u64 `json:"target_hz"`,
-	minimum_fps_milli:    u64 `json:"minimum_fps_milli"`,
-	host_presentation_metric: string `json:"host_presentation_metric"`,
+	schema:                         u32 `json:"schema"`,
+	tool:                           string `json:"tool"`,
+	proof_scope:                    string `json:"proof_scope"`,
+	synthetic_source:               string `json:"synthetic_source"`,
+	presentation_path:              string `json:"presentation_path"`,
+	target_hz:                      u64 `json:"target_hz"`,
+	minimum_fps_milli:              u64 `json:"minimum_fps_milli"`,
+	host_presentation_metric:       string `json:"host_presentation_metric"`,
 	host_presentation_p95_limit_ns: u64 `json:"host_presentation_p95_limit_ns"`,
-	width:                int `json:"width"`,
-	height:               int `json:"height"`,
-	warmup_seconds:       int `json:"warmup_seconds"`,
-	stable_seconds:       int `json:"stable_seconds"`,
-	output_width:         int `json:"output_width"`,
-	output_height:        int `json:"output_height"`,
-	vsync:                bool `json:"vsync"`,
-	warmup_presented:     u64 `json:"warmup_presented"`,
-	stable_attempted:     u64 `json:"stable_attempted"`,
-	stable_presented:     u64 `json:"stable_presented"`,
-	stable_skipped_slots: u64 `json:"stable_skipped_slots"`,
-	stable_elapsed_ns:    u64 `json:"stable_elapsed_ns"`,
-	presented_fps_milli:  u64 `json:"presented_fps_milli"`,
-	sample_count:         int `json:"sample_count"`,
-	sample_capacity:      int `json:"sample_capacity"`,
-	sample_overflow:      bool `json:"sample_overflow"`,
-	pipeline_timing:      Presentation_Timing_Summary `json:"pipeline_timing"`,
-	present_timing:       Presentation_Timing_Summary `json:"present_timing"`,
-	metrics:              Presentation_Metrics_Evidence `json:"stable_host_metrics"`,
-	metrics_valid:        bool `json:"stable_host_metrics_valid"`,
-	gate_pass:            bool `json:"gate_pass"`,
-	failure:              string `json:"failure"`,
-	samples:              []Presentation_Sample `json:"samples"`,
+	width:                          int `json:"width"`,
+	height:                         int `json:"height"`,
+	warmup_seconds:                 int `json:"warmup_seconds"`,
+	stable_seconds:                 int `json:"stable_seconds"`,
+	output_width:                   int `json:"output_width"`,
+	output_height:                  int `json:"output_height"`,
+	vsync:                          bool `json:"vsync"`,
+	warmup_presented:               u64 `json:"warmup_presented"`,
+	stable_attempted:               u64 `json:"stable_attempted"`,
+	stable_presented:               u64 `json:"stable_presented"`,
+	stable_skipped_slots:           u64 `json:"stable_skipped_slots"`,
+	stable_elapsed_ns:              u64 `json:"stable_elapsed_ns"`,
+	presented_fps_milli:            u64 `json:"presented_fps_milli"`,
+	sample_count:                   int `json:"sample_count"`,
+	sample_capacity:                int `json:"sample_capacity"`,
+	sample_overflow:                bool `json:"sample_overflow"`,
+	pipeline_timing:                Presentation_Timing_Summary `json:"pipeline_timing"`,
+	present_timing:                 Presentation_Timing_Summary `json:"present_timing"`,
+	metrics:                        Presentation_Metrics_Evidence `json:"stable_host_metrics"`,
+	metrics_valid:                  bool `json:"stable_host_metrics_valid"`,
+	gate_pass:                      bool `json:"gate_pass"`,
+	failure:                        string `json:"failure"`,
+	samples:                        []Presentation_Sample `json:"samples"`,
 }
 
 presentation_run_diagnostic_text :: proc(diagnostic: Presentation_Run_Diagnostic) -> string {
@@ -236,6 +236,7 @@ presentation_synthetic_frame :: proc(
 	}
 	mode_key := contract.Mode_Key {
 		format         = .Bgrx_8888,
+		display_aspect = contract.aspect_ratio_make(extent.width, extent.height),
 		surface_extent = extent,
 		canvas_extent  = extent,
 		source         = full_rect,
@@ -253,6 +254,7 @@ presentation_synthetic_frame :: proc(
 			device_generation = 1,
 			surface = {PRESENTATION_SURFACE_ID, 1},
 			format = .Bgrx_8888,
+			display_aspect = mode_key.display_aspect,
 			surface_extent = extent,
 			canvas_extent = extent,
 			source = full_rect,
@@ -429,8 +431,11 @@ presentation_run_phase :: proc(
 	}
 
 	if result.diagnostic == .None {
-		elapsed_ns := presentation_tick_elapsed_ns(phase_started, time.tick_now())
-		if elapsed_ns < limit_ns {time.sleep(time.Duration(limit_ns - elapsed_ns))}
+		for {
+			elapsed_ns := presentation_tick_elapsed_ns(phase_started, time.tick_now())
+			if elapsed_ns >= limit_ns {break}
+			time.sleep(time.Duration(limit_ns - elapsed_ns))
+		}
 	}
 	result.elapsed_ns = presentation_tick_elapsed_ns(phase_started, time.tick_now())
 	return result
@@ -622,7 +627,9 @@ presentation_samples_valid :: proc(
 	phase: Presentation_Phase_Result,
 	total_slots: u64,
 ) -> bool {
-	if recorder == nil || recorder.overflow || recorder.count <= 0 ||
+	if recorder == nil ||
+	   recorder.overflow ||
+	   recorder.count <= 0 ||
 	   recorder.count != int(phase.presented) ||
 	   phase.presented > max(u64) - phase.skipped ||
 	   phase.presented + phase.skipped != total_slots {return false}
@@ -647,8 +654,10 @@ presentation_samples_valid :: proc(
 		next_slot = sample.slot + 1
 	}
 	trailing_skips := presentation_cadence_trailing_skips(next_slot, total_slots)
-	return total_skipped <= max(u64) - trailing_skips &&
-	       total_skipped + trailing_skips == phase.skipped
+	return(
+		total_skipped <= max(u64) - trailing_skips &&
+		total_skipped + trailing_skips == phase.skipped \
+	)
 }
 
 presentation_run :: proc(
@@ -766,38 +775,38 @@ presentation_emit_evidence :: proc(
 		samples = recorder.values[:sample_count]
 	}
 	evidence := Presentation_Evidence {
-		schema               = PRESENTATION_EVIDENCE_SCHEMA,
-		tool                 = "retvrn99-presentation-60hz-proof",
-		proof_scope          = "synthetic host presentation/upload/render/present only",
-		synthetic_source     = "GSW2D snapshot with moving 64x64 dirty region",
-		presentation_path    = "host_presentation_admit_gsw>host_presentation_stage_gsw_snapshot>host_presentation_commit_gsw_snapshot_staged>host_render_guest>SDL_RenderPresent",
-		target_hz            = PRESENTATION_RATE_HZ,
-		minimum_fps_milli    = PRESENTATION_MINIMUM_FPS_MILLI,
-		host_presentation_metric = "pipeline_ns",
+		schema                         = PRESENTATION_EVIDENCE_SCHEMA,
+		tool                           = "retvrn99-presentation-60hz-proof",
+		proof_scope                    = "synthetic host presentation/upload/render/present only",
+		synthetic_source               = "GSW2D snapshot with moving 64x64 dirty region",
+		presentation_path              = "host_presentation_admit_gsw>host_presentation_stage_gsw_snapshot>host_presentation_commit_gsw_snapshot_staged>host_render_guest>SDL_RenderPresent",
+		target_hz                      = PRESENTATION_RATE_HZ,
+		minimum_fps_milli              = PRESENTATION_MINIMUM_FPS_MILLI,
+		host_presentation_metric       = "pipeline_ns",
 		host_presentation_p95_limit_ns = result.pipeline_p95_limit_ns,
-		width                = options.width,
-		height               = options.height,
-		warmup_seconds       = options.warmup_seconds,
-		stable_seconds       = options.stable_seconds,
-		output_width         = result.output_width,
-		output_height        = result.output_height,
-		vsync                = result.vsync,
-		warmup_presented     = result.warmup_presented,
-		stable_attempted     = result.stable.attempted,
-		stable_presented     = result.stable.presented,
-		stable_skipped_slots = result.stable.skipped,
-		stable_elapsed_ns    = result.stable.elapsed_ns,
-		presented_fps_milli  = result.fps_milli,
-		sample_count         = sample_count,
-		sample_capacity      = PRESENTATION_SAMPLE_CAPACITY,
-		sample_overflow      = sample_overflow,
-		pipeline_timing      = result.pipeline_timing,
-		present_timing       = result.present_timing,
-		metrics              = result.metrics,
-		metrics_valid        = result.metrics_valid,
-		gate_pass            = result.gate_pass,
-		failure              = presentation_run_diagnostic_text(result.diagnostic),
-		samples              = samples,
+		width                          = options.width,
+		height                         = options.height,
+		warmup_seconds                 = options.warmup_seconds,
+		stable_seconds                 = options.stable_seconds,
+		output_width                   = result.output_width,
+		output_height                  = result.output_height,
+		vsync                          = result.vsync,
+		warmup_presented               = result.warmup_presented,
+		stable_attempted               = result.stable.attempted,
+		stable_presented               = result.stable.presented,
+		stable_skipped_slots           = result.stable.skipped,
+		stable_elapsed_ns              = result.stable.elapsed_ns,
+		presented_fps_milli            = result.fps_milli,
+		sample_count                   = sample_count,
+		sample_capacity                = PRESENTATION_SAMPLE_CAPACITY,
+		sample_overflow                = sample_overflow,
+		pipeline_timing                = result.pipeline_timing,
+		present_timing                 = result.present_timing,
+		metrics                        = result.metrics,
+		metrics_valid                  = result.metrics_valid,
+		gate_pass                      = result.gate_pass,
+		failure                        = presentation_run_diagnostic_text(result.diagnostic),
+		samples                        = samples,
 	}
 	payload, err := json.marshal(evidence)
 	if err != nil {return false}

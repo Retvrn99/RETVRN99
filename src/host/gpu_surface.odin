@@ -266,7 +266,7 @@ host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descripto
 	)
 	if wrapped_texture != rawptr(gpu_texture) ||
 	   !sdl3.SetTextureBlendMode(render_texture, sdl3.BLENDMODE_NONE) ||
-	   !sdl3.SetTextureScaleMode(render_texture, .LINEAR) {
+	   !sdl3.SetTextureScaleMode(render_texture, host_texture_scale_mode(h.scaling_filter)) {
 		sdl3.DestroyTexture(render_texture)
 		sdl3.ReleaseGPUTexture(h.gpu, gpu_texture)
 		return false
@@ -355,8 +355,7 @@ host_gpu_surface_present :: proc(h: ^Host, present: Host_Gpu_Present) -> bool {
 		return false
 	}
 	h.gpu_present = present
-	h.aspect_width = int(present.canvas_width)
-	h.aspect_height = int(present.canvas_height)
+	host_apply_square_pixel_canvas_aspect(h, present.canvas_width, present.canvas_height)
 	h.has_frame = true
 	h.gpu_direct_presents += 1
 	return true

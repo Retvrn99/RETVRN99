@@ -12,6 +12,7 @@ import sdl3 "vendor:sdl3"
 host_presentation_test_mode_key :: proc(width: u32 = 640, height: u32 = 480) -> contract.Mode_Key {
 	return {
 		format = .Bgra_8888,
+		display_aspect = contract.aspect_ratio_make(width, height),
 		surface_extent = {width, height},
 		canvas_extent = {width, height},
 		source = {0, 0, width, height},
@@ -41,6 +42,7 @@ host_presentation_test_legacy :: proc(
 			mode_key = resolved,
 			surface = {11, 1},
 			format = resolved.format,
+			display_aspect = resolved.display_aspect,
 			surface_extent = resolved.surface_extent,
 			canvas_extent = resolved.canvas_extent,
 			source = resolved.source,
@@ -75,6 +77,7 @@ host_presentation_test_resident :: proc(
 			device_generation = 7,
 			surface = {23, 5},
 			format = resolved.format,
+			display_aspect = resolved.display_aspect,
 			surface_extent = resolved.surface_extent,
 			canvas_extent = resolved.canvas_extent,
 			source = resolved.source,
@@ -163,8 +166,7 @@ host_presentation_test_apply_legacy :: proc(h: ^Host, admission: Host_Presentati
 	h.presentation_state.vga_mode_clock = admission.vga_mode_clock
 	h.presentation_state.legacy = admission.legacy
 	h.presentation_state.last_vga_sequence = admission.source_sequence
-	h.aspect_width = int(admission.legacy.header.canvas_extent.width)
-	h.aspect_height = int(admission.legacy.header.canvas_extent.height)
+	host_apply_display_aspect(h, admission.legacy.header)
 	h.has_frame = true
 }
 
@@ -181,6 +183,7 @@ host_presentation_test_apply_gsw :: proc(h: ^Host, admission: Host_Presentation_
 		h.presentation_state.gsw_snapshot_source_mode_generation = admission.source_mode_generation
 	}
 	h.presentation_state.last_vga_sequence = admission.source_sequence
+	host_apply_display_aspect(h, admission.gsw.header)
 	h.has_frame = true
 }
 
@@ -215,6 +218,10 @@ host_presentation_test_in_place_legacy_commit_preserves_texture :: proc(t: ^test
 	h.tex_height = 480
 	h.presentation_state.legacy_resource_generation = 4
 	next := host_presentation_test_legacy(11)
+	next.header.display_aspect = {16, 9}
+	next.header.mode_key.display_aspect = next.header.display_aspect
+	next.header.mode_generation = 2
+	next.header.surface.generation = 2
 	next.header.dirty = {}
 	_ = contract.rect_set_append(&next.header.dirty, {1, 2, 3, 4})
 	admission := host_presentation_admit_legacy(&h, next)
@@ -242,6 +249,8 @@ host_presentation_test_in_place_legacy_commit_preserves_texture :: proc(t: ^test
 		h.presentation_state.legacy.header.sequence,
 		admission.legacy.header.sequence,
 	)
+	testing.expect_value(t, h.aspect_width, 16)
+	testing.expect_value(t, h.aspect_height, 9)
 }
 
 host_presentation_test_invalidation :: proc(
@@ -894,8 +903,8 @@ host_presentation_test_cross_mode_teardown_restores_legacy_desktop :: proc(t: ^t
 		)
 		testing.expect_value(t, h.tex, legacy_texture)
 		testing.expect_value(t, h.gpu_present, Host_Gpu_Present{})
-		testing.expect_value(t, h.aspect_width, 640)
-		testing.expect_value(t, h.aspect_height, 480)
+		testing.expect_value(t, h.aspect_width, 4)
+		testing.expect_value(t, h.aspect_height, 3)
 		testing.expect(t, h.has_frame)
 		// The border colour published by the device reaches the host, which
 		// paints the surround with it instead of a fixed black.

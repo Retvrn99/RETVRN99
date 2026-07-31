@@ -26,6 +26,7 @@ expansion_test_set_gsw_descriptor :: proc(
 	full := presentation.Rect{0, 0, 3, 1}
 	mode_key := presentation.Mode_Key {
 		format         = .Bgrx_8888,
+		display_aspect = {3, 1},
 		surface_extent = {3, 1},
 		canvas_extent  = {3, 1},
 		source         = full,
@@ -48,6 +49,7 @@ expansion_test_set_gsw_descriptor :: proc(
 				device_generation = 1,
 				surface = {1, 1},
 				format = .Bgrx_8888,
+				display_aspect = mode_key.display_aspect,
 				surface_extent = {3, 1},
 				canvas_extent = {3, 1},
 				source = full,

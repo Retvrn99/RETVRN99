@@ -79,12 +79,9 @@ vga_display_frame_replay :: proc(v: ^Vga, journal: ^Raster_Journal) -> ^Display_
 	v.frame.kind = kind
 	v.frame.width = width
 	v.frame.height = height
-	v.frame.aspect_width = width
-	v.frame.aspect_height = height
-	if !vga_vbe_enabled(v) {
-		v.frame.aspect_width = 4
-		v.frame.aspect_height = 3
-	}
+	display_aspect := vga_legacy_display_aspect(v, u32(width), u32(height))
+	v.frame.aspect_width = int(display_aspect.width)
+	v.frame.aspect_height = int(display_aspect.height)
 	v.frame.generation = v.timing.generation
 	v.frame.content_generation = v.content_generation
 	v.frame.guest_activity_generation = v.guest_activity_generation
@@ -232,9 +229,9 @@ scanout_finalize :: proc(v: ^Vga) {
 	v.frame.kind = v.raster_kind
 	v.frame.width = v.raster_width
 	v.frame.height = v.raster_height
-	v.frame.aspect_width = v.raster_width
-	v.frame.aspect_height = v.raster_height
-	if !vga_vbe_enabled(v) {v.frame.aspect_width = 4; v.frame.aspect_height = 3}
+	display_aspect := vga_legacy_display_aspect(v, u32(v.raster_width), u32(v.raster_height))
+	v.frame.aspect_width = int(display_aspect.width)
+	v.frame.aspect_height = int(display_aspect.height)
 	v.frame.generation = v.present_generation
 	v.frame.content_generation = v.content_generation
 	v.frame.guest_activity_generation = v.guest_activity_generation
@@ -312,8 +309,7 @@ render_text_scanline :: proc(v: ^Vga, pixels: []u32, width, height, y, x0, x1: i
 	// compare. It sets at Cursor Start and clears at Cursor End or at the last
 	// scan line of the character cell, so an end below the start runs to the
 	// bottom of the cell instead of wrapping into the top of it.
-	cursor_line :=
-		glyph_y >= cursor_start && (cursor_end < cursor_start || glyph_y <= cursor_end)
+	cursor_line := glyph_y >= cursor_start && (cursor_end < cursor_start || glyph_y <= cursor_end)
 	// Attribute Controller 10h bit 1 reinterprets the attribute byte with
 	// monochrome semantics, which is also the only mode in which the underline
 	// attribute exists. CRT Controller 14h names the scan line it lands on.
@@ -406,8 +402,7 @@ text_palette_index :: proc(v: ^Vga, x, y: int) -> u8 {
 	cursor = (cursor + int(v.crtc[0x0B] >> 5 & 3)) & 0x3fff
 	cursor_start := int(v.crtc[0x0A] & 0x1F)
 	cursor_end := int(v.crtc[0x0B] & 0x1F)
-	cursor_line :=
-		glyph_y >= cursor_start && (cursor_end < cursor_start || glyph_y <= cursor_end)
+	cursor_line := glyph_y >= cursor_start && (cursor_end < cursor_start || glyph_y <= cursor_end)
 	if v.crtc[0x0A] & 0x20 == 0 && blink_on && cursor_line && raw == cursor * 2 {
 		foreground, background = background, foreground
 	}
@@ -416,8 +411,8 @@ text_palette_index :: proc(v: ^Vga, x, y: int) -> u8 {
 	if glyph_x == 8 && character >= 0xC0 && character <= 0xDF && v.attr[0x10] & 0x04 != 0 {
 		set = bits & 1 != 0
 	}
-	underline := v.attr[0x10] & 0x02 != 0 && glyph_y == int(v.crtc[0x14] & 0x1F) &&
-		attribute & 0x07 == 0x01
+	underline :=
+		v.attr[0x10] & 0x02 != 0 && glyph_y == int(v.crtc[0x14] & 0x1F) && attribute & 0x07 == 0x01
 	return attribute_palette_index(v, set || underline ? foreground : background)
 }
 

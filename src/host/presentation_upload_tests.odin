@@ -58,6 +58,7 @@ host_upload_test_header :: proc() -> contract.Header {
 		mode_generation = 1,
 		mode_key = {
 			format = .Bgra_8888,
+			display_aspect = {2, 1},
 			surface_extent = extent,
 			canvas_extent = extent,
 			source = full,
@@ -65,6 +66,7 @@ host_upload_test_header :: proc() -> contract.Header {
 		},
 		surface = {1, 1},
 		format = .Bgra_8888,
+		display_aspect = {2, 1},
 		surface_extent = extent,
 		canvas_extent = extent,
 		source = full,

@@ -98,6 +98,15 @@ guest_view_rect :: proc(
 	)
 }
 
+host_pixel_snap_rect :: proc(rect: sdl3.FRect) -> sdl3.FRect {
+	return {
+		f32(int(rect.x + 0.5)),
+		f32(int(rect.y + 0.5)),
+		f32(max(1, int(rect.w + 0.5))),
+		f32(max(1, int(rect.h + 0.5))),
+	}
+}
+
 guest_view_rect_insets :: proc(
 	aspect_width, aspect_height: int,
 	output_width, output_height: int,
@@ -120,7 +129,7 @@ guest_view_rect_insets :: proc(
 	} else {
 		h = area_w / target
 	}
-	return {left + (area_w - w) * 0.5, top + (area_h - h) * 0.5, w, h}
+	return host_pixel_snap_rect({left + (area_w - w) * 0.5, top + (area_h - h) * 0.5, w, h})
 }
 
 host_border_from_contract :: proc(border: contract.Border) -> Host_Border {
@@ -133,9 +142,13 @@ host_border_from_contract :: proc(border: contract.Border) -> Host_Border {
 // the active image inside it is the part that is no longer exactly 4:3, which is
 // what the hardware does.
 host_guest_canvas_rect :: proc(h: ^Host, output_width, output_height: int) -> sdl3.FRect {
+	canvas_width := h.canvas_width > 0 ? h.canvas_width : h.aspect_width
+	canvas_height := h.canvas_height > 0 ? h.canvas_height : h.aspect_height
 	return guest_canvas_rect(
 		h.aspect_width,
 		h.aspect_height,
+		canvas_width,
+		canvas_height,
 		h.border,
 		output_width,
 		output_height,
@@ -148,6 +161,7 @@ host_guest_canvas_rect :: proc(h: ^Host, output_width, output_height: int) -> sd
 // canvas goes.
 guest_canvas_rect :: proc(
 	aspect_width, aspect_height: int,
+	canvas_width, canvas_height: int,
 	border: Host_Border,
 	output_width, output_height: int,
 	insets: Host_Client_Insets,
@@ -160,18 +174,20 @@ guest_canvas_rect :: proc(
 		insets,
 	)
 	if border == {} {return rect}
-	total_width := max(aspect_width + border.left + border.right, 1)
-	total_height := max(aspect_height + border.top + border.bottom, 1)
+	total_width := max(canvas_width + border.left + border.right, 1)
+	total_height := max(canvas_height + border.top + border.bottom, 1)
 	left := rect.w * f32(max(border.left, 0)) / f32(total_width)
 	right := rect.w * f32(max(border.right, 0)) / f32(total_width)
 	top := rect.h * f32(max(border.top, 0)) / f32(total_height)
 	bottom := rect.h * f32(max(border.bottom, 0)) / f32(total_height)
-	return {
-		rect.x + left,
-		rect.y + top,
-		max(rect.w - left - right, 1),
-		max(rect.h - top - bottom, 1),
-	}
+	return host_pixel_snap_rect(
+		{
+			rect.x + left,
+			rect.y + top,
+			max(rect.w - left - right, 1),
+			max(rect.h - top - bottom, 1),
+		},
+	)
 }
 
 host_ensure_texture :: proc(h: ^Host, width, height: int) -> bool {
@@ -184,7 +200,7 @@ host_ensure_texture :: proc(h: ^Host, width, height: int) -> bool {
 		h.tex_height = 0
 		return false
 	}
-	sdl3.SetTextureScaleMode(h.tex, h.visual_shader == .None ? .NEAREST : .LINEAR)
+	_ = sdl3.SetTextureScaleMode(h.tex, host_texture_scale_mode(h.scaling_filter))
 	h.tex_width = width
 	h.tex_height = height
 	return true
@@ -211,6 +227,8 @@ host_cpu_frame_metadata_publish :: proc(h: ^Host, aspect_width, aspect_height: i
 	if host_presentation_state(h).selector.active.kind == .None {h.gpu_present = {}}
 	h.aspect_width = aspect_width
 	h.aspect_height = aspect_height
+	h.canvas_width = max(h.tex_width, aspect_width)
+	h.canvas_height = max(h.tex_height, aspect_height)
 	h.has_frame = true
 }
 
@@ -218,13 +236,13 @@ host_cpu_frame_metadata_publish :: proc(h: ^Host, aspect_width, aspect_height: i
 host_render_texture_region :: proc(
 	h: ^Host,
 	texture: ^sdl3.Texture,
-	texture_width, texture_height: int,
+	scaling: Host_Scaling_Geometry,
 	source: sdl3.FRect,
 	has_source: bool,
 	destination: sdl3.FRect,
 ) -> bool {
-	if h == nil || texture == nil || texture_width <= 0 || texture_height <= 0 {return false}
-	shader_active := host_shader_begin(h, texture_width, texture_height)
+	if h == nil || texture == nil {return false}
+	shader_active := host_shader_begin(h, scaling)
 	source_rect := source
 	destination_rect := destination
 	source_ptr: Maybe(^sdl3.FRect)
@@ -236,7 +254,8 @@ host_render_texture_region :: proc(
 
 @(private = "file")
 host_render_resident_composition :: proc(h: ^Host, guest_view: sdl3.FRect) -> bool {
-	if h == nil || host_presentation_state(h).selector.active.source_kind != .Gsw_Resident {return false}
+	if h == nil ||
+	   host_presentation_state(h).selector.active.source_kind != .Gsw_Resident {return false}
 	resident := host_presentation_state(h).gsw
 	ok := true
 	needs_desktop := host_presentation_resident_requires_desktop(resident)
@@ -255,12 +274,17 @@ host_render_resident_composition :: proc(h: ^Host, guest_view: sdl3.FRect) -> bo
 			desktop.header.canvas_extent,
 		)
 		if valid {
+			scaling := host_scaling_geometry_from_header(
+				desktop.header,
+				host_presentation_state(h).gsw_texture_width,
+				host_presentation_state(h).gsw_texture_height,
+				guest_view,
+			)
 			ok =
 				host_render_texture_region(
 					h,
 					host_presentation_state(h).gsw_texture,
-					host_presentation_state(h).gsw_texture_width,
-					host_presentation_state(h).gsw_texture_height,
+					scaling,
 					source,
 					true,
 					destination,
@@ -276,17 +300,14 @@ host_render_resident_composition :: proc(h: ^Host, guest_view: sdl3.FRect) -> bo
 		   contract.output_mode_key(host_presentation_state(h).selector.last_good_legacy.header),
 		   contract.output_mode_key(resident.header),
 	   ) {
-		ok =
-			host_render_texture_region(
-				h,
-				h.tex,
-				h.tex_width,
-				h.tex_height,
-				{},
-				false,
-				guest_view,
-			) &&
-			ok
+		legacy := host_presentation_state(h).selector.last_good_legacy
+		scaling := host_scaling_geometry_from_header(
+			legacy.header,
+			h.tex_width,
+			h.tex_height,
+			guest_view,
+		)
+		ok = host_render_texture_region(h, h.tex, scaling, {}, false, guest_view) && ok
 	}
 	texture, _, has_texture, _ := host_active_gpu_texture(h)
 	if texture == nil || !has_texture {return false}
@@ -296,14 +317,19 @@ host_render_resident_composition :: proc(h: ^Host, guest_view: sdl3.FRect) -> bo
 	if !valid_extent {return false}
 	plan := host_presentation_build_resident_draw_plan(resident, guest_view)
 	if !plan.valid {return false}
+	scaling := host_scaling_geometry_from_header(
+		resident.header,
+		texture_width,
+		texture_height,
+		guest_view,
+	)
 	for i in 0 ..< int(plan.count) {
 		segment := plan.segments[i]
 		ok =
 			host_render_texture_region(
 				h,
 				texture,
-				texture_width,
-				texture_height,
+				scaling,
 				segment.source,
 				true,
 				segment.destination,
@@ -351,23 +377,58 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 				texture_height = int(surface.descriptor.height)
 			}
 		}
-		dst := host_guest_canvas_rect(h, output_width, output_height)
-		if gpu_present != nil {
-			dst = host_gpu_present_destination(dst, gpu_present^)
-		} else {
-			dst = host_presentation_destination(h, dst)
-		}
-		ok =
-			host_render_texture_region(
-				h,
-				texture,
+		canvas_output := host_guest_canvas_rect(h, output_width, output_height)
+		dst := canvas_output
+		scaling: Host_Scaling_Geometry
+		if active.kind == .Legacy {
+			scaling = host_scaling_geometry_from_header(
+				host_presentation_state(h).legacy.header,
 				texture_width,
 				texture_height,
-				source,
-				has_source,
-				dst,
-			) &&
-			ok
+				canvas_output,
+			)
+		} else if active.kind == .Gsw {
+			scaling = host_scaling_geometry_from_header(
+				host_presentation_state(h).gsw.header,
+				texture_width,
+				texture_height,
+				canvas_output,
+			)
+		}
+		if gpu_present != nil {
+			dst = host_gpu_present_destination(dst, gpu_present^)
+			scaling = {
+				texture_extent = {u32(texture_width), u32(texture_height)},
+				canvas_extent  = {gpu_present.canvas_width, gpu_present.canvas_height},
+				source         = {
+					gpu_present.source.x,
+					gpu_present.source.y,
+					gpu_present.source.width,
+					gpu_present.source.height,
+				},
+				destination    = {
+					gpu_present.destination.x,
+					gpu_present.destination.y,
+					gpu_present.destination.width,
+					gpu_present.destination.height,
+				},
+				canvas_output  = canvas_output,
+			}
+		} else {
+			dst = host_presentation_destination(h, dst)
+			if scaling == {} {
+				canvas_width := max(h.canvas_width, 1)
+				canvas_height := max(h.canvas_height, 1)
+				scaling = {
+					texture_extent = {u32(texture_width), u32(texture_height)},
+					canvas_extent  = {u32(canvas_width), u32(canvas_height)},
+					source         = {0, 0, u32(texture_width), u32(texture_height)},
+					destination    = {0, 0, u32(canvas_width), u32(canvas_height)},
+					canvas_output  = canvas_output,
+				}
+			}
+		}
+		ok = host_render_texture_region(h, texture, scaling, source, has_source, dst) && ok
 	}
 	return ok
 }
@@ -393,6 +454,8 @@ render_grid :: proc(h: ^Host, snap: ^vga.Text_Snapshot) {
 	h.gpu_present = {}
 	h.aspect_width = 4
 	h.aspect_height = 3
+	h.canvas_width = width
+	h.canvas_height = height
 	h.has_frame = true
 	_ = host_render_guest(h, true)
 }

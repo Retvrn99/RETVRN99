@@ -110,6 +110,7 @@ gsw_presentation_mode_key :: proc(
 	full := gsw_presentation_full_rect(width, height)
 	return {
 		format = format,
+		display_aspect = presentation.aspect_ratio_make(width, height),
 		surface_extent = extent,
 		canvas_extent = extent,
 		source = full,
@@ -223,6 +224,7 @@ gsw_presentation_build :: proc(
 			device_generation = g.presentation_state.device_generation,
 			surface = surface,
 			format = pixel_format,
+			display_aspect = mode_key.display_aspect,
 			surface_extent = {width = width, height = height},
 			canvas_extent = {width = width, height = height},
 			source = full,

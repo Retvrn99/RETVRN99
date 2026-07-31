@@ -134,6 +134,7 @@ host_gsw3d_proof_present :: proc(ctx: rawptr, present: ^Gsw3d_Proof_Present) -> 
 				generation = host_gpu_surface_generation(h, present.surface_id),
 			},
 			format = .Bgra_8888,
+			display_aspect = mode_key.display_aspect,
 			surface_extent = extent,
 			canvas_extent = canvas,
 			source = source,
