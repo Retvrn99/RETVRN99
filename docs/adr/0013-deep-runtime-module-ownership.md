@@ -52,6 +52,17 @@ Interface. Machine supplies guest-memory, DMA, interrupt, and final-mix
 Adapters. PC Speaker and CDDA remain separate until final mixing. The native
 PCI function remains hidden by default.
 
+`Gsw_Sound` contains the private SB16, CT1745, OPL3, and native PCM state. It
+selects DMA and IRQ resources, decides whether a DMA block can complete,
+calculates exact block deadlines, orders DREQ transitions, owns mixer gains and
+source activity, and publishes or releases completed frames. Its Adapters
+provide value-only DMA snapshots, DMA transfers, DREQ changes, IRQ operations,
+bounded guest-memory access, and completed-frame delivery. Machine may consume
+only a value-copy `Gsw_Sound_Observation` for diagnostics and final mixing; it
+does not inspect or mutate the device state. Native PCI decode and transport
+transitions use the same Interface and do not change the default-hidden
+capability decision.
+
 VM lifetime owns one Machine, its image-service Machine session, VM guard, host
 audio, retained CMOS and hardware trace, mounted media, and install boot
 mutation. GUI and console use the same Interface. Profile locking stays outside

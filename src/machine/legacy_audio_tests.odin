@@ -58,9 +58,13 @@ test_machine_sb16_dma_irq5_and_opl_timer_share_guest_audio_clock :: proc(t: ^tes
 	testing.expect_value(t, legacy_audio_test_in(m, 0x220), u8(0xC0))
 	testing.expect(t, legacy_audio_test_out(m, 0x222, 0x05))
 	testing.expect(t, legacy_audio_test_out(m, 0x223, 0x01))
+	opl3_hash_before := sound.gsw_sound_observation(&m.gsw_sound).opl3_register_fnv1a64
 	testing.expect(t, legacy_audio_test_out(m, 0x222, 0x20))
 	testing.expect(t, legacy_audio_test_out(m, 0x223, 0x55))
-	testing.expect_value(t, m.opl3.registers[1][0x20], u8(0x55))
+	testing.expect(
+		t,
+		sound.gsw_sound_observation(&m.gsw_sound).opl3_register_fnv1a64 != opl3_hash_before,
+	)
 
 	// DMA1, single-transfer, device reads memory. Channel 4 is the cascade.
 	m.vm.ram[0x2000] = 0x00

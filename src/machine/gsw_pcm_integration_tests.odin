@@ -29,8 +29,8 @@ gsw_pcm_machine_test_relocated_mmio_pull_and_shared_pirq :: proc(t: ^testing.T) 
 	// covered while the legacy SB16/OPL3 Adapter is tested in guests.
 	pci_init(&m.pci, true)
 	pci_connect_pic(&m.pci, &m.pic)
-	sound.gsw_pcm_init(&m.gsw_pcm)
-	sound.gsw_pcm_set_irq(&m.gsw_pcm, m, machine_gsw_sound_irq)
+	sound.gsw_sound_init(&m.gsw_sound)
+	if !testing.expect(t, sound.audio_mixer_init(&m.audio)) {return}
 	if !testing.expect(t, machine_sync_pci_devices(m)) {return}
 
 	old_base := u64(GSW_SOUND_CONTROL_BAR)
@@ -57,7 +57,12 @@ gsw_pcm_machine_test_relocated_mmio_pull_and_shared_pirq :: proc(t: ^testing.T) 
 	gsw_pcm_machine_test_mmio_write32(m, new_base, sound.GSW_PCM_REG_RING_SIZE, 4096)
 	gsw_pcm_machine_test_mmio_write32(m, new_base, sound.GSW_PCM_REG_PERIOD_BYTES, 4)
 	gsw_pcm_machine_test_mmio_write32(m, new_base, sound.GSW_PCM_REG_RING_TAIL, 4)
-	gsw_pcm_machine_test_mmio_write32(m, new_base, sound.GSW_PCM_REG_IRQ_ENABLE, sound.GSW_PCM_IRQ_PERIOD)
+	gsw_pcm_machine_test_mmio_write32(
+		m,
+		new_base,
+		sound.GSW_PCM_REG_IRQ_ENABLE,
+		sound.GSW_PCM_IRQ_PERIOD,
+	)
 	// A START write changes the machine's earliest observable deadline.  It
 	// must replace an active vCPU run guard immediately, not wait for a later
 	// I/O exit or the governor quantum.
@@ -65,20 +70,36 @@ gsw_pcm_machine_test_relocated_mmio_pull_and_shared_pirq :: proc(t: ^testing.T) 
 	m.wake_ctx = &wake_probe
 	m.wake_schedule = machine_test_string_io_rearm
 	m.vcpu_running = true
-	gsw_pcm_machine_test_mmio_write32(m, new_base, sound.GSW_PCM_REG_CONTROL, sound.GSW_PCM_CONTROL_START)
+	gsw_pcm_machine_test_mmio_write32(
+		m,
+		new_base,
+		sound.GSW_PCM_REG_CONTROL,
+		sound.GSW_PCM_CONTROL_START,
+	)
 	testing.expect_value(t, wake_probe.run_guards, 1)
 	testing.expect_value(t, wake_probe.last_mode, Wake_Schedule_Mode.Run_Guard)
 
-	sample_deadline, sample_pending := sound.gsw_pcm_next_sample_deadline_tick(&m.gsw_pcm)
+	observation := sound.gsw_sound_observation(&m.gsw_sound)
+	sample_deadline, sample_pending :=
+		observation.native_sample_deadline, observation.native_sample_pending
 	testing.expect(t, sample_pending)
-	frame, produced := sound.gsw_pcm_render_sample(&m.gsw_pcm, sample_deadline, m.vm.ram)
-	testing.expect(t, produced)
-	testing.expect_value(t, frame, sound.Audio_Frame{left = 0x1234, right = -292})
+	machine_audio_advance_gsw_to(m, sample_deadline)
+	observation = sound.gsw_sound_observation(&m.gsw_sound)
+	testing.expect_value(
+		t,
+		observation.native_frame,
+		sound.Audio_Frame{left = 0x1234, right = -292},
+	)
 	testing.expect(t, pci_pirq_source_is_asserted(&m.pci, PCI_PIRQ_C, .Gsw_Sound))
 	testing.expect_value(t, pci_pirq_active_irq_mask(&m.pci), u16(1 << 10))
 
 	_ = pci_pirq_set_source_level(&m.pci, PCI_PIRQ_C, .Amd756_Ide, true)
-	gsw_pcm_machine_test_mmio_write32(m, new_base, sound.GSW_PCM_REG_IRQ_STATUS, sound.GSW_PCM_IRQ_PERIOD)
+	gsw_pcm_machine_test_mmio_write32(
+		m,
+		new_base,
+		sound.GSW_PCM_REG_IRQ_STATUS,
+		sound.GSW_PCM_IRQ_PERIOD,
+	)
 	testing.expect(t, !pci_pirq_source_is_asserted(&m.pci, PCI_PIRQ_C, .Gsw_Sound))
 	testing.expect(t, pci_pirq_source_is_asserted(&m.pci, PCI_PIRQ_C, .Amd756_Ide))
 	testing.expect(t, pci_pirq_is_asserted(&m.pci, PCI_PIRQ_C))

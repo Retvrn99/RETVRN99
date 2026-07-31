@@ -95,12 +95,13 @@ test_opl3_sample_deadline_makes_strict_progress :: proc(t: ^testing.T) {
 test_gsw_sound_large_opl_advance_finishes_past_target :: proc(t: ^testing.T) {
 	g: Gsw_Sound
 	gsw_sound_init(&g)
-	opl3_write_register(&g.opl3, 0, 0xB0, 0x20)
+	_ = gsw_sound_legacy_write(&g, OPL3_BASE_PORT, 0xB0)
+	_ = gsw_sound_legacy_write(&g, OPL3_BASE_PORT + 1, 0x20)
 	target := AUDIO_MASTER_CLOCK_HZ * 2
 	gsw_sound_advance_to(&g, target, {})
-	testing.expect_value(t, g.opl3.now_tick, target)
-	testing.expect_value(t, g.opl3.global_sample_index, OPL3_NATIVE_HZ * 2)
-	deadline, pending := opl3_sample_deadline(&g.opl3)
+	observation := gsw_sound_observation(&g)
+	testing.expect_value(t, observation.opl3_global_sample_index, OPL3_NATIVE_HZ * 2)
+	deadline, pending := observation.opl3_sample_deadline, observation.opl3_sample_pending
 	testing.expect(t, pending)
 	testing.expect(t, deadline > target)
 }
