@@ -317,23 +317,30 @@ host_expect_ui_icon_png_size :: proc(t: ^testing.T, encoded: []u8, expected_size
 }
 
 @(test)
-host_test_storage_sidebar_order_is_hdd_dvd_floppy :: proc(t: ^testing.T) {
-	testing.expect_value(t, storage_sidebar_device_order[0], Storage_Sidebar_Device.Hard_Drive)
-	testing.expect_value(t, storage_sidebar_device_order[1], Storage_Sidebar_Device.Dvd_Rom)
-	testing.expect_value(t, storage_sidebar_device_order[2], Storage_Sidebar_Device.Floppy)
+host_test_status_bar_storage_order_is_floppy_hdd_optical :: proc(t: ^testing.T) {
+	testing.expect_value(t, status_bar_storage_device_order[0], Storage_Device.Floppy)
+	testing.expect_value(t, status_bar_storage_device_order[1], Storage_Device.Hard_Drive)
+	testing.expect_value(t, status_bar_storage_device_order[2], Storage_Device.Optical_Drive)
+	testing.expect_value(t, STATUS_STORAGE_ICON_SIZE, f32(32))
+	testing.expect(t, STATUS_BAR_H >= int(STATUS_STORAGE_ICON_SIZE) + 4)
 }
 
 @(test)
-host_test_media_menu_uses_sidebar_device_order_and_current_paths :: proc(t: ^testing.T) {
+host_test_storage_status_uses_mounted_paths_and_empty_fallback :: proc(t: ^testing.T) {
 	st := Menu_State {
-		hard_drive_path = `D:\images\c_drive.img`,
-		cdrom_path      = `D:\images\Windows 98.iso`,
-		floppy_path     = `D:\images\boot.img`,
-		cdrom_mounted   = true,
+		hard_drive_path   = `D:\images\c_drive.img`,
+		cdrom_path        = `D:\images\Windows 98.iso`,
+		floppy_path       = `D:\images\boot.img`,
+		cdrom_mounted     = true,
+		floppy_mounted    = true,
+		hard_drive_status = .Ready,
 	}
-	testing.expect_value(t, storage_sidebar_device_label(storage_sidebar_device_order[0]), "Hard disk")
-	testing.expect_value(t, storage_sidebar_device_label(storage_sidebar_device_order[1]), "DVD-ROM")
-	testing.expect_value(t, storage_sidebar_device_label(storage_sidebar_device_order[2]), "Floppy")
+	testing.expect_value(t, storage_menu_device_order[0], Storage_Device.Hard_Drive)
+	testing.expect_value(t, storage_menu_device_order[1], Storage_Device.Optical_Drive)
+	testing.expect_value(t, storage_menu_device_order[2], Storage_Device.Floppy)
+	testing.expect_value(t, storage_device_label(.Floppy), "Floppy")
+	testing.expect_value(t, storage_device_label(.Hard_Drive), "Hard disk")
+	testing.expect_value(t, storage_device_label(.Optical_Drive), "DVD-ROM")
 	testing.expect_value(
 		t,
 		storage_device_menu_current_label(&st, .Hard_Drive),
@@ -341,7 +348,7 @@ host_test_media_menu_uses_sidebar_device_order_and_current_paths :: proc(t: ^tes
 	)
 	testing.expect_value(
 		t,
-		storage_device_menu_current_label(&st, .Dvd_Rom),
+		storage_device_menu_current_label(&st, .Optical_Drive),
 		cstring("Current: Windows 98.iso"),
 	)
 	testing.expect_value(
@@ -349,32 +356,41 @@ host_test_media_menu_uses_sidebar_device_order_and_current_paths :: proc(t: ^tes
 		storage_device_menu_current_label(&st, .Floppy),
 		cstring("Current: boot.img"),
 	)
-	testing.expect_value(t, storage_device_menu_mount_label(&st, .Dvd_Rom), cstring("Change..."))
-	testing.expect_value(t, storage_device_menu_mount_label(&st, .Floppy), cstring("Mount..."))
+	testing.expect_value(
+		t,
+		status_bar_current_image_label(&st, .Optical_Drive),
+		cstring("Current image file: Windows 98.iso"),
+	)
+	testing.expect_value(t, storage_device_tooltip(&st, .Floppy), `D:\images\boot.img`)
+	testing.expect_value(t, storage_device_tooltip(&st, .Hard_Drive), `D:\images\c_drive.img`)
+	testing.expect_value(
+		t,
+		storage_device_tooltip(&st, .Optical_Drive),
+		`D:\images\Windows 98.iso`,
+	)
+	testing.expect(t, storage_device_mounted(&st, .Floppy))
+	testing.expect(t, storage_device_mounted(&st, .Hard_Drive))
+	testing.expect(t, storage_device_mounted(&st, .Optical_Drive))
 	testing.expect(t, menu_action_enabled(&st, .Mount_Cdrom))
 	testing.expect(t, menu_action_enabled(&st, .Eject_Cdrom))
 	testing.expect(t, menu_action_enabled(&st, .Reveal_Cdrom))
 	testing.expect(t, menu_action_enabled(&st, .Mount_Floppy))
-	testing.expect(t, !menu_action_enabled(&st, .Eject_Floppy))
+	testing.expect(t, menu_action_enabled(&st, .Eject_Floppy))
 	testing.expect(t, menu_action_enabled(&st, .Reveal_Floppy))
 
 	empty: Menu_State
-	testing.expect_value(
-		t,
-		storage_device_menu_current_label(&empty, .Hard_Drive),
-		cstring("Current: None"),
-	)
-	testing.expect_value(
-		t,
-		storage_device_menu_current_label(&empty, .Dvd_Rom),
-		cstring("Current: No image"),
-	)
+	testing.expect_value(t, storage_device_tooltip(&empty, .Floppy), "Empty")
+	testing.expect_value(t, storage_device_tooltip(&empty, .Hard_Drive), "Empty")
+	testing.expect_value(t, storage_device_tooltip(&empty, .Optical_Drive), "Empty")
+	testing.expect(t, !storage_device_mounted(&empty, .Floppy))
+	testing.expect(t, !storage_device_mounted(&empty, .Hard_Drive))
+	testing.expect(t, !storage_device_mounted(&empty, .Optical_Drive))
 	testing.expect(t, !menu_action_enabled(&empty, .Reveal_Cdrom))
 	testing.expect(t, !menu_action_enabled(&empty, .Reveal_Floppy))
 }
 
 @(test)
-host_test_status_bar_reports_only_machine_state :: proc(t: ^testing.T) {
+host_test_status_bar_reports_machine_state :: proc(t: ^testing.T) {
 	st: Menu_State
 	testing.expect_value(t, status_bar_machine_text(&st), "Machine stopped")
 	st.machine_running = true
@@ -384,21 +400,19 @@ host_test_status_bar_reports_only_machine_state :: proc(t: ^testing.T) {
 }
 
 @(test)
-host_test_storage_sidebar_collapse_changes_client_inset :: proc(t: ^testing.T) {
-	h := Host{menu_reveal = 1}
-	expanded := host_client_insets(&h)
-	testing.expect_value(t, expanded.top, f32(MENU_BAR_H))
-	testing.expect_value(t, expanded.right, f32(STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP))
-	testing.expect_value(t, expanded.bottom, f32(STATUS_BAR_H))
-	h.sidebar_collapsed = true
-	collapsed := host_client_insets(&h)
-	testing.expect_value(t, collapsed.right, f32(STORAGE_SIDEBAR_COLLAPSED_W + STORAGE_SIDEBAR_GAP))
-}
-
-@(test)
-host_test_storage_sidebar_arrow_points_toward_movement :: proc(t: ^testing.T) {
-	testing.expect_value(t, storage_sidebar_toggle_direction(false), Storage_Sidebar_Toggle_Direction.Right)
-	testing.expect_value(t, storage_sidebar_toggle_direction(true), Storage_Sidebar_Toggle_Direction.Left)
+host_test_storage_status_bar_leaves_no_right_client_inset :: proc(t: ^testing.T) {
+	h := Host {
+		menu_reveal = 1,
+	}
+	insets := host_client_insets(&h)
+	testing.expect_value(t, insets.top, f32(MENU_BAR_H))
+	testing.expect_value(t, insets.right, f32(0))
+	testing.expect_value(t, insets.bottom, f32(STATUS_BAR_H))
+	testing.expect_value(
+		t,
+		status_bar_storage_width(),
+		STATUS_STORAGE_ITEM_W * 3 + STATUS_CELL_GAP * 2,
+	)
 }
 
 @(test)

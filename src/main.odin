@@ -1165,7 +1165,6 @@ gui_main :: proc(
 		st.window_scale = h.window_scale
 		st.fullscreen = h.fullscreen
 		st.visual_shader = h.visual_shader
-		h.sidebar_collapsed = st.sidebar_collapsed
 		menu_animation_now := time.tick_now()
 		if input_control_exclusive {
 			control_state := input_control_tick(

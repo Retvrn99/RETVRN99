@@ -5,11 +5,8 @@ import "core:fmt"
 import sdl3 "vendor:sdl3"
 
 DEFAULT_WINDOW_SCALE :: 2
-STORAGE_SIDEBAR_EXPANDED_W :: 198
-STORAGE_SIDEBAR_COLLAPSED_W :: 54
-STORAGE_SIDEBAR_GAP :: 2
-STATUS_BAR_H :: 28
-WIN_W :: TEXT_W * DEFAULT_WINDOW_SCALE + STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP
+STATUS_BAR_H :: 38
+WIN_W :: TEXT_W * DEFAULT_WINDOW_SCALE
 WIN_H :: TEXT_H * DEFAULT_WINDOW_SCALE + MENU_BAR_H + STATUS_BAR_H
 HOST_GPU_DRIVER :: "vulkan"
 HOST_VULKAN_API_VERSION :: u32(0x0040_1000) // VK_MAKE_API_VERSION(0, 1, 1, 0)
@@ -54,7 +51,6 @@ Host :: struct {
 	window_scale:           int,
 	fullscreen:             bool,
 	menu_reveal:            f32,
-	sidebar_collapsed:      bool,
 	visual_shader:          Visual_Shader,
 	storage_icons:          Storage_Icon_Textures,
 	stopped_logo:           Ui_Icon_Texture,
@@ -164,7 +160,7 @@ host_set_window_scale :: proc(h: ^Host, scale: int) -> bool {
 	if h == nil || h.win == nil || h.fullscreen || scale < 2 || scale > 4 {return false}
 	if !sdl3.SetWindowSize(
 		h.win,
-		i32(TEXT_W * scale + STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP),
+		i32(TEXT_W * scale),
 		i32(TEXT_H * scale + MENU_BAR_H + STATUS_BAR_H),
 	) {
 		return false
@@ -200,7 +196,7 @@ host_set_fullscreen :: proc(h: ^Host, enabled: bool) -> bool {
 		if !sdl3.SetWindowBordered(h.win, true) {return false}
 		_ = sdl3.SetWindowSize(
 			h.win,
-			i32(TEXT_W * h.window_scale + STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP),
+			i32(TEXT_W * h.window_scale),
 			i32(TEXT_H * h.window_scale + MENU_BAR_H + STATUS_BAR_H),
 		)
 		_ = sdl3.SetWindowPosition(h.win, sdl3.WINDOWPOS_CENTERED, sdl3.WINDOWPOS_CENTERED)
@@ -217,12 +213,7 @@ host_toggle_fullscreen :: proc(h: ^Host) -> bool {
 host_client_insets :: proc(h: ^Host) -> Host_Client_Insets {
 	if h == nil {return {top = f32(MENU_BAR_H)}}
 	reveal := clamp(h.menu_reveal, f32(0), f32(1))
-	sidebar_width := h.sidebar_collapsed ? STORAGE_SIDEBAR_COLLAPSED_W : STORAGE_SIDEBAR_EXPANDED_W
-	return {
-		top = f32(MENU_BAR_H) * reveal,
-		right = f32(sidebar_width + STORAGE_SIDEBAR_GAP) * reveal,
-		bottom = f32(STATUS_BAR_H) * reveal,
-	}
+	return {top = f32(MENU_BAR_H) * reveal, bottom = f32(STATUS_BAR_H) * reveal}
 }
 
 host_set_input_title :: proc(h: ^Host, captured: bool, release_binding: string = "") {

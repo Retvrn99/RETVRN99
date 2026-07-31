@@ -8,14 +8,6 @@ import "core:path/filepath"
 
 MENU_ROLL_SECONDS :: f32(0.18)
 MENU_ACTIVITY_HOLD_SECONDS :: f32(0.15)
-MENU_STORAGE_LED_RADIUS :: f32(3)
-MENU_STORAGE_LED_GAP :: f32(4)
-MENU_STORAGE_ICON_SIZE :: f32(17)
-MENU_STORAGE_ITEM_GAP :: f32(12)
-MENU_STORAGE_RIGHT_INSET :: f32(8)
-MENU_STORAGE_ITEM_WIDTH ::
-	MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP + MENU_STORAGE_ICON_SIZE
-MENU_STORAGE_TOTAL_WIDTH :: MENU_STORAGE_ITEM_WIDTH * 3 + MENU_STORAGE_ITEM_GAP * 2
 MENU_MESSAGE_WIDTH :: f32(510)
 
 MENU_LED_IDLE :: u32(0xFF305830)
@@ -116,7 +108,6 @@ Menu_State :: struct {
 	window_scale:               int,
 	fullscreen:                 bool,
 	menu_reveal:                f32,
-	sidebar_collapsed:          bool,
 	visual_shader:              Visual_Shader,
 	shaders_available:          bool,
 	show_hotkeys:               bool,
@@ -293,80 +284,30 @@ menu_end :: proc() {
 	imgui.EndMenu()
 }
 
-menu_storage_indicator_left :: proc(window_x, window_width: f32) -> f32 {
-	return window_x + window_width - MENU_STORAGE_RIGHT_INSET - MENU_STORAGE_TOTAL_WIDTH
-}
-
-menu_storage_indicators_fit :: proc(menu_content_right, indicator_left: f32) -> bool {
-	return indicator_left >= menu_content_right + MENU_STORAGE_ITEM_GAP
-}
-
-@(private = "file")
-menu_draw_activity_led :: proc(draw: ^imgui.DrawList, center: imgui.Vec2, active: bool) {
-	fill := imgui.ColorConvertFloat4ToU32(theme_color(active ? MENU_LED_ACTIVE : MENU_LED_IDLE))
-	outline := imgui.ColorConvertFloat4ToU32(theme_color(THEME_SHADOW))
-	imgui.DrawList_AddCircleFilled(draw, center, MENU_STORAGE_LED_RADIUS, fill)
-	imgui.DrawList_AddCircle(draw, center, MENU_STORAGE_LED_RADIUS, outline, 0, 1)
-}
-
-menu_storage_icon_rect :: proc(
-	icon_width, icon_height: int,
-	slot_x, center_y: f32,
-) -> (
-	min_point, max_point: imgui.Vec2,
-) {
-	if icon_width <= 0 || icon_height <= 0 {return {}, {}}
-	scale := min(
-		MENU_STORAGE_ICON_SIZE / f32(icon_width),
-		MENU_STORAGE_ICON_SIZE / f32(icon_height),
-	)
-	draw_width := f32(icon_width) * scale
-	draw_height := f32(icon_height) * scale
-	min_point = {
-		slot_x + (MENU_STORAGE_ICON_SIZE - draw_width) * 0.5,
-		center_y - draw_height * 0.5,
+hard_drive_menu_contents :: proc(st: ^Menu_State) -> Menu_Action {
+	action := Menu_Action.None
+	if imgui.MenuItem(
+		menu_select_hard_drive_label(st),
+		nil,
+		false,
+		menu_action_enabled(st, .Select_Hard_Drive),
+	) {
+		action = .Select_Hard_Drive
 	}
-	max_point = {min_point.x + draw_width, min_point.y + draw_height}
-	return
-}
-
-@(private = "file")
-menu_draw_storage_icon :: proc(
-	draw: ^imgui.DrawList,
-	icon: Storage_Icon_Texture,
-	slot_x, center_y: f32,
-) {
-	if draw == nil || icon.texture == nil || icon.width <= 0 || icon.height <= 0 {return}
-	min_point, max_point := menu_storage_icon_rect(icon.width, icon.height, slot_x, center_y)
-	texture_ref := imgui.TextureRef {
-		_TexID = imgui.TextureID(uintptr(icon.texture)),
+	if imgui.MenuItem(
+		menu_browse_c_drive_label(st),
+		nil,
+		false,
+		menu_action_enabled(st, .Browse_C_Drive),
+	) {
+		action = .Browse_C_Drive
 	}
-	imgui.DrawList_AddImage(draw, texture_ref, min_point, max_point)
-}
-
-@(private = "file")
-menu_draw_storage_indicators :: proc(st: ^Menu_State, icons: Storage_Icon_Textures) {
-	if st == nil {return}
-	draw := imgui.GetWindowDrawList()
-	window_pos := imgui.GetWindowPos()
-	window_size := imgui.GetWindowSize()
-	x := menu_storage_indicator_left(window_pos.x, window_size.x)
-	if !menu_storage_indicators_fit(imgui.GetCursorScreenPos().x, x) {return}
-	center_y := window_pos.y + window_size.y * 0.5
-
-	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.hard_drive_active)
-	icon_x := x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
-	menu_draw_storage_icon(draw, icons.hard_drive_16, icon_x, center_y)
-	x += MENU_STORAGE_ITEM_WIDTH + MENU_STORAGE_ITEM_GAP
-
-	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.dvd_rom_active)
-	icon_x = x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
-	menu_draw_storage_icon(draw, icons.dvd_rom_16, icon_x, center_y)
-	x += MENU_STORAGE_ITEM_WIDTH + MENU_STORAGE_ITEM_GAP
-
-	menu_draw_activity_led(draw, {x + MENU_STORAGE_LED_RADIUS, center_y}, st.floppy_active)
-	icon_x = x + MENU_STORAGE_LED_RADIUS * 2 + MENU_STORAGE_LED_GAP
-	menu_draw_storage_icon(draw, icons.floppy_16, icon_x, center_y)
+	imgui.Separator()
+	_ = imgui.MenuItem(menu_current_hard_drive_label(st), nil, false, false)
+	if st != nil && len(st.hard_drive_path) > 0 {
+		imgui.SetItemTooltip("%s", fmt.ctprintf("%s", st.hard_drive_path))
+	}
+	return action
 }
 
 menu_draw :: proc(
@@ -439,33 +380,14 @@ menu_draw :: proc(
 			}
 
 			if menu_begin(MENU_TOP_LEVEL_ORDER[1]) {
-				if imgui.MenuItem(
-					menu_select_hard_drive_label(st),
-					nil,
-					false,
-					menu_action_enabled(st, .Select_Hard_Drive),
-				) {
-					action = .Select_Hard_Drive
-				}
-				if imgui.MenuItem(
-					menu_browse_c_drive_label(st),
-					nil,
-					false,
-					menu_action_enabled(st, .Browse_C_Drive),
-				) {
-					action = .Browse_C_Drive
-				}
-				imgui.Separator()
-				_ = imgui.MenuItem(menu_current_hard_drive_label(st), nil, false, false)
-				if len(st.hard_drive_path) > 0 {
-					imgui.SetItemTooltip("%s", fmt.ctprintf("%s", st.hard_drive_path))
-				}
+				hard_drive_action := hard_drive_menu_contents(st)
+				if hard_drive_action != .None {action = hard_drive_action}
 				menu_end()
 			}
 
 			if menu_begin(MENU_TOP_LEVEL_ORDER[2]) {
-				for device in storage_sidebar_device_order {
-					if menu_begin(fmt.ctprintf("%s", storage_sidebar_device_label(device))) {
+				for device in storage_menu_device_order {
+					if menu_begin(fmt.ctprintf("%s", storage_device_label(device))) {
 						device_action := storage_device_menu_contents(st, device)
 						if device_action != .None {action = device_action}
 						menu_end()
@@ -683,9 +605,9 @@ menu_draw :: proc(
 		}
 		imgui.End()
 	}
-	sidebar_action := storage_sidebar_draw(st, storage_icons)
-	if action == .None && sidebar_action != .None {action = sidebar_action}
-	status_bar_draw(st)
+	storage_properties_draw(st, storage_icons)
+	status_action := status_bar_draw(st, storage_icons)
+	if action == .None && status_action != .None {action = status_action}
 	return action
 }
 

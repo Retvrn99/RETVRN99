@@ -111,11 +111,7 @@ host_test_stopped_screen_uses_the_client_area :: proc(t: ^testing.T) {
 	screen := stopped_screen_rect(
 		WIN_W,
 		WIN_H,
-		{
-			top = f32(MENU_BAR_H),
-			right = f32(STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP),
-			bottom = f32(STATUS_BAR_H),
-		},
+		{top = f32(MENU_BAR_H), bottom = f32(STATUS_BAR_H)},
 	)
 	testing.expect_value(t, screen.x, f32(0))
 	testing.expect_value(t, screen.y, f32(MENU_BAR_H))
@@ -124,17 +120,12 @@ host_test_stopped_screen_uses_the_client_area :: proc(t: ^testing.T) {
 }
 
 @(test)
-host_test_stopped_screen_follows_the_collapsed_sidebar :: proc(t: ^testing.T) {
+host_test_stopped_screen_uses_full_width_without_sidebar :: proc(t: ^testing.T) {
 	h := Host {
-		menu_reveal       = 1,
-		sidebar_collapsed = true,
+		menu_reveal = 1,
 	}
 	screen := stopped_screen_rect(WIN_W, WIN_H, host_client_insets(&h))
-	testing.expect_value(
-		t,
-		screen.w,
-		f32(WIN_W - STORAGE_SIDEBAR_COLLAPSED_W - STORAGE_SIDEBAR_GAP),
-	)
+	testing.expect_value(t, screen.w, f32(WIN_W))
 	logo := stopped_logo_rect(screen, 460, 222)
 	testing.expect_value(t, logo.x + logo.w + STOPPED_SCREEN_LOGO_MARGIN, screen.x + screen.w)
 	testing.expect_value(t, logo.y + logo.h + STOPPED_SCREEN_LOGO_MARGIN, screen.y + screen.h)

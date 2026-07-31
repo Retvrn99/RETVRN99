@@ -8,29 +8,17 @@ import sdl3 "vendor:sdl3"
 @(test)
 host_test_theme_layout_invariant :: proc(t: ^testing.T) {
 	testing.expect_value(t, MENU_BAR_H, THEME_FONT_PX + THEME_FRAME_PAD_Y * 2)
-	testing.expect_value(t, WIN_W, TEXT_W * 2 + STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP)
+	testing.expect_value(t, WIN_W, TEXT_W * 2)
 	testing.expect_value(t, WIN_H, TEXT_H * 2 + MENU_BAR_H + STATUS_BAR_H)
 
-	r := guest_view_rect_insets(
-		9,
-		5,
-		WIN_W,
-		WIN_H,
-		{top = MENU_BAR_H, right = STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP, bottom = STATUS_BAR_H},
-	)
+	r := guest_view_rect_insets(9, 5, WIN_W, WIN_H, {top = MENU_BAR_H, bottom = STATUS_BAR_H})
 	testing.expect_value(t, r.x, f32(0))
 	testing.expect_value(t, r.y, f32(MENU_BAR_H))
 	testing.expect_value(t, r.w, f32(TEXT_W * 2))
 	testing.expect_value(t, r.h, f32(TEXT_H * 2))
 	testing.expect_value(t, int(r.y + r.h + STATUS_BAR_H), WIN_H)
 
-	r = guest_view_rect_insets(
-		4,
-		3,
-		WIN_W,
-		WIN_H,
-		{top = MENU_BAR_H, right = STORAGE_SIDEBAR_EXPANDED_W + STORAGE_SIDEBAR_GAP, bottom = STATUS_BAR_H},
-	)
+	r = guest_view_rect_insets(4, 3, WIN_W, WIN_H, {top = MENU_BAR_H, bottom = STATUS_BAR_H})
 	testing.expect_value(t, int(r.x + 0.5), 187)
 	testing.expect_value(t, int(r.y), MENU_BAR_H)
 	testing.expect_value(t, int(r.w + 0.5), 1067)
