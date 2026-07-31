@@ -413,6 +413,10 @@ get_regs :: proc(vm: ^Vm) -> Regs {
 	return whpx_get_regs(vm)
 }
 
+get_regs_checked :: proc(vm: ^Vm) -> (Regs, bool) {
+	return whpx_get_regs_checked(vm)
+}
+
 cpu_physical_address :: proc(vm: ^Vm, gpa: u64) -> u64 {
 	if vm != nil && !vm.a20_enabled {return gpa &~ WHPX_A20_BIT}
 	return gpa

@@ -86,6 +86,61 @@ test_machine_runtime_diagnostic_reports_gsw_shutdown_marker_stall :: proc(t: ^te
 	testing.expect(t, available)
 	testing.expect(t, strings.contains(message, "GSW shutdown stalled for 5s"))
 	testing.expect(t, strings.contains(message, "markers=d0d5d7"))
+	testing.expect(t, strings.contains(message, "registers=unavailable"))
+}
+
+@(test)
+test_machine_runtime_diagnostic_saturates_shutdown_io_count :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	d := &m.runtime_diagnostic
+	d.shutdown_marker_active = true
+	d.shutdown_io_count = 1
+	d.shutdown_io_ports[0] = 0x03DA
+	d.shutdown_io_counts[0] = max(u32)
+	machine_runtime_diagnostic_note_io(m, 0x03DA, false, 1, 0)
+	testing.expect_value(t, d.shutdown_io_counts[0], max(u32))
+}
+
+@(test)
+test_machine_runtime_diagnostic_rearms_until_shutdown_completes :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	m.active_ns = 1
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xD5)
+	m.active_ns += MACHINE_GSW_SHUTDOWN_STALL_NS
+	machine_runtime_diagnostic_check_shutdown(m)
+	first, first_available := machine_take_runtime_diagnostic(m)
+	defer delete(first)
+	testing.expect(t, first_available)
+	m.active_ns += MACHINE_GSW_SHUTDOWN_STALL_NS
+	machine_runtime_diagnostic_check_shutdown(m)
+	second, second_available := machine_take_runtime_diagnostic(m)
+	defer delete(second)
+	testing.expect(t, second_available)
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xDC)
+	m.active_ns += MACHINE_GSW_SHUTDOWN_STALL_NS
+	machine_runtime_diagnostic_check_shutdown(m)
+	_, completed_available := machine_take_runtime_diagnostic(m)
+	testing.expect(t, !completed_available)
+}
+
+@(test)
+test_machine_runtime_diagnostic_formats_valid_shutdown_snapshot :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	d := &m.runtime_diagnostic
+	d.pending = .Gsw_Shutdown
+	d.shutdown_registers_valid = true
+	d.shutdown_cs = 0x1234
+	d.shutdown_rip = 0x5678
+	d.shutdown_bytes_valid = true
+	d.shutdown_bytes[0] = 0xF4
+	message, available := machine_take_runtime_diagnostic(m)
+	defer delete(message)
+	testing.expect(t, available)
+	testing.expect(t, strings.contains(message, "cs=1234 rip=00005678"))
+	testing.expect(t, strings.contains(message, "ins=f4"))
 }
 
 @(test)

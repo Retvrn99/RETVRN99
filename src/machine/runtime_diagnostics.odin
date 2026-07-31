@@ -52,7 +52,23 @@ Runtime_Diagnostic_State :: struct {
 	shutdown_marker_count:    u64,
 	shutdown_marker_active:   bool,
 	shutdown_marker_started:  u64,
-	shutdown_marker_reported: bool,
+	shutdown_registers_valid: bool,
+	shutdown_cs:              u16,
+	shutdown_rip:             u64,
+	shutdown_rflags:          u64,
+	shutdown_linear:          u64,
+	shutdown_ax:              u16,
+	shutdown_bx:              u16,
+	shutdown_cx:              u16,
+	shutdown_dx:              u16,
+	shutdown_bytes:           [16]u8,
+	shutdown_bytes_valid:     bool,
+	shutdown_io_ports:        [16]u16,
+	shutdown_io_origins:      [16]u64,
+	shutdown_io_counts:       [16]u32,
+	shutdown_io_count:        u8,
+	shutdown_io_total:        u64,
+	shutdown_halts:           u64,
 	mmio_window_ns:           u64,
 	mmio_window_fallbacks:    u64,
 	mmio_window_scalar:       u64,
@@ -80,6 +96,9 @@ machine_runtime_diagnostic_note_halt :: proc(m: ^Machine, ex: hv.Exit) {
 	d.halt_rip = ex.rip
 	d.halt_rflags = ex.rflags
 	d.halt_reported = false
+	// Separates a spinning guest from one idling on HLT waiting for an interrupt
+	// that never comes. The 5s halt detector cannot: each timer tick rearms it.
+	if d.shutdown_marker_active {d.shutdown_halts += 1}
 }
 
 @(private = "package")
@@ -115,6 +134,30 @@ machine_runtime_diagnostic_note_io :: proc(
 		write = write,
 		size  = size,
 		val   = value,
+	}
+	// io_origin.linear is the address of the instruction doing the access, which
+	// the VGA poll detector already relies on. Collecting the distinct
+	// port/origin pairs seen while a shutdown window is open profiles the loop
+	// directly, instead of sampling wherever the run loop happens to stop.
+	if d.shutdown_marker_active {
+		io_origin := m.vm.io_origin.valid ? m.vm.io_origin.linear : 0
+		d.shutdown_io_total += 1
+		seen := false
+		for index in 0 ..< int(d.shutdown_io_count) {
+			if d.shutdown_io_ports[index] == port && d.shutdown_io_origins[index] == io_origin {
+				if d.shutdown_io_counts[index] < max(u32) {
+					d.shutdown_io_counts[index] += 1
+				}
+				seen = true
+				break
+			}
+		}
+		if !seen && int(d.shutdown_io_count) < len(d.shutdown_io_ports) {
+			d.shutdown_io_ports[d.shutdown_io_count] = port
+			d.shutdown_io_origins[d.shutdown_io_count] = io_origin
+			d.shutdown_io_counts[d.shutdown_io_count] = 1
+			d.shutdown_io_count += 1
+		}
 	}
 	status_read := !write && size == 1 && (port == 0x03BA || port == 0x03DA)
 	if !status_read {
@@ -180,7 +223,9 @@ machine_runtime_diagnostic_note_shutdown_marker :: proc(m: ^Machine, value: u8) 
 	if (value == 0xD5 || value == 0xD6) && !d.shutdown_marker_active {
 		d.shutdown_marker_active = true
 		d.shutdown_marker_started = m.active_ns
-		d.shutdown_marker_reported = false
+		d.shutdown_io_count = 0
+		d.shutdown_io_total = 0
+		d.shutdown_halts = 0
 	} else if value == 0xDC {
 		d.shutdown_marker_active = false
 	}
@@ -191,12 +236,32 @@ machine_runtime_diagnostic_check_shutdown :: proc(m: ^Machine) {
 	if m == nil {return}
 	d := &m.runtime_diagnostic
 	if !d.shutdown_marker_active ||
-	   d.shutdown_marker_reported ||
 	   m.active_ns < d.shutdown_marker_started ||
 	   m.active_ns - d.shutdown_marker_started < MACHINE_GSW_SHUTDOWN_STALL_NS {
 		return
 	}
-	d.shutdown_marker_reported = true
+	// A guest spinning and a guest looping HLT-tick-HLT both stall here, and the
+	// halt detector cannot separate them because every tick rearms it. Sample the
+	// instruction pointer, and rearm rather than latch, so a second report says
+	// whether the guest moved at all and which module owns the code.
+	d.shutdown_registers_valid = false
+	d.shutdown_bytes_valid = false
+	if regs, ok := hv.get_regs_checked(&m.vm); ok {
+		d.shutdown_registers_valid = true
+		d.shutdown_cs = regs.cs_sel
+		d.shutdown_rip = regs.rip
+		d.shutdown_rflags = regs.rflags
+		d.shutdown_ax = u16(regs.rax)
+		d.shutdown_bx = u16(regs.rbx)
+		d.shutdown_cx = u16(regs.rcx)
+		d.shutdown_dx = u16(regs.rdx)
+		// A repeated identical RIP says the guest is parked but not which
+		// instruction parks it. The bytes at CS:RIP name it, and for a poll loop
+		// the operand plus DX name what is being waited on.
+		d.shutdown_linear = regs.cs_base + regs.rip
+		d.shutdown_bytes_valid = hv.linear_read(&m.vm, d.shutdown_linear, d.shutdown_bytes[:])
+	}
+	d.shutdown_marker_started = m.active_ns
 	machine_runtime_diagnostic_queue(m, .Gsw_Shutdown)
 }
 
@@ -292,6 +357,69 @@ machine_take_runtime_diagnostic :: proc(m: ^Machine) -> (string, bool) {
 				"%02x",
 				d.shutdown_markers[index % MACHINE_SHUTDOWN_MARKER_CAPACITY],
 			)
+		}
+		if d.shutdown_registers_valid {
+			fmt.sbprintf(
+				&builder,
+				" cs=%04x rip=%08x rflags=%08x linear=%08x ax=%04x bx=%04x cx=%04x dx=%04x ins=",
+				d.shutdown_cs,
+				d.shutdown_rip,
+				d.shutdown_rflags,
+				d.shutdown_linear,
+				d.shutdown_ax,
+				d.shutdown_bx,
+				d.shutdown_cx,
+				d.shutdown_dx,
+			)
+			if d.shutdown_bytes_valid {
+				for b in d.shutdown_bytes {fmt.sbprintf(&builder, "%02x", b)}
+			} else {
+				fmt.sbprintf(&builder, "unreadable")
+			}
+		} else {
+			fmt.sbprintf(&builder, " registers=unavailable")
+		}
+		// This report also fires while a fullscreen application owns the display,
+		// because Windows disables the display driver the same way it does at
+		// shutdown. That makes it the one place the in-game mode is observable.
+		obs := video.vga_mode_observability(&m.vga)
+		fmt.sbprintf(
+			&builder,
+			" mode=%v/%dx%d vbe=%d bpp=%d/%d pitch=%d start=%d xoff=%d yoff=%d",
+			obs.kind,
+			obs.width,
+			obs.height,
+			obs.vbe_enabled ? 1 : 0,
+			obs.vbe_bpp_raw,
+			obs.vbe_bpp_effective,
+			obs.vbe_pitch_bytes_derived,
+			obs.vbe_display_start_byte_offset_derived,
+			obs.vbe_x_offset_raw,
+			obs.vbe_y_offset_raw,
+		)
+		fmt.sbprintf(
+			&builder,
+			" lastio=%c%04x/%d=%x iototal=%d halts=%d io=",
+			d.last_io.write ? 'w' : 'r',
+			d.last_io.port,
+			d.last_io.size,
+			d.last_io.val,
+			d.shutdown_io_total,
+			d.shutdown_halts,
+		)
+		if d.shutdown_io_count == 0 {
+			fmt.sbprintf(&builder, "none")
+		} else {
+			for index in 0 ..< int(d.shutdown_io_count) {
+				if index > 0 {fmt.sbprintf(&builder, ",")}
+				fmt.sbprintf(
+					&builder,
+					"%04x@%08x*%d",
+					d.shutdown_io_ports[index],
+					d.shutdown_io_origins[index],
+					d.shutdown_io_counts[index],
+				)
+			}
 		}
 	case .Mmio_Storm:
 		alias := hv.Device_Alias{}

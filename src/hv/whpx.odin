@@ -1301,7 +1301,8 @@ whpx_reg_rax :: proc(vm: ^Vm) -> u64 {
 	return val.Reg64
 }
 
-whpx_get_regs :: proc(vm: ^Vm) -> Regs {
+whpx_get_regs_checked :: proc(vm: ^Vm) -> (Regs, bool) {
+	if vm == nil || vm.part == nil {return {}, false}
 	names := [?]WHV_REGISTER_NAME {
 		.Rax,
 		.Rbx,
@@ -1322,7 +1323,7 @@ whpx_get_regs :: proc(vm: ^Vm) -> Regs {
 	}
 	vals: [len(names)]WHV_REGISTER_VALUE
 	if WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &vals[0]) < 0 {
-		return {}
+		return {}, false
 	}
 	return Regs {
 		rax = vals[0].Reg64,
@@ -1343,7 +1344,12 @@ whpx_get_regs :: proc(vm: ^Vm) -> Regs {
 		ss_base = vals[13].Segment.Base,
 		ds_sel = vals[14].Segment.Selector,
 		es_sel = vals[15].Segment.Selector,
-	}
+	}, true
+}
+
+whpx_get_regs :: proc(vm: ^Vm) -> Regs {
+	regs, _ := whpx_get_regs_checked(vm)
+	return regs
 }
 
 whpx_linear_read :: proc(vm: ^Vm, gva: u64, data: []u8) -> bool {
