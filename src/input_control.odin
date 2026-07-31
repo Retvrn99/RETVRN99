@@ -13,6 +13,11 @@ INPUT_CONTROL_ACTIONS_PER_TICK :: 64
 INPUT_CONTROL_MOUSE_DELTA_LIMIT :: i32(32767)
 INPUT_CONTROL_WHEEL_LIMIT :: i32(127)
 
+saturating_counter_add :: proc(left, right: u64) -> u64 {
+	if right > max(u64) - left {return max(u64)}
+	return left + right
+}
+
 Input_Control_Diagnostic :: enum u8 {
 	None,
 	Read_Failed,
@@ -63,8 +68,8 @@ Input_Control_Stats :: struct {
 }
 
 input_control_stats_resolved :: proc(stats: Input_Control_Stats) -> u64 {
-	return graphics_counter_add(
-		graphics_counter_add(stats.applied, stats.stale_dropped),
+	return saturating_counter_add(
+		saturating_counter_add(stats.applied, stats.stale_dropped),
 		stats.reset_cancelled,
 	)
 }

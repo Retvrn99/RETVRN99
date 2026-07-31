@@ -25,6 +25,7 @@ import "opticaldrive"
 import "profile"
 import sdl3 "vendor:sdl3"
 import "vga"
+import video "videopresentation"
 import "vmconfig"
 
 RAM_SIZE :: vmconfig.GSW_RAM_BYTES
@@ -64,8 +65,7 @@ Command :: struct {
 Shared :: struct {
 	mu:                               sync.Mutex,
 	snap:                             vga.Text_Snapshot,
-	frames:                           Frame_Mailbox,
-	graphics_postmortem:              Graphics_Postmortem,
+	video_presentation:               video.Video_Presentation,
 	graphics_trace_enabled:           bool,
 	log_lines:                        [dynamic]string,
 	cmds:                             [dynamic]Command,
@@ -487,13 +487,15 @@ gui_main :: proc(
 		delete(ctx.machine_session_id)
 		delete(ctx.hard_drive_path)
 		profile.install_state_destroy(&ctx.install_state)
-		postmortem_enabled := graphics_postmortem_status(&shared.graphics_postmortem).enabled
-		postmortem_diagnostic := graphics_postmortem_destroy(&shared.graphics_postmortem)
-		if postmortem_enabled && postmortem_diagnostic != .None {
-			fmt.eprintfln("graphics postmortem save failed: %v", postmortem_diagnostic)
+		presentation_destroyed := video.video_presentation_destroy(&shared.video_presentation)
+		if presentation_destroyed.postmortem_enabled &&
+		   presentation_destroyed.postmortem_diagnostic != .None {
+			fmt.eprintfln(
+				"graphics postmortem save failed: %v",
+				presentation_destroyed.postmortem_diagnostic,
+			)
 			if result == 0 {result = 1}
 		}
-		frame_mailbox_destroy(&shared.frames)
 		command_queue_destroy(shared)
 		vm_log_destroy(shared)
 		shared_media_destroy(shared)
@@ -503,23 +505,29 @@ gui_main :: proc(
 	}
 	shared.running = true
 	shared.graphics_trace_enabled = graphics_trace
-	frame_mailbox_graphics_telemetry_init(&shared.frames, graphics_trace)
 	ctx.shared = shared
 	ctx.allow_hard_drive = attach
 	ctx.attach = attach
 	ctx.cpu_mode = active_settings.cpu_mode
 	ctx.paths = paths^
 	ctx.machine_session_id = strings.clone(machine_session_id_now(.Gui))
-	if postmortem_diagnostic := graphics_postmortem_init(
-		&shared.graphics_postmortem,
+	presentation_initialized := video.video_presentation_init(
+		&shared.video_presentation,
 		{
-			enabled = graphics_trace,
-			path = paths.graphics_postmortem,
-			session = ctx.machine_session_id,
-			device = "PCI\\VEN_FFFE&DEV_0002",
+			trace_enabled = graphics_trace,
+			postmortem = {
+				enabled = graphics_trace,
+				path = paths.graphics_postmortem,
+				session = ctx.machine_session_id,
+				device = "PCI\\VEN_FFFE&DEV_0002",
+			},
 		},
-	); postmortem_diagnostic != .None {
-		fmt.eprintfln("graphics postmortem initialization failed: %v", postmortem_diagnostic)
+	)
+	if !presentation_initialized.initialized {
+		fmt.eprintfln(
+			"graphics postmortem initialization failed: %v",
+			presentation_initialized.postmortem_diagnostic,
+		)
 		return 1
 	}
 	ctx.cmos = cmos
@@ -558,6 +566,7 @@ gui_main :: proc(
 		fmt.eprintfln("host_init failed: %s", sdl3.GetError())
 		return 1
 	}
+	presentation_host_adapter := video.video_presentation_host_adapter(&h)
 	if gsw3d_proof {
 		if !host.host_gsw3d_proof_enable(&h) {
 			fmt.eprintfln("GSW3D proof renderer initialization failed: %s", sdl3.GetError())
@@ -567,8 +576,9 @@ gui_main :: proc(
 		ctx.gsw3d_host = &h
 		fmt.println("video: developer-only exact GSW3D triangle profile enabled")
 	}
-	_ = frame_mailbox_graphics_telemetry_note_host_gpu(
-		&shared.frames,
+	_ = graphics_presentation_note_host_gpu(
+		&shared.video_presentation,
+		&presentation_host_adapter,
 		host.host_gsw3d_observability_snapshot(&h),
 		time.tick_now(),
 	)
@@ -710,7 +720,6 @@ gui_main :: proc(
 	start := time.tick_now()
 	menu_animation_tick := start
 	last_graphics_vm_checkpoint: time.Tick
-	graphics_aggregate_logs: u64
 	last_input_control_state := input_control.state
 
 	for {
@@ -1097,7 +1106,7 @@ gui_main :: proc(
 			}
 		}
 
-		_ = graphics_presentation_sync_lifecycle(&h, &shared.frames, machine_running)
+		_ = graphics_presentation_sync_lifecycle(&h, &shared.video_presentation, machine_running)
 		if st.machine_running && !machine_running {
 			release_mouse_key = false
 			host_hotkey_scancode = .UNKNOWN
@@ -1111,7 +1120,10 @@ gui_main :: proc(
 			input_control_note_reset_cancelled_locked(shared)
 			host.host_input_discard_after_stop(&shared.input, &keyboard)
 			sync.unlock(&shared.mu)
-			host.host_clear_frame(&h)
+			video.video_presentation_stop(
+				&shared.video_presentation,
+				&presentation_host_adapter,
+			)
 		}
 		st.machine_running = machine_running
 		st.storage_actions_blocked =
@@ -1183,9 +1195,9 @@ gui_main :: proc(
 		st.menu_reveal = host.menu_reveal_step(st.menu_reveal, menu_target, menu_animation_seconds)
 		h.menu_reveal = st.menu_reveal
 
-		frame_consumer := graphics_frame_consume(
-			shared,
-			&h,
+		frame_consumer := video.video_presentation_consume(
+			&shared.video_presentation,
+			&presentation_host_adapter,
 			graphics_trace,
 			&last_graphics_vm_checkpoint,
 		)
@@ -1194,13 +1206,14 @@ gui_main :: proc(
 		graphics_epoch_reset := false
 		postmortem_state := frame_consumer.postmortem_state
 		postmortem_state_valid := frame_consumer.postmortem_state_valid
-		_ = graphics_presentation_sync_lifecycle(&h, &shared.frames, st.machine_running)
+		_ = graphics_presentation_sync_lifecycle(&h, &shared.video_presentation, st.machine_running)
 		gpu_drain_started := time.tick_now()
 		gpu_drain := host.host_gsw3d_proof_drain(&h)
 		gpu_drain_ended := time.tick_now()
-		_ = graphics_presentation_sync_lifecycle(&h, &shared.frames, st.machine_running)
-		frame_mailbox_graphics_telemetry_note_gpu_drain(
-			&shared.frames,
+		_ = graphics_presentation_sync_lifecycle(&h, &shared.video_presentation, st.machine_running)
+		graphics_presentation_note_gpu_drain(
+			&shared.video_presentation,
+			&presentation_host_adapter,
 			gpu_drain_started,
 			gpu_drain_ended,
 			gpu_drain.executed,
@@ -1208,14 +1221,16 @@ gui_main :: proc(
 			gpu_drain.budget_used,
 		)
 		host_gpu_snapshot := host.host_gsw3d_observability_snapshot(&h)
-		host_gpu_interval := frame_mailbox_graphics_telemetry_note_host_gpu(
-			&shared.frames,
+		host_gpu_interval := graphics_presentation_note_host_gpu(
+			&shared.video_presentation,
+			&presentation_host_adapter,
 			host_gpu_snapshot,
 			gpu_drain_ended,
 		)
-		selection := graphics_presentation_select(
-			&shared.frames,
-			graphics_epoch,
+		selection := graphics_presentation_select_frame(
+			&shared.video_presentation,
+			&presentation_host_adapter,
+			&graphics_epoch,
 			graphics_epoch_pending,
 			{
 				started = gpu_drain_started,
@@ -1229,7 +1244,9 @@ gui_main :: proc(
 		graphics_epoch = selection.active_epoch
 		graphics_epoch_pending = selection.active
 		if graphics_trace && graphics_epoch_pending && graphics_epoch.source == .Gsw3d {
-			postmortem_state = graphics_postmortem_measured_state(
+			postmortem_state = graphics_presentation_measured_state(
+				&shared.video_presentation,
+				&presentation_host_adapter,
 				storage_activity_session,
 				graphics_epoch.producer.device_generation,
 				host_gpu_snapshot.device_generation,
@@ -1237,16 +1254,18 @@ gui_main :: proc(
 				.Gpu_Drain,
 			)
 			postmortem_state_valid = true
-			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state)
+			_ = graphics_presentation_postmortem_state(&shared.video_presentation, &presentation_host_adapter, postmortem_state)
 		} else if graphics_epoch_pending && postmortem_state_valid {
-			postmortem_state = graphics_postmortem_measured_state(
+			postmortem_state = graphics_presentation_measured_state(
+				&shared.video_presentation,
+				&presentation_host_adapter,
 				postmortem_state.session_generation,
 				postmortem_state.guest_device_generation,
 				host_gpu_snapshot.device_generation,
 				graphics_epoch.sequence,
 				.Gpu_Drain,
 			)
-			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state)
+			_ = graphics_presentation_postmortem_state(&shared.video_presentation, &presentation_host_adapter, postmortem_state)
 		}
 		if graphics_trace && selection.has_terminal {
 			terminal := selection.terminal_epoch
@@ -1254,24 +1273,30 @@ gui_main :: proc(
 			if terminal.result == .Reset || terminal.gpu_failures > 0 {
 				terminal_stage = .Failed
 			}
-			terminal_state := graphics_postmortem_measured_state(
+			terminal_state := graphics_presentation_measured_state(
+				&shared.video_presentation,
+				&presentation_host_adapter,
 				storage_activity_session,
 				terminal.producer.device_generation,
 				host_gpu_snapshot.device_generation,
 				terminal.sequence,
 				terminal_stage,
 			)
-			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, terminal_state)
+			_ = graphics_presentation_postmortem_state(&shared.video_presentation, &presentation_host_adapter, terminal_state)
 		}
 		if graphics_epoch_pending &&
 		   (!st.machine_running ||
-				   !frame_mailbox_graphics_epoch_current(&shared.frames, &graphics_epoch)) {
+				   !graphics_presentation_epoch_current(
+					   &shared.video_presentation,
+					   &presentation_host_adapter,
+					   &graphics_epoch,
+				   )) {
 			graphics_epoch_reset = true
-			_ = graphics_presentation_sync_lifecycle(&h, &shared.frames, st.machine_running)
+			_ = graphics_presentation_sync_lifecycle(&h, &shared.video_presentation, st.machine_running)
 			if postmortem_state_valid {
 				postmortem_state.host_stage = .Failed
-				_ = graphics_postmortem_publish_state(
-					&shared.graphics_postmortem,
+				_ = graphics_presentation_postmortem_state(
+					&shared.video_presentation, &presentation_host_adapter,
 					postmortem_state,
 				)
 			}
@@ -1279,21 +1304,23 @@ gui_main :: proc(
 		compose_started := time.tick_now()
 		if graphics_epoch_pending && postmortem_state_valid {
 			postmortem_state.host_stage = .Compose
-			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state)
+			_ = graphics_presentation_postmortem_state(&shared.video_presentation, &presentation_host_adapter, postmortem_state)
 		}
 		compose_ok := host.host_render_guest(&h, st.machine_running)
 		compose_ended := time.tick_now()
-		frame_mailbox_graphics_telemetry_note_compose(
-			&shared.frames,
+		graphics_presentation_compose(
+			&shared.video_presentation,
+			&presentation_host_adapter,
+			graphics_epoch_pending ? &graphics_epoch : nil,
 			compose_started,
 			compose_ended,
 		)
 		if graphics_epoch_pending {
-			graphics_frame_epoch_compose(&graphics_epoch, compose_started, compose_ended)
 			if !compose_ok {
 				intended := graphics_epoch_reset ? Graphics_Frame_Result.Reset : .Compose_Failed
-				_ = frame_mailbox_graphics_epoch_complete_and_record(
-					&shared.frames,
+				_ = graphics_presentation_complete_epoch(
+					&shared.video_presentation,
+					&presentation_host_adapter,
 					&graphics_epoch,
 					intended,
 					time.tick_now(),
@@ -1301,8 +1328,8 @@ gui_main :: proc(
 				graphics_epoch_pending = false
 				if postmortem_state_valid {
 					postmortem_state.host_stage = .Failed
-					_ = graphics_postmortem_publish_state(
-						&shared.graphics_postmortem,
+					_ = graphics_presentation_postmortem_state(
+						&shared.video_presentation, &presentation_host_adapter,
 						postmortem_state,
 					)
 				}
@@ -1706,13 +1733,17 @@ gui_main :: proc(
 		}
 		if graphics_epoch_pending &&
 		   (!st.machine_running ||
-				   !frame_mailbox_graphics_epoch_current(&shared.frames, &graphics_epoch)) {
+				   !graphics_presentation_epoch_current(
+					   &shared.video_presentation,
+					   &presentation_host_adapter,
+					   &graphics_epoch,
+				   )) {
 			graphics_epoch_reset = true
-			_ = graphics_presentation_sync_lifecycle(&h, &shared.frames, st.machine_running)
+			_ = graphics_presentation_sync_lifecycle(&h, &shared.video_presentation, st.machine_running)
 			if postmortem_state_valid {
 				postmortem_state.host_stage = .Failed
-				_ = graphics_postmortem_publish_state(
-					&shared.graphics_postmortem,
+				_ = graphics_presentation_postmortem_state(
+					&shared.video_presentation, &presentation_host_adapter,
 					postmortem_state,
 				)
 			}
@@ -1723,18 +1754,24 @@ gui_main :: proc(
 		if graphics_epoch_pending {
 			if postmortem_state_valid {
 				postmortem_state.host_stage = .Present
-				_ = graphics_postmortem_publish_state(
-					&shared.graphics_postmortem,
+				_ = graphics_presentation_postmortem_state(
+					&shared.video_presentation, &presentation_host_adapter,
 					postmortem_state,
 				)
 			}
-			graphics_frame_epoch_present_begin(&graphics_epoch, graphics_present_started)
+			graphics_presentation_present_begin(
+				&shared.video_presentation,
+				&presentation_host_adapter,
+				&graphics_epoch,
+				graphics_present_started,
+			)
 		}
 		host.host_screenshot_capture(&h, &screenshot, time.tick_now())
 		present_ok := sdl3.RenderPresent(h.ren)
 		graphics_presented := time.tick_now()
-		frame_mailbox_graphics_telemetry_note_present(
-			&shared.frames,
+		graphics_presentation_present_complete(
+			&shared.video_presentation,
+			&presentation_host_adapter,
 			graphics_present_started,
 			graphics_presented,
 		)
@@ -1743,16 +1780,17 @@ gui_main :: proc(
 			if graphics_epoch_reset || !st.machine_running {
 				result = .Reset
 			}
-			result = frame_mailbox_graphics_epoch_complete_and_record(
-				&shared.frames,
+			result = graphics_presentation_complete_epoch(
+				&shared.video_presentation,
+				&presentation_host_adapter,
 				&graphics_epoch,
 				result,
 				graphics_presented,
 			)
 			if postmortem_state_valid {
 				postmortem_state.host_stage = result == .Presented ? .Complete : .Failed
-				_ = graphics_postmortem_publish_state(
-					&shared.graphics_postmortem,
+				_ = graphics_presentation_postmortem_state(
+					&shared.video_presentation, &presentation_host_adapter,
 					postmortem_state,
 				)
 			}
@@ -1761,16 +1799,16 @@ gui_main :: proc(
 			fmt.eprintfln("graphics presentation failed: %s", sdl3.GetError())
 		}
 		if graphics_trace {
-			if graphics_window, ready := frame_mailbox_graphics_telemetry_take_window(
-				&shared.frames,
+			if graphics_window, text, log_admitted, ready := graphics_presentation_take_window(
+				&shared.video_presentation,
+				&presentation_host_adapter,
 				graphics_presented,
 			); ready {
-				text := graphics_telemetry_window_text(graphics_window)
-				if graphics_telemetry_aggregate_log_admit(&graphics_aggregate_logs) {
+				if log_admitted {
 					fmt.println(text)
 				}
-				_ = graphics_postmortem_publish_window(
-					&shared.graphics_postmortem,
+				_ = graphics_presentation_postmortem_window(
+					&shared.video_presentation, &presentation_host_adapter,
 					text,
 					graphics_window.latest_epoch,
 					.Derived,
@@ -1818,7 +1856,9 @@ gui_main :: proc(
 		control_stats := shared.input_control_stats
 		control_pending := host.host_input_control_pending(&shared.input)
 		sync.unlock(&shared.mu)
-		correlation := frame_mailbox_graphics_input_correlation(&shared.frames)
+		correlation := video.video_presentation_telemetry_snapshot(
+			&shared.video_presentation,
+		).correlation
 		resolved := input_control_stats_resolved(control_stats)
 		unresolved := u64(0)
 		if control_stats.queued > resolved {unresolved = control_stats.queued - resolved}
@@ -1866,7 +1906,10 @@ gui_main :: proc(
 		)
 	}
 	if graphics_trace {
-		trace := frame_mailbox_graphics_trace_text(&shared.frames)
+		trace := video.video_presentation_telemetry_snapshot(
+			&shared.video_presentation,
+			true,
+		).trace_text
 		if trace != "" {
 			fmt.println("graphics trace:")
 			fmt.print(trace)

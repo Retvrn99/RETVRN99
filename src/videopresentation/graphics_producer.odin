@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:fmt"
 import "core:strings"
-import hv "hv"
-import machine "machine"
-import vga "vga"
+import hv "../hv"
+import machine "../machine"
+import vga "../vga"
 
 Graphics_Vm_Execution_Sample :: struct {
 	step_calls:       u64,
@@ -103,6 +103,7 @@ Graphics_Producer_Interval :: struct {
 	gsw3d_completed_fence:                      u64,
 }
 
+@(private = "package")
 graphics_counter_add :: proc(left, right: u64) -> u64 {
 	return left + min(right, max(u64) - left)
 }
@@ -133,6 +134,7 @@ graphics_dirty_coverage_upper_bound :: proc(pages: u64) -> u64 {
 	return pages * 4096
 }
 
+@(private = "package")
 graphics_producer_sample :: proc(
 	source: ^machine.Machine,
 	session_generation: u64,
@@ -151,6 +153,7 @@ graphics_producer_sample :: proc(
 	}
 }
 
+@(private = "package")
 graphics_producer_interval :: proc(
 	current: Graphics_Producer_Sample,
 	previous: Graphics_Producer_Sample,
@@ -520,6 +523,7 @@ graphics_producer_interval :: proc(
 	return result
 }
 
+@(private = "package")
 graphics_producer_interval_add :: proc(
 	target: ^Graphics_Producer_Interval,
 	addition: Graphics_Producer_Interval,
@@ -681,6 +685,7 @@ graphics_producer_interval_add :: proc(
 	target.gsw3d_completed_fence = addition.gsw3d_completed_fence
 }
 
+@(private = "package")
 graphics_producer_sample_text :: proc(sample: Graphics_Producer_Sample) -> string {
 	if !sample.valid {return strings.clone("graphics producer unavailable")}
 	m := sample.machine

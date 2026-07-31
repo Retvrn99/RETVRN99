@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:strings"
 import "core:testing"
 import "core:time"
-import host "host"
-import "vga"
+import host "../host"
+import vga "../vga"
 
 @(test)
 graphics_telemetry_test_aggregate_log_is_bounded :: proc(t: ^testing.T) {

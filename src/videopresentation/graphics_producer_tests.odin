@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:strings"
 import "core:testing"
-import hv "hv"
-import vga "vga"
+import hv "../hv"
+import vga "../vga"
 
 @(test)
 graphics_producer_test_interval_separates_measured_and_derived_counters :: proc(t: ^testing.T) {

@@ -20,6 +20,7 @@ Expansion :: struct {
 	gsw_baseline:    Expansion_Baseline,
 }
 
+@(private = "package")
 expansion_baseline_matches :: proc(
 	baseline: ^Expansion_Baseline,
 	header: presentation.Header,
@@ -39,6 +40,7 @@ expansion_baseline_matches :: proc(
 	)
 }
 
+@(private = "package")
 expansion_init :: proc(expansion: ^Expansion, allocator := context.allocator) {
 	if expansion == nil {return}
 	expansion^ = {
@@ -46,6 +48,7 @@ expansion_init :: proc(expansion: ^Expansion, allocator := context.allocator) {
 	}
 }
 
+@(private = "package")
 expand_legacy :: proc(
 	expansion: ^Expansion,
 	descriptor: ^vga.Scanout_Descriptor,
@@ -66,6 +69,7 @@ expand_legacy :: proc(
 	return frame
 }
 
+@(private = "package")
 expand_gsw :: proc(
 	expansion: ^Expansion,
 	descriptor: ^vga.Scanout_Descriptor,
@@ -86,6 +90,7 @@ expand_gsw :: proc(
 	return frame
 }
 
+@(private = "package")
 expansion_destroy :: proc(expansion: ^Expansion) {
 	if expansion == nil {return}
 	allocator := expansion.allocator

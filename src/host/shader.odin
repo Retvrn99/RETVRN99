@@ -76,7 +76,7 @@ host_set_visual_shader :: proc(h: ^Host, style: Visual_Shader) -> bool {
 	if h.tex != nil {
 		sdl3.SetTextureScaleMode(h.tex, style == .None ? .NEAREST : .LINEAR)
 	}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	if state.legacy_staging.texture != nil {
 		sdl3.SetTextureScaleMode(state.legacy_staging.texture, style == .None ? .NEAREST : .LINEAR)
 	}

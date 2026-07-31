@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:fmt"
 import "core:slice"
 import "core:strings"
 import "core:time"
-import host "host"
-import hv "hv"
-import "vga"
+import host "../host"
+import hv "../hv"
+import vga "../vga"
 
 GRAPHICS_TELEMETRY_WINDOW :: time.Second
 GRAPHICS_TELEMETRY_AGGREGATE_LOG_CAPACITY :: 3600
@@ -195,12 +195,14 @@ Graphics_Telemetry_Snapshot :: struct {
 	trace_enabled:  bool,
 }
 
+@(private = "package")
 graphics_telemetry_aggregate_log_admit :: proc(emitted: ^u64) -> bool {
 	if emitted == nil || emitted^ >= GRAPHICS_TELEMETRY_AGGREGATE_LOG_CAPACITY {return false}
 	emitted^ += 1
 	return true
 }
 
+@(private = "package")
 graphics_telemetry_init :: proc(telemetry: ^Graphics_Telemetry, trace_enabled: bool) {
 	if telemetry == nil {return}
 	if telemetry.trace != nil {free(telemetry.trace)}
@@ -213,6 +215,7 @@ graphics_telemetry_init :: proc(telemetry: ^Graphics_Telemetry, trace_enabled: b
 	}
 }
 
+@(private = "package")
 graphics_telemetry_destroy :: proc(telemetry: ^Graphics_Telemetry) {
 	if telemetry == nil {return}
 	if telemetry.trace != nil {free(telemetry.trace)}
@@ -220,6 +223,7 @@ graphics_telemetry_destroy :: proc(telemetry: ^Graphics_Telemetry) {
 	telemetry^ = {}
 }
 
+@(private = "package")
 graphics_telemetry_reset_attribution :: proc(telemetry: ^Graphics_Telemetry) {
 	if telemetry == nil {return}
 	telemetry.pending_input_events = 0
@@ -251,6 +255,7 @@ graphics_telemetry_window_touch :: proc(telemetry: ^Graphics_Telemetry, now: tim
 	}
 }
 
+@(private = "package")
 graphics_telemetry_note_publish_attempt :: proc(telemetry: ^Graphics_Telemetry, now: time.Tick) {
 	if telemetry == nil {return}
 	graphics_telemetry_window_touch(telemetry, now)
@@ -260,6 +265,7 @@ graphics_telemetry_note_publish_attempt :: proc(telemetry: ^Graphics_Telemetry, 
 	)
 }
 
+@(private = "package")
 graphics_telemetry_note_unchanged :: proc(telemetry: ^Graphics_Telemetry, now: time.Tick) {
 	if telemetry == nil {return}
 	graphics_telemetry_window_touch(telemetry, now)
@@ -269,6 +275,7 @@ graphics_telemetry_note_unchanged :: proc(telemetry: ^Graphics_Telemetry, now: t
 	)
 }
 
+@(private = "package")
 graphics_telemetry_note_blocked :: proc(telemetry: ^Graphics_Telemetry, now: time.Tick) {
 	if telemetry == nil {return}
 	graphics_telemetry_window_touch(telemetry, now)
@@ -278,6 +285,7 @@ graphics_telemetry_note_blocked :: proc(telemetry: ^Graphics_Telemetry, now: tim
 	)
 }
 
+@(private = "package")
 graphics_telemetry_note_input :: proc(
 	telemetry: ^Graphics_Telemetry,
 	events, residence_ns, max_residence_ns: u64,
@@ -305,6 +313,7 @@ graphics_telemetry_note_input :: proc(
 	}
 }
 
+@(private = "package")
 graphics_telemetry_note_producer :: proc(
 	telemetry: ^Graphics_Telemetry,
 	sample: Graphics_Producer_Sample,
@@ -321,6 +330,7 @@ graphics_telemetry_note_producer :: proc(
 	graphics_producer_interval_add(&telemetry.pending_producer, interval)
 }
 
+@(private = "package")
 graphics_telemetry_note_host_gpu :: proc(
 	telemetry: ^Graphics_Telemetry,
 	sample: host.Host_Gsw3d_Observability_Snapshot,
@@ -340,6 +350,7 @@ graphics_telemetry_note_host_gpu :: proc(
 	return interval
 }
 
+@(private = "package")
 graphics_telemetry_note_gpu_drain :: proc(
 	telemetry: ^Graphics_Telemetry,
 	started, ended: time.Tick,
@@ -369,6 +380,7 @@ graphics_telemetry_note_gpu_drain :: proc(
 	)
 }
 
+@(private = "package")
 graphics_telemetry_attach_pending_host_gpu :: proc(
 	telemetry: ^Graphics_Telemetry,
 	epoch: ^Graphics_Frame_Epoch,
@@ -378,6 +390,7 @@ graphics_telemetry_attach_pending_host_gpu :: proc(
 	telemetry.pending_host_gpu = {}
 }
 
+@(private = "package")
 graphics_frame_epoch_begin :: proc(
 	sequence: u64,
 	scanout_generation: u64,
@@ -391,6 +404,7 @@ graphics_frame_epoch_begin :: proc(
 	}
 }
 
+@(private = "package")
 graphics_telemetry_begin_epoch :: proc(
 	telemetry: ^Graphics_Telemetry,
 	sequence: u64,
@@ -413,6 +427,7 @@ graphics_telemetry_begin_epoch :: proc(
 	return epoch
 }
 
+@(private = "package")
 graphics_frame_epoch_transfer_correlation :: proc(destination, source: ^Graphics_Frame_Epoch) {
 	if destination == nil || source == nil {return}
 	graphics_frame_epoch_transfer_input_producer_correlation(destination, source)
@@ -422,6 +437,7 @@ graphics_frame_epoch_transfer_correlation :: proc(destination, source: ^Graphics
 	source.host_gpu = {}
 }
 
+@(private = "package")
 graphics_frame_epoch_transfer_input_producer_correlation :: proc(
 	destination, source: ^Graphics_Frame_Epoch,
 ) {
@@ -451,11 +467,13 @@ graphics_frame_epoch_transfer_input_producer_correlation :: proc(
 	source.producer = {}
 }
 
+@(private = "package")
 graphics_frame_epoch_capture_begin :: proc(epoch: ^Graphics_Frame_Epoch, now: time.Tick) {
 	if epoch == nil || epoch.result != .Incomplete {return}
 	epoch.capture_started = now
 }
 
+@(private = "package")
 graphics_frame_epoch_capture_complete :: proc(
 	epoch: ^Graphics_Frame_Epoch,
 	bytes_copied: int,
@@ -466,11 +484,13 @@ graphics_frame_epoch_capture_complete :: proc(
 	if bytes_copied > 0 {epoch.bytes_copied = u64(bytes_copied)}
 }
 
+@(private = "package")
 graphics_frame_epoch_descriptor_copy :: proc(epoch: ^Graphics_Frame_Epoch, duration_ns: u64) {
 	if epoch == nil || epoch.result != .Incomplete {return}
 	epoch.descriptor_copy_ns = duration_ns
 }
 
+@(private = "package")
 graphics_frame_epoch_render_begin :: proc(
 	epoch: ^Graphics_Frame_Epoch,
 	source: Graphics_Frame_Source,
@@ -497,6 +517,7 @@ graphics_frame_pixel_count :: proc(width, height: int) -> u64 {
 	return w * h
 }
 
+@(private = "package")
 graphics_frame_epoch_render_complete :: proc(
 	epoch: ^Graphics_Frame_Epoch,
 	frame: ^vga.Display_Frame,
@@ -518,11 +539,13 @@ graphics_frame_epoch_render_complete :: proc(
 	epoch.rendered_pixels = graphics_counter_add(epoch.rendered_pixels, pixels)
 }
 
+@(private = "package")
 graphics_frame_epoch_upload_begin :: proc(epoch: ^Graphics_Frame_Epoch, now: time.Tick) {
 	if epoch == nil || epoch.result != .Incomplete {return}
 	epoch.upload_started = now
 }
 
+@(private = "package")
 graphics_frame_epoch_upload_complete :: proc(
 	epoch: ^Graphics_Frame_Epoch,
 	bytes_uploaded: u64,
@@ -541,6 +564,7 @@ graphics_frame_epoch_upload_complete :: proc(
 	epoch.bytes_uploaded = graphics_counter_add(epoch.bytes_uploaded, bytes_uploaded)
 }
 
+@(private = "package")
 graphics_frame_epoch_gpu_drain :: proc(
 	epoch: ^Graphics_Frame_Epoch,
 	started, ended: time.Tick,
@@ -555,17 +579,20 @@ graphics_frame_epoch_gpu_drain :: proc(
 	epoch.gpu_budget = budget
 }
 
+@(private = "package")
 graphics_frame_epoch_compose :: proc(epoch: ^Graphics_Frame_Epoch, started, ended: time.Tick) {
 	if epoch == nil || epoch.result != .Incomplete {return}
 	epoch.compose_started = started
 	epoch.compose_ended = ended
 }
 
+@(private = "package")
 graphics_frame_epoch_present_begin :: proc(epoch: ^Graphics_Frame_Epoch, now: time.Tick) {
 	if epoch == nil || epoch.result != .Incomplete {return}
 	epoch.present_started = now
 }
 
+@(private = "package")
 graphics_frame_epoch_complete :: proc(
 	epoch: ^Graphics_Frame_Epoch,
 	result: Graphics_Frame_Result,
@@ -598,6 +625,7 @@ graphics_telemetry_add_span :: proc(total, samples: ^u64, started, ended: time.T
 	return span
 }
 
+@(private = "package")
 graphics_telemetry_note_compose :: proc(
 	telemetry: ^Graphics_Telemetry,
 	started, ended: time.Tick,
@@ -612,6 +640,7 @@ graphics_telemetry_note_compose :: proc(
 	)
 }
 
+@(private = "package")
 graphics_telemetry_note_present :: proc(
 	telemetry: ^Graphics_Telemetry,
 	started, ended: time.Tick,
@@ -626,6 +655,7 @@ graphics_telemetry_note_present :: proc(
 	)
 }
 
+@(private = "package")
 graphics_telemetry_record :: proc(telemetry: ^Graphics_Telemetry, epoch: Graphics_Frame_Epoch) {
 	if telemetry == nil || epoch.sequence == 0 || epoch.result == .Incomplete {return}
 	graphics_telemetry_window_touch(telemetry, epoch.completed)
@@ -751,6 +781,7 @@ graphics_input_correlation_percentile :: proc(sorted: []u64, percentile: u64) ->
 	return sorted[int(rank - 1)]
 }
 
+@(private = "package")
 graphics_telemetry_input_correlation :: proc(
 	telemetry: ^Graphics_Telemetry,
 ) -> Graphics_Input_Correlation {
@@ -784,6 +815,7 @@ graphics_telemetry_input_correlation :: proc(
 	return result
 }
 
+@(private = "package")
 graphics_telemetry_take_window :: proc(
 	telemetry: ^Graphics_Telemetry,
 	now: time.Tick,
@@ -800,6 +832,7 @@ graphics_telemetry_take_window :: proc(
 	return telemetry.latest, true
 }
 
+@(private = "package")
 graphics_telemetry_trace_epoch :: proc(
 	telemetry: ^Graphics_Telemetry,
 	index: u64,
@@ -815,6 +848,7 @@ graphics_telemetry_trace_epoch :: proc(
 	return telemetry.trace[(start + int(index)) % GRAPHICS_FRAME_TRACE_CAPACITY], true
 }
 
+@(private = "package")
 graphics_telemetry_snapshot :: proc(
 	telemetry: ^Graphics_Telemetry,
 	now: time.Tick,
@@ -899,6 +933,7 @@ graphics_frame_source_name :: proc(source: Graphics_Frame_Source) -> string {
 	return "unknown"
 }
 
+@(private = "package")
 graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> string {
 	elapsed_ms := graphics_frame_span_ns(window.started, window.ended) / u64(time.Millisecond)
 	builder := strings.builder_make(0, 4096, context.allocator)
@@ -1179,6 +1214,7 @@ graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> str
 	return strings.to_string(builder)
 }
 
+@(private = "package")
 graphics_telemetry_trace_text :: proc(telemetry: ^Graphics_Telemetry) -> string {
 	if telemetry == nil || !telemetry.trace_enabled {return ""}
 	count := min(telemetry.trace_count, u64(GRAPHICS_FRAME_TRACE_CAPACITY))

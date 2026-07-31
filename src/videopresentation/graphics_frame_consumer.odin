@@ -1,37 +1,49 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:time"
-import "host"
-import presentation "presentation"
-import "vga"
-import "videopresentation"
+import host "../host"
+import presentation "../presentation"
+import vga "../vga"
 
 Graphics_Frame_Consumer_Result :: struct {
 	graphics_epoch:         Graphics_Frame_Epoch,
 	graphics_epoch_pending: bool,
 	postmortem_state:       Graphics_Postmortem_State,
 	postmortem_state_valid: bool,
+	event_applied:          bool,
+	host_gpu_interval:      Graphics_Host_Gpu_Interval,
+	selection:              Graphics_Presentation_Selection,
+	epoch_current:          bool,
+	completed_result:       Graphics_Frame_Result,
+	telemetry_window:       Graphics_Telemetry_Window,
+	telemetry_window_ready: bool,
+	telemetry_window_text:  string,
+	telemetry_log_admitted: bool,
 }
 
+@(private = "package")
 Graphics_Legacy_Staged_Commit :: struct {
-	target:    ^host.Host,
+	adapter:   ^Video_Presentation_Host_Adapter,
 	admission: host.Host_Presentation_Admission,
 	staged:    host.Host_Presentation_Staged_Texture,
 }
 
+@(private = "package")
 Graphics_Gsw_Staged_Commit :: struct {
-	target:    ^host.Host,
+	adapter:   ^Video_Presentation_Host_Adapter,
 	admission: host.Host_Presentation_Admission,
 	staged:    host.Host_Presentation_Staged_Texture,
 }
 
+@(private = "package")
 Graphics_Gsw_Invalidation_Commit :: struct {
-	target:       ^host.Host,
+	adapter:      ^Video_Presentation_Host_Adapter,
 	invalidation: presentation.Gsw_Invalidation,
 	action:       presentation.Selector_Action,
 }
 
+@(private = "package")
 Graphics_Gsw_Frame_Consume_Result :: struct {
 	attempted:      bool,
 	committed:      bool,
@@ -41,6 +53,7 @@ Graphics_Gsw_Frame_Consume_Result :: struct {
 	epoch_pending:  bool,
 }
 
+@(private = "package")
 Graphics_Frame_Record_Order :: enum u8 {
 	Single,
 	Legacy_First,
@@ -48,6 +61,7 @@ Graphics_Frame_Record_Order :: enum u8 {
 	Invalid,
 }
 
+@(private = "package")
 Graphics_Frame_Stage_Proc :: proc(
 	ctx: rawptr,
 	target: ^host.Host,
@@ -55,11 +69,13 @@ Graphics_Frame_Stage_Proc :: proc(
 	frame: ^vga.Display_Frame,
 ) -> host.Host_Presentation_Staged_Texture
 
+@(private = "package")
 Graphics_Frame_Expand_Proc :: proc(
 	ctx: rawptr,
 	descriptor: ^vga.Scanout_Descriptor,
 ) -> ^vga.Display_Frame
 
+@(private = "package")
 Graphics_Frame_Consumer_Ops :: struct {
 	ctx:           rawptr,
 	expand_legacy: Graphics_Frame_Expand_Proc,
@@ -67,53 +83,63 @@ Graphics_Frame_Consumer_Ops :: struct {
 	stage:         Graphics_Frame_Stage_Proc,
 }
 
+@(private = "package")
 graphics_frame_expand_legacy :: proc(
-	shared: ^Shared,
+	video: ^Video_Presentation,
 	descriptor: ^vga.Scanout_Descriptor,
 	ops: ^Graphics_Frame_Consumer_Ops,
 ) -> ^vga.Display_Frame {
 	if ops != nil && ops.expand_legacy != nil {
 		return ops.expand_legacy(ops.ctx, descriptor)
 	}
-	return videopresentation.expand_legacy(&shared.frames.expansion, descriptor)
+	return expand_legacy(&video.expansion, descriptor)
 }
 
+@(private = "package")
 graphics_frame_expand_gsw :: proc(
-	shared: ^Shared,
+	video: ^Video_Presentation,
 	descriptor: ^vga.Scanout_Descriptor,
 	ops: ^Graphics_Frame_Consumer_Ops,
 ) -> ^vga.Display_Frame {
 	if ops != nil && ops.expand_gsw != nil {return ops.expand_gsw(ops.ctx, descriptor)}
-	return videopresentation.expand_gsw(&shared.frames.expansion, descriptor)
+	return expand_gsw(&video.expansion, descriptor)
 }
 
+@(private = "package")
 graphics_legacy_staged_commit :: proc(ctx: rawptr) -> bool {
 	commit := (^Graphics_Legacy_Staged_Commit)(ctx)
-	if commit == nil {return false}
-	return host.host_presentation_commit_legacy_staged(
-		commit.target,
+	if commit == nil || commit.adapter == nil || commit.adapter.activate_legacy == nil {
+		return false
+	}
+	return commit.adapter.activate_legacy(
+		commit.adapter.ctx,
 		&commit.admission,
 		commit.staged,
 	)
 }
 
+@(private = "package")
 graphics_gsw_staged_commit :: proc(ctx: rawptr) -> bool {
 	commit := (^Graphics_Gsw_Staged_Commit)(ctx)
-	if commit == nil {return false}
-	return host.host_presentation_commit_gsw_snapshot_staged(
-		commit.target,
+	if commit == nil || commit.adapter == nil || commit.adapter.activate_gsw == nil {
+		return false
+	}
+	return commit.adapter.activate_gsw(
+		commit.adapter.ctx,
 		&commit.admission,
 		commit.staged,
 	)
 }
 
+@(private = "package")
 graphics_gsw_invalidation_commit :: proc(ctx: rawptr) -> bool {
 	commit := (^Graphics_Gsw_Invalidation_Commit)(ctx)
-	if commit == nil {return false}
-	commit.action = host.host_presentation_apply_invalidation(commit.target, commit.invalidation)
+	if commit == nil || commit.adapter == nil || commit.adapter.invalidate == nil {return false}
+	commit.action = commit.adapter.invalidate(commit.adapter.ctx, commit.invalidation)
 	return true
 }
 
+@(private = "package")
 graphics_gsw_restoration_source :: proc(
 	action: presentation.Selector_Action,
 ) -> (
@@ -130,21 +156,26 @@ graphics_gsw_restoration_source :: proc(
 	}
 }
 
+@(private = "package")
 graphics_frame_stage :: proc(
 	ops: ^Graphics_Frame_Consumer_Ops,
-	target: ^host.Host,
+	adapter: ^Video_Presentation_Host_Adapter,
 	admission: ^host.Host_Presentation_Admission,
 	frame: ^vga.Display_Frame,
 ) -> host.Host_Presentation_Staged_Texture {
+	if adapter == nil {return {}}
 	if ops != nil && ops.stage != nil {
-		return ops.stage(ops.ctx, target, admission, frame)
+		return ops.stage(ops.ctx, adapter.target, admission, frame)
 	}
 	if admission != nil && admission.kind == .Legacy {
-		return host.host_presentation_stage_legacy(target, admission, frame)
+		if adapter.stage_legacy == nil {return {}}
+		return adapter.stage_legacy(adapter.ctx, admission, frame)
 	}
-	return host.host_presentation_stage_gsw_snapshot(target, admission, frame)
+	if adapter.stage_gsw == nil {return {}}
+	return adapter.stage_gsw(adapter.ctx, admission, frame)
 }
 
+@(private = "package")
 graphics_frame_consumer_record_order :: proc(
 	descriptor: ^vga.Scanout_Descriptor,
 ) -> Graphics_Frame_Record_Order {
@@ -164,9 +195,10 @@ graphics_frame_consumer_record_order :: proc(
 	return .Invalid
 }
 
+@(private = "package")
 graphics_frame_consume_gsw_present :: proc(
-	shared: ^Shared,
-	target: ^host.Host,
+	video: ^Video_Presentation,
+	adapter: ^Video_Presentation_Host_Adapter,
 	frame_slot: ^Frame_Slot,
 	descriptor: ^vga.Gsw_Presentation_Descriptor,
 	postmortem_state: ^Graphics_Postmortem_State,
@@ -174,7 +206,8 @@ graphics_frame_consume_gsw_present :: proc(
 	ops: ^Graphics_Frame_Consumer_Ops,
 ) -> Graphics_Gsw_Frame_Consume_Result {
 	result: Graphics_Gsw_Frame_Consume_Result
-	if shared == nil ||
+	target := adapter != nil ? adapter.target : nil
+	if video == nil ||
 	   target == nil ||
 	   frame_slot == nil ||
 	   descriptor == nil ||
@@ -191,13 +224,13 @@ graphics_frame_consume_gsw_present :: proc(
 	)
 	if !gsw_admission.valid {
 		if gsw_admission.rejection == .Stale &&
-		   frame_mailbox_gsw_was_committed(&shared.frames, descriptor.present) {
-			_ = frame_mailbox_note_gsw_applied(&shared.frames, descriptor.present)
+		   frame_mailbox_gsw_was_committed(video, descriptor.present) {
+			_ = frame_mailbox_note_gsw_applied(video, descriptor.present)
 			return result
 		}
-		still_current := frame_mailbox_graphics_epoch_current(&shared.frames, &frame_slot.epoch)
+		still_current := frame_mailbox_graphics_epoch_current(video, &frame_slot.epoch)
 		_ = frame_mailbox_graphics_epoch_complete_and_record(
-			&shared.frames,
+			video,
 			&frame_slot.epoch,
 			still_current ? .Render_Failed : .Reset,
 			time.tick_now(),
@@ -205,19 +238,19 @@ graphics_frame_consume_gsw_present :: proc(
 		result.failed = true
 		if postmortem_state_valid {
 			postmortem_state.host_stage = .Failed
-			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state^)
+			_ = graphics_postmortem_publish_state(&video.postmortem, postmortem_state^)
 		}
 		return result
 	}
 
 	graphics_frame_epoch_render_begin(&frame_slot.epoch, .Gsw2d, time.tick_now())
-	gsw_frame := graphics_frame_expand_gsw(shared, &frame_slot.scanout, ops)
+	gsw_frame := graphics_frame_expand_gsw(video, &frame_slot.scanout, ops)
 	graphics_frame_epoch_render_complete(&frame_slot.epoch, gsw_frame, time.tick_now())
 	host.host_presentation_record_conversion(target, gsw_frame)
 	if gsw_frame == nil {
-		still_current := frame_mailbox_graphics_epoch_current(&shared.frames, &frame_slot.epoch)
+		still_current := frame_mailbox_graphics_epoch_current(video, &frame_slot.epoch)
 		_ = frame_mailbox_graphics_epoch_complete_and_record(
-			&shared.frames,
+			video,
 			&frame_slot.epoch,
 			still_current ? .Render_Failed : .Reset,
 			time.tick_now(),
@@ -226,26 +259,26 @@ graphics_frame_consume_gsw_present :: proc(
 		result.retry = still_current
 		if postmortem_state_valid {
 			postmortem_state.host_stage = .Failed
-			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state^)
+			_ = graphics_postmortem_publish_state(&video.postmortem, postmortem_state^)
 		}
 		return result
 	}
 
 	if postmortem_state_valid {
 		postmortem_state.host_stage = .Upload
-		_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state^)
+		_ = graphics_postmortem_publish_state(&video.postmortem, postmortem_state^)
 	}
 	graphics_frame_epoch_upload_begin(&frame_slot.epoch, time.tick_now())
-	staged := graphics_frame_stage(ops, target, &gsw_admission, gsw_frame)
+	staged := graphics_frame_stage(ops, adapter, &gsw_admission, gsw_frame)
 	commit := Graphics_Gsw_Staged_Commit {
-		target    = target,
+		adapter   = adapter,
 		admission = gsw_admission,
 		staged    = staged,
 	}
 	commit_result := Frame_Mailbox_Current_Commit_Result.Invalid
 	if staged.valid {
 		commit_result = frame_mailbox_graphics_epoch_commit_current(
-			&shared.frames,
+			video,
 			&frame_slot.epoch,
 			&commit,
 			graphics_gsw_staged_commit,
@@ -255,9 +288,9 @@ graphics_frame_consume_gsw_present :: proc(
 		host.host_presentation_note_stale_finalization(target)
 	}
 	if commit_result != .Committed && staged.in_place && staged.mutated {
-		_ = host.host_presentation_retire_mutated(target, staged)
+		if adapter.retire != nil {_ = adapter.retire(adapter.ctx, staged)}
 	}
-	still_current := frame_mailbox_graphics_epoch_current(&shared.frames, &frame_slot.epoch)
+	still_current := frame_mailbox_graphics_epoch_current(video, &frame_slot.epoch)
 	graphics_frame_epoch_upload_complete(
 		&frame_slot.epoch,
 		staged.upload_bytes,
@@ -265,7 +298,7 @@ graphics_frame_consume_gsw_present :: proc(
 		time.tick_now(),
 	)
 	if commit_result == .Committed {
-		_ = frame_mailbox_note_gsw_applied(&shared.frames, descriptor.present)
+		_ = frame_mailbox_note_gsw_applied(video, descriptor.present)
 		result.committed = true
 		result.graphics_epoch = frame_slot.epoch
 		result.epoch_pending = true
@@ -273,7 +306,7 @@ graphics_frame_consume_gsw_present :: proc(
 	}
 
 	_ = frame_mailbox_graphics_epoch_complete_and_record(
-		&shared.frames,
+		video,
 		&frame_slot.epoch,
 		still_current ? .Upload_Failed : .Reset,
 		time.tick_now(),
@@ -282,23 +315,26 @@ graphics_frame_consume_gsw_present :: proc(
 	result.retry = still_current
 	if postmortem_state_valid {
 		postmortem_state.host_stage = .Failed
-		_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state^)
+		_ = graphics_postmortem_publish_state(&video.postmortem, postmortem_state^)
 	}
 	return result
 }
 
-graphics_frame_consume :: proc(
-	shared: ^Shared,
-	target: ^host.Host,
+@(private = "package")
+graphics_frame_consume_with_adapter :: proc(
+	video: ^Video_Presentation,
+	adapter: ^Video_Presentation_Host_Adapter,
 	trace_enabled: bool,
 	last_vm_checkpoint: ^time.Tick,
 	ops: ^Graphics_Frame_Consumer_Ops = nil,
 ) -> Graphics_Frame_Consumer_Result {
+	target := adapter != nil ? adapter.target : nil
+	if target == nil {return {}}
 	graphics_epoch: Graphics_Frame_Epoch
 	graphics_epoch_pending := false
 	postmortem_state: Graphics_Postmortem_State
 	postmortem_state_valid := false
-	if frame_slot := frame_mailbox_acquire(&shared.frames); frame_slot != nil {
+	if frame_slot := frame_mailbox_acquire(video); frame_slot != nil {
 		gsw_descriptor := &frame_slot.scanout.gsw_presentation
 		host.host_presentation_record_descriptor_copy(target, frame_slot.scanout.bytes_copied)
 		gsw_transition := gsw_descriptor.present_valid || gsw_descriptor.invalidation_valid
@@ -318,7 +354,7 @@ graphics_frame_consume :: proc(
 			   time.tick_diff(last_vm_checkpoint^, now) >= time.Second {
 				vm_text := graphics_producer_sample_text(frame_slot.producer_sample)
 				_ = graphics_postmortem_publish_vm(
-					&shared.graphics_postmortem,
+					&video.postmortem,
 					vm_text,
 					frame_slot.epoch.sequence,
 					.Measured,
@@ -328,7 +364,7 @@ graphics_frame_consume :: proc(
 			}
 		}
 		if postmortem_state_valid {
-			_ = graphics_postmortem_publish_state(&shared.graphics_postmortem, postmortem_state)
+			_ = graphics_postmortem_publish_state(&video.postmortem, postmortem_state)
 		}
 		paired_invalidation :=
 			gsw_descriptor.invalidation_valid &&
@@ -339,7 +375,7 @@ graphics_frame_consume :: proc(
 		record_order := graphics_frame_consumer_record_order(&frame_slot.scanout)
 		legacy_admission: host.Host_Presentation_Admission
 		current_before_render := frame_mailbox_graphics_epoch_current(
-			&shared.frames,
+			video,
 			&frame_slot.epoch,
 		)
 		if !current_before_render ||
@@ -352,7 +388,7 @@ graphics_frame_consume :: proc(
 				result = .Render_Failed
 			}
 			_ = frame_mailbox_graphics_epoch_complete_and_record(
-				&shared.frames,
+				video,
 				&frame_slot.epoch,
 				result,
 				time.tick_now(),
@@ -360,15 +396,15 @@ graphics_frame_consume :: proc(
 			if postmortem_state_valid && result == .Render_Failed {
 				postmortem_state.host_stage = .Failed
 				_ = graphics_postmortem_publish_state(
-					&shared.graphics_postmortem,
+					&video.postmortem,
 					postmortem_state,
 				)
 			}
 		} else {
 			if record_order == .Gsw_First {
 				gsw_result := graphics_frame_consume_gsw_present(
-					shared,
-					target,
+					video,
+					adapter,
 					frame_slot,
 					gsw_descriptor,
 					&postmortem_state,
@@ -392,17 +428,17 @@ graphics_frame_consume :: proc(
 				)
 				if !legacy_admission.valid {
 					legacy_already_committed := frame_mailbox_legacy_was_committed(
-						&shared.frames,
+						video,
 						frame_slot.scanout.legacy_update,
 					)
 					if legacy_admission.rejection == .Stale && legacy_already_committed {
 						_ = frame_mailbox_note_legacy_applied(
-							&shared.frames,
+							video,
 							frame_slot.scanout.legacy_update,
 						)
 						if !gsw_transition {
 							_ = frame_mailbox_graphics_epoch_complete_and_record(
-								&shared.frames,
+								video,
 								&frame_slot.epoch,
 								.Superseded,
 								time.tick_now(),
@@ -410,7 +446,7 @@ graphics_frame_consume :: proc(
 						}
 					} else {
 						_ = frame_mailbox_graphics_epoch_complete_and_record(
-							&shared.frames,
+							video,
 							&frame_slot.epoch,
 							.Render_Failed,
 							time.tick_now(),
@@ -418,7 +454,7 @@ graphics_frame_consume :: proc(
 						if postmortem_state_valid {
 							postmortem_state.host_stage = .Failed
 							_ = graphics_postmortem_publish_state(
-								&shared.graphics_postmortem,
+								&video.postmortem,
 								postmortem_state,
 							)
 						}
@@ -430,14 +466,14 @@ graphics_frame_consume :: proc(
 		   legacy_admission.valid &&
 		   frame_slot.epoch.result == .Incomplete {
 			graphics_frame_epoch_render_begin(&frame_slot.epoch, .Legacy_Scanout, time.tick_now())
-			frame := graphics_frame_expand_legacy(shared, &frame_slot.scanout, ops)
+			frame := graphics_frame_expand_legacy(video, &frame_slot.scanout, ops)
 			graphics_frame_epoch_render_complete(&frame_slot.epoch, frame, time.tick_now())
 			host.host_presentation_record_conversion(target, frame)
 			if frame == nil {
 				retry_latest = true
 				if !graphics_epoch_pending {
 					_ = frame_mailbox_graphics_epoch_complete_and_record(
-						&shared.frames,
+						video,
 						&frame_slot.epoch,
 						.Render_Failed,
 						time.tick_now(),
@@ -447,21 +483,21 @@ graphics_frame_consume :: proc(
 				if postmortem_state_valid {
 					postmortem_state.host_stage = .Upload
 					_ = graphics_postmortem_publish_state(
-						&shared.graphics_postmortem,
+						&video.postmortem,
 						postmortem_state,
 					)
 				}
 				graphics_frame_epoch_upload_begin(&frame_slot.epoch, time.tick_now())
-				staged := graphics_frame_stage(ops, target, &legacy_admission, frame)
+				staged := graphics_frame_stage(ops, adapter, &legacy_admission, frame)
 				commit := Graphics_Legacy_Staged_Commit {
-					target    = target,
+					adapter   = adapter,
 					admission = legacy_admission,
 					staged    = staged,
 				}
 				commit_result := Frame_Mailbox_Current_Commit_Result.Invalid
 				if staged.valid {
 					commit_result = frame_mailbox_graphics_epoch_commit_current(
-						&shared.frames,
+						video,
 						&frame_slot.epoch,
 						&commit,
 						graphics_legacy_staged_commit,
@@ -471,11 +507,11 @@ graphics_frame_consume :: proc(
 					host.host_presentation_note_stale_finalization(target)
 				}
 				if commit_result != .Committed && staged.in_place && staged.mutated {
-					_ = host.host_presentation_retire_mutated(target, staged)
+					if adapter.retire != nil {_ = adapter.retire(adapter.ctx, staged)}
 				}
 				committed := commit_result == .Committed
 				still_current := frame_mailbox_graphics_epoch_current(
-					&shared.frames,
+					video,
 					&frame_slot.epoch,
 				)
 				graphics_frame_epoch_upload_complete(
@@ -486,7 +522,7 @@ graphics_frame_consume :: proc(
 				)
 				if committed {
 					_ = frame_mailbox_note_legacy_applied(
-						&shared.frames,
+						video,
 						frame_slot.scanout.legacy_update,
 					)
 					disposition := graphics_legacy_upload_disposition(
@@ -511,7 +547,7 @@ graphics_frame_consume :: proc(
 					retry_latest = retry_latest || still_current
 					if !graphics_epoch_pending || !still_current {
 						_ = frame_mailbox_graphics_epoch_complete_and_record(
-							&shared.frames,
+							video,
 							&frame_slot.epoch,
 							still_current ? .Upload_Failed : .Reset,
 							time.tick_now(),
@@ -520,7 +556,7 @@ graphics_frame_consume :: proc(
 						if postmortem_state_valid {
 							postmortem_state.host_stage = .Failed
 							_ = graphics_postmortem_publish_state(
-								&shared.graphics_postmortem,
+								&video.postmortem,
 								postmortem_state,
 							)
 						}
@@ -530,8 +566,8 @@ graphics_frame_consume :: proc(
 		}
 		if current_before_render && !gsw_processed && frame_slot.epoch.result == .Incomplete {
 			gsw_result := graphics_frame_consume_gsw_present(
-				shared,
-				target,
+				video,
+				adapter,
 				frame_slot,
 				gsw_descriptor,
 				&postmortem_state,
@@ -551,11 +587,11 @@ graphics_frame_consume :: proc(
 		   gsw_descriptor.invalidation_valid &&
 		   frame_slot.epoch.result == .Incomplete {
 			commit := Graphics_Gsw_Invalidation_Commit {
-				target       = target,
+				adapter      = adapter,
 				invalidation = gsw_descriptor.invalidation,
 			}
 			commit_result := frame_mailbox_graphics_epoch_commit_current(
-				&shared.frames,
+				video,
 				&frame_slot.epoch,
 				&commit,
 				graphics_gsw_invalidation_commit,
@@ -571,7 +607,7 @@ graphics_frame_consume :: proc(
 			} else if action == .Clear {
 				frame_slot.epoch.source = .Gsw2d
 				_ = frame_mailbox_graphics_epoch_complete_and_record(
-					&shared.frames,
+					video,
 					&frame_slot.epoch,
 					.Gpu_Work,
 					time.tick_now(),
@@ -579,7 +615,7 @@ graphics_frame_consume :: proc(
 				graphics_epoch_pending = false
 			} else if commit_result == .Stale {
 				_ = frame_mailbox_graphics_epoch_complete_and_record(
-					&shared.frames,
+					video,
 					&frame_slot.epoch,
 					.Reset,
 					time.tick_now(),
@@ -587,7 +623,7 @@ graphics_frame_consume :: proc(
 				graphics_epoch_pending = false
 			} else if !graphics_epoch_pending {
 				_ = frame_mailbox_graphics_epoch_complete_and_record(
-					&shared.frames,
+					video,
 					&frame_slot.epoch,
 					.Superseded,
 					time.tick_now(),
@@ -599,16 +635,16 @@ graphics_frame_consume :: proc(
 		}
 		if !graphics_epoch_pending && frame_slot.epoch.result == .Incomplete {
 			_ = frame_mailbox_graphics_epoch_complete_and_record(
-				&shared.frames,
+				video,
 				&frame_slot.epoch,
 				.Superseded,
 				time.tick_now(),
 			)
 		}
 		if retry_latest {
-			_ = frame_mailbox_retry_latest(&shared.frames, frame_slot)
+			_ = frame_mailbox_retry_latest(video, frame_slot)
 		}
-		frame_mailbox_release(&shared.frames, frame_slot)
+		frame_mailbox_release(video, frame_slot)
 	}
 	return {
 		graphics_epoch = graphics_epoch,
@@ -616,4 +652,22 @@ graphics_frame_consume :: proc(
 		postmortem_state = postmortem_state,
 		postmortem_state_valid = postmortem_state_valid,
 	}
+}
+
+@(private = "package")
+graphics_frame_consume :: proc(
+	video: ^Video_Presentation,
+	target: ^host.Host,
+	trace_enabled: bool,
+	last_vm_checkpoint: ^time.Tick,
+	ops: ^Graphics_Frame_Consumer_Ops = nil,
+) -> Graphics_Frame_Consumer_Result {
+	adapter := video_presentation_host_adapter(target)
+	return graphics_frame_consume_with_adapter(
+		video,
+		&adapter,
+		trace_enabled,
+		last_vm_checkpoint,
+		ops,
+	)
 }

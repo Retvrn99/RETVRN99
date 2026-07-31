@@ -15,12 +15,12 @@ host_surface_download_context :: proc(
 	bool,
 ) {
 	if h == nil ||
-	   !h.presentation_state.accepting ||
-	   h.presentation_state.selector.active.source_kind != .Gsw_Resident ||
-	   h.presentation_state.gsw.header.sequence == 0 {return {}, nil, false}
-	header := h.presentation_state.gsw.header
+	   !host_presentation_state(h).accepting ||
+	   host_presentation_state(h).selector.active.source_kind != .Gsw_Resident ||
+	   host_presentation_state(h).gsw.header.sequence == 0 {return {}, nil, false}
+	header := host_presentation_state(h).gsw.header
 	if header.surface.id > u64(max(u32)) {return {}, nil, false}
-	if !host_presentation_active_matches(h.presentation_state.selector.active, header) {
+	if !host_presentation_active_matches(host_presentation_state(h).selector.active, header) {
 		return {}, nil, false
 	}
 	surface := host_gpu_surface_find(h, u32(header.surface.id))

@@ -105,6 +105,28 @@ Host_Presentation_Admission_State :: enum u8 {
 	Stale,
 }
 
+host_presentation_state :: proc(h: ^Host) -> ^Host_Presentation_State {
+	if h == nil {return nil}
+	if h.presentation_external != nil {return h.presentation_external}
+	return &h.presentation_state
+}
+
+host_presentation_bind :: proc(h: ^Host, state: ^Host_Presentation_State) -> bool {
+	if h == nil || state == nil {return false}
+	if h.presentation_external != nil {return h.presentation_external == state}
+	fallback := &h.presentation_state
+	if fallback.accepting ||
+	   fallback.legacy_staging.texture != nil ||
+	   fallback.gsw_staging.texture != nil ||
+	   fallback.gsw_texture != nil ||
+	   fallback.legacy_shadow != nil ||
+	   fallback.gsw_shadow != nil {
+		return false
+	}
+	h.presentation_external = state
+	return true
+}
+
 @(private = "package")
 host_presentation_metric_add :: proc(target: ^u64, value: u64) {
 	if target == nil {return}
@@ -174,7 +196,7 @@ host_presentation_record_full_reason :: proc(h: ^Host, reason: contract.Damage_F
 
 host_presentation_start :: proc(h: ^Host, lifecycle: u64) -> bool {
 	if h == nil || lifecycle == 0 {return false}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	if state.accepting && state.lifecycle == lifecycle {return true}
 	texture := state.gsw_texture
 	texture_width := state.gsw_texture_width
@@ -212,7 +234,7 @@ host_presentation_start :: proc(h: ^Host, lifecycle: u64) -> bool {
 
 host_presentation_stop :: proc(h: ^Host) {
 	if h == nil {return}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	_ = contract.selector_vm_stop(&state.selector)
 	state.accepting = false
 	state.legacy = {}
@@ -371,7 +393,7 @@ host_presentation_admit_legacy :: proc(
 	paired_invalidation: bool = false,
 ) -> Host_Presentation_Admission {
 	if h == nil {return {rejection = .Invalid}}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	if !state.accepting {
 		host_presentation_note_closed(h)
 		return {rejection = .Closed}
@@ -452,7 +474,7 @@ host_presentation_admit_gsw :: proc(
 	source_full_reason: contract.Damage_Full_Reason = .None,
 ) -> Host_Presentation_Admission {
 	if h == nil {return {rejection = .Invalid}}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	if !state.accepting {
 		host_presentation_note_closed(h)
 		return {rejection = .Closed}
@@ -590,11 +612,11 @@ host_presentation_admission_state :: proc(
 	if h == nil || admission == nil || !admission.valid || admission.kind == .Invalid {
 		return .Invalid
 	}
-	if !h.presentation_state.accepting {return .Closed}
-	if h.presentation_state.lifecycle == 0 {return .Invalid}
+	if !host_presentation_state(h).accepting {return .Closed}
+	if host_presentation_state(h).lifecycle == 0 {return .Invalid}
 	header := admission.kind == .Legacy ? admission.legacy.header : admission.gsw.header
-	if h.presentation_state.lifecycle != header.lifecycle_generation ||
-	   h.presentation_state.sequence != header.sequence {return .Stale}
+	if host_presentation_state(h).lifecycle != header.lifecycle_generation ||
+	   host_presentation_state(h).sequence != header.sequence {return .Stale}
 	return .Current
 }
 
@@ -629,7 +651,7 @@ host_presentation_note_admission_state :: proc(
 
 @(private = "file")
 host_presentation_commit_common :: proc(h: ^Host, admission: ^Host_Presentation_Admission) {
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	state.selector = admission.selector
 	state.mode_clock = admission.mode_clock
 	if admission.vga_ordered {state.vga_mode_clock = admission.vga_mode_clock}
@@ -649,7 +671,7 @@ host_presentation_full_update :: proc(header: contract.Header) -> bool {
 @(private = "package")
 host_presentation_gsw_desktop_available :: proc(h: ^Host, resident: contract.Header) -> bool {
 	if h == nil {return false}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	snapshot := state.gsw_snapshot
 	if !state.accepting ||
 	   state.lifecycle == 0 ||
@@ -676,7 +698,7 @@ host_presentation_gsw_desktop_available :: proc(h: ^Host, resident: contract.Hea
 @(private = "package")
 host_presentation_desktop_available :: proc(h: ^Host, resident: contract.Header) -> bool {
 	if h == nil {return false}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	output := contract.output_mode_key(resident)
 	if host_presentation_gsw_desktop_available(h, resident) {return true}
 	return(
@@ -713,7 +735,7 @@ host_presentation_stage_texture :: proc(
 	if frame.width > int(max(i32)) || frame.height > int(max(i32)) {return {}}
 	plan := host_presentation_upload_plan(frame, header)
 	if !plan.valid {return {}}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	shadow: ^Host_Presentation_Resource_Shadow
 	selected: ^sdl3.Texture
 	selected_width, selected_height: int
@@ -850,11 +872,11 @@ host_presentation_stage_legacy :: proc(
 		host_presentation_note_invalid(h)
 		return {}
 	}
-	if h.presentation_state.legacy_staging.texture != nil &&
-	   h.presentation_state.legacy_staging.texture == h.tex {return {}}
+	if host_presentation_state(h).legacy_staging.texture != nil &&
+	   host_presentation_state(h).legacy_staging.texture == h.tex {return {}}
 	return host_presentation_stage_texture(
 		h,
-		&h.presentation_state.legacy_staging,
+		&host_presentation_state(h).legacy_staging,
 		frame,
 		admission,
 	)
@@ -874,9 +896,14 @@ host_presentation_stage_gsw_snapshot :: proc(
 		host_presentation_note_invalid(h)
 		return {}
 	}
-	if h.presentation_state.gsw_staging.texture != nil &&
-	   h.presentation_state.gsw_staging.texture == h.presentation_state.gsw_texture {return {}}
-	return host_presentation_stage_texture(h, &h.presentation_state.gsw_staging, frame, admission)
+	if host_presentation_state(h).gsw_staging.texture != nil &&
+	   host_presentation_state(h).gsw_staging.texture == host_presentation_state(h).gsw_texture {return {}}
+	return host_presentation_stage_texture(
+		h,
+		&host_presentation_state(h).gsw_staging,
+		frame,
+		admission,
+	)
 }
 
 @(private = "file")
@@ -915,11 +942,11 @@ host_presentation_in_place_current :: proc(
 		return false
 	}
 	header := admission.kind == .Legacy ? admission.legacy.header : admission.gsw.header
-	texture := admission.kind == .Legacy ? h.tex : h.presentation_state.gsw_texture
-	width := admission.kind == .Legacy ? h.tex_width : h.presentation_state.gsw_texture_width
-	height := admission.kind == .Legacy ? h.tex_height : h.presentation_state.gsw_texture_height
+	texture := admission.kind == .Legacy ? h.tex : host_presentation_state(h).gsw_texture
+	width := admission.kind == .Legacy ? h.tex_width : host_presentation_state(h).gsw_texture_width
+	height := admission.kind == .Legacy ? h.tex_height : host_presentation_state(h).gsw_texture_height
 	resource_generation :=
-		admission.kind == .Legacy ? h.presentation_state.legacy_resource_generation : h.presentation_state.gsw_resource_generation
+		admission.kind == .Legacy ? host_presentation_state(h).legacy_resource_generation : host_presentation_state(h).gsw_resource_generation
 	return(
 		staged.valid &&
 		staged.kind == admission.kind &&
@@ -930,7 +957,7 @@ host_presentation_in_place_current :: proc(
 		u64(staged.width) == u64(header.surface_extent.width) &&
 		u64(staged.height) == u64(header.surface_extent.height) &&
 		staged.stage_generation != 0 &&
-		staged.stage_generation == h.presentation_state.texture_stage_generation &&
+		staged.stage_generation == host_presentation_state(h).texture_stage_generation &&
 		staged.lifecycle_generation == header.lifecycle_generation &&
 		staged.admission_sequence == header.sequence &&
 		staged.resource_generation != 0 &&
@@ -953,7 +980,7 @@ host_presentation_commit_legacy_staged :: proc(
 		return false
 	}
 	stage_current :=
-		staged.in_place ? host_presentation_in_place_current(h, staged, admission) : host_presentation_staged_current(h.presentation_state.legacy_staging, staged, admission)
+		staged.in_place ? host_presentation_in_place_current(h, staged, admission) : host_presentation_staged_current(host_presentation_state(h).legacy_staging, staged, admission)
 	if !stage_current {
 		if staged.valid {
 			host_presentation_note_stale_finalization(h)
@@ -975,13 +1002,13 @@ host_presentation_commit_legacy_staged :: proc(
 		h.tex = staged.texture
 		h.tex_width = staged.width
 		h.tex_height = staged.height
-		h.presentation_state.legacy_staging = previous
-		h.presentation_state.legacy_resource_generation = contract.generation_next(
-			h.presentation_state.legacy_resource_generation,
+		host_presentation_state(h).legacy_staging = previous
+		host_presentation_state(h).legacy_resource_generation = contract.generation_next(
+			host_presentation_state(h).legacy_resource_generation,
 		)
 	}
 	host_presentation_commit_common(h, admission)
-	h.presentation_state.legacy = admission.legacy
+	host_presentation_state(h).legacy = admission.legacy
 	if admission.result.action == .Present_Legacy {
 		h.gpu_present = {}
 		h.aspect_width = int(admission.legacy.header.canvas_extent.width)
@@ -1009,7 +1036,7 @@ host_presentation_commit_gsw_snapshot_staged :: proc(
 		host_presentation_note_admission_state(h, current, true)
 		return false
 	}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	if admission.kind != .Gsw_Snapshot {
 		host_presentation_note_invalid(h)
 		return false
@@ -1092,7 +1119,7 @@ host_presentation_retire_mutated :: proc(
 	   staged.texture == nil ||
 	   !host_presentation_upload_ops_valid(ops) ||
 	   (ops == nil && !sdl3.IsMainThread()) {return false}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	#partial switch staged.kind {
 	case .Legacy:
 		if h.tex != staged.texture ||
@@ -1170,7 +1197,7 @@ host_presentation_commit_resident :: proc(
 		return false
 	}
 	host_presentation_commit_common(h, admission)
-	h.presentation_state.gsw = admission.gsw
+	host_presentation_state(h).gsw = admission.gsw
 	h.gpu_present = present
 	h.aspect_width = int(admission.gsw.header.canvas_extent.width)
 	h.aspect_height = int(admission.gsw.header.canvas_extent.height)
@@ -1275,12 +1302,12 @@ host_presentation_invalidation_matches_active :: proc(
 	invalidation: contract.Gsw_Invalidation,
 ) -> bool {
 	if h == nil {return false}
-	state := h.presentation_state
+	state := host_presentation_state(h)^
 	if h.tex == nil {
 		state.selector.has_last_good_legacy = false
 		state.selector.last_good_legacy = {}
 	}
-	if h.presentation_state.gsw_texture == nil {
+	if host_presentation_state(h).gsw_texture == nil {
 		state.selector.has_last_good_gsw = false
 		state.selector.last_good_gsw = {}
 	}
@@ -1297,7 +1324,7 @@ host_presentation_apply_invalidation :: proc(
 	invalidation: contract.Gsw_Invalidation,
 ) -> contract.Selector_Action {
 	if h == nil {return .Reject_Invalid}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	evaluation := state^
 	if h.tex == nil {
 		evaluation.selector.has_last_good_legacy = false
@@ -1361,14 +1388,14 @@ host_presentation_invalidate_active :: proc(
 ) -> contract.Selector_Action {
 	if h == nil ||
 	   expected_namespace == .Invalid ||
-	   h.presentation_state.selector.active.kind != .Gsw ||
-	   h.presentation_state.selector.active.identity_namespace != expected_namespace {return .None}
-	present := h.presentation_state.gsw.header
+	   host_presentation_state(h).selector.active.kind != .Gsw ||
+	   host_presentation_state(h).selector.active.identity_namespace != expected_namespace {return .None}
+	present := host_presentation_state(h).gsw.header
 	return host_presentation_apply_invalidation(
 		h,
 		{
 			lifecycle_generation = present.lifecycle_generation,
-			mode_generation = h.presentation_state.gsw_source_mode_generation,
+			mode_generation = host_presentation_state(h).gsw_source_mode_generation,
 			mode_key = present.mode_key,
 			identity_namespace = present.identity_namespace,
 			device_generation = present.device_generation,
@@ -1388,17 +1415,17 @@ host_presentation_active_texture :: proc(
 	^Host_Gpu_Present,
 ) {
 	if h == nil {return nil, {}, false, nil}
-	active := h.presentation_state.selector.active
+	active := host_presentation_state(h).selector.active
 	if active.kind == .Legacy {return h.tex, {}, false, nil}
 	if active.kind == .Gsw && active.source_kind == .Gsw_Snapshot {
-		present := h.presentation_state.gsw
+		present := host_presentation_state(h).gsw
 		source := sdl3.FRect {
 			f32(present.header.source.x),
 			f32(present.header.source.y),
 			f32(present.header.source.width),
 			f32(present.header.source.height),
 		}
-		return h.presentation_state.gsw_texture, source, true, nil
+		return host_presentation_state(h).gsw_texture, source, true, nil
 	}
 	if active.kind == .Gsw && active.source_kind == .Gsw_Resident {
 		return host_active_gpu_texture(h)
@@ -1408,8 +1435,8 @@ host_presentation_active_texture :: proc(
 
 @(private = "package")
 host_presentation_destination :: proc(h: ^Host, base: sdl3.FRect) -> sdl3.FRect {
-	if h == nil || h.presentation_state.selector.active.kind != .Gsw {return base}
-	present := h.presentation_state.gsw.header
+	if h == nil || host_presentation_state(h).selector.active.kind != .Gsw {return base}
+	present := host_presentation_state(h).gsw.header
 	canvas := present.canvas_extent
 	if canvas.width == 0 || canvas.height == 0 {return {}}
 	return {
@@ -1423,7 +1450,7 @@ host_presentation_destination :: proc(h: ^Host, base: sdl3.FRect) -> sdl3.FRect 
 @(private = "package")
 host_presentation_destroy :: proc(h: ^Host) {
 	if h == nil {return}
-	state := &h.presentation_state
+	state := host_presentation_state(h)
 	has_texture :=
 		state.legacy_staging.texture != nil ||
 		state.gsw_staging.texture != nil ||
@@ -1444,6 +1471,8 @@ host_presentation_destroy :: proc(h: ^Host) {
 		if state.gsw_shadow.pixels != nil {delete(state.gsw_shadow.pixels)}
 		free(state.gsw_shadow)
 	}
+	state^ = {}
+	h.presentation_external = nil
 	h.presentation_state = {}
 	h.gpu_present = {}
 	h.has_frame = false

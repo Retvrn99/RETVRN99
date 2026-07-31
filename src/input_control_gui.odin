@@ -12,7 +12,7 @@ input_control_event_current :: proc(event: ^host.Host_Input_Event, generation: u
 
 input_control_note_reset_cancelled_locked :: proc(s: ^Shared) {
 	if s == nil {return}
-	s.input_control_stats.reset_cancelled = graphics_counter_add(
+	s.input_control_stats.reset_cancelled = saturating_counter_add(
 		s.input_control_stats.reset_cancelled,
 		host.host_input_control_pending(&s.input),
 	)
@@ -79,7 +79,7 @@ input_control_enqueue_shared :: proc(
 	case:
 	}
 	if accepted {
-		s.input_control_stats.queued = graphics_counter_add(s.input_control_stats.queued, 1)
+		s.input_control_stats.queued = saturating_counter_add(s.input_control_stats.queued, 1)
 	}
 	sync.unlock(&s.mu)
 	if accepted {vm_guard_kick(s.guard)}
@@ -95,7 +95,7 @@ input_control_release_mouse :: proc(control: ^Input_Control, s: ^Shared) {
 		s.input_generation == control.generation &&
 		host.host_input_push_control_release(&s.input, control.generation)
 	if accepted {
-		s.input_control_stats.queued = graphics_counter_add(s.input_control_stats.queued, 1)
+		s.input_control_stats.queued = saturating_counter_add(s.input_control_stats.queued, 1)
 	}
 	sync.unlock(&s.mu)
 	if accepted {vm_guard_kick(s.guard)}

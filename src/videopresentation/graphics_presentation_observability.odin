@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:time"
-import contract "presentation"
+import contract "../presentation"
 
 Graphics_Legacy_Upload_Disposition :: enum u8 {
 	Invalid,
@@ -11,6 +11,7 @@ Graphics_Legacy_Upload_Disposition :: enum u8 {
 	Refresh_Deferred,
 }
 
+@(private = "package")
 graphics_legacy_upload_disposition :: proc(
 	action: contract.Selector_Action,
 	gsw_transition: bool,
@@ -52,6 +53,7 @@ graphics_presentation_host_work_observed :: proc(
 	)
 }
 
+@(private = "package")
 graphics_presentation_select :: proc(
 	mailbox: ^Frame_Mailbox,
 	legacy_epoch: Graphics_Frame_Epoch,

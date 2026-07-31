@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:time"
-import host "host"
+import host "../host"
 
 Graphics_Host_Gpu_Interval :: struct {
 	valid:                                   bool,
@@ -248,6 +248,7 @@ graphics_host_presentation_interval_add :: proc(
 	graphics_interval_add_counter(&target.source_full_external, addition.source_full_external)
 }
 
+@(private = "package")
 graphics_host_gpu_interval :: proc(
 	current: host.Host_Gsw3d_Observability_Snapshot,
 	previous: host.Host_Gsw3d_Observability_Snapshot,
@@ -357,6 +358,7 @@ graphics_host_gpu_interval :: proc(
 	return result
 }
 
+@(private = "package")
 graphics_host_gpu_interval_add :: proc(
 	target: ^Graphics_Host_Gpu_Interval,
 	addition: Graphics_Host_Gpu_Interval,

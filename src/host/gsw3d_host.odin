@@ -118,13 +118,13 @@ host_gsw3d_proof_present :: proc(ctx: rawptr, present: ^Gsw3d_Proof_Present) -> 
 	completion: contract.Completion
 	if present.fence != 0 {completion = {present.fence, present.generation}}
 	mode_key := vga.vga_presentation_mode_key(canvas.width, canvas.height)
-	mode_clock := h.presentation_state.mode_clock
+	mode_clock := host_presentation_state(h).mode_clock
 	mode_generation, _ := contract.mode_clock_observe(&mode_clock, .Gsw3d, mode_key)
 	record := contract.Gsw_Present {
 		clip_mode = .Fullscreen,
 		header = {
-			sequence = contract.generation_next(h.presentation_state.sequence),
-			lifecycle_generation = h.presentation_state.lifecycle,
+			sequence = contract.generation_next(host_presentation_state(h).sequence),
+			lifecycle_generation = host_presentation_state(h).lifecycle,
 			mode_generation = mode_generation,
 			mode_key = mode_key,
 			identity_namespace = .Gsw3d,

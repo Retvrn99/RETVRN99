@@ -13,6 +13,7 @@ import "hv"
 import "machine"
 import "profile"
 import "vmconfig"
+import video "videopresentation"
 import "win98imageprep"
 
 GUI_INSTALL_COMPLETION_POLL_INTERVAL :: 2 * time.Second
@@ -655,18 +656,19 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			}
 			if control_applied_count != 0 || control_stale_count != 0 {
 				sync.lock(&s.mu)
-				s.input_control_stats.applied = graphics_counter_add(
+				s.input_control_stats.applied = saturating_counter_add(
 					s.input_control_stats.applied,
 					control_applied_count,
 				)
-				s.input_control_stats.stale_dropped = graphics_counter_add(
+				s.input_control_stats.stale_dropped = saturating_counter_add(
 					s.input_control_stats.stale_dropped,
 					control_stale_count,
 				)
 				sync.unlock(&s.mu)
 			}
-			frame_mailbox_graphics_telemetry_note_input(
-				&s.frames,
+			graphics_presentation_note_input(
+				&s.video_presentation,
+				nil,
 				u64(input_applied_count),
 				input_residence_ns,
 				max_input_residence_ns,
@@ -679,11 +681,11 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			step_started := time.tick_now()
 			alive := machine.step(m)
 			step_ended := time.tick_now()
-			graphics_vm_execution.step_calls = graphics_counter_add(
+			graphics_vm_execution.step_calls = saturating_counter_add(
 				graphics_vm_execution.step_calls,
 				1,
 			)
-			graphics_vm_execution.step_wall_ns = graphics_counter_add(
+			graphics_vm_execution.step_wall_ns = saturating_counter_add(
 				graphics_vm_execution.step_wall_ns,
 				u64(max(time.Duration(0), time.tick_diff(step_started, step_ended))),
 			)
@@ -832,7 +834,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 		} else {
 			wait_started := time.tick_now()
 			time.sleep(10 * time.Millisecond)
-			graphics_vm_execution.inactive_wait_ns = graphics_counter_add(
+			graphics_vm_execution.inactive_wait_ns = saturating_counter_add(
 				graphics_vm_execution.inactive_wait_ns,
 				u64(max(time.Duration(0), time.tick_since(wait_started))),
 			)
@@ -862,14 +864,11 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 		if machine_live && time.tick_diff(last_snap, now) >= SNAP_PERIOD {
 			last_snap = now
 			snap := machine.machine_text_snapshot(m)
-			postmortem: ^Graphics_Postmortem
-			if s.graphics_trace_enabled {postmortem = &s.graphics_postmortem}
-			if frame_mailbox_publish_observed(
-				&s.frames,
+			if video.video_presentation_publish_observed(
+				&s.video_presentation,
 				m,
 				storage_activity_session,
 				graphics_vm_execution,
-				postmortem,
 			) {
 				machine.machine_note_scanout_copy(m)
 			}

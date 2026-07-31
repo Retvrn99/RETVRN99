@@ -36,6 +36,17 @@ expanded baseline needed to apply them. The host Adapter
 owns SDL resources. SDL creation, upload, and destruction occur only on the
 main thread and never while the Video-presentation mutex is held.
 
+`Video_Presentation` contains the two mailbox slots, lifecycle generation,
+acknowledgements, committed identities, selector policy, expansion baseline,
+telemetry, postmortem record, and Host presentation state. `Shared` contains
+one `Video_Presentation`; GUI and VM callers use lifecycle, publication,
+consumption, and value-snapshot operations without inspecting that state. The
+Host Adapter stages uploads before the Module lock, performs only the
+non-blocking activation swap during the current-generation commit, and retires
+or destroys rejected resources after the lock is released. Host-only tests may
+use the embedded fallback presentation state when no external Module state is
+bound.
+
 GSW-Sound owns legacy SB16/OPL3 and native PCM policy behind one time-ordered
 Interface. Machine supplies guest-memory, DMA, interrupt, and final-mix
 Adapters. PC Speaker and CDDA remain separate until final mixing. The native

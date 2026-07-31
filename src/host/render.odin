@@ -208,7 +208,7 @@ host_upload_frame :: proc(h: ^Host, frame: ^vga.Display_Frame) -> bool {
 @(private = "package")
 host_cpu_frame_metadata_publish :: proc(h: ^Host, aspect_width, aspect_height: int) {
 	if h == nil {return}
-	if h.presentation_state.selector.active.kind == .None {h.gpu_present = {}}
+	if host_presentation_state(h).selector.active.kind == .None {h.gpu_present = {}}
 	h.aspect_width = aspect_width
 	h.aspect_height = aspect_height
 	h.has_frame = true
@@ -236,12 +236,12 @@ host_render_texture_region :: proc(
 
 @(private = "file")
 host_render_resident_composition :: proc(h: ^Host, guest_view: sdl3.FRect) -> bool {
-	if h == nil || h.presentation_state.selector.active.source_kind != .Gsw_Resident {return false}
-	resident := h.presentation_state.gsw
+	if h == nil || host_presentation_state(h).selector.active.source_kind != .Gsw_Resident {return false}
+	resident := host_presentation_state(h).gsw
 	ok := true
 	needs_desktop := host_presentation_resident_requires_desktop(resident)
 	desktop_drawn := !needs_desktop
-	desktop := h.presentation_state.gsw_snapshot
+	desktop := host_presentation_state(h).gsw_snapshot
 	if needs_desktop && host_presentation_gsw_desktop_available(h, resident.header) {
 		source := sdl3.FRect {
 			f32(desktop.header.source.x),
@@ -258,9 +258,9 @@ host_render_resident_composition :: proc(h: ^Host, guest_view: sdl3.FRect) -> bo
 			ok =
 				host_render_texture_region(
 					h,
-					h.presentation_state.gsw_texture,
-					h.presentation_state.gsw_texture_width,
-					h.presentation_state.gsw_texture_height,
+					host_presentation_state(h).gsw_texture,
+					host_presentation_state(h).gsw_texture_width,
+					host_presentation_state(h).gsw_texture_height,
 					source,
 					true,
 					destination,
@@ -271,9 +271,9 @@ host_render_resident_composition :: proc(h: ^Host, guest_view: sdl3.FRect) -> bo
 	}
 	if !desktop_drawn &&
 	   h.tex != nil &&
-	   h.presentation_state.selector.has_last_good_legacy &&
+	   host_presentation_state(h).selector.has_last_good_legacy &&
 	   contract.mode_key_equal(
-		   contract.output_mode_key(h.presentation_state.selector.last_good_legacy.header),
+		   contract.output_mode_key(host_presentation_state(h).selector.last_good_legacy.header),
 		   contract.output_mode_key(resident.header),
 	   ) {
 		ok =
@@ -334,7 +334,7 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 		host_render_stopped_screen(h, output_width, output_height)
 		return ok
 	}
-	active := h.presentation_state.selector.active
+	active := host_presentation_state(h).selector.active
 	if active.kind == .Gsw && active.source_kind == .Gsw_Resident && h.has_frame {
 		dst := host_guest_canvas_rect(h, output_width, output_height)
 		return host_render_resident_composition(h, dst) && ok
@@ -343,8 +343,8 @@ host_render_guest :: proc(h: ^Host, machine_running: bool) -> bool {
 	if texture != nil && h.has_frame {
 		texture_width, texture_height := h.tex_width, h.tex_height
 		if active.kind == .Gsw && active.source_kind == .Gsw_Snapshot {
-			texture_width = h.presentation_state.gsw_texture_width
-			texture_height = h.presentation_state.gsw_texture_height
+			texture_width = host_presentation_state(h).gsw_texture_width
+			texture_height = host_presentation_state(h).gsw_texture_height
 		} else if gpu_present != nil {
 			if surface := host_gpu_surface_find(h, gpu_present.surface_id); surface != nil {
 				texture_width = int(surface.descriptor.width)

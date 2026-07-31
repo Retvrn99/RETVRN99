@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:testing"
 import "core:time"
-import host "host"
+import host "../host"
 
 @(test)
 graphics_host_gpu_test_interval_tracks_physical_fences_and_present_coalescing :: proc(

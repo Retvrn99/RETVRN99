@@ -37,6 +37,7 @@ Host :: struct {
 	gpu_direct_presents:    u64,
 	presentation_metrics:   Host_Presentation_Metrics,
 	presentation_state:     Host_Presentation_State,
+	presentation_external:  ^Host_Presentation_State,
 	gsw3d_bridge:           Gsw3d_Bridge,
 	gsw3d_triangle:         Gsw3d_Triangle_Renderer,
 	gsw3d_backend:          Gsw3d_Proof_Backend,

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
+import "core:sync"
 import "core:testing"
 import "core:time"
-import host "host"
-import "machine"
-import contract "presentation"
-import vga "vga"
+import host "../host"
+import machine "../machine"
+import contract "../presentation"
+import vga "../vga"
 
 frame_mailbox_test_pixel_hash :: proc(pixels: []u32) -> u64 {
 	hash := u64(14_695_981_039_346_656_037)
@@ -127,14 +128,19 @@ frame_mailbox_test_publish_gsw :: proc(
 }
 
 Frame_Mailbox_Test_Current_Commit :: struct {
-	calls:  int,
-	result: bool,
+	mailbox:    ^Frame_Mailbox,
+	calls:      int,
+	result:     bool,
+	mutex_held: bool,
 }
 
 frame_mailbox_test_current_commit :: proc(ctx: rawptr) -> bool {
 	commit := (^Frame_Mailbox_Test_Current_Commit)(ctx)
 	if commit == nil {return false}
 	commit.calls += 1
+	unlocked := sync.try_lock(&commit.mailbox.mu)
+	if unlocked {sync.unlock(&commit.mailbox.mu)}
+	commit.mutex_held = !unlocked
 	return commit.result
 }
 
@@ -645,7 +651,8 @@ frame_mailbox_test_current_commit_is_gated_by_lifecycle_lock :: proc(t: ^testing
 	defer frame_mailbox_destroy(&mailbox)
 	epoch := frame_mailbox_graphics_telemetry_begin_host_epoch(&mailbox, time.Tick{10})
 	commit := Frame_Mailbox_Test_Current_Commit {
-		result = true,
+		mailbox = &mailbox,
+		result  = true,
 	}
 	testing.expect_value(
 		t,
@@ -658,6 +665,7 @@ frame_mailbox_test_current_commit_is_gated_by_lifecycle_lock :: proc(t: ^testing
 		Frame_Mailbox_Current_Commit_Result.Committed,
 	)
 	testing.expect_value(t, commit.calls, 1)
+	testing.expect(t, commit.mutex_held)
 	commit.result = false
 	testing.expect_value(
 		t,
@@ -687,10 +695,10 @@ frame_mailbox_test_current_commit_is_gated_by_lifecycle_lock :: proc(t: ^testing
 
 @(test)
 frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t: ^testing.T) {
-	shared := new(Shared)
-	defer free(shared)
-	defer frame_mailbox_destroy(&shared.frames)
-	mailbox := &shared.frames
+	video := new(Video_Presentation)
+	defer free(video)
+	defer frame_mailbox_destroy(video)
+	mailbox := video
 	backing := make([]u8, vga.VRAM_SIZE)
 	defer delete(backing)
 	source: vga.Vga
@@ -706,7 +714,7 @@ frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t
 	if !testing.expect(t, seeded) {return}
 	seed := frame_mailbox_acquire(mailbox)
 	if !testing.expect(t, seed == seed_slot) {return}
-	seed_frame := graphics_frame_expand_legacy(shared, &seed.scanout, nil)
+	seed_frame := graphics_frame_expand_legacy(video, &seed.scanout, nil)
 	if !testing.expect(t, seed_frame != nil) {return}
 	if !testing.expect(
 		t,
@@ -742,7 +750,7 @@ frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t
 	raw_hash := frame_mailbox_test_raw_update_hash(&latest.scanout)
 	ranges_before := latest.scanout.valid_ranges
 	update_before := latest.scanout.legacy_update
-	frame := graphics_frame_expand_legacy(shared, &latest.scanout, nil)
+	frame := graphics_frame_expand_legacy(video, &latest.scanout, nil)
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame_mailbox_test_pixel_hash(frame.pixels), reference_hash)
 	testing.expect_value(t, frame_mailbox_test_raw_update_hash(&latest.scanout), raw_hash)
@@ -765,7 +773,7 @@ frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t
 	post_reset := frame_mailbox_acquire(mailbox)
 	if !testing.expect(t, post_reset == post_reset_slot) {return}
 	testing.expect(t, !post_reset.scanout.raw_complete)
-	testing.expect(t, graphics_frame_expand_legacy(shared, &post_reset.scanout, nil) == nil)
+	testing.expect(t, graphics_frame_expand_legacy(video, &post_reset.scanout, nil) == nil)
 	frame_mailbox_release(mailbox, post_reset)
 
 	vga.vga_note_content_change(&source)
@@ -774,7 +782,7 @@ frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t
 	recovery := frame_mailbox_acquire(mailbox)
 	if !testing.expect(t, recovery == recovery_slot) {return}
 	testing.expect(t, recovery.scanout.raw_complete)
-	recovered := graphics_frame_expand_legacy(shared, &recovery.scanout, nil)
+	recovered := graphics_frame_expand_legacy(video, &recovery.scanout, nil)
 	if !testing.expect(t, recovered != nil) {return}
 	testing.expect_value(t, recovered.pixels[3], u32(0xFF63_5266))
 	frame_mailbox_release(mailbox, recovery)
@@ -782,17 +790,17 @@ frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t
 
 @(test)
 frame_mailbox_test_gsw_expansion_crosses_slots_coalescing_and_reset :: proc(t: ^testing.T) {
-	shared := new(Shared)
-	defer free(shared)
-	defer frame_mailbox_destroy(&shared.frames)
-	mailbox := &shared.frames
+	video := new(Video_Presentation)
+	defer free(video)
+	defer frame_mailbox_destroy(video)
+	mailbox := video
 	full_dirty := contract.rect_set_full({3, 1})
 	full_source := []u8{0x11, 0x22, 0x33, 0, 0x21, 0x32, 0x43, 0, 0x31, 0x42, 0x53, 0}
 	seed_slot, seeded := frame_mailbox_test_publish_gsw(mailbox, 1, full_source, full_dirty, 12)
 	if !testing.expect(t, seeded) {return}
 	seed := frame_mailbox_acquire(mailbox)
 	if !testing.expect(t, seed == seed_slot) {return}
-	seed_frame := graphics_frame_expand_gsw(shared, &seed.scanout, nil)
+	seed_frame := graphics_frame_expand_gsw(video, &seed.scanout, nil)
 	if !testing.expect(t, seed_frame != nil) {return}
 
 	skipped_dirty: contract.Rect_Set
@@ -827,7 +835,7 @@ frame_mailbox_test_gsw_expansion_crosses_slots_coalescing_and_reset :: proc(t: ^
 	present_before := latest.scanout.gsw_presentation.present
 	raw_before := [12]u8{}
 	copy(raw_before[:], latest.scanout.gsw_presentation.source)
-	frame := graphics_frame_expand_gsw(shared, &latest.scanout, nil)
+	frame := graphics_frame_expand_gsw(video, &latest.scanout, nil)
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame.pixels[0], u32(0xFF33_2211))
 	testing.expect_value(t, frame.pixels[1], u32(0xFF43_3244))
@@ -850,7 +858,7 @@ frame_mailbox_test_gsw_expansion_crosses_slots_coalescing_and_reset :: proc(t: ^
 	post_reset := frame_mailbox_acquire(mailbox)
 	if !testing.expect(t, post_reset == post_reset_slot) {return}
 	testing.expect(t, !post_reset.scanout.gsw_presentation.raw_complete)
-	testing.expect(t, graphics_frame_expand_gsw(shared, &post_reset.scanout, nil) == nil)
+	testing.expect(t, graphics_frame_expand_gsw(video, &post_reset.scanout, nil) == nil)
 	frame_mailbox_release(mailbox, post_reset)
 
 	full_source[4] = 0x44
@@ -866,7 +874,7 @@ frame_mailbox_test_gsw_expansion_crosses_slots_coalescing_and_reset :: proc(t: ^
 	recovery := frame_mailbox_acquire(mailbox)
 	if !testing.expect(t, recovery == recovery_slot) {return}
 	testing.expect(t, recovery.scanout.gsw_presentation.raw_complete)
-	recovered := graphics_frame_expand_gsw(shared, &recovery.scanout, nil)
+	recovered := graphics_frame_expand_gsw(video, &recovery.scanout, nil)
 	if !testing.expect(t, recovered != nil) {return}
 	testing.expect_value(t, recovered.pixels[1], u32(0xFF43_3244))
 	testing.expect_value(t, recovered.pixels[2], u32(0xFF53_4255))

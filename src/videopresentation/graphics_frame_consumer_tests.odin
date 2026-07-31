@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:testing"
 import "core:time"
-import "host"
-import presentation "presentation"
+import host "../host"
+import presentation "../presentation"
 import sdl3 "vendor:sdl3"
-import "vga"
+import vga "../vga"
 
 Graphics_Frame_Consumer_Test_Stage_Probe :: struct {
 	mailbox:         ^Frame_Mailbox,
@@ -300,17 +300,17 @@ graphics_frame_consumer_test_single_source_and_zero_sequence_order_is_stable :: 
 
 @(test)
 graphics_frame_consumer_test_single_legacy_commits_and_acks_only_legacy :: proc(t: ^testing.T) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
 	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
-		mailbox      = &shared.frames,
+		mailbox      = video,
 		next_texture = 50,
 	}
 	ops := Graphics_Frame_Consumer_Ops {
@@ -319,14 +319,14 @@ graphics_frame_consumer_test_single_legacy_commits_and_acks_only_legacy :: proc(
 		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
 		stage         = graphics_frame_consumer_test_stage,
 	}
-	slot, reserved := frame_mailbox_begin(&shared.frames, 10)
+	slot, reserved := frame_mailbox_begin(video, 10)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 11, 10)
 	slot.scanout.gsw_presentation.present_valid = false
 	slot.scanout.generation = 10
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint, &ops)
 	testing.expect(t, consumed.graphics_epoch_pending)
 	testing.expect_value(t, consumed.graphics_epoch.source, Graphics_Frame_Source.Legacy_Scanout)
 	testing.expect_value(t, probe.order_count, 1)
@@ -336,8 +336,8 @@ graphics_frame_consumer_test_single_legacy_commits_and_acks_only_legacy :: proc(
 		target.presentation_state.selector.active.kind,
 		presentation.Active_Kind.Legacy,
 	)
-	legacy_ack, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
-	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	legacy_ack, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
+	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, legacy_ack_valid)
 	testing.expect_value(t, legacy_ack.sequence, u64(10))
 	testing.expect(t, !gsw_ack_valid)
@@ -345,17 +345,17 @@ graphics_frame_consumer_test_single_legacy_commits_and_acks_only_legacy :: proc(
 
 @(test)
 graphics_frame_consumer_test_single_gsw_commits_and_acks_only_gsw :: proc(t: ^testing.T) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
 	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
-		mailbox      = &shared.frames,
+		mailbox      = video,
 		next_texture = 75,
 	}
 	ops := Graphics_Frame_Consumer_Ops {
@@ -364,13 +364,13 @@ graphics_frame_consumer_test_single_gsw_commits_and_acks_only_gsw :: proc(t: ^te
 		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
 		stage         = graphics_frame_consumer_test_stage,
 	}
-	slot, reserved := frame_mailbox_begin(&shared.frames, 10)
+	slot, reserved := frame_mailbox_begin(video, 10)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 10, 0)
 	slot.scanout.generation = 10
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint, &ops)
 	testing.expect(t, consumed.graphics_epoch_pending)
 	testing.expect_value(t, consumed.graphics_epoch.source, Graphics_Frame_Source.Gsw2d)
 	testing.expect_value(t, probe.order_count, 1)
@@ -380,8 +380,8 @@ graphics_frame_consumer_test_single_gsw_commits_and_acks_only_gsw :: proc(t: ^te
 		target.presentation_state.selector.active.kind,
 		presentation.Active_Kind.Gsw,
 	)
-	gsw_ack, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
-	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
+	gsw_ack, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
+	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
 	testing.expect(t, gsw_ack_valid)
 	testing.expect_value(t, gsw_ack.sequence, u64(10))
 	testing.expect(t, !legacy_ack_valid)
@@ -391,28 +391,28 @@ graphics_frame_consumer_test_reject_invalid_pair_order :: proc(
 	t: ^testing.T,
 	legacy_sequence, gsw_sequence: u64,
 ) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
-	slot, reserved := frame_mailbox_begin(&shared.frames, legacy_sequence)
+	slot, reserved := frame_mailbox_begin(video, legacy_sequence)
 	if !testing.expect(t, reserved) {return}
 	slot.scanout.generation = legacy_sequence
 	slot.scanout.legacy_update.header.sequence = legacy_sequence
 	slot.scanout.gsw_presentation.present_valid = true
 	slot.scanout.gsw_presentation.present.header.sequence = gsw_sequence
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint)
 	testing.expect(t, !consumed.graphics_epoch_pending)
 	testing.expect_value(t, target.presentation_state.sequence, u64(0))
-	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
-	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
+	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, !legacy_ack_valid)
 	testing.expect(t, !gsw_ack_valid)
 }
@@ -435,45 +435,45 @@ graphics_frame_consumer_test_ambiguous_pair_sequences_fail_closed :: proc(t: ^te
 graphics_frame_consumer_test_legacy_render_failure_allows_identical_republish :: proc(
 	t: ^testing.T,
 ) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
-	slot, reserved := frame_mailbox_begin(&shared.frames, 7)
+	slot, reserved := frame_mailbox_begin(video, 7)
 	if !testing.expect(t, reserved) {return}
 	slot.scanout.generation = 7
 	slot.scanout.legacy_update = graphics_frame_consumer_test_legacy_update(7, lifecycle)
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint)
 	testing.expect(t, !consumed.graphics_epoch_pending)
-	_, ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
+	_, ack_valid := frame_mailbox_take_legacy_ack(video)
 	testing.expect(t, !ack_valid)
 
-	retry, retry_reserved := frame_mailbox_begin(&shared.frames, 7)
+	retry, retry_reserved := frame_mailbox_begin(video, 7)
 	if !testing.expect(t, retry_reserved) {return}
-	_ = frame_mailbox_commit(&shared.frames, retry, false)
+	_ = frame_mailbox_commit(video, retry, false)
 }
 
 @(test)
 graphics_frame_consumer_test_older_gsw_failure_blocks_later_legacy_and_acks_neither :: proc(
 	t: ^testing.T,
 ) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
-	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
+	slot, reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, reserved) {return}
 	slot.scanout.generation = 11
 	slot.scanout.legacy_update = graphics_frame_consumer_test_legacy_update(11, lifecycle)
@@ -482,17 +482,17 @@ graphics_frame_consumer_test_older_gsw_failure_blocks_later_legacy_and_acks_neit
 		sequence             = 10,
 		lifecycle_generation = lifecycle,
 	}
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint)
 	testing.expect(t, !consumed.graphics_epoch_pending)
 	testing.expect_value(t, target.presentation_state.sequence, u64(0))
-	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
-	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
+	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, !legacy_ack_valid)
 	testing.expect(t, !gsw_ack_valid)
 
-	_, retry_reserved := frame_mailbox_begin(&shared.frames, 11)
+	_, retry_reserved := frame_mailbox_begin(video, 11)
 	testing.expect(t, !retry_reserved)
 }
 
@@ -500,17 +500,17 @@ graphics_frame_consumer_test_older_gsw_failure_blocks_later_legacy_and_acks_neit
 graphics_frame_consumer_test_gsw_then_hidden_legacy_commits_and_acks_in_order :: proc(
 	t: ^testing.T,
 ) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
 	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
-		mailbox      = &shared.frames,
+		mailbox      = video,
 		next_texture = 100,
 	}
 	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe, {2, 2}) {return}
@@ -520,12 +520,12 @@ graphics_frame_consumer_test_gsw_then_hidden_legacy_commits_and_acks_in_order ::
 		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
 		stage         = graphics_frame_consumer_test_stage,
 	}
-	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
+	slot, reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 10, 11)
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint, &ops)
 	testing.expect(t, consumed.graphics_epoch_pending)
 	testing.expect_value(t, consumed.graphics_epoch.source, Graphics_Frame_Source.Gsw2d)
 	testing.expect_value(t, consumed.graphics_epoch.kind, vga.Display_Kind.Xrgb_8888)
@@ -540,8 +540,8 @@ graphics_frame_consumer_test_gsw_then_hidden_legacy_commits_and_acks_in_order ::
 		presentation.Active_Kind.Gsw,
 	)
 	testing.expect_value(t, target.presentation_state.last_vga_sequence, u64(11))
-	gsw_ack, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
-	legacy_ack, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
+	gsw_ack, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
+	legacy_ack, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
 	testing.expect(t, gsw_ack_valid)
 	testing.expect(t, legacy_ack_valid)
 	testing.expect_value(t, gsw_ack.sequence, u64(10))
@@ -552,17 +552,17 @@ graphics_frame_consumer_test_gsw_then_hidden_legacy_commits_and_acks_in_order ::
 graphics_frame_consumer_test_first_gsw_stage_failure_blocks_legacy_and_retries :: proc(
 	t: ^testing.T,
 ) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
 	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
-		mailbox      = &shared.frames,
+		mailbox      = video,
 		next_texture = 200,
 	}
 	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe) {return}
@@ -573,12 +573,12 @@ graphics_frame_consumer_test_first_gsw_stage_failure_blocks_legacy_and_retries :
 		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
 		stage         = graphics_frame_consumer_test_stage,
 	}
-	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
+	slot, reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 10, 11)
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint, &ops)
 	testing.expect(t, !consumed.graphics_epoch_pending)
 	testing.expect_value(t, probe.order_count, 1)
 	testing.expect_value(t, probe.order[0], host.Host_Presentation_Kind.Gsw_Snapshot)
@@ -587,28 +587,28 @@ graphics_frame_consumer_test_first_gsw_stage_failure_blocks_legacy_and_retries :
 		target.presentation_state.selector.active.kind,
 		presentation.Active_Kind.Legacy,
 	)
-	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
-	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
+	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, !legacy_ack_valid)
 	testing.expect(t, !gsw_ack_valid)
-	retry, retry_reserved := frame_mailbox_begin(&shared.frames, 11)
+	retry, retry_reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, retry_reserved) {return}
-	_ = frame_mailbox_commit(&shared.frames, retry, false)
+	_ = frame_mailbox_commit(video, retry, false)
 }
 
 @(test)
 graphics_frame_consumer_test_legacy_then_gsw_commits_and_acks_in_order :: proc(t: ^testing.T) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
 	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
-		mailbox      = &shared.frames,
+		mailbox      = video,
 		next_texture = 250,
 	}
 	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe) {return}
@@ -618,13 +618,13 @@ graphics_frame_consumer_test_legacy_then_gsw_commits_and_acks_in_order :: proc(t
 		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
 		stage         = graphics_frame_consumer_test_stage,
 	}
-	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
+	slot, reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 11, 10)
 	slot.scanout.legacy_update.header.mode_generation = 1
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint, &ops)
 	testing.expect(t, consumed.graphics_epoch_pending)
 	testing.expect_value(t, consumed.graphics_epoch.source, Graphics_Frame_Source.Gsw2d)
 	testing.expect_value(t, probe.order_count, 2)
@@ -635,8 +635,8 @@ graphics_frame_consumer_test_legacy_then_gsw_commits_and_acks_in_order :: proc(t
 		target.presentation_state.selector.active.kind,
 		presentation.Active_Kind.Gsw,
 	)
-	legacy_ack, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
-	gsw_ack, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	legacy_ack, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
+	gsw_ack, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, legacy_ack_valid)
 	testing.expect(t, gsw_ack_valid)
 	testing.expect_value(t, legacy_ack.sequence, u64(10))
@@ -647,17 +647,17 @@ graphics_frame_consumer_test_legacy_then_gsw_commits_and_acks_in_order :: proc(t
 graphics_frame_consumer_test_first_legacy_stage_failure_blocks_gsw_and_retries :: proc(
 	t: ^testing.T,
 ) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
 	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
-		mailbox      = &shared.frames,
+		mailbox      = video,
 		next_texture = 275,
 	}
 	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe) {return}
@@ -668,13 +668,13 @@ graphics_frame_consumer_test_first_legacy_stage_failure_blocks_gsw_and_retries :
 		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
 		stage         = graphics_frame_consumer_test_stage,
 	}
-	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
+	slot, reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 11, 10)
 	slot.scanout.legacy_update.header.mode_generation = 1
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint, &ops)
 	testing.expect(t, !consumed.graphics_epoch_pending)
 	testing.expect_value(t, probe.order_count, 1)
 	testing.expect_value(t, probe.order[0], host.Host_Presentation_Kind.Legacy)
@@ -683,30 +683,30 @@ graphics_frame_consumer_test_first_legacy_stage_failure_blocks_gsw_and_retries :
 		target.presentation_state.selector.active.kind,
 		presentation.Active_Kind.Legacy,
 	)
-	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
-	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
+	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, !legacy_ack_valid)
 	testing.expect(t, !gsw_ack_valid)
-	retry, retry_reserved := frame_mailbox_begin(&shared.frames, 11)
+	retry, retry_reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, retry_reserved) {return}
-	_ = frame_mailbox_commit(&shared.frames, retry, false)
+	_ = frame_mailbox_commit(video, retry, false)
 }
 
 @(test)
 graphics_frame_consumer_test_reset_after_gsw_commit_clears_pending_epoch_and_acks :: proc(
 	t: ^testing.T,
 ) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
 	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
-		mailbox      = &shared.frames,
+		mailbox      = video,
 		next_texture = 300,
 	}
 	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe) {return}
@@ -717,38 +717,38 @@ graphics_frame_consumer_test_reset_after_gsw_commit_clears_pending_epoch_and_ack
 		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
 		stage         = graphics_frame_consumer_test_stage,
 	}
-	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
+	slot, reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 10, 11)
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint, &ops)
 	testing.expect(t, !consumed.graphics_epoch_pending)
 	testing.expect_value(t, probe.order_count, 2)
-	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
-	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
+	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, !legacy_ack_valid)
 	testing.expect(t, !gsw_ack_valid)
 }
 
 @(test)
 graphics_frame_consumer_test_exact_stale_gsw_duplicate_requeues_ack :: proc(t: ^testing.T) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	present := graphics_frame_consumer_test_gsw_present(10, lifecycle, 2)
-	if !testing.expect(t, frame_mailbox_note_gsw_applied(&shared.frames, present)) {return}
-	_, pending := frame_mailbox_take_gsw_ack(&shared.frames)
+	if !testing.expect(t, frame_mailbox_note_gsw_applied(video, present)) {return}
+	_, pending := frame_mailbox_take_gsw_ack(video)
 	if !testing.expect(t, pending) {return}
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
 	target.presentation_state.last_vga_sequence = 10
 	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
-		mailbox   = &shared.frames,
+		mailbox   = video,
 		fail_kind = .Legacy,
 	}
 	ops := Graphics_Frame_Consumer_Ops {
@@ -757,13 +757,13 @@ graphics_frame_consumer_test_exact_stale_gsw_duplicate_requeues_ack :: proc(t: ^
 		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
 		stage         = graphics_frame_consumer_test_stage,
 	}
-	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
+	slot, reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 10, 11)
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	_ = graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
-	reissued, reissued_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	_ = graphics_frame_consume(video, &target, false, &checkpoint, &ops)
+	reissued, reissued_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, reissued_valid)
 	testing.expect_value(t, reissued.sequence, u64(10))
 }
@@ -772,63 +772,63 @@ graphics_frame_consumer_test_exact_stale_gsw_duplicate_requeues_ack :: proc(t: ^
 graphics_frame_consumer_test_single_exact_stale_gsw_duplicate_is_superseded :: proc(
 	t: ^testing.T,
 ) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	present := graphics_frame_consumer_test_gsw_present(10, lifecycle, 2)
-	if !testing.expect(t, frame_mailbox_note_gsw_applied(&shared.frames, present)) {return}
-	_, pending := frame_mailbox_take_gsw_ack(&shared.frames)
+	if !testing.expect(t, frame_mailbox_note_gsw_applied(video, present)) {return}
+	_, pending := frame_mailbox_take_gsw_ack(video)
 	if !testing.expect(t, pending) {return}
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
 	defer host.host_presentation_stop(&target)
 	target.presentation_state.last_vga_sequence = 10
-	slot, reserved := frame_mailbox_begin(&shared.frames, 10)
+	slot, reserved := frame_mailbox_begin(video, 10)
 	if !testing.expect(t, reserved) {return}
 	slot.scanout.generation = 10
 	slot.scanout.gsw_presentation.present = present
 	slot.scanout.gsw_presentation.present_valid = true
 	slot.scanout.gsw_presentation.source = make([]u8, 4)
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint)
 	testing.expect(t, !consumed.graphics_epoch_pending)
 	testing.expect_value(t, slot.epoch.result, Graphics_Frame_Result.Superseded)
-	reissued, reissued_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	reissued, reissued_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, reissued_valid)
 	testing.expect_value(t, reissued.sequence, u64(10))
 }
 
 @(test)
 graphics_frame_consumer_test_closed_host_does_not_skip_exact_committed_gsw :: proc(t: ^testing.T) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	present := graphics_frame_consumer_test_gsw_present(10, lifecycle, 2)
-	if !testing.expect(t, frame_mailbox_note_gsw_applied(&shared.frames, present)) {return}
-	_, pending := frame_mailbox_take_gsw_ack(&shared.frames)
+	if !testing.expect(t, frame_mailbox_note_gsw_applied(video, present)) {return}
+	_, pending := frame_mailbox_take_gsw_ack(video)
 	if !testing.expect(t, pending) {return}
 	target: host.Host
-	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
+	slot, reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 10, 11)
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint)
 	testing.expect(t, !consumed.graphics_epoch_pending)
 	testing.expect_value(t, target.presentation_state.sequence, u64(0))
 	testing.expect_value(t, slot.epoch.result, Graphics_Frame_Result.Render_Failed)
-	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
-	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(video)
+	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, !legacy_ack_valid)
 	testing.expect(t, !gsw_ack_valid)
-	_, retry_reserved := frame_mailbox_begin(&shared.frames, 11)
+	_, retry_reserved := frame_mailbox_begin(video, 11)
 	testing.expect(t, !retry_reserved)
 }
 
@@ -836,27 +836,27 @@ graphics_frame_consumer_test_closed_host_does_not_skip_exact_committed_gsw :: pr
 graphics_frame_consumer_test_wrong_host_lifecycle_does_not_skip_exact_committed_gsw :: proc(
 	t: ^testing.T,
 ) {
-	shared := new(Shared)
+	video := new(Video_Presentation)
 	defer {
-		frame_mailbox_destroy(&shared.frames)
-		free(shared)
+		frame_mailbox_destroy(video)
+		free(video)
 	}
-	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	lifecycle := frame_mailbox_lifecycle_generation(video)
 	present := graphics_frame_consumer_test_gsw_present(10, lifecycle, 2)
-	if !testing.expect(t, frame_mailbox_note_gsw_applied(&shared.frames, present)) {return}
-	_, pending := frame_mailbox_take_gsw_ack(&shared.frames)
+	if !testing.expect(t, frame_mailbox_note_gsw_applied(video, present)) {return}
+	_, pending := frame_mailbox_take_gsw_ack(video)
 	if !testing.expect(t, pending) {return}
 	target: host.Host
 	if !testing.expect(t, host.host_presentation_start(&target, lifecycle + 1)) {return}
 	defer host.host_presentation_stop(&target)
-	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
+	slot, reserved := frame_mailbox_begin(video, 11)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 10, 11)
-	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	if !testing.expect(t, frame_mailbox_commit(video, slot, true)) {return}
 	checkpoint: time.Tick
-	consumed := graphics_frame_consume(shared, &target, false, &checkpoint)
+	consumed := graphics_frame_consume(video, &target, false, &checkpoint)
 	testing.expect(t, !consumed.graphics_epoch_pending)
 	testing.expect_value(t, slot.epoch.result, Graphics_Frame_Result.Render_Failed)
-	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(video)
 	testing.expect(t, !gsw_ack_valid)
 }

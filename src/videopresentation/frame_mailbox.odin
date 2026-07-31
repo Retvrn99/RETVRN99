@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:sync"
 import "core:time"
-import host "host"
-import machine "machine"
-import contract "presentation"
-import vga "vga"
-import "videopresentation"
+import host "../host"
+import machine "../machine"
+import contract "../presentation"
+import vga "../vga"
 
+@(private = "package")
 Frame_Slot_State :: enum {
 	Free,
 	Writing,
@@ -16,6 +16,7 @@ Frame_Slot_State :: enum {
 	Reading,
 }
 
+@(private = "package")
 Frame_Slot :: struct {
 	state:                         Frame_Slot_State,
 	reserved_lifecycle_generation: u64,
@@ -24,6 +25,7 @@ Frame_Slot :: struct {
 	producer_sample:               Graphics_Producer_Sample,
 }
 
+@(private = "package")
 Frame_Mailbox_Legacy_Ack :: struct {
 	valid:                bool,
 	lifecycle_generation: u64,
@@ -33,6 +35,7 @@ Frame_Mailbox_Legacy_Ack :: struct {
 	surface_generation:   u64,
 }
 
+@(private = "package")
 Frame_Mailbox_Gsw_Ack :: struct {
 	valid:                bool,
 	lifecycle_generation: u64,
@@ -42,17 +45,19 @@ Frame_Mailbox_Gsw_Ack :: struct {
 	surface_generation:   u64,
 }
 
+@(private = "package")
 Frame_Mailbox_Legacy_Commit :: struct {
 	valid:  bool,
 	update: contract.Legacy_Frame_Update,
 }
 
+@(private = "package")
 Frame_Mailbox_Gsw_Commit :: struct {
 	valid:   bool,
 	present: contract.Gsw_Present,
 }
 
-Frame_Mailbox :: struct {
+Video_Presentation :: struct {
 	mu:                   sync.Mutex,
 	slots:                [2]Frame_Slot,
 	published:            u64,
@@ -65,11 +70,19 @@ Frame_Mailbox :: struct {
 	gsw_ack:              Frame_Mailbox_Gsw_Ack,
 	legacy_committed:     Frame_Mailbox_Legacy_Commit,
 	gsw_committed:        Frame_Mailbox_Gsw_Commit,
-	expansion:            videopresentation.Expansion,
+	expansion:            Expansion,
+	postmortem:           Graphics_Postmortem,
+	host_state:           host.Host_Presentation_State,
+	aggregate_logs:       u64,
 }
 
+@(private = "package")
+Frame_Mailbox :: Video_Presentation
+
+@(private = "package")
 Frame_Mailbox_Current_Commit_Proc :: proc(ctx: rawptr) -> bool
 
+@(private = "package")
 Frame_Mailbox_Current_Commit_Result :: enum u8 {
 	Invalid,
 	Stale,
@@ -174,10 +187,12 @@ frame_mailbox_begin_at :: proc(
 	return slot, true
 }
 
+@(private = "package")
 frame_mailbox_begin :: proc(mailbox: ^Frame_Mailbox, generation: u64) -> (^Frame_Slot, bool) {
 	return frame_mailbox_begin_at(mailbox, generation, time.tick_now(), {})
 }
 
+@(private = "package")
 frame_mailbox_commit :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot, ready: bool) -> bool {
 	if mailbox == nil || slot == nil {return false}
 	sync.lock(&mailbox.mu)
@@ -204,6 +219,7 @@ frame_mailbox_commit :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot, ready: 
 	return false
 }
 
+@(private = "package")
 frame_mailbox_publish_observed :: proc(
 	mailbox: ^Frame_Mailbox,
 	source: ^machine.Machine,
@@ -285,10 +301,12 @@ frame_mailbox_publish_observed :: proc(
 	return committed
 }
 
+@(private = "package")
 frame_mailbox_publish :: proc(mailbox: ^Frame_Mailbox, source: ^machine.Machine) -> bool {
 	return frame_mailbox_publish_observed(mailbox, source, 0, {})
 }
 
+@(private = "package")
 frame_mailbox_acquire :: proc(mailbox: ^Frame_Mailbox) -> ^Frame_Slot {
 	sync.lock(&mailbox.mu)
 	defer sync.unlock(&mailbox.mu)
@@ -307,6 +325,7 @@ frame_mailbox_acquire :: proc(mailbox: ^Frame_Mailbox) -> ^Frame_Slot {
 	return &mailbox.slots[chosen]
 }
 
+@(private = "package")
 frame_mailbox_release :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot) {
 	if slot == nil {return}
 	sync.lock(&mailbox.mu)
@@ -314,6 +333,7 @@ frame_mailbox_release :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot) {
 	sync.unlock(&mailbox.mu)
 }
 
+@(private = "package")
 frame_mailbox_retry_latest :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot) -> bool {
 	if mailbox == nil || slot == nil {return false}
 	sync.lock(&mailbox.mu)
@@ -333,6 +353,7 @@ frame_mailbox_retry_latest :: proc(mailbox: ^Frame_Mailbox, slot: ^Frame_Slot) -
 	return true
 }
 
+@(private = "package")
 frame_mailbox_note_legacy_applied :: proc(
 	mailbox: ^Frame_Mailbox,
 	update: contract.Legacy_Frame_Update,
@@ -357,6 +378,7 @@ frame_mailbox_note_legacy_applied :: proc(
 	return true
 }
 
+@(private = "package")
 frame_mailbox_legacy_was_committed :: proc(
 	mailbox: ^Frame_Mailbox,
 	update: contract.Legacy_Frame_Update,
@@ -389,6 +411,7 @@ frame_mailbox_take_legacy_ack :: proc(
 	return ack, ack.valid && ack.lifecycle_generation == mailbox.lifecycle_generation
 }
 
+@(private = "package")
 frame_mailbox_note_gsw_applied :: proc(
 	mailbox: ^Frame_Mailbox,
 	present: contract.Gsw_Present,
@@ -413,6 +436,7 @@ frame_mailbox_note_gsw_applied :: proc(
 	return true
 }
 
+@(private = "package")
 frame_mailbox_gsw_was_committed :: proc(
 	mailbox: ^Frame_Mailbox,
 	present: contract.Gsw_Present,
@@ -440,6 +464,7 @@ frame_mailbox_take_gsw_ack :: proc(mailbox: ^Frame_Mailbox) -> (Frame_Mailbox_Gs
 	return ack, ack.valid && ack.lifecycle_generation == mailbox.lifecycle_generation
 }
 
+@(private = "package")
 frame_mailbox_reset :: proc(mailbox: ^Frame_Mailbox) {
 	sync.lock(&mailbox.mu)
 	now := time.tick_now()
@@ -468,6 +493,7 @@ frame_mailbox_reset :: proc(mailbox: ^Frame_Mailbox) {
 	sync.unlock(&mailbox.mu)
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_init :: proc(mailbox: ^Frame_Mailbox, trace_enabled: bool) {
 	if mailbox == nil {return}
 	sync.lock(&mailbox.mu)
@@ -475,6 +501,7 @@ frame_mailbox_graphics_telemetry_init :: proc(mailbox: ^Frame_Mailbox, trace_ena
 	sync.unlock(&mailbox.mu)
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_record :: proc(
 	mailbox: ^Frame_Mailbox,
 	epoch: Graphics_Frame_Epoch,
@@ -485,6 +512,7 @@ frame_mailbox_graphics_telemetry_record :: proc(
 	sync.unlock(&mailbox.mu)
 }
 
+@(private = "package")
 frame_mailbox_graphics_epoch_complete_and_record :: proc(
 	mailbox: ^Frame_Mailbox,
 	epoch: ^Graphics_Frame_Epoch,
@@ -502,6 +530,7 @@ frame_mailbox_graphics_epoch_complete_and_record :: proc(
 	return result
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_note_input :: proc(
 	mailbox: ^Frame_Mailbox,
 	events, residence_ns, max_residence_ns: u64,
@@ -521,6 +550,7 @@ frame_mailbox_graphics_telemetry_note_input :: proc(
 	sync.unlock(&mailbox.mu)
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_note_host_gpu :: proc(
 	mailbox: ^Frame_Mailbox,
 	sample: host.Host_Gsw3d_Observability_Snapshot,
@@ -532,6 +562,7 @@ frame_mailbox_graphics_telemetry_note_host_gpu :: proc(
 	return graphics_telemetry_note_host_gpu(&mailbox.telemetry, sample, now)
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_note_gpu_drain :: proc(
 	mailbox: ^Frame_Mailbox,
 	started, ended: time.Tick,
@@ -544,6 +575,7 @@ frame_mailbox_graphics_telemetry_note_gpu_drain :: proc(
 	sync.unlock(&mailbox.mu)
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_note_compose :: proc(
 	mailbox: ^Frame_Mailbox,
 	started, ended: time.Tick,
@@ -554,6 +586,7 @@ frame_mailbox_graphics_telemetry_note_compose :: proc(
 	sync.unlock(&mailbox.mu)
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_note_present :: proc(
 	mailbox: ^Frame_Mailbox,
 	started, ended: time.Tick,
@@ -564,6 +597,7 @@ frame_mailbox_graphics_telemetry_note_present :: proc(
 	sync.unlock(&mailbox.mu)
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_attach_pending_host_gpu :: proc(
 	mailbox: ^Frame_Mailbox,
 	epoch: ^Graphics_Frame_Epoch,
@@ -574,6 +608,7 @@ frame_mailbox_graphics_telemetry_attach_pending_host_gpu :: proc(
 	sync.unlock(&mailbox.mu)
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_begin_host_epoch :: proc(
 	mailbox: ^Frame_Mailbox,
 	now: time.Tick,
@@ -590,6 +625,7 @@ frame_mailbox_graphics_telemetry_begin_host_epoch :: proc(
 	return epoch
 }
 
+@(private = "package")
 frame_mailbox_graphics_epoch_current :: proc(
 	mailbox: ^Frame_Mailbox,
 	epoch: ^Graphics_Frame_Epoch,
@@ -601,6 +637,7 @@ frame_mailbox_graphics_epoch_current :: proc(
 	return epoch.lifecycle_generation == mailbox.lifecycle_generation
 }
 
+@(private = "package")
 frame_mailbox_graphics_epoch_commit_current :: proc(
 	mailbox: ^Frame_Mailbox,
 	epoch: ^Graphics_Frame_Epoch,
@@ -616,6 +653,7 @@ frame_mailbox_graphics_epoch_commit_current :: proc(
 	return .Committed
 }
 
+@(private = "package")
 frame_mailbox_lifecycle_generation :: proc(mailbox: ^Frame_Mailbox) -> u64 {
 	if mailbox == nil {return 0}
 	sync.lock(&mailbox.mu)
@@ -624,6 +662,7 @@ frame_mailbox_lifecycle_generation :: proc(mailbox: ^Frame_Mailbox) -> u64 {
 	return mailbox.lifecycle_generation
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_take_window :: proc(
 	mailbox: ^Frame_Mailbox,
 	now: time.Tick,
@@ -637,6 +676,7 @@ frame_mailbox_graphics_telemetry_take_window :: proc(
 	return graphics_telemetry_take_window(&mailbox.telemetry, now)
 }
 
+@(private = "package")
 frame_mailbox_graphics_telemetry_snapshot :: proc(
 	mailbox: ^Frame_Mailbox,
 	now: time.Tick,
@@ -647,6 +687,7 @@ frame_mailbox_graphics_telemetry_snapshot :: proc(
 	return graphics_telemetry_snapshot(&mailbox.telemetry, now)
 }
 
+@(private = "package")
 frame_mailbox_graphics_input_correlation :: proc(
 	mailbox: ^Frame_Mailbox,
 ) -> Graphics_Input_Correlation {
@@ -656,6 +697,7 @@ frame_mailbox_graphics_input_correlation :: proc(
 	return graphics_telemetry_input_correlation(&mailbox.telemetry)
 }
 
+@(private = "package")
 frame_mailbox_graphics_trace_text :: proc(mailbox: ^Frame_Mailbox) -> string {
 	if mailbox == nil {return ""}
 	sync.lock(&mailbox.mu)
@@ -663,13 +705,14 @@ frame_mailbox_graphics_trace_text :: proc(mailbox: ^Frame_Mailbox) -> string {
 	return graphics_telemetry_trace_text(&mailbox.telemetry)
 }
 
+@(private = "package")
 frame_mailbox_destroy :: proc(mailbox: ^Frame_Mailbox) {
 	if mailbox == nil {return}
 	for &slot in mailbox.slots {
 		vga.scanout_descriptor_destroy(&slot.scanout)
 		slot = {}
 	}
-	videopresentation.expansion_destroy(&mailbox.expansion)
+	expansion_destroy(&mailbox.expansion)
 	graphics_telemetry_destroy(&mailbox.telemetry)
 	mailbox^ = {}
 }

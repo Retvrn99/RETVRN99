@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "base:runtime"
 import "core:encoding/json"
 import "core:sync"
 import "core:thread"
 import "core:time"
-import "profile"
+import profile "../profile"
 
 GRAPHICS_POSTMORTEM_SCHEMA_VERSION :: 2
 GRAPHICS_POSTMORTEM_WRITE_INTERVAL :: time.Second
@@ -280,6 +280,7 @@ graphics_postmortem_stage_name :: proc(value: Graphics_Postmortem_Host_Stage) ->
 	return "unavailable"
 }
 
+@(private = "package")
 graphics_postmortem_format :: proc(snapshot: ^Graphics_Postmortem_Snapshot) -> ([]u8, bool) {
 	if snapshot == nil {return nil, false}
 	disk := Graphics_Postmortem_Disk {
@@ -438,6 +439,7 @@ graphics_postmortem_worker_proc :: proc(writer: ^Graphics_Postmortem) {
 	}
 }
 
+@(private = "package")
 graphics_postmortem_init :: proc(
 	writer: ^Graphics_Postmortem,
 	config: Graphics_Postmortem_Config,
@@ -493,6 +495,7 @@ graphics_postmortem_next_revision :: proc(writer: ^Graphics_Postmortem) {
 	writer.dirty = true
 }
 
+@(private = "package")
 graphics_postmortem_publish_state :: proc(
 	writer: ^Graphics_Postmortem,
 	state: Graphics_Postmortem_State,
@@ -525,6 +528,7 @@ graphics_postmortem_publish_state :: proc(
 	return .None
 }
 
+@(private = "package")
 graphics_postmortem_measured_state :: proc(
 	session_generation: u64,
 	guest_device_generation: u64,
@@ -555,6 +559,7 @@ graphics_postmortem_measured_state :: proc(
 	return state
 }
 
+@(private = "package")
 graphics_postmortem_publish_window :: proc(
 	writer: ^Graphics_Postmortem,
 	text: string,
@@ -598,6 +603,7 @@ graphics_postmortem_publish_window :: proc(
 	return .None
 }
 
+@(private = "package")
 graphics_postmortem_publish_vm :: proc(
 	writer: ^Graphics_Postmortem,
 	text: string,
@@ -637,6 +643,7 @@ graphics_postmortem_publish_vm :: proc(
 	return .None
 }
 
+@(private = "package")
 graphics_postmortem_snapshot :: proc(
 	writer: ^Graphics_Postmortem,
 ) -> Graphics_Postmortem_Snapshot {
@@ -646,6 +653,7 @@ graphics_postmortem_snapshot :: proc(
 	return writer.latest
 }
 
+@(private = "package")
 graphics_postmortem_status :: proc(writer: ^Graphics_Postmortem) -> Graphics_Postmortem_Status {
 	if writer == nil {return {}}
 	sync.lock(&writer.mu)
@@ -663,6 +671,7 @@ graphics_postmortem_status :: proc(writer: ^Graphics_Postmortem) -> Graphics_Pos
 	}
 }
 
+@(private = "package")
 graphics_postmortem_destroy :: proc(
 	writer: ^Graphics_Postmortem,
 ) -> profile.Graphics_Postmortem_Save_Diagnostic {

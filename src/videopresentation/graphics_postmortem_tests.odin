@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package main
+package videopresentation
 
 import "core:mem"
 import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:time"
-import "profile"
+import profile "../profile"
 
 Graphics_Postmortem_Test_Sink :: struct {
 	mu:          sync.Mutex,

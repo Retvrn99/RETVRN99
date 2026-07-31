@@ -7,15 +7,17 @@ import "fat32session"
 import "host"
 import "machine"
 import "profile"
+import video "videopresentation"
 import sdl3 "vendor:sdl3"
 
 graphics_presentation_sync_lifecycle :: proc(
 	h: ^host.Host,
-	frames: ^Frame_Mailbox,
+	presentation: ^video.Video_Presentation,
 	machine_running: bool,
 ) -> bool {
 	if !machine_running {return false}
-	return host.host_presentation_start(h, frame_mailbox_lifecycle_generation(frames))
+	adapter := video.video_presentation_host_adapter(h)
+	return video.video_presentation_start(presentation, &adapter)
 }
 
 vm_open_volume :: proc(c: ^Vm_Ctx) -> bool {
@@ -281,7 +283,7 @@ vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine, clock_running: bool = true) -> 
 	}
 	if !machine.machine_set_hardware_trace(m, true) {return false}
 	if !clock_running {machine.machine_clock_set_running(m, false)}
-	frame_mailbox_reset(&c.shared.frames)
+	video.video_presentation_reset(&c.shared.video_presentation)
 	if c.has_cmos {_ = machine.machine_cmos_import(m, c.cmos[:])}
 	if profile.install_state_active(&c.install_state) {
 		if !install_prepare_boot_cmos(c, m.cmos.ram[:]) {

@@ -275,10 +275,10 @@ host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descripto
 	previous := slot^
 	if previous.live &&
 	   previous.generation != 0 &&
-	   h.presentation_state.selector.active.kind == .Gsw &&
-	   h.presentation_state.selector.active.identity_namespace == .Gsw3d &&
-	   h.presentation_state.gsw.header.surface.id == u64(descriptor.id) &&
-	   h.presentation_state.gsw.header.surface.generation == previous.generation {
+	   host_presentation_state(h).selector.active.kind == .Gsw &&
+	   host_presentation_state(h).selector.active.identity_namespace == .Gsw3d &&
+	   host_presentation_state(h).gsw.header.surface.id == u64(descriptor.id) &&
+	   host_presentation_state(h).gsw.header.surface.generation == previous.generation {
 		action := host_presentation_invalidate_active(h, .Gsw3d, .Surface_Destroyed)
 		if !host_gpu_surface_invalidation_allows_lifecycle(action) {
 			sdl3.DestroyTexture(render_texture)
@@ -300,7 +300,7 @@ host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descripto
 		// Replacement storage is undefined until the backend renders or uploads
 		// it, even when the new descriptor has the same dimensions and format.
 		if h.gpu_present.surface_id == descriptor.id &&
-		   h.presentation_state.selector.active.kind == .None {
+		   host_presentation_state(h).selector.active.kind == .None {
 			h.gpu_present = {}
 			h.has_frame = false
 		}
@@ -313,14 +313,14 @@ host_gpu_surface_create :: proc(h: ^Host, descriptor: Host_Gpu_Surface_Descripto
 host_gpu_surface_destroy :: proc(h: ^Host, id: u32) -> bool {
 	surface := host_gpu_surface_find(h, id)
 	if surface == nil {return false}
-	if h.presentation_state.selector.active.kind == .Gsw &&
-	   h.presentation_state.selector.active.identity_namespace == .Gsw3d &&
-	   h.presentation_state.gsw.header.surface.id == u64(id) &&
-	   h.presentation_state.gsw.header.surface.generation == surface.generation {
+	if host_presentation_state(h).selector.active.kind == .Gsw &&
+	   host_presentation_state(h).selector.active.identity_namespace == .Gsw3d &&
+	   host_presentation_state(h).gsw.header.surface.id == u64(id) &&
+	   host_presentation_state(h).gsw.header.surface.generation == surface.generation {
 		action := host_presentation_invalidate_active(h, .Gsw3d, .Surface_Destroyed)
 		if !host_gpu_surface_invalidation_allows_lifecycle(action) {return false}
 	}
-	if h.gpu_present.surface_id == id && h.presentation_state.selector.active.kind == .None {
+	if h.gpu_present.surface_id == id && host_presentation_state(h).selector.active.kind == .None {
 		h.gpu_present = {}
 		h.has_frame = false
 	}
@@ -367,7 +367,7 @@ host_active_gpu_texture :: proc(h: ^Host) -> (^sdl3.Texture, sdl3.FRect, bool, ^
 	if h == nil {return nil, {}, false, nil}
 	if h.gpu_present.surface_id != 0 {
 		surface := host_gpu_surface_find(h, h.gpu_present.surface_id)
-		active := h.presentation_state.selector.active
+		active := host_presentation_state(h).selector.active
 		if active.kind == .Gsw &&
 		   active.source_kind == .Gsw_Resident &&
 		   (active.surface.id != u64(h.gpu_present.surface_id) ||
@@ -391,7 +391,7 @@ host_active_gpu_texture :: proc(h: ^Host) -> (^sdl3.Texture, sdl3.FRect, bool, ^
 @(private = "package")
 host_active_texture :: proc(h: ^Host) -> (^sdl3.Texture, sdl3.FRect, bool, ^Host_Gpu_Present) {
 	if h == nil {return nil, {}, false, nil}
-	if h.presentation_state.selector.active.kind != .None {
+	if host_presentation_state(h).selector.active.kind != .None {
 		return host_presentation_active_texture(h)
 	}
 	return host_active_gpu_texture(h)
