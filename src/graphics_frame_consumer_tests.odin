@@ -244,6 +244,119 @@ graphics_frame_consumer_test_sequence_order_places_older_gsw_first :: proc(t: ^t
 	_ = frame_mailbox_commit(&mailbox, descriptor, false)
 }
 
+@(test)
+graphics_frame_consumer_test_single_source_and_zero_sequence_order_is_stable :: proc(
+	t: ^testing.T,
+) {
+	descriptor: vga.Scanout_Descriptor
+	testing.expect_value(
+		t,
+		graphics_frame_consumer_record_order(&descriptor),
+		Graphics_Frame_Record_Order.Single,
+	)
+	descriptor.gsw_presentation.present_valid = true
+	descriptor.gsw_presentation.present.header.sequence = 9
+	testing.expect_value(
+		t,
+		graphics_frame_consumer_record_order(&descriptor),
+		Graphics_Frame_Record_Order.Single,
+	)
+	descriptor.legacy_update.header.sequence = 8
+	descriptor.gsw_presentation.present.header.sequence = 0
+	testing.expect_value(
+		t,
+		graphics_frame_consumer_record_order(&descriptor),
+		Graphics_Frame_Record_Order.Invalid,
+	)
+}
+
+@(test)
+graphics_frame_consumer_test_single_legacy_commits_and_acks_only_legacy :: proc(
+	t: ^testing.T,
+) {
+	shared := new(Shared)
+	defer {
+		frame_mailbox_destroy(&shared.frames)
+		free(shared)
+	}
+	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	target: host.Host
+	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
+	defer host.host_presentation_stop(&target)
+	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
+		mailbox      = &shared.frames,
+		next_texture = 50,
+	}
+	ops := Graphics_Frame_Consumer_Ops {
+		ctx   = &probe,
+		stage = graphics_frame_consumer_test_stage,
+	}
+	slot, reserved := frame_mailbox_begin(&shared.frames, 10)
+	if !testing.expect(t, reserved) {return}
+	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 11, 10)
+	slot.scanout.gsw_presentation.present_valid = false
+	slot.scanout.generation = 10
+	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	checkpoint: time.Tick
+	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
+	testing.expect(t, consumed.graphics_epoch_pending)
+	testing.expect_value(t, consumed.graphics_epoch.source, Graphics_Frame_Source.Legacy_Scanout)
+	testing.expect_value(t, probe.order_count, 1)
+	testing.expect_value(t, probe.order[0], host.Host_Presentation_Kind.Legacy)
+	testing.expect_value(
+		t,
+		target.presentation_state.selector.active.kind,
+		presentation.Active_Kind.Legacy,
+	)
+	legacy_ack, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
+	_, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	testing.expect(t, legacy_ack_valid)
+	testing.expect_value(t, legacy_ack.sequence, u64(10))
+	testing.expect(t, !gsw_ack_valid)
+}
+
+@(test)
+graphics_frame_consumer_test_single_gsw_commits_and_acks_only_gsw :: proc(t: ^testing.T) {
+	shared := new(Shared)
+	defer {
+		frame_mailbox_destroy(&shared.frames)
+		free(shared)
+	}
+	lifecycle := frame_mailbox_lifecycle_generation(&shared.frames)
+	target: host.Host
+	if !testing.expect(t, host.host_presentation_start(&target, lifecycle)) {return}
+	defer host.host_presentation_stop(&target)
+	probe := Graphics_Frame_Consumer_Test_Stage_Probe {
+		mailbox      = &shared.frames,
+		next_texture = 75,
+	}
+	ops := Graphics_Frame_Consumer_Ops {
+		ctx   = &probe,
+		stage = graphics_frame_consumer_test_stage,
+	}
+	slot, reserved := frame_mailbox_begin(&shared.frames, 10)
+	if !testing.expect(t, reserved) {return}
+	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 10, 0)
+	slot.scanout.generation = 10
+	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
+	checkpoint: time.Tick
+	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
+	testing.expect(t, consumed.graphics_epoch_pending)
+	testing.expect_value(t, consumed.graphics_epoch.source, Graphics_Frame_Source.Gsw2d)
+	testing.expect_value(t, probe.order_count, 1)
+	testing.expect_value(t, probe.order[0], host.Host_Presentation_Kind.Gsw_Snapshot)
+	testing.expect_value(
+		t,
+		target.presentation_state.selector.active.kind,
+		presentation.Active_Kind.Gsw,
+	)
+	gsw_ack, gsw_ack_valid := frame_mailbox_take_gsw_ack(&shared.frames)
+	_, legacy_ack_valid := frame_mailbox_take_legacy_ack(&shared.frames)
+	testing.expect(t, gsw_ack_valid)
+	testing.expect_value(t, gsw_ack.sequence, u64(10))
+	testing.expect(t, !legacy_ack_valid)
+}
+
 graphics_frame_consumer_test_reject_invalid_pair_order :: proc(
 	t: ^testing.T,
 	legacy_sequence, gsw_sequence: u64,
