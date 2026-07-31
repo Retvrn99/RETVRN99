@@ -74,15 +74,15 @@ test_test_device_frame_crc_clamps_and_uses_little_endian_argb :: proc(t: ^testin
 test_machine_test_device_is_opt_in_and_byte_decomposed :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	bus_init(&m.bus)
-	defer bus_destroy(&m.bus)
-	_ = bus_io_read(&m.bus, TEST_DEVICE_INDEX_PORT, 1)
-	testing.expect_value(t, m.bus.unclassified_count, u64(1))
+	bus_init(&m.platform.bus)
+	defer bus_destroy(&m.platform.bus)
+	_ = bus_io_read(&m.platform.bus, TEST_DEVICE_INDEX_PORT, 1)
+	testing.expect_value(t, m.platform.bus.unclassified_count, u64(1))
 	machine_enable_test_device(m)
-	bus_io_write(&m.bus, TEST_DEVICE_INDEX_PORT, 2, 0xBBAA)
+	bus_io_write(&m.platform.bus, TEST_DEVICE_INDEX_PORT, 2, 0xBBAA)
 	testing.expect_value(t, m.test_device.index, u8(11))
 	testing.expect_value(t, m.test_device.regs[10], u8(0))
-	testing.expect_value(t, m.bus.modeled_count, u64(1))
+	testing.expect_value(t, m.platform.bus.modeled_count, u64(1))
 }
 
 // The snapshot label rides in a register the guest sets before issuing the

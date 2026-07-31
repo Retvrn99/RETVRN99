@@ -188,17 +188,17 @@ test_machine_disk_attach_reasserts_cmos_after_nvram_import :: proc(t: ^testing.T
 	backing := make([]u8, 1024 * 1024)
 	defer delete(backing)
 	machine_attach_disk(m, machine_test_bd(&backing))
-	testing.expect_value(t, m.cmos.ram[CMOS_DISK_TYPE] & 0xF0, u8(0xF0))
-	testing.expect(t, cmos_checksum_valid(&m.cmos))
+	testing.expect_value(t, m.platform.cmos.ram[CMOS_DISK_TYPE] & 0xF0, u8(0xF0))
+	testing.expect(t, cmos_checksum_valid(&m.platform.cmos))
 
 	testing.expect(t, machine_cmos_import(m, diskless_nvram[:]))
-	testing.expect_value(t, m.cmos.ram[CMOS_DISK_TYPE] & 0xF0, u8(0xF0))
-	testing.expect_value(t, m.cmos.ram[CMOS_PRIMARY_DISK_EXTENDED_TYPE], u8(47))
-	testing.expect(t, cmos_checksum_valid(&m.cmos))
+	testing.expect_value(t, m.platform.cmos.ram[CMOS_DISK_TYPE] & 0xF0, u8(0xF0))
+	testing.expect_value(t, m.platform.cmos.ram[CMOS_PRIMARY_DISK_EXTENDED_TYPE], u8(47))
+	testing.expect(t, cmos_checksum_valid(&m.platform.cmos))
 
 	testing.expect(t, machine_detach_disk(m))
-	testing.expect_value(t, m.cmos.ram[CMOS_DISK_TYPE] & 0xF0, u8(0))
-	testing.expect(t, cmos_checksum_valid(&m.cmos))
+	testing.expect_value(t, m.platform.cmos.ram[CMOS_DISK_TYPE] & 0xF0, u8(0))
+	testing.expect(t, cmos_checksum_valid(&m.platform.cmos))
 }
 
 @(test)

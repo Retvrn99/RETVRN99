@@ -16,8 +16,8 @@ pci_machine_test_write_config :: proc(p: ^Pci, address: u32, size: u8, value: u3
 
 @(private = "file")
 pci_machine_test_write_live_config :: proc(m: ^Machine, address: u32, size: u8, value: u32) {
-	bus_io_write(&m.bus, 0xCF8, 4, address)
-	bus_io_write(&m.bus, 0xCFC, size, value)
+	bus_io_write(&m.platform.bus, 0xCF8, 4, address)
+	bus_io_write(&m.platform.bus, 0xCFC, size, value)
 }
 
 @(private = "file")
@@ -143,8 +143,8 @@ test_machine_disabled_ide_channels_do_not_cancel_bmide_requests :: proc(t: ^test
 test_machine_gsw_control_mmio_follows_relocated_bar :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	bus_init(&m.bus)
-	defer bus_destroy(&m.bus)
+	bus_init(&m.platform.bus)
+	defer bus_destroy(&m.platform.bus)
 	m.vm.a20_enabled = true
 	pci_init(&m.pci)
 	video.gsw_vga_init(&m.gsw_vga, nil)

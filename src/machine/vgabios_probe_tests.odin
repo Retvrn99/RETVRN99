@@ -112,7 +112,7 @@ vgabios_probe_run :: proc(
 	timeout: time.Duration,
 ) -> bool {
 	if !testing.expect(t, machine_mount_floppy(m, image)) {return false}
-	m.cmos.ram[0x3D] = 0x01
+	m.platform.cmos.ram[0x3D] = 0x01
 	fwcfg_add_file(&m.fwcfg, "etc/show-boot-menu", []u8{0, 0, 0, 0}, 0x0022)
 
 	watchdog := Vgabios_Test_Watchdog {
@@ -135,7 +135,7 @@ vgabios_probe_run :: proc(
 			m.exit_count,
 		)
 	}
-	if !testing.expect_value(t, m.bus.freeze_msg, "") {return false}
+	if !testing.expect_value(t, m.platform.bus.freeze_msg, "") {return false}
 	return testing.expect_value(
 		t,
 		m.vm.ram[VGABIOS_PROBE_SENTINEL_ADDRESS],

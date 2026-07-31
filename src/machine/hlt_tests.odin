@@ -30,7 +30,7 @@ test_machine_hlt_waits_for_deliverable_latched_pit_irq :: proc(t: ^testing.T) {
 	defer free(m)
 	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
 	defer machine_destroy(m)
-	machine_test_setup_irq0(&m.pic, true)
+	machine_test_setup_irq0(&m.platform.pic, true)
 
 	copy(m.vm.ram[0x20:], []u8{0x00, 0x05, 0x00, 0x00})
 	copy(m.vm.ram[0x500:], []u8{0x50, 0xB0, 0x20, 0xE6, 0x20, 0x58, 0xCF})
@@ -43,25 +43,25 @@ test_machine_hlt_waits_for_deliverable_latched_pit_irq :: proc(t: ^testing.T) {
 		0xF4,
 	})
 	seen: u32
-	bus_register(&m.bus, 0x99, 0x99, Io_Handler{
+	bus_register(&m.platform.bus, 0x99, 0x99, Io_Handler{
 		ctx = &seen,
 		write = proc(ctx: rawptr, port: u16, size: u8, value: u32) {(^u32)(ctx)^ = value},
 	})
-	pit_out(&m.pit, 0x43, 0x34)
-	pit_out(&m.pit, 0x40, 0x9C)
-	pit_out(&m.pit, 0x40, 0x2E)
+	pit_out(&m.platform.pit, 0x43, 0x34)
+	pit_out(&m.platform.pit, 0x40, 0x9C)
+	pit_out(&m.platform.pit, 0x40, 0x2E)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
 
 	if !testing.expect(t, step(m)) {return}
 	testing.expect(t, m.cpu_halted)
 	testing.expect_value(t, seen, u32(0))
 	machine_advance_time_ns(m, 20_000_000)
-	testing.expect(t, m.pic.master.irr & 0x01 != 0)
+	testing.expect(t, m.platform.pic.master.irr & 0x01 != 0)
 	if !testing.expect(t, step(m)) {return}
 	testing.expect(t, m.cpu_halted)
 	testing.expect_value(t, seen, u32(0))
 
-	pic_out(&m.pic, 0x21, 0xFE)
+	pic_out(&m.platform.pic, 0x21, 0xFE)
 	for _ in 0 ..< 10 {
 		if !step(m) || seen == 0x42 {break}
 	}
@@ -79,7 +79,7 @@ test_machine_halted_pending_event_drains_before_pic_irq :: proc(t: ^testing.T) {
 	defer free(m)
 	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
 	defer machine_destroy(m)
-	machine_test_setup_irq0(&m.pic, true)
+	machine_test_setup_irq0(&m.platform.pic, true)
 
 	copy(m.vm.ram[0x18:], []u8{0x00, 0x05, 0x00, 0x00})
 	copy(m.vm.ram[0x20:], []u8{0x20, 0x05, 0x00, 0x00})
@@ -113,8 +113,8 @@ test_machine_halted_pending_event_drains_before_pic_irq :: proc(t: ^testing.T) {
 	) {
 		return
 	}
-	pic_raise(&m.pic, 0)
-	pic_out(&m.pic, 0x21, 0xFE)
+	pic_raise(&m.platform.pic, 0)
+	pic_out(&m.platform.pic, 0x21, 0xFE)
 
 	if !testing.expect(t, step(m)) {return}
 	testing.expect_value(t, m.vm.ram[0x540], u8(1))

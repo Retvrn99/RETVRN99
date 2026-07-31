@@ -38,7 +38,7 @@ machine_cdda_frame :: proc(ctx: rawptr, pcm: []u8) {
 	remaining := len(frames) - consumed
 	if remaining == 0 {return}
 	if m.cdda_pending_count + remaining > len(m.cdda_pending) {
-		bus_freeze(&m.bus, "CDDA source queue overflow")
+		bus_freeze(&m.platform.bus, "CDDA source queue overflow")
 		return
 	}
 	copy(m.cdda_pending[m.cdda_pending_count:m.cdda_pending_count + remaining], frames[consumed:])
@@ -69,16 +69,16 @@ machine_audio_next_deadline :: proc(m: ^Machine) -> (deadline: u64, pending: boo
 @(private = "package")
 machine_sb16_dma_read_byte :: proc(ctx: rawptr, channel: int) -> (u8, bool) {
 	m := (^Machine)(ctx)
-	return dma_transfer_from_memory_byte(&m.dma, channel, m.vm.ram)
+	return dma_transfer_from_memory_byte(&m.platform.dma, channel, m.vm.ram)
 }
 
 @(private = "package")
 machine_sb16_dma_read_word :: proc(ctx: rawptr, channel: int) -> (u16, bool) {
 	m := (^Machine)(ctx)
-	if channel >= 5 {return dma_transfer_from_memory_word(&m.dma, channel, m.vm.ram)}
-	low, low_ok := dma_transfer_from_memory_byte(&m.dma, channel, m.vm.ram)
+	if channel >= 5 {return dma_transfer_from_memory_word(&m.platform.dma, channel, m.vm.ram)}
+	low, low_ok := dma_transfer_from_memory_byte(&m.platform.dma, channel, m.vm.ram)
 	if !low_ok {return 0, false}
-	high, high_ok := dma_transfer_from_memory_byte(&m.dma, channel, m.vm.ram)
+	high, high_ok := dma_transfer_from_memory_byte(&m.platform.dma, channel, m.vm.ram)
 	if !high_ok {return 0, false}
 	return u16(low) | u16(high) << 8, true
 }
@@ -92,9 +92,9 @@ machine_audio_dma_snapshot_adapter :: proc(
 	bool,
 ) {
 	m := (^Machine)(ctx)
-	if m == nil || channel < 0 || channel >= len(m.dma.ch) {return {}, false}
-	chip := channel < 4 ? &m.dma.master : &m.dma.slave
-	c := &m.dma.ch[channel]
+	if m == nil || channel < 0 || channel >= len(m.platform.dma.ch) {return {}, false}
+	chip := channel < 4 ? &m.platform.dma.master : &m.platform.dma.slave
+	c := &m.platform.dma.ch[channel]
 	return {
 			controller_command = chip.command,
 			mode = c.mode,
@@ -109,14 +109,14 @@ machine_audio_dma_snapshot_adapter :: proc(
 machine_audio_dreq_adapter :: proc(ctx: rawptr, channel: int, asserted: bool) {
 	m := (^Machine)(ctx)
 	if m == nil {return}
-	dma_set_hardware_request(&m.dma, channel, asserted)
+	dma_set_hardware_request(&m.platform.dma, channel, asserted)
 }
 
 @(private = "file")
 machine_audio_legacy_irq_adapter :: proc(ctx: rawptr, irq: u8) {
 	m := (^Machine)(ctx)
 	if m == nil {return}
-	pic_raise(&m.pic, irq)
+	pic_raise(&m.platform.pic, irq)
 }
 
 @(private = "file")
@@ -205,9 +205,9 @@ machine_audio_advance_gsw_to :: proc(m: ^Machine, tick: u64) {
 machine_audio_render_to :: proc(m: ^Machine, tick: u64) {
 	machine_audio_apply_gsw_observation(m)
 	machine_audio_drain_cdda(m)
-	transitions := pit_channel2_transition_slice(&m.pit)
+	transitions := pit_channel2_transition_slice(&m.platform.pit)
 	transition_index := 0
-	speaker_enabled := m.pit.port61_low & 0x02 != 0
+	speaker_enabled := m.platform.pit.port61_low & 0x02 != 0
 	if !speaker_enabled {transition_index = len(transitions)}
 	for transition_index < len(transitions) && transitions[transition_index].master_tick <= tick {
 		next_tick := transitions[transition_index].master_tick
@@ -228,28 +228,28 @@ machine_audio_render_to :: proc(m: ^Machine, tick: u64) {
 		}
 		machine_audio_advance_gsw_to(m, next_tick)
 	}
-	sound.audio_mixer_record_speaker_dropped(&m.audio, pit_channel2_transitions_dropped(&m.pit))
-	pit_clear_channel2_transitions(&m.pit)
+	sound.audio_mixer_record_speaker_dropped(&m.audio, pit_channel2_transitions_dropped(&m.platform.pit))
+	pit_clear_channel2_transitions(&m.platform.pit)
 	machine_audio_advance_gsw_to(m, tick)
 	_ = sound.audio_mixer_advance_to(&m.audio, tick)
 }
 
 @(private = "package")
 machine_audio_apply_pit_transitions :: proc(m: ^Machine) {
-	transitions := pit_channel2_transition_slice(&m.pit)
-	dropped := pit_channel2_transitions_dropped(&m.pit)
+	transitions := pit_channel2_transition_slice(&m.platform.pit)
+	dropped := pit_channel2_transitions_dropped(&m.platform.pit)
 	if len(transitions) == 0 && dropped == 0 {return}
-	if m.pit.port61_low & 0x02 == 0 {
+	if m.platform.pit.port61_low & 0x02 == 0 {
 		sound.audio_mixer_record_speaker_dropped(&m.audio, dropped)
-		pit_clear_channel2_transitions(&m.pit)
+		pit_clear_channel2_transitions(&m.platform.pit)
 		return
 	}
-	machine_audio_render_to(m, pit_now(&m.pit))
+	machine_audio_render_to(m, pit_now(&m.platform.pit))
 }
 
 @(private = "package")
 machine_audio_advance_to :: proc(m: ^Machine, tick: u64) {
-	for _ in 0 ..< pit_advance_to(&m.pit, tick) {pic_raise(&m.pic, 0)}
+	for _ in 0 ..< pit_advance_to(&m.platform.pit, tick) {pic_raise(&m.platform.pic, 0)}
 	machine_audio_render_to(m, tick)
 }
 

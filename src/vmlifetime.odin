@@ -412,7 +412,7 @@ vm_lifetime_boot :: proc(lifetime: ^Vm_Lifetime) -> Vm_Lifetime_Diagnostic {
 	if !lifetime.clock_running {machine.machine_clock_set_running(lifetime.m, false)}
 	if lifetime.has_cmos {_ = machine.machine_cmos_import(lifetime.m, lifetime.cmos[:])}
 	if lifetime.adapters.configure != nil &&
-	   !lifetime.adapters.configure(lifetime.adapters.ctx, lifetime.m, lifetime.m.cmos.ram[:]) {
+	   !lifetime.adapters.configure(lifetime.adapters.ctx, lifetime.m, lifetime.m.platform.cmos.ram[:]) {
 		return .Machine_Configure_Failed
 	}
 	if lifetime.attach_storage {
@@ -432,7 +432,7 @@ vm_lifetime_boot :: proc(lifetime: ^Vm_Lifetime) -> Vm_Lifetime_Diagnostic {
 	}
 	_ = host.host_audio_set_gain(&lifetime.audio, lifetime.volume_gain)
 	vm_lifetime_guard_bind(lifetime)
-	if lifetime.m.bus.frozen {return .Machine_Configure_Failed}
+	if lifetime.m.platform.bus.frozen {return .Machine_Configure_Failed}
 	booted = true
 	return .None
 }

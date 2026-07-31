@@ -21,11 +21,11 @@ console_input_apply :: proc(
 	switch action.kind {
 	case .Key, .Key_While_Setup_Page:
 		keys := action.key
-		before := machine.i8042_diagnostics(&m.kbd)
+		before := machine.i8042_diagnostics(&m.platform.kbd)
 		if !machine.machine_key_sequence(m, keys[:int(action.key_n)]) {
 			fmt.eprintln("input script: keyboard schedule is full")
 		} else {
-			after := machine.i8042_diagnostics(&m.kbd)
+			after := machine.i8042_diagnostics(&m.platform.kbd)
 			fmt.printfln(
 				"input script: keyboard scanning=%t set=%d command=%02x output=%t queued=%d scheduled=%d->%d",
 				before.keyboard_scanning,

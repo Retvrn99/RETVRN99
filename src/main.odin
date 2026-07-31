@@ -2243,7 +2243,7 @@ console_vm_lifetime_configure :: proc(ctx: rawptr, m: ^machine.Machine, _: []u8)
 	config := (^Console_Vm_Lifetime_Config)(ctx)
 	if config == nil || config.options == nil || config.install_state == nil {return false}
 	install_apply_initial_boot_order(
-		m.cmos.ram[:],
+		m.platform.cmos.ram[:],
 		config.loaded_cmos[:],
 		config.has_cmos,
 		config.install_state,
@@ -2251,11 +2251,11 @@ console_vm_lifetime_configure :: proc(ctx: rawptr, m: ^machine.Machine, _: []u8)
 	if config.has_cmos {_ = machine.machine_cmos_import(m, config.loaded_cmos[:])}
 	if !machine.load_roms(&m.vm) {return false}
 	machine.machine_set_cpu_mode(m, config.settings.cpu_mode)
-	machine.bus_set_strict_io(&m.bus, config.options.strict_io)
+	machine.bus_set_strict_io(&m.platform.bus, config.options.strict_io)
 	machine.machine_set_diagnostic_tracing(m, config.options.strict_io)
 	machine.machine_set_bus_diagnostic_tracing(m, config.options.setup_diagnostics == .Hardware)
 	if config.options.test_device {machine.machine_enable_test_device(m)}
-	return !m.bus.frozen
+	return !m.platform.bus.frozen
 }
 
 console_main :: proc(
@@ -2838,11 +2838,11 @@ console_main :: proc(
 					break loop
 				}
 				reason := strings.clone(machine.machine_cpu_reset_reason(m))
-				reset_code := m.cpu_reset_cmos_0f
+				reset_code := m.platform.reset.cpu_reset_cmos_0f
 				reset_ok := vm_lifetime_warm_cpu_reset(&lifetime)
 				if !reset_ok {
 					firmware_log_host_flush(&firmware, nil)
-					fmt.printfln("CPU reset failed: %s", m.bus.freeze_msg)
+					fmt.printfln("CPU reset failed: %s", m.platform.bus.freeze_msg)
 					dump_state(m)
 					run_result.stop_reason = .Fatal_Virtualization_Failure
 					result = 2
@@ -2861,7 +2861,7 @@ console_main :: proc(
 				firmware_log_host_flush(&firmware, nil)
 				fmt.printfln(
 					"warm CPU reset %d after %d iterations: %s, CMOS 0F=%02x",
-					m.cpu_reset_count,
+					m.platform.reset.cpu_reset_count,
 					iterations,
 					reason,
 					reset_code,
@@ -2969,12 +2969,12 @@ console_main :: proc(
 				continue
 			}
 			firmware_log_host_flush(&firmware, nil)
-			fmt.printfln("VM frozen after %d iterations: %s", iterations, m.bus.freeze_msg)
+			fmt.printfln("VM frozen after %d iterations: %s", iterations, m.platform.bus.freeze_msg)
 			dump_state(m)
 			print_grid(machine.machine_text_snapshot(m))
 			if options.strict_io &&
-			   (strings.has_prefix(m.bus.freeze_msg, "unclassified port") ||
-					   strings.has_prefix(m.bus.freeze_msg, "unclassified MMIO")) {
+			   (strings.has_prefix(m.platform.bus.freeze_msg, "unclassified port") ||
+					   strings.has_prefix(m.platform.bus.freeze_msg, "unclassified MMIO")) {
 				run_result.stop_reason = .Strict_IO_Failure
 			} else {
 				run_result.stop_reason = .Fatal_Virtualization_Failure

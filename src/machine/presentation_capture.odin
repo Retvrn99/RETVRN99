@@ -32,7 +32,7 @@ machine_publish_vbe_writes :: proc(m: ^Machine) -> bool {
 		&legacy_pages,
 	)
 	if !lfb_ok || !bank_ok || !legacy_ok {
-		bus_freeze(&m.bus, "WHPX VGA dirty-page query failed")
+		bus_freeze(&m.platform.bus, "WHPX VGA dirty-page query failed")
 		return false
 	}
 	m.lfb_dirty_page_observations = machine_graphics_saturating_add(

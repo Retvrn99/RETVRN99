@@ -50,26 +50,26 @@ test_advertised_hardware_reset_routes_share_request_contract :: proc(t: ^testing
 	for expected in routes {
 		m := new(Machine)
 		defer free(m)
-		i8042_init(&m.kbd, m, nil, nil, machine_guest_reset)
+		i8042_init(&m.platform.kbd, m, nil, nil, machine_guest_reset)
 		switch expected.route {
 		case .Cf9:
 			machine_reset_control_write(m, 0xCF9, 1, 0x06)
 		case .Kbc_Pulse:
-			i8042_out(&m.kbd, 0x64, 0xFE)
-			i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
+			i8042_out(&m.platform.kbd, 0x64, 0xFE)
+			i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS)
 		case .Kbc_Output_Port:
-			i8042_out(&m.kbd, 0x64, 0xD1)
-			i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
-			i8042_out(&m.kbd, 0x60, 0x00)
-			i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
+			i8042_out(&m.platform.kbd, 0x64, 0xD1)
+			i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS)
+			i8042_out(&m.platform.kbd, 0x60, 0x00)
+			i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS)
 		case .Port_92:
-			i8042_out(&m.kbd, 0x92, 0x03)
+			i8042_out(&m.platform.kbd, 0x92, 0x03)
 		}
 
 		testing.expect(t, machine_reset_requested(m))
 		testing.expect_value(t, machine_reset_provenance(m), expected.source)
 		testing.expect_value(t, machine_reset_record_count(m), 1)
-		testing.expect(t, !m.bus.frozen)
+		testing.expect(t, !m.platform.bus.frozen)
 	}
 }
 
@@ -180,7 +180,7 @@ test_machine_seabios_resumes_after_dosx_triple_fault :: proc(t: ^testing.T) {
 	floppy := reset_test_floppy()
 	defer delete(floppy)
 	if !testing.expect(t, machine_mount_floppy(m, floppy)) {return}
-	m.cmos.ram[0x3D] = 0x01
+	m.platform.cmos.ram[0x3D] = 0x01
 	fwcfg_add_file(&m.fwcfg, "etc/show-boot-menu", []u8{0, 0, 0, 0}, 0x0022)
 
 	watchdog := Reset_Test_Watchdog {
@@ -199,9 +199,9 @@ test_machine_seabios_resumes_after_dosx_triple_fault :: proc(t: ^testing.T) {
 		if !testing.expect(t, reset_ok) {break}
 	}
 
-	testing.expect_value(t, m.bus.freeze_msg, "")
-	testing.expect_value(t, m.cpu_reset_count, u64(1))
-	testing.expect_value(t, m.cpu_reset_cmos_0f, u8(0x0A))
+	testing.expect_value(t, m.platform.bus.freeze_msg, "")
+	testing.expect_value(t, m.platform.reset.cpu_reset_count, u64(1))
+	testing.expect_value(t, m.platform.reset.cpu_reset_cmos_0f, u8(0x0A))
 	testing.expect_value(
 		t,
 		machine_reset_provenance(m),
@@ -211,7 +211,7 @@ test_machine_seabios_resumes_after_dosx_triple_fault :: proc(t: ^testing.T) {
 	testing.expect(t, reset_recorded)
 	testing.expect_value(t, reset_record.source, Reset_Provenance.Dos_Extender_Warm_Resume)
 	testing.expect_value(t, reset_record.cmos_shutdown, u8(0x0A))
-	testing.expect_value(t, m.cmos.ram[0x0F], u8(0))
+	testing.expect_value(t, m.platform.cmos.ram[0x0F], u8(0))
 	testing.expect_value(t, m.vm.ram[0x0467], u8(0x40))
 	testing.expect_value(t, m.vm.ram[0x0468], u8(0x7C))
 	testing.expect_value(t, m.vm.ram[0x0500], u8(0xD7))

@@ -49,6 +49,6 @@ test_machine_vga_sequencer_reset_crosses_io_and_restores_scanout :: proc(t: ^tes
 
 	testing.expect(t, machine_io_write(m, 0x3C5, 1, 3))
 	testing.expect_value(t, machine_display_frame(m).pixels[0], baseline)
-	testing.expect_value(t, m.bus.unclassified_count, u64(0))
-	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(0))
+	testing.expect_value(t, m.platform.bus.unclassified_count, u64(0))
+	testing.expect_value(t, m.platform.bus.unclassified_mmio_count, u64(0))
 }

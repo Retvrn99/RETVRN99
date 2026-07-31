@@ -7,24 +7,26 @@ import "core:testing"
 
 machine_test_audio_timing_init :: proc(m: ^Machine) -> bool {
 	if !sound.audio_mixer_init(&m.audio) {return false}
-	pit_init(&m.pit)
-	dma_init(&m.dma)
+	m.platform.adapters = machine_pc_at_adapters(m)
+	m.platform.a20_enabled = true
+	pit_init(&m.platform.pit)
+	dma_init(&m.platform.dma)
 	sound.gsw_sound_init(&m.gsw_sound)
-	cmos_init(&m.cmos, 64 * 1024 * 1024)
-	i8042_init(&m.kbd, nil, nil)
-	uart_init_com1(&m.serial1)
-	uart_init_com2(&m.serial2)
-	lpt_init_lpt1(&m.parallel1)
-	lpt_init_lpt2(&m.parallel2)
+	cmos_init(&m.platform.cmos, 64 * 1024 * 1024)
+	i8042_init(&m.platform.kbd, nil, nil)
+	uart_init_com1(&m.platform.serial1)
+	uart_init_com2(&m.platform.serial2)
+	lpt_init_lpt1(&m.platform.parallel1)
+	lpt_init_lpt2(&m.platform.parallel2)
 	disk.atapi_init(&m.atapi)
 	disk.bmide_init(&m.bmide)
 	m.vga.timing.elapsed_ns = ~u64(0)
-	pit_out(&m.pit, 0x43, 0xB6)
-	pit_out(&m.pit, 0x42, 0xA9)
-	pit_out(&m.pit, 0x42, 0x04)
-	pit_port61_write(&m.pit, 0x03)
-	pit_clear_channel2_transitions(&m.pit)
-	_ = sound.audio_mixer_set_speaker_state(&m.audio, 0, true, pit_channel_out(&m.pit, 2))
+	pit_out(&m.platform.pit, 0x43, 0xB6)
+	pit_out(&m.platform.pit, 0x42, 0xA9)
+	pit_out(&m.platform.pit, 0x42, 0x04)
+	pit_port61_write(&m.platform.pit, 0x03)
+	pit_clear_channel2_transitions(&m.platform.pit)
+	_ = sound.audio_mixer_set_speaker_state(&m.audio, 0, true, pit_channel_out(&m.platform.pit, 2))
 	return true
 }
 
@@ -106,11 +108,11 @@ test_machine_pc_speaker_440_hz_tracks_pit_divisor :: proc(t: ^testing.T) {
 	defer free(m)
 	if !testing.expect(t, machine_test_audio_timing_init(m)) {return}
 	// 1,193,182 / 2,712 = 439.96 Hz.
-	pit_out(&m.pit, 0x43, 0xB6)
-	pit_out(&m.pit, 0x42, 0x98)
-	pit_out(&m.pit, 0x42, 0x0A)
-	pit_clear_channel2_transitions(&m.pit)
-	_ = sound.audio_mixer_set_speaker_state(&m.audio, 0, true, pit_channel_out(&m.pit, 2))
+	pit_out(&m.platform.pit, 0x43, 0xB6)
+	pit_out(&m.platform.pit, 0x42, 0x98)
+	pit_out(&m.platform.pit, 0x42, 0x0A)
+	pit_clear_channel2_transitions(&m.platform.pit)
+	_ = sound.audio_mixer_set_speaker_state(&m.audio, 0, true, pit_channel_out(&m.platform.pit, 2))
 
 	consumer: sound.Audio_Consumer
 	sound.audio_consumer_init(&consumer, machine_audio_output(m))
@@ -203,7 +205,7 @@ test_machine_audio_scheduler_batches_opl_samples_but_preserves_timer_deadline ::
 	defer free(timer_machine)
 	if !testing.expect(t, machine_test_audio_timing_init(timer_machine)) {return}
 	_ = sound.audio_mixer_set_speaker_state(&timer_machine.audio, 0, false, false)
-	pit_port61_write(&timer_machine.pit, 0)
+	pit_port61_write(&timer_machine.platform.pit, 0)
 	audio_test_opl3_write_register(timer_machine, 0x02, 0xFF)
 	audio_test_opl3_write_register(timer_machine, 0x04, 0x01)
 	timer_observation := sound.gsw_sound_observation(&timer_machine.gsw_sound)
@@ -246,11 +248,11 @@ test_machine_audio_scheduler_keeps_exact_sb16_adpcm_block_deadline :: proc(t: ^t
 	// Four DMA bytes: one reference followed by three 4-bit ADPCM bytes.
 	ram := [4]u8{0x80, 0x11, 0x22, 0x33}
 	m.vm.ram = ram[:]
-	m.dma.ch[1].masked = false
-	m.dma.ch[1].mode = 0x08
-	m.dma.ch[1].count = 3
-	m.dma.ch[4].masked = false
-	m.dma.ch[4].mode = 0xC0
+	m.platform.dma.ch[1].masked = false
+	m.platform.dma.ch[1].mode = 0x08
+	m.platform.dma.ch[1].count = 3
+	m.platform.dma.ch[4].masked = false
+	m.platform.dma.ch[4].mode = 0xC0
 	audio_test_gsw_legacy_write(m, 0x22C, 0x75)
 	audio_test_gsw_legacy_write(m, 0x22C, 3)
 	audio_test_gsw_legacy_write(m, 0x22C, 0)
@@ -294,8 +296,8 @@ test_machine_audio_merges_native_pcm_and_keeps_observable_transport_deadline :: 
 		ram[base + 2] = 0x00
 		ram[base + 3] = 0xF0
 	}
-	pit_port61_write(&m.pit, 0)
-	pit_clear_channel2_transitions(&m.pit)
+	pit_port61_write(&m.platform.pit, 0)
+	pit_clear_channel2_transitions(&m.platform.pit)
 	_ = sound.audio_mixer_set_speaker_state(&m.audio, 0, false, false)
 	audio_test_gsw_pcm_write32(m, sound.GSW_PCM_REG_RING_GPA_LOW, 4_096)
 	audio_test_gsw_pcm_write32(m, sound.GSW_PCM_REG_RING_SIZE, 4_096)

@@ -114,8 +114,8 @@ console_acceptance_test_failed_reset_does_not_accumulate_live_segment_twice :: p
 	m := new(machine.Machine)
 	defer free(m)
 	m.inj_count[8] = 3
-	m.bus.modeled_count = 7
-	m.bus.unclassified_count = 2
+	m.platform.bus.modeled_count = 7
+	m.platform.bus.unclassified_count = 2
 	segment_accumulated := false
 	testing.expect(t, console_result_accumulate_machine_segment(&result, m, &segment_accumulated))
 	testing.expect(t, segment_accumulated)
@@ -710,8 +710,8 @@ console_acceptance_test_reports_unavailable_legacy_histories_when_not_traced :: 
 	m := new(machine.Machine)
 	defer free(m)
 	m.io_count = 8
-	m.bus.unclassified_count = 3
-	m.bus.unclassified_mmio_count = 2
+	m.platform.bus.unclassified_count = 3
+	m.platform.bus.unclassified_mmio_count = 2
 	builder := strings.builder_make()
 	console_artifact_append_legacy_histories(&builder, m)
 	diagnostics := strings.to_string(builder)

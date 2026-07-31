@@ -152,8 +152,8 @@ run_until :: proc(m: ^machine.Machine, deadline: time.Duration, needle: string) 
 		snap := machine.machine_text_snapshot(m)
 		if strings.contains(grid_text(&snap), needle) {return true}
 		free_all(context.temp_allocator)
-		if m.bus.frozen {
-			fmt.printfln("frozen: %s", m.bus.freeze_msg)
+		if m.platform.bus.frozen {
+			fmt.printfln("frozen: %s", m.platform.bus.freeze_msg)
 			return false
 		}
 	}

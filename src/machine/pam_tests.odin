@@ -22,16 +22,16 @@ test_amd756_romw_does_not_lock_low_bios_shadow_ram :: proc(t: ^testing.T) {
 	testing.expect_value(t, pci_amd756_bios_write_enabled(&m.pci), false)
 
 	// AMD-751 has no Intel PAM register.
-	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_0058)
-	bus_io_write(&m.bus, 0xCFD, 1, 0xFF)
-	testing.expect_value(t, bus_io_read(&m.bus, 0xCFD, 1), u32(0))
+	bus_io_write(&m.platform.bus, 0xCF8, 4, 0x8000_0058)
+	bus_io_write(&m.platform.bus, 0xCFD, 1, 0xFF)
+	testing.expect_value(t, bus_io_read(&m.platform.bus, 0xCFD, 1), u32(0))
 
-	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_3840)
-	bus_io_write(&m.bus, 0xCFC, 1, u32(AMD756_ISA_ROM_WRITE_ENABLE))
+	bus_io_write(&m.platform.bus, 0xCF8, 4, 0x8000_3840)
+	bus_io_write(&m.platform.bus, 0xCFC, 1, u32(AMD756_ISA_ROM_WRITE_ENABLE))
 	testing.expect_value(t, pci_amd756_bios_write_enabled(&m.pci), true)
 	m.vm.ram[0xE1000] = 0x66
 
-	bus_io_write(&m.bus, 0xCFC, 1, 0)
+	bus_io_write(&m.platform.bus, 0xCFC, 1, 0)
 	testing.expect_value(t, pci_amd756_bios_write_enabled(&m.pci), false)
 	m.vm.ram[0xE1001] = 0x77
 	testing.expect_value(t, m.vm.ram[0xE1000], u8(0x66))
@@ -76,14 +76,14 @@ test_amd756_guest_romw_clear_keeps_low_bios_shadow_writable :: proc(t: ^testing.
 		steps += 1
 		if !step(m) || m.cpu_halted {break}
 	}
-	if !testing.expect_value(t, m.bus.freeze_msg, "") {return}
+	if !testing.expect_value(t, m.platform.bus.freeze_msg, "") {return}
 	if !testing.expect_value(t, m.cpu_halted, true) {return}
 	testing.expect(t, steps >= 1)
 
-	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_3840)
+	bus_io_write(&m.platform.bus, 0xCF8, 4, 0x8000_3840)
 	testing.expect_value(
 		t,
-		bus_io_read(&m.bus, 0xCFC, 1) & u32(AMD756_ISA_ROM_WRITE_ENABLE),
+		bus_io_read(&m.platform.bus, 0xCFC, 1) & u32(AMD756_ISA_ROM_WRITE_ENABLE),
 		u32(0),
 	)
 	testing.expect_value(t, m.vm.ram[0xE1000], u8(0x66))

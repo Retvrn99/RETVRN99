@@ -21,14 +21,14 @@ gsw_pcm_machine_test_relocated_mmio_pull_and_shared_pirq :: proc(t: ^testing.T) 
 	defer free(m)
 	ram: [8192]u8
 	m.vm.ram = ram[:]
-	bus_init(&m.bus)
-	defer bus_destroy(&m.bus)
-	pic_setup(&m.pic)
+	bus_init(&m.platform.bus)
+	defer bus_destroy(&m.platform.bus)
+	pic_setup(&m.platform.pic)
 	// The normal guest persona deliberately hides the unproven native PCI
 	// Adapter.  This integration test opts in so the reserved ABI remains
 	// covered while the legacy SB16/OPL3 Adapter is tested in guests.
 	pci_init(&m.pci, true)
-	pci_connect_pic(&m.pci, &m.pic)
+	pci_connect_pic(&m.pci, &m.platform.pic)
 	sound.gsw_sound_init(&m.gsw_sound)
 	if !testing.expect(t, sound.audio_mixer_init(&m.audio)) {return}
 	if !testing.expect(t, machine_sync_pci_devices(m)) {return}

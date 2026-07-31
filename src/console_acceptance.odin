@@ -125,14 +125,14 @@ console_progress_snapshot :: proc(
 	irq_injections: u64
 	for count in m.inj_count {irq_injections += count}
 	dma_units: u64
-	for channel in m.dma.ch {dma_units += channel.transfer_cycles}
+	for channel in m.platform.dma.ch {dma_units += channel.transfer_cycles}
 	execution := machine.machine_execution_counters(m)
 	return {
 		boot_epoch = result.boot_epoch,
 		guest_requested_resets = result.guest_requested_resets,
 		irq_injections = irq_injections,
 		dma_units = dma_units,
-		modeled_io = m.bus.modeled_count,
+		modeled_io = m.platform.bus.modeled_count,
 		ide_io = m.ide_count,
 		ide_commands = m.cmd_count,
 		atapi_packets = m.atapi.trace_count,
@@ -394,11 +394,11 @@ console_result_accumulate_machine :: proc(result: ^acceptance.Result, m: ^machin
 	first_segment := result.master_ticks == 0
 	result.master_ticks += machine.master_timeline_now(m.timeline)
 	for count in m.inj_count {result.irq_injections += count}
-	for channel in m.dma.ch {result.dma_units += channel.transfer_cycles}
-	result.modeled_io += m.bus.modeled_count
-	result.passive_io += m.bus.passive_count
-	result.unclassified_io += m.bus.unclassified_count
-	result.unclassified_mmio += m.bus.unclassified_mmio_count
+	for channel in m.platform.dma.ch {result.dma_units += channel.transfer_cycles}
+	result.modeled_io += m.platform.bus.modeled_count
+	result.passive_io += m.platform.bus.passive_count
+	result.unclassified_io += m.platform.bus.unclassified_count
+	result.unclassified_mmio += m.platform.bus.unclassified_mmio_count
 	execution := machine.machine_execution_counters(m)
 	result.execution.hypervisor_runs += execution.hypervisor_runs
 	result.execution.hypervisor_cancellations += execution.hypervisor_cancellations
@@ -1455,7 +1455,7 @@ console_artifact_append_legacy_histories :: proc(builder: ^strings.Builder, m: ^
 	} else {
 		fmt.sbprintln(builder, "recent I/O: unavailable (diagnostic tracing disabled)")
 	}
-	if m.bus.diagnostic_tracing {
+	if m.platform.bus.diagnostic_tracing {
 		fmt.sbprintfln(
 			builder,
 			"first kernel IDE probe accesses (%d captured of %d):",
@@ -1508,16 +1508,16 @@ console_artifact_append_legacy_histories :: proc(builder: ^strings.Builder, m: ^
 			)
 		}
 	}
-	if m.bus.diagnostic_tracing {
+	if m.platform.bus.diagnostic_tracing {
 		unclassified_count := int(
-			min(m.bus.unclassified_count, u64(machine.BUS_UNCLASSIFIED_HISTORY)),
+			min(m.platform.bus.unclassified_count, u64(machine.BUS_UNCLASSIFIED_HISTORY)),
 		)
 		fmt.sbprintfln(builder, "recent unclassified I/O (%d):", unclassified_count)
 		for i in 0 ..< unclassified_count {
 			index :=
-				(m.bus.unclassified_count - u64(unclassified_count) + u64(i)) %
+				(m.platform.bus.unclassified_count - u64(unclassified_count) + u64(i)) %
 				machine.BUS_UNCLASSIFIED_HISTORY
-			trace := m.bus.unclassified_history[index]
+			trace := m.platform.bus.unclassified_history[index]
 			fmt.sbprintfln(
 				builder,
 				"  %s %04x size=%d value=%08x",
@@ -1528,14 +1528,14 @@ console_artifact_append_legacy_histories :: proc(builder: ^strings.Builder, m: ^
 			)
 		}
 		mmio_count := int(
-			min(m.bus.unclassified_mmio_count, u64(machine.BUS_UNCLASSIFIED_MMIO_HISTORY)),
+			min(m.platform.bus.unclassified_mmio_count, u64(machine.BUS_UNCLASSIFIED_MMIO_HISTORY)),
 		)
 		fmt.sbprintfln(builder, "recent unclassified MMIO (%d):", mmio_count)
 		for i in 0 ..< mmio_count {
 			index :=
-				(m.bus.unclassified_mmio_count - u64(mmio_count) + u64(i)) %
+				(m.platform.bus.unclassified_mmio_count - u64(mmio_count) + u64(i)) %
 				machine.BUS_UNCLASSIFIED_MMIO_HISTORY
-			trace := m.bus.unclassified_mmio_history[index]
+			trace := m.platform.bus.unclassified_mmio_history[index]
 			fmt.sbprintfln(
 				builder,
 				"  %s gpa=%016x size=%d",
@@ -1693,27 +1693,27 @@ console_artifact_diagnostics :: proc(
 		result.audio.cdda.nonzero_frames,
 	)
 	if m != nil {
-		fmt.sbprintfln(&builder, "freeze=%s", m.bus.freeze_msg)
+		fmt.sbprintfln(&builder, "freeze=%s", m.platform.bus.freeze_msg)
 		registers := format_regs(hv.get_regs(&m.vm), m)
 		fmt.sbprintfln(&builder, "%s", registers)
 		delete(registers)
 		fmt.sbprintfln(
 			&builder,
 			"PIC master irr=%02x isr=%02x imr=%02x asserted=%02x elcr=%02x auto_eoi=%t init=%v; slave irr=%02x isr=%02x imr=%02x asserted=%02x elcr=%02x auto_eoi=%t init=%v",
-			m.pic.master.irr,
-			m.pic.master.isr,
-			m.pic.master.imr,
-			m.pic.master.asserted,
-			m.pic.master.elcr,
-			m.pic.master.auto_eoi,
-			m.pic.master.init,
-			m.pic.slave.irr,
-			m.pic.slave.isr,
-			m.pic.slave.imr,
-			m.pic.slave.asserted,
-			m.pic.slave.elcr,
-			m.pic.slave.auto_eoi,
-			m.pic.slave.init,
+			m.platform.pic.master.irr,
+			m.platform.pic.master.isr,
+			m.platform.pic.master.imr,
+			m.platform.pic.master.asserted,
+			m.platform.pic.master.elcr,
+			m.platform.pic.master.auto_eoi,
+			m.platform.pic.master.init,
+			m.platform.pic.slave.irr,
+			m.platform.pic.slave.isr,
+			m.platform.pic.slave.imr,
+			m.platform.pic.slave.asserted,
+			m.platform.pic.slave.elcr,
+			m.platform.pic.slave.auto_eoi,
+			m.platform.pic.slave.init,
 		)
 		fmt.sbprintfln(
 			&builder,
@@ -1792,7 +1792,7 @@ console_artifact_diagnostics :: proc(
 			fmt.sbprintfln(&builder, "scheduler next=%v deadline=%d", event.device, event.deadline)
 		}
 		fmt.sbprintln(&builder, "PIT:")
-		for channel, index in m.pit.ch {
+		for channel, index in m.platform.pit.ch {
 			fmt.sbprintfln(
 				&builder,
 				"  ch%d mode=%d rw=%d reload=%04x active=%04x count=%05x null=%v gate=%v out=%v state=%v",
@@ -1848,15 +1848,15 @@ console_artifact_diagnostics :: proc(
 		fmt.sbprintfln(
 			&builder,
 			"RTC index=%02x A=%02x B=%02x C=%02x D=%02x irq_edge=%v nmi_disabled=%v",
-			m.cmos.index,
-			m.cmos.ram[0x0A],
-			m.cmos.ram[0x0B],
-			m.cmos.ram[0x0C],
-			m.cmos.ram[0x0D],
-			m.cmos.irq_edge_pending,
-			m.cmos.nmi_disabled,
+			m.platform.cmos.index,
+			m.platform.cmos.ram[0x0A],
+			m.platform.cmos.ram[0x0B],
+			m.platform.cmos.ram[0x0C],
+			m.platform.cmos.ram[0x0D],
+			m.platform.cmos.irq_edge_pending,
+			m.platform.cmos.nmi_disabled,
 		)
-		keyboard := machine.i8042_diagnostics(&m.kbd)
+		keyboard := machine.i8042_diagnostics(&m.platform.kbd)
 		fmt.sbprintfln(
 			&builder,
 			"i8042 queued=%d keyboard=%d auxiliary=%d obf=%v aux=%v ibf=%v a20=%v",
@@ -1866,10 +1866,10 @@ console_artifact_diagnostics :: proc(
 			keyboard.output_full,
 			keyboard.output_aux,
 			keyboard.input_busy,
-			m.kbd.a20,
+			m.platform.kbd.a20,
 		)
 		fmt.sbprintln(&builder, "DMA:")
-		for channel, index in m.dma.ch {
+		for channel, index in m.platform.dma.ch {
 			fmt.sbprintfln(
 				&builder,
 				"  ch%d addr=%02x:%04x count=%04x mode=%02x masked=%v dreq=%v active=%v tc=%v units=%d",
@@ -1903,8 +1903,8 @@ console_artifact_diagnostics :: proc(
 				)
 			}
 		}
-		console_artifact_append_uart(&builder, "COM1", &m.serial1)
-		console_artifact_append_uart(&builder, "COM2", &m.serial2)
+		console_artifact_append_uart(&builder, "COM1", &m.platform.serial1)
+		console_artifact_append_uart(&builder, "COM2", &m.platform.serial2)
 		console_artifact_append_legacy_histories(&builder, m)
 		atapi_count := int(min(m.atapi.trace_count, u64(disk.ATAPI_TRACE_HISTORY)))
 		fmt.sbprintfln(&builder, "recent ATAPI packets (%d):", atapi_count)

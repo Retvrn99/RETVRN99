@@ -392,16 +392,16 @@ install_test_finish_session_restores_boot_order_and_releases_media_controls :: p
 	defer vm_log_destroy(&shared)
 	m := new(machine.Machine)
 	defer free(m)
-	m.cmos.ram[0x20] = 0x99
-	m.cmos.ram[0x38] = 0x15
-	m.cmos.ram[0x3D] = 0x32
+	m.platform.cmos.ram[0x20] = 0x99
+	m.platform.cmos.ram[0x38] = 0x15
+	m.platform.cmos.ram[0x3D] = 0x32
 	testing.expect(t, install_session_finish(&ctx, m))
 	testing.expect(t, !profile.install_state_active(&ctx.install_state))
 	testing.expect_value(t, ctx.install_state.source_path, "")
 	testing.expect(t, !shared.installing_windows_98)
 	testing.expect(t, shared.cdrom_mounted)
-	testing.expect_value(t, m.cmos.ram[0x38], u8(0x15))
-	testing.expect_value(t, m.cmos.ram[0x3D], u8(0x32))
+	testing.expect_value(t, m.platform.cmos.ram[0x38], u8(0x15))
+	testing.expect_value(t, m.platform.cmos.ram[0x3D], u8(0x32))
 	retained_cmos, retained := vm_lifetime_cmos_snapshot(&ctx.lifetime)
 	testing.expect(t, retained)
 	testing.expect_value(t, retained_cmos[0x20], u8(0x77))
@@ -526,15 +526,15 @@ install_test_finish_session_save_failure_keeps_active_state :: proc(t: ^testing.
 	defer vm_log_destroy(&shared)
 	m := new(machine.Machine)
 	defer free(m)
-	m.cmos.ram[0x38] = 0x15
-	m.cmos.ram[0x3D] = 0x32
+	m.platform.cmos.ram[0x38] = 0x15
+	m.platform.cmos.ram[0x3D] = 0x32
 	testing.expect(t, !install_session_finish(&ctx, m))
 	testing.expect(t, profile.install_state_active(&ctx.install_state))
 	testing.expect_value(t, ctx.install_state.source_path, "WIN98SE.ISO")
 	testing.expect(t, shared.installing_windows_98)
 	testing.expect(t, shared.cdrom_mounted)
-	testing.expect_value(t, m.cmos.ram[0x38], u8(0x15))
-	testing.expect_value(t, m.cmos.ram[0x3D], u8(0x32))
+	testing.expect_value(t, m.platform.cmos.ram[0x38], u8(0x15))
+	testing.expect_value(t, m.platform.cmos.ram[0x3D], u8(0x32))
 }
 
 @(test)
@@ -560,9 +560,9 @@ install_test_console_finish_restores_boot_order_and_releases_install_media :: pr
 	defer profile.install_state_destroy(&state)
 	m := new(machine.Machine)
 	defer free(m)
-	m.cmos.ram[0x20] = 0x77
-	m.cmos.ram[0x38] = 0x15
-	m.cmos.ram[0x3D] = 0x32
+	m.platform.cmos.ram[0x20] = 0x77
+	m.platform.cmos.ram[0x38] = 0x15
+	m.platform.cmos.ram[0x3D] = 0x32
 	result := acceptance.Result {
 		installation_milestone = "none",
 		desktop_marker_seen    = true,
@@ -574,8 +574,8 @@ install_test_console_finish_restores_boot_order_and_releases_install_media :: pr
 	testing.expect_value(t, diagnostic, Install_Session_Finish_Diagnostic.None)
 	testing.expect(t, !profile.install_state_active(&state))
 	testing.expect_value(t, state.source_path, "")
-	testing.expect_value(t, m.cmos.ram[0x38], u8(0xA5))
-	testing.expect_value(t, m.cmos.ram[0x3D], u8(0x5A))
+	testing.expect_value(t, m.platform.cmos.ram[0x38], u8(0xA5))
+	testing.expect_value(t, m.platform.cmos.ram[0x3D], u8(0x5A))
 	testing.expect_value(t, result.installation_milestone, "hardware_detection")
 	testing.expect(t, result.desktop_marker_seen)
 	testing.expect(t, result.desktop_enum_valid)
@@ -611,13 +611,13 @@ install_test_console_finish_without_saved_boot_order_retains_current_cmos :: pro
 	defer profile.install_state_destroy(&state)
 	m := new(machine.Machine)
 	defer free(m)
-	m.cmos.ram[0x38] = 0x15
-	m.cmos.ram[0x3D] = 0x32
+	m.platform.cmos.ram[0x38] = 0x15
+	m.platform.cmos.ram[0x3D] = 0x32
 
 	diagnostic := console_install_session_finish(&paths, &state, m, nil)
 	testing.expect_value(t, diagnostic, Install_Session_Finish_Diagnostic.None)
-	testing.expect_value(t, m.cmos.ram[0x38], u8(0x15))
-	testing.expect_value(t, m.cmos.ram[0x3D], u8(0x32))
+	testing.expect_value(t, m.platform.cmos.ram[0x38], u8(0x15))
+	testing.expect_value(t, m.platform.cmos.ram[0x3D], u8(0x32))
 	persisted_cmos, cmos_diagnostic := profile.cmos_load(cmos_path)
 	testing.expect_value(t, cmos_diagnostic, profile.Cmos_Diagnostic.None)
 	testing.expect_value(t, persisted_cmos[0x38], u8(0x15))
@@ -679,8 +679,8 @@ install_test_console_finish_failure_is_nonzero_and_preserves_evidence :: proc(t:
 	defer profile.install_state_destroy(&state)
 	m := new(machine.Machine)
 	defer free(m)
-	m.cmos.ram[0x38] = 0x15
-	m.cmos.ram[0x3D] = 0x32
+	m.platform.cmos.ram[0x38] = 0x15
+	m.platform.cmos.ram[0x3D] = 0x32
 	result := acceptance.Result {
 		installation_milestone = "none",
 		desktop_marker_seen    = true,
@@ -705,8 +705,8 @@ install_test_console_finish_failure_is_nonzero_and_preserves_evidence :: proc(t:
 	testing.expect(t, result.desktop_vga_irq11_seen)
 	testing.expect(t, profile.install_state_active(&state))
 	testing.expect_value(t, state.source_path, "WIN98SE.ISO")
-	testing.expect_value(t, m.cmos.ram[0x38], u8(0x15))
-	testing.expect_value(t, m.cmos.ram[0x3D], u8(0x32))
+	testing.expect_value(t, m.platform.cmos.ram[0x38], u8(0x15))
+	testing.expect_value(t, m.platform.cmos.ram[0x3D], u8(0x32))
 }
 
 @(test)

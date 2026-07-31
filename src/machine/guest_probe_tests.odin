@@ -58,8 +58,8 @@ test_guest_probe_legacy_audio_crosses_real_mode_io_dma_and_irq :: proc(t: ^testi
 	testing.expect(t, m.vm.ram[0x0505] > 0)
 	testing.expect_value(t, m.vm.ram[0x0506] & 0xE0, u8(0))
 	testing.expect_value(t, m.vm.ram[0x0507] & 0xE0, u8(0xC0))
-	testing.expect(t, dma_at_terminal_count(&m.dma, 1))
-	testing.expect(t, dma_at_terminal_count(&m.dma, 5))
+	testing.expect(t, dma_at_terminal_count(&m.platform.dma, 1))
+	testing.expect(t, dma_at_terminal_count(&m.platform.dma, 5))
 	observability := machine_audio_observability(m)
 	testing.expect(t, observability.pc_speaker.nonzero_frames > 0)
 	testing.expect(t, observability.opl3.nonzero_frames > 0)
@@ -101,8 +101,8 @@ guest_probe_prepare :: proc(t: ^testing.T, m: ^Machine, image: []u8) -> bool {
 	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return false}
 	// Bare probes skip firmware, so establish the PCI VGA decode state that
 	// SeaBIOS normally programs before invoking a VGA option ROM.
-	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_1004)
-	bus_io_write(&m.bus, 0xCFC, 2, 0x0007)
+	bus_io_write(&m.platform.bus, 0xCF8, 4, 0x8000_1004)
+	bus_io_write(&m.platform.bus, 0xCFC, 2, 0x0007)
 	machine_enable_test_device(m)
 	copy(m.vm.ram[GUEST_PROBE_LOAD_ADDRESS:], image)
 	hv.set_realmode_entry(&m.vm, 0, GUEST_PROBE_LOAD_ADDRESS)
@@ -147,8 +147,8 @@ guest_probe_run :: proc(m: ^Machine, wall_limit: time.Duration) -> bool {
 	log.errorf(
 		"guest probe failed exit=%d frozen=%v reason=%s CS:IP=%04x:%08x master=%d exits=%d",
 		machine_test_device_exit_code(m),
-		m.bus.frozen,
-		m.bus.freeze_msg,
+		m.platform.bus.frozen,
+		m.platform.bus.freeze_msg,
 		regs.cs_sel,
 		regs.rip,
 		master_timeline_now(m.timeline) - master_start,

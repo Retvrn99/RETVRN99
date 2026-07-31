@@ -60,12 +60,12 @@ bmide_test_machine_init :: proc(t: ^testing.T, m: ^Machine) -> bool {
 	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return false}
 	machine_clock_set_running(m, false)
 	// Match the AMD-756 firmware setup before driving the channels directly.
-	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_3940)
-	bus_io_write(&m.bus, 0xCFC, 1, 0x03)
-	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_3920)
-	bus_io_write(&m.bus, 0xCFC, 4, 0x0000_C001)
-	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_3904)
-	bus_io_write(&m.bus, 0xCFC, 2, 0x0005)
+	bus_io_write(&m.platform.bus, 0xCF8, 4, 0x8000_3940)
+	bus_io_write(&m.platform.bus, 0xCFC, 1, 0x03)
+	bus_io_write(&m.platform.bus, 0xCF8, 4, 0x8000_3920)
+	bus_io_write(&m.platform.bus, 0xCFC, 4, 0x0000_C001)
+	bus_io_write(&m.platform.bus, 0xCF8, 4, 0x8000_3904)
+	bus_io_write(&m.platform.bus, 0xCFC, 2, 0x0005)
 	return true
 }
 
@@ -91,17 +91,17 @@ bmide_test_set_prd :: proc(m: ^Machine, table, buffer, count: u32) {
 }
 
 bmide_test_set_lba28 :: proc(m: ^Machine, lba: u32, count: u8) {
-	bus_io_write(&m.bus, 0x1F2, 1, u32(count))
-	bus_io_write(&m.bus, 0x1F3, 1, u32(u8(lba)))
-	bus_io_write(&m.bus, 0x1F4, 1, u32(u8(lba >> 8)))
-	bus_io_write(&m.bus, 0x1F5, 1, u32(u8(lba >> 16)))
-	bus_io_write(&m.bus, 0x1F6, 1, u32(0xE0 | u8(lba >> 24) & 0x0F))
+	bus_io_write(&m.platform.bus, 0x1F2, 1, u32(count))
+	bus_io_write(&m.platform.bus, 0x1F3, 1, u32(u8(lba)))
+	bus_io_write(&m.platform.bus, 0x1F4, 1, u32(u8(lba >> 8)))
+	bus_io_write(&m.platform.bus, 0x1F5, 1, u32(u8(lba >> 16)))
+	bus_io_write(&m.platform.bus, 0x1F6, 1, u32(0xE0 | u8(lba >> 24) & 0x0F))
 }
 
 bmide_test_select_udma4 :: proc(m: ^Machine) {
-	bus_io_write(&m.bus, 0x1F1, 1, 0x03)
-	bus_io_write(&m.bus, 0x1F2, 1, u32(0x40 | disk.IDE_UDMA_MODE))
-	bus_io_write(&m.bus, 0x1F7, 1, 0xEF)
+	bus_io_write(&m.platform.bus, 0x1F1, 1, 0x03)
+	bus_io_write(&m.platform.bus, 0x1F2, 1, u32(0x40 | disk.IDE_UDMA_MODE))
+	bus_io_write(&m.platform.bus, 0x1F7, 1, 0xEF)
 	machine_advance_time_ns(m, 1_000_000)
 }
 
@@ -157,8 +157,8 @@ bmide_machine_test_config_ports_precede_overlapping_bar_decode :: proc(t: ^testi
 	if !bmide_test_machine_init(t, m) {return}
 	defer machine_destroy(m)
 
-	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_3920)
-	bus_io_write(&m.bus, 0xCFC, 4, 0x0000_0CF1)
+	bus_io_write(&m.platform.bus, 0xCF8, 4, 0x8000_3920)
+	bus_io_write(&m.platform.bus, 0xCFC, 4, 0x0000_0CF1)
 	testing.expect(t, bmide_test_io_write(m, 0xCF0, 1, u32(disk.BMIDE_COMMAND_READ_FROM_DISK)))
 	testing.expect_value(
 		t,
@@ -237,7 +237,7 @@ bmide_machine_test_ata_read_uses_physical_gpa_with_a20_disabled :: proc(t: ^test
 	bmide_test_set_prd(m, table, buffer, disk.IDE_SECTOR_SIZE)
 	bmide_test_select_udma4(m)
 	bmide_test_set_lba28(m, 1, 1)
-	bus_io_write(&m.bus, 0x1F7, 1, 0xC8)
+	bus_io_write(&m.platform.bus, 0x1F7, 1, 0xC8)
 	testing.expect(t, bmide_test_io_write(m, 0xC004, 4, table))
 	testing.expect(
 		t,
@@ -264,7 +264,7 @@ bmide_machine_test_ata_read_uses_physical_gpa_with_a20_disabled :: proc(t: ^test
 	testing.expect(t, status & disk.BMIDE_STATUS_ACTIVE == 0)
 	testing.expect(t, status & disk.BMIDE_STATUS_INTERRUPT != 0)
 	testing.expect(t, status & disk.BMIDE_STATUS_ERROR == 0)
-	testing.expect(t, m.pic.slave.irr & (u8(1) << 6) != 0)
+	testing.expect(t, m.platform.pic.slave.irr & (u8(1) << 6) != 0)
 	execution := machine_execution_counters(m)
 	testing.expect_value(t, execution.primary_ide_dma_transactions, u64(1))
 	testing.expect_value(t, execution.primary_ide_dma_bytes, u64(disk.IDE_SECTOR_SIZE))
@@ -364,7 +364,7 @@ bmide_machine_test_ata_write_commits_one_block_transaction :: proc(t: ^testing.T
 	bmide_test_set_prd(m, table, buffer, u32(byte_count))
 	bmide_test_select_udma4(m)
 	bmide_test_set_lba28(m, 3, 2)
-	bus_io_write(&m.bus, 0x1F7, 1, 0xCA)
+	bus_io_write(&m.platform.bus, 0x1F7, 1, 0xCA)
 	testing.expect(t, bmide_test_io_write(m, 0xC004, 4, table))
 	testing.expect(t, bmide_test_io_write(m, 0xC000, 1, u32(disk.BMIDE_COMMAND_START)))
 	machine_advance_time_ns(m, 2_000_000)
@@ -381,7 +381,7 @@ bmide_machine_test_ata_write_commits_one_block_transaction :: proc(t: ^testing.T
 			m.vm.ram[int(buffer):int(buffer) + byte_count],
 		),
 	)
-	testing.expect(t, m.pic.slave.irr & (u8(1) << 6) != 0)
+	testing.expect(t, m.platform.pic.slave.irr & (u8(1) << 6) != 0)
 }
 
 @(test)
@@ -403,12 +403,12 @@ bmide_machine_test_atapi_read10_dma_routes_secondary_channel :: proc(t: ^testing
 	table := u32(0x2200)
 	buffer := u32(0x120000)
 	bmide_test_set_prd(m, table, buffer, disk.CDROM_SECTOR_SIZE)
-	bus_io_write(&m.bus, 0x171, 1, 0x01)
-	bus_io_write(&m.bus, 0x174, 1, 0x00)
-	bus_io_write(&m.bus, 0x175, 1, 0x08)
-	bus_io_write(&m.bus, 0x177, 1, 0xA0)
+	bus_io_write(&m.platform.bus, 0x171, 1, 0x01)
+	bus_io_write(&m.platform.bus, 0x174, 1, 0x00)
+	bus_io_write(&m.platform.bus, 0x175, 1, 0x08)
+	bus_io_write(&m.platform.bus, 0x177, 1, 0xA0)
 	packet := [12]u8{0x28, 0, 0, 0, 0, 18, 0, 0, 1, 0, 0, 0}
-	completed, handled := bus_io_stream_write(&m.bus, 0x170, 2, packet[:])
+	completed, handled := bus_io_stream_write(&m.platform.bus, 0x170, 2, packet[:])
 	testing.expect(t, handled)
 	testing.expect_value(t, completed, disk.ATAPI_PACKET_BYTES / 2)
 	testing.expect(t, m.atapi.dma_submitted)
@@ -432,8 +432,8 @@ bmide_machine_test_atapi_read10_dma_routes_secondary_channel :: proc(t: ^testing
 	testing.expect(t, status & disk.BMIDE_STATUS_ACTIVE == 0)
 	testing.expect(t, status & disk.BMIDE_STATUS_INTERRUPT != 0)
 	testing.expect(t, status & disk.BMIDE_STATUS_ERROR == 0)
-	testing.expect(t, m.pic.slave.irr & (u8(1) << 7) != 0)
-	testing.expect(t, bus_io_read(&m.bus, 0x177, 1) & disk.ATAPI_STATUS_ERR == 0)
+	testing.expect(t, m.platform.pic.slave.irr & (u8(1) << 7) != 0)
+	testing.expect(t, bus_io_read(&m.platform.bus, 0x177, 1) & disk.ATAPI_STATUS_ERR == 0)
 	execution := machine_execution_counters(m)
 	testing.expect_value(t, execution.primary_ide_dma_transactions, u64(0))
 	testing.expect_value(t, execution.primary_ide_dma_bytes, u64(0))

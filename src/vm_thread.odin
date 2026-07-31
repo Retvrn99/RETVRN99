@@ -729,7 +729,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					)
 				} else if machine.machine_cpu_reset_pending(m) {
 					reason := machine.machine_cpu_reset_reason(m)
-					reset_code := m.cpu_reset_cmos_0f
+					reset_code := m.platform.reset.cpu_reset_cmos_0f
 					publish_machine_reinitializing(s)
 					reset_ok := vm_lifetime_warm_cpu_reset(&c.lifetime)
 					if reset_ok {
@@ -744,7 +744,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						)
 					} else {
 						frozen = true
-						publish_freeze(s, m.bus.freeze_msg, "")
+						publish_freeze(s, m.platform.bus.freeze_msg, "")
 					}
 					publish_machine_running(s, machine_live)
 				} else if machine.machine_reset_requested(m) {
@@ -819,7 +819,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				} else {
 					frozen = true
 					r := hv.get_regs(&m.vm)
-					msg := strings.clone(m.bus.freeze_msg)
+					msg := strings.clone(m.platform.bus.freeze_msg)
 					regs := format_regs(r, m)
 					publish_freeze(s, msg, regs)
 					fmt.printfln("VM frozen: %s", msg)

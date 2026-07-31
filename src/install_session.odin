@@ -95,8 +95,8 @@ install_session_finish :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 	}
 	c.install_state_diagnostic = .None
 	if live {
-		m.cmos.ram[0x38] = finish.cmos[0x38]
-		m.cmos.ram[0x3D] = finish.cmos[0x3D]
+		m.platform.cmos.ram[0x38] = finish.cmos[0x38]
+		m.platform.cmos.ram[0x3D] = finish.cmos[0x3D]
 		machine.machine_set_cpu_mode(m, c.cpu_mode)
 	}
 	publish_install_state(c.shared, false)
@@ -130,8 +130,8 @@ console_install_session_finish :: proc(
 		run_result.installation_milestone = console_install_milestone_name(finish.milestone)
 	}
 	if diagnostic != .None {return diagnostic}
-	m.cmos.ram[0x38] = finish.cmos[0x38]
-	m.cmos.ram[0x3D] = finish.cmos[0x3D]
+	m.platform.cmos.ram[0x38] = finish.cmos[0x38]
+	m.platform.cmos.ram[0x3D] = finish.cmos[0x3D]
 	return .None
 }
 

@@ -276,7 +276,7 @@ test_machine_boots_bochs_vgabios_and_sets_vbe_mode :: proc(t: ^testing.T) {
 	floppy := vgabios_test_boot_floppy()
 	defer delete(floppy)
 	if !testing.expect(t, machine_mount_floppy(m, floppy)) {return}
-	m.cmos.ram[0x3D] = 0x01
+	m.platform.cmos.ram[0x3D] = 0x01
 	fwcfg_add_file(&m.fwcfg, "etc/show-boot-menu", []u8{0, 0, 0, 0}, 0x0022)
 
 	watchdog := Vgabios_Test_Watchdog {
@@ -318,7 +318,7 @@ test_machine_boots_bochs_vgabios_and_sets_vbe_mode :: proc(t: ^testing.T) {
 			)
 		}
 	}
-	if !testing.expect_value(t, m.bus.freeze_msg, "") {return}
+	if !testing.expect_value(t, m.platform.bus.freeze_msg, "") {return}
 	if !testing.expect_value(t, m.vm.ram[0x0506], u8(0xD7)) {return}
 	if !pci_firmware_validate_pir_contract(t, m.vm.ram) {return}
 	testing.expect_value(t, romw_seen_enabled, false)

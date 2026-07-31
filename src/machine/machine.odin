@@ -79,7 +79,7 @@ Storage_Activity :: struct {
 WIN9X_KERNEL_LINEAR_BASE :: u64(0xC000_0000)
 
 Machine :: struct {
-	using platform:                      Pc_At_Platform,
+	platform:                            Pc_At_Platform,
 	pci:                                 Pci,
 	fwcfg:                               Fwcfg,
 	vga:                                 video.Vga,
@@ -108,7 +108,6 @@ Machine :: struct {
 	nanosecond_phase:                    Rate_Phase,
 	active_tick:                         time.Tick,
 	active_ns:                           u64,
-	cmos_active_ns:                      u64,
 	clock_running:                       bool,
 	wake_ctx:                            rawptr,
 	wake_schedule:                       Wake_Schedule_Proc,
@@ -163,7 +162,7 @@ machine_record_ide_kernel_probe :: proc(
 	value: u32,
 	elements: u32 = 1,
 ) {
-	if m == nil || !m.bus.diagnostic_tracing {
+	if m == nil || !m.platform.bus.diagnostic_tracing {
 		return
 	}
 	kernel_origin := machine_primary_ide_kernel_origin(m.vm.io_origin)
@@ -208,7 +207,9 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	if m == nil || ram_size <= 0 {return false}
 	initialized := false
 	defer if !initialized {machine_destroy(m)}
-	bus_init(&m.bus)
+	if !pc_at_platform_init(&m.platform, u64(ram_size), machine_pc_at_adapters(m)) {
+		return false
+	}
 	if !hv.create(&m.vm, ram_size) {return false}
 	if !hv.reserve_mmio(
 		&m.vm,
@@ -261,217 +262,77 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	m.vm.irq_delivered = machine_irq_delivered
 	m.vm.mmio = machine_mmio
 
-	cmos_init(&m.cmos, u64(ram_size))
 	now := time.now()
 	year, month, day := time.date(now)
 	hh, mm, ss := time.clock_from_time(now)
 	weekday := int(time.weekday(now)) + 1
-	cmos_set_datetime(&m.cmos, u16(year), u8(month), u8(day), u8(weekday), u8(hh), u8(mm), u8(ss))
-	i8042_init(&m.kbd, m, machine_irq1, machine_irq12, machine_guest_reset, machine_a20_control)
-	i8042_set_irq_lower_callbacks(&m.kbd, machine_irq1_lower, machine_irq12_lower)
-	uart_init_com1(&m.serial1)
-	uart_init_com2(&m.serial2)
-	lpt_init_lpt1(&m.parallel1)
-	lpt_init_lpt2(&m.parallel2)
-	dma_init(&m.dma)
+	cmos_set_datetime(
+		pc_at_platform_cmos(&m.platform),
+		u16(year),
+		u8(month),
+		u8(day),
+		u8(weekday),
+		u8(hh),
+		u8(mm),
+		u8(ss),
+	)
 	pci_init(&m.pci)
-	pci_connect_pic(&m.pci, &m.pic)
+	pci_connect_pic(&m.pci, pc_at_platform_pic(&m.platform))
 	disk.bmide_init(&m.bmide)
 	fwcfg_init(&m.fwcfg, u64(ram_size))
 	// SeaBIOS vgarom_setup memsets 0xC0000 and then deploys "vgaroms/"
 	// romfiles: the Bochs VGABIOS image must arrive through fw_cfg
 	fwcfg_add_file(&m.fwcfg, "vgaroms/vgabios.bin", VGABIOS_IMAGE, 0x0021)
 
-	pic_h := Io_Handler {
-		ctx   = m,
-		read  = machine_pic_read,
-		write = machine_pic_write,
-	}
-	bus_register(&m.bus, 0x20, 0x21, pic_h)
-	bus_register(&m.bus, 0xA0, 0xA1, pic_h)
-	bus_register(&m.bus, 0x4D0, 0x4D1, pic_h)
-
-	pit_h := Io_Handler {
-		ctx   = m,
-		read  = machine_pit_read,
-		write = machine_pit_write,
-	}
-	bus_register(&m.bus, 0x40, 0x43, pit_h)
-	p61_h := Io_Handler {
-		ctx   = m,
-		read  = machine_port61_read,
-		write = machine_port61_write,
-	}
-	bus_register(&m.bus, 0x61, 0x61, p61_h)
-
-	serial_h := Io_Handler {
-		ctx   = m,
-		read  = machine_uart_read,
-		write = machine_uart_write,
-	}
-	bus_register_byte_decomposed(&m.bus, UART_COM1_BASE, UART_COM1_BASE + 7, serial_h)
-	bus_register_byte_decomposed(&m.bus, UART_COM2_BASE, UART_COM2_BASE + 7, serial_h)
-
-	parallel_h := Io_Handler {
-		ctx   = m,
-		read  = machine_lpt_read,
-		write = machine_lpt_write,
-	}
-	bus_register_byte_decomposed(&m.bus, LPT1_BASE, LPT1_BASE + 2, parallel_h)
-	bus_register_byte_decomposed(&m.bus, LPT2_BASE, LPT2_BASE + 2, parallel_h)
-	bus_whitelist(&m.bus, LPT1_BASE + LPT_ECR_OFFSET, LPT2_BASE + LPT_ECR_OFFSET)
-	bus_whitelist(
-		&m.bus,
-		LPT1_BASE + LPT_ALIAS_PROBE_OFFSET,
-		LPT2_BASE + LPT_ALIAS_PROBE_OFFSET,
-	)
-	machine_init_isa_pnp(m)
-
-	cmos_h := Io_Handler {
-		ctx   = m,
-		read  = machine_cmos_read,
-		write = machine_cmos_write,
-	}
-	bus_register(&m.bus, 0x70, 0x71, cmos_h)
-
-	kbd_h := Io_Handler {
-		ctx   = m,
-		read  = machine_kbd_read,
-		write = machine_kbd_write,
-	}
-	bus_register(&m.bus, 0x60, 0x60, kbd_h)
-	bus_register(&m.bus, 0x64, 0x64, kbd_h)
-	bus_register(&m.bus, 0x92, 0x92, kbd_h)
-
-	dma_h := Io_Handler {
-		ctx   = m,
-		read  = machine_dma_read,
-		write = machine_dma_write,
-	}
-	bus_register(&m.bus, 0x00, 0x0F, dma_h)
-	for port := u16(0xC0); port <= 0xDE; port += 2 {
-		bus_register(&m.bus, port, port, dma_h)
-	}
-	dma_page_ports := [?]u16 {
-		0x81,
-		0x82,
-		0x83,
-		0x84,
-		0x85,
-		0x86,
-		0x87,
-		0x88,
-		0x89,
-		0x8A,
-		0x8B,
-		0x8C,
-		0x8D,
-		0x8E,
-		0x8F,
-	}
-	for port in dma_page_ports {
-		bus_register(&m.bus, port, port, dma_h)
-	}
-
 	sb16_h := Io_Handler {
 		ctx   = m,
 		read  = machine_sb16_read,
 		write = machine_sb16_write,
 	}
-	bus_register_byte_decomposed(&m.bus, sound.SB16_BASE_PORT, sound.SB16_LAST_PORT, sb16_h)
+	bus_register_byte_decomposed(&m.platform.bus, sound.SB16_BASE_PORT, sound.SB16_LAST_PORT, sb16_h)
 	opl3_h := Io_Handler {
 		ctx   = m,
 		read  = machine_opl3_read,
 		write = machine_opl3_write,
 	}
-	bus_register_byte_decomposed(&m.bus, sound.OPL3_BASE_PORT, sound.OPL3_LAST_PORT, opl3_h)
-
-	delay_h := Io_Handler {
-		ctx   = m,
-		read  = machine_isa_delay_read,
-		write = machine_isa_delay_write,
-	}
-	bus_register(&m.bus, 0x80, 0x80, delay_h)
+	bus_register_byte_decomposed(&m.platform.bus, sound.OPL3_BASE_PORT, sound.OPL3_LAST_PORT, opl3_h)
 
 	pci_h := Io_Handler {
 		ctx   = m,
 		read  = machine_pci_read,
 		write = machine_pci_write,
 	}
-	bus_register(&m.bus, 0xCF8, 0xCFF, pci_h)
-	reset_h := Io_Handler {
-		ctx   = m,
-		read  = machine_reset_control_read,
-		write = machine_reset_control_write,
-	}
-	bus_register(&m.bus, 0xCF9, 0xCF9, reset_h)
-	apm_power_h := Io_Handler {
-		ctx   = m,
-		read  = machine_apm_power_read,
-		write = machine_apm_power_write,
-	}
-	bus_register(&m.bus, APM_POWER_OFF_PORT, APM_POWER_OFF_PORT, apm_power_h)
-
+	bus_register(&m.platform.bus, 0xCF8, 0xCFF, pci_h)
 	fw_h := Io_Handler {
 		ctx   = m,
 		read  = machine_fwcfg_read,
 		write = machine_fwcfg_write,
 	}
-	bus_register(&m.bus, 0x510, 0x511, fw_h)
+	bus_register(&m.platform.bus, 0x510, 0x511, fw_h)
 
 	vga_h := Io_Handler {
 		ctx   = m,
 		read  = machine_vga_read,
 		write = machine_vga_write,
 	}
-	bus_register(&m.bus, 0x3B0, 0x3DF, vga_h)
-	bus_register(&m.bus, video.DISPI_PORT_INDEX, video.DISPI_PORT_DATA, vga_h)
+	bus_register(&m.platform.bus, 0x3B0, 0x3DF, vga_h)
+	bus_register(&m.platform.bus, video.DISPI_PORT_INDEX, video.DISPI_PORT_DATA, vga_h)
 
 	dbg_h := Io_Handler {
 		ctx   = m,
 		read  = machine_dbg_read,
 		write = machine_dbg_write,
 	}
-	bus_register(&m.bus, 0x402, 0x402, dbg_h)
-	bus_register(&m.bus, 0x500, 0x500, dbg_h)
-	shutdown_trace_h := Io_Handler {
-		ctx   = m,
-		read  = machine_shutdown_trace_read,
-		write = machine_shutdown_trace_write,
-	}
-	bus_register(&m.bus, 0x80, 0x80, shutdown_trace_h)
-
-	// deliberate whitelist: probed but not modeled yet
-	bus_whitelist(&m.bus, 0x81, 0xED) // delay ports
-	bus_whitelist(&m.bus, 0x421, 0x4A1) // Windows 98 PIC alias probe
-	bus_whitelist(&m.bus, 0x94, 0x102) // MCA POS probe; absent
-	machine_whitelist_range(&m.bus, 0x1F0, 0x1F7) // IDE until machine_attach_disk
-	bus_whitelist(&m.bus, 0x3F6)
+	bus_register(&m.platform.bus, 0x402, 0x402, dbg_h)
+	bus_register(&m.platform.bus, 0x500, 0x500, dbg_h)
+	machine_whitelist_range(&m.platform.bus, 0x1F0, 0x1F7) // IDE until machine_attach_disk
+	bus_whitelist(&m.platform.bus, 0x3F6)
 	machine_init_fdc(m)
 	machine_init_atapi(m)
+	pc_at_platform_install_fixed_io(&m.platform)
 	if !machine_sync_pci_devices(m) {
 		return false
 	}
-	machine_whitelist_range(&m.bus, 0x3E8, 0x3EF) // COM3 probe by SeaBIOS serial_setup; absent
-	machine_whitelist_range(&m.bus, 0x2E8, 0x2EF) // COM4 probe by SeaBIOS serial_setup; absent
-	machine_whitelist_range(&m.bus, 0x2F2, 0x2F7) // IO.SYS boot probe: writes 0xFF here (tertiary FDC range); absent
-	machine_whitelist_range(&m.bus, 0x6F2, 0x6F7) // same IO.SYS probe series, stride 0x400
-	machine_whitelist_range(&m.bus, 0x1E8, 0x1EF) // IDE tertiary: Win98 boot-disk ATAPI driver probe; absent
-	machine_whitelist_range(&m.bus, 0x168, 0x16F) // IDE quaternary, same driver probe series
-	bus_whitelist(&m.bus, 0x36E, 0x36F) // IDE quaternary device control, same probe (tertiary's 0x3EE is inside the COM3 range above)
-	// Known-absent ISA game, SCSI, and network adapter probe windows.
-	machine_whitelist_range(&m.bus, 0x130, 0x13F)
-	machine_whitelist_range(&m.bus, 0x180, 0x18F)
-	machine_whitelist_range(&m.bus, 0x200, 0x207)
-	machine_whitelist_range(&m.bus, 0x230, 0x23F)
-	machine_whitelist_range(&m.bus, 0x240, 0x24F)
-	machine_whitelist_range(&m.bus, 0x280, 0x29F)
-	// AWE32 EMU8000 register windows; RETVRN99 exposes SB16 and OPL3 only.
-	machine_whitelist_range(&m.bus, 0x620, 0x623)
-	machine_whitelist_range(&m.bus, 0xA20, 0xA23)
-	machine_whitelist_range(&m.bus, 0xE20, 0xE23)
-	machine_whitelist_range(&m.bus, 0x300, 0x31F)
-	machine_whitelist_range(&m.bus, 0x330, 0x35F)
 	machine_clock_set_running(m, true)
 	initialized = true
 	return true
@@ -491,7 +352,7 @@ machine_destroy :: proc(m: ^Machine) {
 	video.vga_destroy(&m.vga)
 	hv.destroy(&m.vm)
 	fwcfg_destroy(&m.fwcfg)
-	bus_destroy(&m.bus)
+	pc_at_platform_destroy(&m.platform)
 	delete(m.dbg_out)
 	if m.hardware_trace != nil {
 		free(m.hardware_trace)
@@ -511,12 +372,12 @@ machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
 	disk.bmide_reset_channel(&m.bmide, 0)
 	m.primary_ide_kernel_dma_request = false
 	disk.ide_init(&m.ide, bd)
-	cmos_set_primary_disk(&m.cmos, bd.sector_count)
+	cmos_set_primary_disk(&m.platform.cmos, bd.sector_count)
 	m.ide.irq_ctx = m
 	m.ide.irq = machine_irq14
 	m.has_disk = true
 	if !machine_sync_pci_devices(m) {
-		bus_freeze(&m.bus, "PCI IDE decode synchronization failed")
+		bus_freeze(&m.platform.bus, "PCI IDE decode synchronization failed")
 	}
 	h := Io_Handler {
 		ctx          = m,
@@ -525,8 +386,8 @@ machine_attach_disk :: proc(m: ^Machine, bd: disk.Block_Device) {
 		stream_read  = machine_ide_stream_read,
 		stream_write = machine_ide_stream_write,
 	}
-	bus_register(&m.bus, 0x1F0, 0x1F7, h)
-	bus_register(&m.bus, 0x3F6, 0x3F6, h)
+	bus_register(&m.platform.bus, 0x1F0, 0x1F7, h)
+	bus_register(&m.platform.bus, 0x3F6, 0x3F6, h)
 }
 
 machine_detach_disk :: proc(m: ^Machine) -> bool {
@@ -536,7 +397,7 @@ machine_detach_disk :: proc(m: ^Machine) -> bool {
 	m.primary_ide_kernel_dma_request = false
 	m.ide.bd = {}
 	m.has_disk = false
-	cmos_set_primary_disk(&m.cmos, 0)
+	cmos_set_primary_disk(&m.platform.cmos, 0)
 	return true
 }
 
@@ -554,8 +415,8 @@ machine_init_fdc :: proc(m: ^Machine) {
 		read  = machine_fdc_read,
 		write = machine_fdc_write,
 	}
-	bus_register(&m.bus, 0x3F0, 0x3F5, h) // 0x3F6 belongs to the IDE
-	bus_register(&m.bus, 0x3F7, 0x3F7, h)
+	bus_register(&m.platform.bus, 0x3F0, 0x3F5, h) // 0x3F6 belongs to the IDE
+	bus_register(&m.platform.bus, 0x3F7, 0x3F7, h)
 }
 
 // hook for the GUI menu
@@ -596,8 +457,8 @@ machine_init_atapi :: proc(m: ^Machine) {
 		stream_read  = machine_atapi_stream_read,
 		stream_write = machine_atapi_stream_write,
 	}
-	bus_register(&m.bus, 0x170, 0x177, h)
-	bus_register(&m.bus, 0x376, 0x376, h)
+	bus_register(&m.platform.bus, 0x170, 0x177, h)
+	bus_register(&m.platform.bus, 0x376, 0x376, h)
 }
 
 machine_mount_cdrom :: proc(m: ^Machine, path: string) -> bool {
@@ -628,7 +489,7 @@ machine_enable_test_device :: proc(m: ^Machine) {
 		read  = machine_test_device_read,
 		write = machine_test_device_write,
 	}
-	bus_register_byte_decomposed(&m.bus, TEST_DEVICE_INDEX_PORT, TEST_DEVICE_COMMAND_PORT, h)
+	bus_register_byte_decomposed(&m.platform.bus, TEST_DEVICE_INDEX_PORT, TEST_DEVICE_COMMAND_PORT, h)
 	m.test_device_enabled = true
 }
 
@@ -777,63 +638,63 @@ machine_note_scanout_copy :: proc(m: ^Machine) {
 }
 
 machine_cmos_export :: proc(m: ^Machine) -> [CMOS_NVRAM_SIZE]u8 {
-	return cmos_nvram_export(&m.cmos)
+	return cmos_nvram_export(&m.platform.cmos)
 }
 
 machine_cmos_import :: proc(m: ^Machine, data: []u8) -> bool {
-	ok := cmos_nvram_import(&m.cmos, data, u64(len(m.vm.ram)))
+	ok := cmos_nvram_import(&m.platform.cmos, data, u64(len(m.vm.ram)))
 	if ok {
-		if m.has_disk {cmos_set_primary_disk(&m.cmos, m.ide.bd.sector_count)}
-		m.cmos_active_ns = m.active_ns
+		if m.has_disk {cmos_set_primary_disk(&m.platform.cmos, m.ide.bd.sector_count)}
+		m.platform.cmos_active_ns = m.active_ns
 		m.device_sync_valid[int(Scheduled_Device.Cmos)] = false
 	}
 	return ok
 }
 
 machine_reset_requested :: proc(m: ^Machine) -> bool {
-	return m != nil && m.reset_requested
+	return m != nil && m.platform.reset.reset_requested
 }
 
 machine_reset_provenance :: proc(m: ^Machine) -> Reset_Provenance {
-	return m != nil ? m.reset_source : .None
+	return m != nil ? m.platform.reset.reset_source : .None
 }
 
 machine_reset_reason :: proc(m: ^Machine) -> string {
-	return m != nil ? m.reset_reason : ""
+	return m != nil ? m.platform.reset.reset_reason : ""
 }
 
 machine_reset_record_count :: proc(m: ^Machine) -> int {
-	return m != nil ? int(min(m.reset_count, u64(PC_AT_RESET_HISTORY))) : 0
+	return m != nil ? int(min(m.platform.reset.reset_count, u64(PC_AT_RESET_HISTORY))) : 0
 }
 
 machine_reset_record :: proc(m: ^Machine, index: int) -> (Reset_Record, bool) {
 	count := machine_reset_record_count(m)
 	if index < 0 || index >= count {return {}, false}
-	oldest := m.reset_count - u64(count)
-	return m.reset_history[(oldest + u64(index)) % PC_AT_RESET_HISTORY], true
+	oldest := m.platform.reset.reset_count - u64(count)
+	return m.platform.reset.reset_history[(oldest + u64(index)) % PC_AT_RESET_HISTORY], true
 }
 
 machine_cpu_reset_pending :: proc(m: ^Machine) -> bool {
-	return m != nil && m.cpu_reset_pending
+	return m != nil && m.platform.reset.cpu_reset_pending
 }
 
 machine_cpu_reset_reason :: proc(m: ^Machine) -> string {
-	return m != nil ? m.cpu_reset_reason : ""
+	return m != nil ? m.platform.reset.cpu_reset_reason : ""
 }
 
 machine_cpu_reset :: proc(m: ^Machine) -> bool {
-	if m == nil || !m.cpu_reset_pending {return false}
-	reason := m.cpu_reset_reason
+	if m == nil || !m.platform.reset.cpu_reset_pending {return false}
+	reason := m.platform.reset.cpu_reset_reason
 	if !hv.reset_cpu(&m.vm) {
-		bus_freeze(&m.bus, fmt.tprintf("CPU reset failed after %s", reason))
+		bus_freeze(&m.platform.bus, fmt.tprintf("CPU reset failed after %s", reason))
 		return false
 	}
-	m.cpu_reset_pending = false
-	m.cpu_reset_reason = ""
+	m.platform.reset.cpu_reset_pending = false
+	m.platform.reset.cpu_reset_reason = ""
 	m.cpu_halted = false
 	m.pic_offer_queued = false
 	m.pic_queued_offer = {}
-	m.cpu_reset_count += 1
+	m.platform.reset.cpu_reset_count += 1
 	hv.governor_rebase(&m.governor, &m.vm)
 	m.active_tick = time.tick_now()
 	return true
@@ -843,7 +704,7 @@ machine_mouse :: proc(m: ^Machine, dx, dy: i32, buttons: u8) {
 	if m == nil {return}
 	machine_sync_time(m)
 	machine_sync_device(m, .I8042)
-	i8042_mouse(&m.kbd, dx, dy, buttons)
+	i8042_mouse(&m.platform.kbd, dx, dy, buttons)
 	machine_scheduler_refresh(m)
 	machine_rearm_wake(m)
 }
@@ -851,21 +712,21 @@ machine_mouse :: proc(m: ^Machine, dx, dy: i32, buttons: u8) {
 machine_set_diagnostic_tracing :: proc(m: ^Machine, enabled: bool) {
 	if m == nil {return}
 	m.diagnostic_tracing = enabled
-	m.bus.diagnostic_tracing = enabled || m.bus.strict_io || m.bus.log_unclassified
+	m.platform.bus.diagnostic_tracing = enabled || m.platform.bus.strict_io || m.platform.bus.log_unclassified
 }
 
 machine_set_bus_diagnostic_tracing :: proc(m: ^Machine, enabled: bool) {
 	if m == nil {return}
-	m.bus.diagnostic_tracing =
-		enabled || m.diagnostic_tracing || m.bus.strict_io || m.bus.log_unclassified
+	m.platform.bus.diagnostic_tracing =
+		enabled || m.diagnostic_tracing || m.platform.bus.strict_io || m.platform.bus.log_unclassified
 }
 
 machine_mouse_wheel :: proc(m: ^Machine, wheel: i32, buttons: u8) {
 	if m == nil {return}
 	machine_sync_time(m)
 	machine_sync_device(m, .I8042)
-	i8042_mouse(&m.kbd, 0, 0, buttons)
-	i8042_mouse_wheel(&m.kbd, wheel)
+	i8042_mouse(&m.platform.kbd, 0, 0, buttons)
+	i8042_mouse_wheel(&m.platform.kbd, wheel)
 	machine_scheduler_refresh(m)
 	machine_rearm_wake(m)
 }
@@ -874,7 +735,7 @@ machine_key :: proc(m: ^Machine, scancode: u8) {
 	if m == nil {return}
 	machine_sync_time(m)
 	machine_sync_device(m, .I8042)
-	i8042_key(&m.kbd, scancode)
+	i8042_key(&m.platform.kbd, scancode)
 	machine_scheduler_refresh(m)
 	machine_rearm_wake(m)
 }
@@ -883,7 +744,7 @@ machine_key_sequence :: proc(m: ^Machine, scancodes: []u8) -> bool {
 	if m == nil || len(scancodes) == 0 {return false}
 	machine_sync_time(m)
 	machine_sync_device(m, .I8042)
-	scheduled := i8042_schedule_keys(&m.kbd, scancodes)
+	scheduled := i8042_schedule_keys(&m.platform.kbd, scancodes)
 	if scheduled {machine_scheduler_refresh(m)}
 	machine_rearm_wake(m)
 	return scheduled
@@ -898,7 +759,7 @@ machine_clock_set_running :: proc(m: ^Machine, running: bool) {
 		hh, mm, ss := time.clock_from_time(now)
 		weekday := int(time.weekday(now)) + 1
 		cmos_set_datetime(
-			&m.cmos,
+			&m.platform.cmos,
 			u16(year),
 			u8(month),
 			u8(day),
@@ -907,12 +768,12 @@ machine_clock_set_running :: proc(m: ^Machine, running: bool) {
 			u8(mm),
 			u8(ss),
 		)
-		m.cmos_active_ns = m.active_ns
+		m.platform.cmos_active_ns = m.active_ns
 		m.device_sync_valid[int(Scheduled_Device.Cmos)] = false
 	}
 	if m.vm.part != nil && !hv.set_time_running(&m.vm, running) {
 		bus_freeze(
-			&m.bus,
+			&m.platform.bus,
 			running ? "failed to resume partition time" : "failed to suspend partition time",
 		)
 		return
@@ -976,34 +837,38 @@ machine_relative_ns_deadline :: proc(m: ^Machine, delta_ns: u64) -> u64 {
 // available from inside ring 0.
 machine_take_serial_output :: proc(m: ^Machine) -> []u8 {
 	if m == nil {return nil}
-	return uart_output(&m.serial1)
+	return uart_output(&m.platform.serial1)
 }
 
 machine_clear_serial_output :: proc(m: ^Machine) {
-	if m != nil {uart_clear_output(&m.serial1)}
+	if m != nil {uart_clear_output(&m.platform.serial1)}
 }
 
 machine_serial_output_dropped :: proc(m: ^Machine) -> u64 {
-	return m == nil ? 0 : uart_output_dropped(&m.serial1)
+	return m == nil ? 0 : uart_output_dropped(&m.platform.serial1)
 }
 
 @(private = "package")
 machine_scheduler_refresh :: proc(m: ^Machine) {
 	if m == nil {return}
 	if !m.scheduler.initialized {event_scheduler_init(&m.scheduler)}
-	deadline, pending := pit_next_deadline(&m.pit)
-	machine_scheduler_set(m, .Pit, deadline, pending)
-	deadline, pending = uart_next_deadline(&m.serial1)
-	machine_scheduler_set(m, .Uart1, deadline, pending)
-	deadline, pending = uart_next_deadline(&m.serial2)
-	machine_scheduler_set(m, .Uart2, deadline, pending)
-	deadline, pending = lpt_next_deadline(&m.parallel1)
-	machine_scheduler_set(m, .Lpt1, deadline, pending)
-	deadline, pending = lpt_next_deadline(&m.parallel2)
-	machine_scheduler_set(m, .Lpt2, deadline, pending)
-	deadline, pending = dma_next_deadline(&m.dma)
-	machine_scheduler_set(m, .Dma, deadline, pending)
-	deadline, pending = disk.fdc_next_deadline(&m.fdc)
+	platform_devices := [?]Pc_At_Device {
+		.Pit, .Uart1, .Uart2, .Lpt1, .Lpt2, .Dma, .I8042, .Cmos,
+	}
+	for device in platform_devices {
+		platform_deadline := pc_at_platform_deadline(&m.platform, device, m.active_ns)
+		deadline := platform_deadline.value
+		if platform_deadline.pending && platform_deadline.basis == .Relative_Nanoseconds {
+			deadline = machine_relative_ns_deadline(m, deadline)
+		}
+		machine_scheduler_set(
+			m,
+			machine_pc_at_scheduled_device(device),
+			deadline,
+			platform_deadline.pending,
+		)
+	}
+	deadline, pending := disk.fdc_next_deadline(&m.fdc)
 	machine_scheduler_set(m, .Fdc, deadline, pending)
 	deadline, pending = disk.ide_next_deadline(&m.ide)
 	machine_scheduler_set(m, .Ide, deadline, pending)
@@ -1011,18 +876,6 @@ machine_scheduler_refresh :: proc(m: ^Machine) {
 	machine_scheduler_set(m, .Atapi, deadline, pending)
 	deadline, pending = disk.bmide_next_deadline(&m.bmide)
 	machine_scheduler_set(m, .Bmide, deadline, pending)
-	if deadline_ns, ok := i8042_next_deadline(&m.kbd); ok {
-		delta_ns := deadline_ns > m.active_ns ? deadline_ns - m.active_ns : 0
-		machine_scheduler_set(m, .I8042, machine_relative_ns_deadline(m, delta_ns), true)
-	} else {
-		machine_scheduler_set(m, .I8042, 0, false)
-	}
-	machine_scheduler_set(
-		m,
-		.Cmos,
-		machine_relative_ns_deadline(m, cmos_next_deadline_ns(&m.cmos)),
-		true,
-	)
 	deadline, pending = machine_audio_next_deadline(m)
 	machine_scheduler_set(m, .Audio, deadline, pending)
 	if deadline_ns, ok := video.vga_next_deadline_ns(&m.vga); ok {
@@ -1062,7 +915,7 @@ machine_rearm_wake :: proc(m: ^Machine) {
 			m.wake_scheduled = false
 			m.wake_mode = .Disarm
 			m.wake_deadline = 0
-			bus_freeze(&m.bus, "vCPU run-guard rearm failed")
+			bus_freeze(&m.platform.bus, "vCPU run-guard rearm failed")
 			return
 		}
 		machine_trace_record(
@@ -1100,7 +953,7 @@ machine_rearm_wake :: proc(m: ^Machine) {
 		m.wake_scheduled = false
 		m.wake_mode = .Disarm
 		m.wake_deadline = 0
-		bus_freeze(&m.bus, "vCPU wake scheduling failed")
+		bus_freeze(&m.platform.bus, "vCPU wake scheduling failed")
 		return
 	}
 	machine_trace_record(
@@ -1225,23 +1078,10 @@ machine_advance_device :: proc(m: ^Machine, device: Scheduled_Device) {
 	now := master_timeline_now(m.timeline)
 	m.device_advances[int(device)] += 1
 	switch device {
-	case .Pit:
-		for _ in 0 ..< pit_advance_to(&m.pit, now) {pic_raise(&m.pic, 0)}
-		machine_audio_apply_pit_transitions(m)
-	case .Uart1:
-		uart_advance_to(&m.serial1, now)
-		if uart_take_irq(&m.serial1) {pic_raise(&m.pic, uart_irq_number(&m.serial1))}
-	case .Uart2:
-		uart_advance_to(&m.serial2, now)
-		if uart_take_irq(&m.serial2) {pic_raise(&m.pic, uart_irq_number(&m.serial2))}
-	case .Lpt1:
-		lpt_advance_to(&m.parallel1, now)
-		if lpt_take_irq(&m.parallel1) {pic_raise(&m.pic, lpt_irq_number(&m.parallel1))}
-	case .Lpt2:
-		lpt_advance_to(&m.parallel2, now)
-		if lpt_take_irq(&m.parallel2) {pic_raise(&m.pic, lpt_irq_number(&m.parallel2))}
-	case .Dma:
-		_ = dma_advance_to(&m.dma, now, m.vm.ram)
+	case .Pit, .Uart1, .Uart2, .Lpt1, .Lpt2, .Dma, .I8042, .Cmos:
+		platform_device, _ := machine_scheduled_pc_at_device(device)
+		result := pc_at_platform_advance(&m.platform, platform_device, m.active_ns)
+		if result.pit_transitions {machine_audio_apply_pit_transitions(m)}
 	case .Fdc:
 		disk.fdc_advance_to(&m.fdc, now)
 	case .Ide:
@@ -1254,12 +1094,6 @@ machine_advance_device :: proc(m: ^Machine, device: Scheduled_Device) {
 		_ = disk.bmide_advance_to(&m.bmide, now, machine_bmide_memory(m))
 		machine_bmide_account_completion(m, transactions_before, bytes_before)
 		machine_bmide_poll_irqs(m)
-	case .I8042:
-		i8042_advance_to(&m.kbd, m.active_ns)
-	case .Cmos:
-		elapsed := m.active_ns - min(m.active_ns, m.cmos_active_ns)
-		for _ in 0 ..< cmos_advance(&m.cmos, elapsed) {pic_raise(&m.pic, 8)}
-		m.cmos_active_ns = m.active_ns
 	case .Audio:
 		machine_audio_advance_to(m, now)
 	case .Vga:
@@ -1312,21 +1146,21 @@ machine_trace_hv_exit :: proc(m: ^Machine, kind: hv.Exit_Kind, run_generation: u
 
 step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 	if m == nil {return false}
-	if m.bus.frozen {
+	if m.platform.bus.frozen {
 		machine_trace_record(m, .Freeze)
 		return false
 	}
-	if m.power_off_requested {return false}
+	if m.platform.power.power_off_requested {return false}
 	machine_sync_time(m)
 	machine_runtime_diagnostic_check_mmio(m)
 	machine_runtime_diagnostic_check_shutdown(m)
 	machine_runtime_diagnostic_check_storage(m)
 	video.gsw_vga_poll(&m.gsw_vga)
-	if m.reset_requested || m.power_off_requested {return false}
+	if m.platform.reset.reset_requested || m.platform.power.power_off_requested {return false}
 	queued := false
 	deferred_pending_event := false
-	if !m.pic_offer_queued && pic_has_pending(&m.pic) {
-		if offer, offered := pic_interrupt_preview(&m.pic); offered {
+	if !m.pic_offer_queued && pic_has_pending(&m.platform.pic) {
+		if offer, offered := pic_interrupt_preview(&m.platform.pic); offered {
 			switch hv.try_inject_irq(&m.vm, offer.vector) {
 			case .Injected:
 				m.pic_offer_queued = true
@@ -1345,7 +1179,7 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 				deferred_pending_event = m.vm.irq_deferred_pending_event
 				hv.request_irq_window(&m.vm, true)
 			case .Failed:
-				bus_freeze(&m.bus, "WHPX interrupt injection failed")
+				bus_freeze(&m.platform.bus, "WHPX interrupt injection failed")
 				return false
 			}
 		} else {
@@ -1363,13 +1197,13 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 			machine_sync_time(m)
 			machine_runtime_diagnostic_check_halt(m)
 			machine_runtime_diagnostic_check_shutdown(m)
-			return !m.bus.frozen
+			return !m.platform.bus.frozen
 		}
 	}
 	m.vcpu_running = true
 	if !machine_arm_run_guard(m) {
 		m.vcpu_running = false
-		bus_freeze(&m.bus, "vCPU run-guard scheduling failed")
+		bus_freeze(&m.platform.bus, "vCPU run-guard scheduling failed")
 		return false
 	}
 	run_generation := m.wake_generation
@@ -1378,12 +1212,12 @@ step :: proc(m: ^Machine) -> bool { 	// false = frozen/powered off
 	machine_disarm_wake(m)
 	machine_sync_time(m)
 	machine_trace_hv_exit(m, ex.kind, run_generation)
-	if m.reset_requested || m.power_off_requested {return false}
+	if m.platform.reset.reset_requested || m.platform.power.power_off_requested {return false}
 	governor_ok := ex.kind != .Canceled || hv.governor_on_cancel(&m.governor, &m.vm)
 	m.exit_hist[m.exit_count % EXIT_HISTORY] = ex.kind
 	m.exit_count += 1
 	if !governor_ok {
-		bus_freeze(&m.bus, "GSW-886 runtime counters unavailable")
+		bus_freeze(&m.platform.bus, "GSW-886 runtime counters unavailable")
 		return false
 	}
 	return machine_handle_exit(m, ex)
@@ -1394,7 +1228,7 @@ machine_irq_delivered :: proc(ctx: rawptr, vector: u8) -> bool {
 	m := (^Machine)(ctx)
 	if m == nil || !m.pic_offer_queued || m.pic_queued_offer.vector != vector {return false}
 	offer := m.pic_queued_offer
-	pic_interrupt_complete_queued(&m.pic, offer)
+	pic_interrupt_complete_queued(&m.platform.pic, offer)
 	machine_runtime_diagnostic_note_irq(m, offer)
 	m.pic_offer_queued = false
 	m.pic_queued_offer = {}
@@ -1414,7 +1248,7 @@ machine_irq_delivered :: proc(ctx: rawptr, vector: u8) -> bool {
 		m.vm.irq_delivery_cs_base + m.vm.irq_delivery_rip,
 		m.vm.irq_delivery_rflags,
 	)
-	if m.vm.part != nil {hv.request_irq_window(&m.vm, pic_has_pending(&m.pic))}
+	if m.vm.part != nil {hv.request_irq_window(&m.vm, pic_has_pending(&m.platform.pic))}
 	return true
 }
 
@@ -1426,14 +1260,14 @@ machine_handle_exit :: proc(m: ^Machine, ex: hv.Exit) -> bool {
 		machine_runtime_diagnostic_note_halt(m, ex)
 	case .Reset:
 		source :=
-			m.cmos.ram[0x0F] == 0x0A ? Reset_Provenance.Dos_Extender_Warm_Resume : Reset_Provenance.Triple_Fault
-		machine_record_reset(m, source)
-		m.cpu_reset_pending = true
-		m.cpu_reset_reason = ex.detail
-		m.cpu_reset_cmos_0f = m.cmos.ram[0x0F]
+			m.platform.cmos.ram[0x0F] == 0x0A ? Reset_Provenance.Dos_Extender_Warm_Resume : Reset_Provenance.Triple_Fault
+		pc_at_platform_record_reset(&m.platform, source)
+		m.platform.reset.cpu_reset_pending = true
+		m.platform.reset.cpu_reset_reason = ex.detail
+		m.platform.reset.cpu_reset_cmos_0f = m.platform.cmos.ram[0x0F]
 		return false
 	case .Failed:
-		bus_freeze(&m.bus, ex.detail)
+		bus_freeze(&m.platform.bus, ex.detail)
 		return false
 	case .Mmio_Undecodable:
 		// Guest misbehavior, recorded on the same path as any other
@@ -1443,13 +1277,13 @@ machine_handle_exit :: proc(m: ^Machine, ex: hv.Exit) -> bool {
 		// state, so freezing is the honest containment. Artifacts are written
 		// either way, and the detail names CS:RIP and the instruction bytes.
 		bus_record_unclassified_mmio(
-			&m.bus,
+			&m.platform.bus,
 			Unclassified_Mmio{gpa = ex.gpa, size = u32(ex.size), write = ex.write},
 		)
-		bus_freeze(&m.bus, ex.detail)
+		bus_freeze(&m.platform.bus, ex.detail)
 		return false
 	}
-	return !m.bus.frozen
+	return !m.platform.bus.frozen
 }
 
 @(private = "file")
@@ -1602,12 +1436,12 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 	} else if ide_decode == .Suppressed {
 		v = machine_ide_open_value(size)
 	} else {
-		v = bus_io_read(&m.bus, bus_port, size)
+		v = bus_io_read(&m.platform.bus, bus_port, size)
 	}
 	if acknowledges_ide_irq || acknowledges_atapi_irq {
 		machine_trace_record(m, .Ide_Access, u64(port), u64(size), u64(v))
 	} else if ide_decode != .Suppressed {
-		if kind := hardware_trace_io_kind(bus_port, false, &m.isa_pnp); kind != .None {
+		if kind := hardware_trace_io_kind(bus_port, false, &m.platform.isa_pnp); kind != .None {
 			machine_trace_record(m, kind, u64(port), u64(size), u64(v))
 		}
 	}
@@ -1621,12 +1455,12 @@ machine_io_read :: proc(ctx: rawptr, port: u16, size: u8) -> (u32, bool) {
 	machine_runtime_diagnostic_note_io(m, port, false, size, v)
 	m.io_count += 1
 	if ide_decode == .Decoded {
-		if m.bus.diagnostic_tracing {m.ide_hist[m.ide_count % IDE_HISTORY] = t}
+		if m.platform.bus.diagnostic_tracing {m.ide_hist[m.ide_count % IDE_HISTORY] = t}
 		m.ide_count += 1
 		machine_record_ide_kernel_probe(m, port, false, size, v)
 	}
 	machine_rearm_wake(m)
-	return v, !m.bus.frozen && !m.reset_requested && !m.power_off_requested
+	return v, !m.platform.bus.frozen && !m.platform.reset.reset_requested && !m.platform.power.power_off_requested
 }
 
 @(private = "package")
@@ -1648,7 +1482,7 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 	if m.diagnostic_tracing {m.io_hist[m.io_count % IO_HISTORY] = t}
 	m.io_count += 1
 	if ide_decode == .Decoded {
-		if m.bus.diagnostic_tracing {m.ide_hist[m.ide_count % IDE_HISTORY] = t}
+		if m.platform.bus.diagnostic_tracing {m.ide_hist[m.ide_count % IDE_HISTORY] = t}
 		m.ide_count += 1
 		machine_record_ide_kernel_probe(m, port, true, size, val)
 	}
@@ -1658,7 +1492,7 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 			u32(m.ide.reg_lba_mid) << 8 |
 			u32(m.ide.reg_lba_hi) << 16 |
 			u32(m.ide.reg_drive & 0x0F) << 24
-		if m.bus.diagnostic_tracing {m.cmd_hist[m.cmd_count % IDE_HISTORY] = Ide_Cmd_Trace {
+		if m.platform.bus.diagnostic_tracing {m.cmd_hist[m.cmd_count % IDE_HISTORY] = Ide_Cmd_Trace {
 				cmd   = u8(val),
 				drive = m.ide.reg_drive,
 				count = m.ide.reg_seccount,
@@ -1667,7 +1501,7 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 		m.cmd_count += 1
 	}
 	if ide_decode != .Suppressed {
-		if kind := hardware_trace_io_kind(bus_port, true, &m.isa_pnp, val); kind != .None {
+		if kind := hardware_trace_io_kind(bus_port, true, &m.platform.isa_pnp, val); kind != .None {
 			machine_trace_record(m, kind, u64(port), u64(size), u64(val))
 		}
 	}
@@ -1677,11 +1511,11 @@ machine_io_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) -> bool {
 		machine_trace_record(m, .Bmide_Access, u64(bmide_offset), u64(size), u64(val))
 		machine_bmide_synchronize(m)
 	} else if ide_decode != .Suppressed {
-		bus_io_write(&m.bus, bus_port, size, val)
+		bus_io_write(&m.platform.bus, bus_port, size, val)
 	}
 	machine_runtime_diagnostic_note_io(m, port, true, size, val)
 	machine_rearm_wake(m)
-	return !m.bus.frozen && !m.reset_requested && !m.power_off_requested
+	return !m.platform.bus.frozen && !m.platform.reset.reset_requested && !m.platform.power.power_off_requested
 }
 
 @(private = "package")
@@ -1700,7 +1534,7 @@ machine_io_stream_read :: proc(
 	if ide_decode != .Decoded || bus_port != 0x1F0 && bus_port != 0x170 {
 		return 0, false, true
 	}
-	completed, handled = bus_io_stream_read(&m.bus, bus_port, size, data)
+	completed, handled = bus_io_stream_read(&m.platform.bus, bus_port, size, data)
 	if handled && completed > 0 {
 		value: u32
 		for byte in 0 ..< min(int(size), len(data)) {
@@ -1708,7 +1542,7 @@ machine_io_stream_read :: proc(
 		}
 		machine_record_ide_kernel_probe(m, port, false, size, value, u32(completed))
 	}
-	return completed, handled, !m.bus.frozen && !m.reset_requested && !m.power_off_requested
+	return completed, handled, !m.platform.bus.frozen && !m.platform.reset.reset_requested && !m.platform.power.power_off_requested
 }
 
 @(private = "package")
@@ -1727,7 +1561,7 @@ machine_io_stream_write :: proc(
 	if ide_decode != .Decoded || bus_port != 0x1F0 && bus_port != 0x170 {
 		return 0, false, true
 	}
-	completed, handled = bus_io_stream_write(&m.bus, bus_port, size, data)
+	completed, handled = bus_io_stream_write(&m.platform.bus, bus_port, size, data)
 	if handled && completed > 0 {
 		value: u32
 		for byte in 0 ..< min(int(size), len(data)) {
@@ -1735,7 +1569,7 @@ machine_io_stream_write :: proc(
 		}
 		machine_record_ide_kernel_probe(m, port, true, size, value, u32(completed))
 	}
-	return completed, handled, !m.bus.frozen && !m.reset_requested && !m.power_off_requested
+	return completed, handled, !m.platform.bus.frozen && !m.platform.reset.reset_requested && !m.platform.power.power_off_requested
 }
 
 machine_storage_activity :: proc(m: ^Machine) -> Storage_Activity {
@@ -1781,7 +1615,7 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 		if write {
 			video.gsw_vga_mmio_write(&m.gsw_vga, offset, data, m.vm.ram)
 			if !machine_refresh_vbe_bank_alias(m) {
-				bus_freeze(&m.bus, "VBE bank alias synchronization failed")
+				bus_freeze(&m.platform.bus, "VBE bank alias synchronization failed")
 			}
 		} else {
 			video.gsw_vga_mmio_read(&m.gsw_vga, offset, data)
@@ -1833,12 +1667,12 @@ machine_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) {
 		return
 	}
 	bus_record_unclassified_mmio(
-		&m.bus,
+		&m.platform.bus,
 		Unclassified_Mmio{gpa = decoded_gpa, write = write, size = u32(len(data))},
 	)
-	if m.bus.strict_io {
+	if m.platform.bus.strict_io {
 		bus_freeze(
-			&m.bus,
+			&m.platform.bus,
 			fmt.tprintf(
 				"unclassified MMIO %s gpa=0x%x size=%d",
 				write ? "write" : "read",
@@ -1881,7 +1715,7 @@ machine_mmio_zone :: proc(gpa: u64) -> (Mmio_Zone, bool) {
 machine_vga_legacy_irq :: proc(ctx: rawptr, asserted: bool) {
 	m := (^Machine)(ctx)
 	if m == nil {return}
-	pic_set_irq_source_level(&m.pic, 9, .Vga_Retrace, asserted)
+	pic_set_irq_source_level(&m.platform.pic, 9, .Vga_Retrace, asserted)
 	if asserted {m.yield_requested = true}
 }
 
@@ -1922,7 +1756,7 @@ machine_gsw_sound_irq :: proc(ctx: rawptr, asserted: bool) {
 @(private = "file")
 machine_irq1 :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
-	pic_set_irq_level(&m.pic, 1, true)
+	pic_set_irq_level(&m.platform.pic, 1, true)
 }
 
 @(private = "file")
@@ -1941,25 +1775,25 @@ machine_test_device_write :: proc(ctx: rawptr, port: u16, size: u8, value: u32) 
 @(private = "file")
 machine_irq1_lower :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
-	pic_set_irq_level(&m.pic, 1, false)
+	pic_set_irq_level(&m.platform.pic, 1, false)
 }
 
 @(private)
 machine_irq12 :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
-	pic_set_irq_level(&m.pic, 12, true)
+	pic_set_irq_level(&m.platform.pic, 12, true)
 }
 
 @(private = "file")
 machine_irq12_lower :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
-	pic_set_irq_level(&m.pic, 12, false)
+	pic_set_irq_level(&m.platform.pic, 12, false)
 }
 
 @(private = "file")
 machine_irq6 :: proc(ctx: rawptr) {
 	m := (^Machine)(ctx)
-	pic_raise(&m.pic, 6)
+	pic_raise(&m.platform.pic, 6)
 }
 
 machine_bmide_memory_read :: proc(ctx: rawptr, address: u64, data: []u8) -> bool {
@@ -1975,7 +1809,7 @@ machine_bmide_memory_write :: proc(ctx: rawptr, address: u64, data: []u8) -> boo
 @(private)
 machine_io_should_yield :: proc(ctx: rawptr) -> bool {
 	m := (^Machine)(ctx)
-	requested := m.yield_requested || m.bus.frozen || m.reset_requested || m.power_off_requested
+	requested := m.yield_requested || m.platform.bus.frozen || m.platform.reset.reset_requested || m.platform.power.power_off_requested
 	m.yield_requested = false
 	return requested
 }
@@ -2069,8 +1903,8 @@ machine_sync_ide_irq_routes :: proc(m: ^Machine) {
 	secondary_native := pci_ide_channel_native(&m.pci, 1)
 	primary_level := m.ide.irq_signaled && pci_ide_channel_enabled(&m.pci, 0)
 	secondary_level := m.atapi.irq_signaled && pci_ide_channel_enabled(&m.pci, 1)
-	pic_set_irq_level(&m.pic, 14, primary_level && !primary_native)
-	pic_set_irq_level(&m.pic, 15, secondary_level && !secondary_native)
+	pic_set_irq_level(&m.platform.pic, 14, primary_level && !primary_native)
+	pic_set_irq_level(&m.platform.pic, 15, secondary_level && !secondary_native)
 	native_level := primary_level && primary_native || secondary_level && secondary_native
 	previous := pci_pirq_source_is_asserted(&m.pci, PCI_AMD756_IDE_PIRQ, .Amd756_Ide)
 	_ = pci_pirq_set_source_level(&m.pci, PCI_AMD756_IDE_PIRQ, .Amd756_Ide, native_level)
@@ -2106,17 +1940,17 @@ machine_irq15 :: proc(ctx: rawptr, asserted: bool) {
 @(private = "file")
 machine_fdc_dma_to_mem :: proc(ctx: rawptr, data: []u8) -> int {
 	m := (^Machine)(ctx)
-	dma_set_hardware_request(&m.dma, 2, true)
-	defer dma_set_hardware_request(&m.dma, 2, false)
-	return dma_transfer_to_memory(&m.dma, 2, m.vm.ram, data)
+	dma_set_hardware_request(&m.platform.dma, 2, true)
+	defer dma_set_hardware_request(&m.platform.dma, 2, false)
+	return dma_transfer_to_memory(&m.platform.dma, 2, m.vm.ram, data)
 }
 
 @(private = "file")
 machine_fdc_dma_from_mem :: proc(ctx: rawptr, buf: []u8) -> int {
 	m := (^Machine)(ctx)
-	dma_set_hardware_request(&m.dma, 2, true)
-	defer dma_set_hardware_request(&m.dma, 2, false)
-	return dma_transfer_from_memory(&m.dma, 2, m.vm.ram, buf)
+	dma_set_hardware_request(&m.platform.dma, 2, true)
+	defer dma_set_hardware_request(&m.platform.dma, 2, false)
+	return dma_transfer_from_memory(&m.platform.dma, 2, m.vm.ram, buf)
 }
 
 // channel 2 TC for the transfer in flight: the status bit is sticky until
@@ -2124,293 +1958,7 @@ machine_fdc_dma_from_mem :: proc(ctx: rawptr, buf: []u8) -> int {
 @(private = "file")
 machine_fdc_dma_tc :: proc(ctx: rawptr) -> bool {
 	m := (^Machine)(ctx)
-	return m.dma.ch[2].tc
-}
-
-@(private)
-machine_guest_reset :: proc(ctx: rawptr) {
-	m := (^Machine)(ctx)
-	source: Reset_Provenance
-	switch m.kbd.reset_source {
-	case .Controller_Pulse:
-		source = .Kbc_Controller_Pulse
-	case .Output_Port:
-		source = .Kbc_Output_Port
-	case .Fast_A20:
-		source = .Port_92
-	case .None:
-		source = .Kbc_Controller_Pulse
-	}
-	machine_request_reset(m, source)
-}
-
-@(private = "file")
-machine_reset_name :: proc(source: Reset_Provenance) -> string {
-	switch source {
-	case .Kbc_Controller_Pulse:
-		return "i8042 pulse"
-	case .Kbc_Output_Port:
-		return "i8042 output port"
-	case .Port_92:
-		return "port 92"
-	case .Pci_Cf9:
-		return "PCI reset control"
-	case .Triple_Fault:
-		return "triple fault"
-	case .Dos_Extender_Warm_Resume:
-		return "DOS extender warm resume"
-	case .None:
-		return "unspecified"
-	}
-	return "unspecified"
-}
-
-@(private = "file")
-machine_record_reset :: proc(m: ^Machine, source: Reset_Provenance) {
-	index := m.reset_count % PC_AT_RESET_HISTORY
-	m.reset_history[index] = {
-		source        = source,
-		master_tick   = master_timeline_now(m.timeline),
-		cmos_shutdown = m.cmos.ram[0x0F],
-	}
-	m.reset_count += 1
-	m.reset_source = source
-}
-
-@(private = "file")
-machine_request_reset :: proc(m: ^Machine, source: Reset_Provenance) {
-	if m == nil || m.reset_requested {return}
-	machine_trace_record(m, .Reset_Request, u64(source))
-	machine_record_reset(m, source)
-	m.reset_requested = true
-	m.reset_reason = fmt.tprintf("guest requested hardware reset (%s)", machine_reset_name(source))
-}
-
-@(private = "file")
-machine_a20_control :: proc(ctx: rawptr, enabled: bool) -> bool {
-	m := (^Machine)(ctx)
-	if hv.set_a20(&m.vm, enabled) {return true}
-	bus_freeze(&m.bus, "A20 mapping failed")
-	return false
-}
-
-// --- per-device adapters; multi-byte access splits into successive ports ---
-
-@(private = "file")
-machine_pic_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
-	m := (^Machine)(ctx)
-	v: u32 = 0
-	for i in 0 ..< int(size) {v |= u32(pic_in(&m.pic, port + u16(i))) << (8 * uint(i))}
-	return v
-}
-
-@(private = "file")
-machine_pic_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	for i in 0 ..< int(size) {pic_out(&m.pic, port + u16(i), u8(val >> (8 * uint(i))))}
-	// EOI with more IRQs queued: WHPX clears the window notification when it
-	// delivers an injection, so re-arm it here (mid-run, guest still in the
-	// handler) to get an exit at IRET instead of waiting for the vCPU pacer
-	if m.vm.part != nil && pic_has_pending(&m.pic) {
-		hv.request_irq_window(&m.vm, true)
-	}
-}
-
-@(private = "file")
-machine_pit_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .Audio)
-	v: u32 = 0
-	for i in 0 ..< int(size) {v |= u32(pit_in(&m.pit, port + u16(i))) << (8 * uint(i))}
-	return v
-}
-
-@(private = "file")
-machine_pit_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .Audio)
-	for i in 0 ..< int(size) {pit_out(&m.pit, port + u16(i), u8(val >> (8 * uint(i))))}
-	machine_audio_apply_pit_transitions(m)
-	_ = sound.audio_mixer_set_speaker_state(
-		&m.audio,
-		master_timeline_now(m.timeline),
-		m.pit.port61_low & 0x02 != 0,
-		pit_channel_out(&m.pit, 2),
-	)
-}
-
-@(private = "file")
-machine_port61_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .Audio)
-	return u32(pit_port61_read(&m.pit))
-}
-
-@(private = "file")
-machine_port61_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .Audio)
-	pit_port61_write(&m.pit, u8(val))
-	machine_audio_apply_pit_transitions(m)
-	_ = sound.audio_mixer_set_speaker_state(
-		&m.audio,
-		master_timeline_now(m.timeline),
-		m.pit.port61_low & 0x02 != 0,
-		pit_channel_out(&m.pit, 2),
-	)
-}
-
-@(private = "file")
-machine_uart_for_port :: proc(m: ^Machine, port: u16) -> ^Uart_16450 {
-	return port >= UART_COM1_BASE && port <= UART_COM1_BASE + 7 ? &m.serial1 : &m.serial2
-}
-
-@(private = "file")
-machine_uart_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
-	m := (^Machine)(ctx)
-	u := machine_uart_for_port(m, port)
-	machine_sync_device(m, port >= UART_COM1_BASE && port <= UART_COM1_BASE + 7 ? .Uart1 : .Uart2)
-	value, _ := uart_in(u, port)
-	return u32(value)
-}
-
-@(private = "file")
-machine_uart_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	u := machine_uart_for_port(m, port)
-	machine_sync_device(m, port >= UART_COM1_BASE && port <= UART_COM1_BASE + 7 ? .Uart1 : .Uart2)
-	_ = uart_out(u, port, u8(val))
-	if uart_take_irq(u) {pic_raise(&m.pic, uart_irq_number(u))}
-}
-
-@(private = "file")
-machine_lpt_for_port :: proc(m: ^Machine, port: u16) -> ^Lpt {
-	return port >= LPT1_BASE && port <= LPT1_BASE + 2 ? &m.parallel1 : &m.parallel2
-}
-
-@(private = "file")
-machine_lpt_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
-	m := (^Machine)(ctx)
-	lpt := machine_lpt_for_port(m, port)
-	machine_sync_device(m, port >= LPT1_BASE && port <= LPT1_BASE + 2 ? .Lpt1 : .Lpt2)
-	value, _ := lpt_in(lpt, port)
-	return u32(value)
-}
-
-@(private = "file")
-machine_lpt_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	lpt := machine_lpt_for_port(m, port)
-	machine_sync_device(m, port >= LPT1_BASE && port <= LPT1_BASE + 2 ? .Lpt1 : .Lpt2)
-	_ = lpt_out(lpt, port, u8(val))
-}
-
-@(private = "file")
-machine_isa_pnp_restore_passive :: proc(m: ^Machine) {
-	if !m.isa_pnp_passive_installed {return}
-	port := m.isa_pnp_passive_port
-	if m.bus.passive[int(port)] == u16(0x100) {m.bus.passive[int(port)] = 0}
-	m.isa_pnp_passive_port = 0
-	m.isa_pnp_passive_installed = false
-}
-
-@(private = "file")
-machine_isa_pnp_sync_read_data :: proc(m: ^Machine) {
-	port, programmed := isa_pnp_read_data_selection(&m.isa_pnp)
-	if m.isa_pnp_passive_installed && programmed && port == m.isa_pnp_passive_port {return}
-	machine_isa_pnp_restore_passive(m)
-	if !programmed || m.bus.io[int(port)].read != nil || m.bus.passive[int(port)] != 0 {return}
-	bus_register_passive(&m.bus, 0xFF, port)
-	m.isa_pnp_passive_port = port
-	m.isa_pnp_passive_installed = true
-}
-
-@(private = "file")
-machine_isa_pnp_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	_ = isa_pnp_out(&m.isa_pnp, port, u8(val))
-	machine_isa_pnp_sync_read_data(m)
-}
-
-@(private = "package")
-machine_init_isa_pnp :: proc(m: ^Machine) {
-	isa_pnp_init(&m.isa_pnp)
-	m.isa_pnp_passive_port = 0
-	m.isa_pnp_passive_installed = false
-	address_h := Io_Handler {
-		ctx   = m,
-		read  = machine_lpt_read,
-		write = machine_isa_pnp_write,
-	}
-	bus_register_byte_decomposed(&m.bus, ISA_PNP_ADDRESS_PORT, ISA_PNP_ADDRESS_PORT, address_h)
-	write_data_h := Io_Handler {
-		ctx   = m,
-		write = machine_isa_pnp_write,
-	}
-	bus_register(&m.bus, ISA_PNP_WRITE_DATA_PORT, ISA_PNP_WRITE_DATA_PORT, write_data_h)
-	bus_whitelist(&m.bus, ISA_PNP_WRITE_DATA_PORT)
-}
-
-@(private = "file")
-machine_cmos_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .Cmos)
-	v: u32 = 0
-	for i in 0 ..< int(size) {v |= u32(cmos_in(&m.cmos, port + u16(i))) << (8 * uint(i))}
-	return v
-}
-
-@(private = "file")
-machine_cmos_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .Cmos)
-	for i in 0 ..< int(size) {cmos_out(&m.cmos, port + u16(i), u8(val >> (8 * uint(i))))}
-	for _ in 0 ..< cmos_advance(&m.cmos, 0) {pic_raise(&m.pic, 8)}
-}
-
-@(private = "file")
-machine_kbd_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .I8042)
-	return u32(i8042_in(&m.kbd, port))
-}
-
-@(private = "file")
-machine_kbd_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .I8042)
-	i8042_out(&m.kbd, port, u8(val))
-}
-
-@(private = "file")
-machine_dma_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .Dma)
-	v: u32 = 0
-	for i in 0 ..< int(size) {v |= u32(dma_in(&m.dma, port + u16(i))) << (8 * uint(i))}
-	return v
-}
-
-@(private = "file")
-machine_dma_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	machine_sync_device(m, .Dma)
-	for i in 0 ..< int(size) {dma_out(&m.dma, port + u16(i), u8(val >> (8 * uint(i))))}
-}
-
-@(private = "file")
-machine_isa_delay_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
-	m := (^Machine)(ctx)
-	value, elapsed_ns := isa_delay_read(&m.isa_delay)
-	machine_advance_time_ns(m, elapsed_ns)
-	return u32(value)
-}
-
-@(private = "file")
-machine_isa_delay_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	m := (^Machine)(ctx)
-	elapsed_ns := isa_delay_write(&m.isa_delay, u8(val))
-	machine_advance_time_ns(m, elapsed_ns)
+	return m.platform.dma.ch[2].tc
 }
 
 @(private = "file")
@@ -2482,7 +2030,7 @@ machine_pci_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	machine_sync_time(m)
 	pci_out(&m.pci, port, size, val)
 	if !machine_sync_pci_devices(m) {
-		bus_freeze(&m.bus, "PCI device decode synchronization failed")
+		bus_freeze(&m.platform.bus, "PCI device decode synchronization failed")
 		return
 	}
 	machine_bmide_synchronize(m)
@@ -2491,14 +2039,13 @@ machine_pci_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 
 machine_reset_control_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
 	m := (^Machine)(ctx)
-	return u32(m.reset_control)
+	return pc_at_reset_control_read(&m.platform, port, size)
 }
 
 machine_reset_control_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
-	if size != 1 {return}
 	m := (^Machine)(ctx)
-	m.reset_control = u8(val) & 0x02
-	if val & 0x04 != 0 {machine_request_reset(m, .Pci_Cf9)}
+	if m.platform.adapters.ctx == nil {m.platform.adapters = machine_pc_at_adapters(m)}
+	pc_at_reset_control_write(&m.platform, port, size, val)
 }
 
 @(private = "file")
@@ -2527,7 +2074,7 @@ machine_vga_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 	video.vga_begin_raster_change(&m.vga, m.active_ns)
 	video.vga_io_write(&m.vga, port, size, val)
 	if !machine_refresh_vbe_bank_alias(m) {
-		bus_freeze(&m.bus, "VBE bank alias synchronization failed")
+		bus_freeze(&m.platform.bus, "VBE bank alias synchronization failed")
 		return
 	}
 	machine_scheduler_refresh(m)
@@ -2708,12 +2255,17 @@ machine_dbg_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
 }
 
 @(private = "package")
-machine_shutdown_trace_read :: proc(_: rawptr, _: u16, _: u8) -> u32 {
-	return 0xFF
+machine_shutdown_trace_read :: proc(ctx: rawptr, port: u16, size: u8) -> u32 {
+	m := (^Machine)(ctx)
+	if m == nil {return 0xFF}
+	if m.platform.adapters.ctx == nil {m.platform.adapters = machine_pc_at_adapters(m)}
+	return pc_at_port80_read(&m.platform, port, size)
 }
 
 @(private = "package")
-machine_shutdown_trace_write :: proc(ctx: rawptr, _: u16, size: u8, val: u32) {
-	if ctx == nil || size == 0 {return}
-	machine_runtime_diagnostic_note_shutdown_marker((^Machine)(ctx), u8(val))
+machine_shutdown_trace_write :: proc(ctx: rawptr, port: u16, size: u8, val: u32) {
+	m := (^Machine)(ctx)
+	if m == nil {return}
+	if m.platform.adapters.ctx == nil {m.platform.adapters = machine_pc_at_adapters(m)}
+	pc_at_port80_write(&m.platform, port, size, val)
 }

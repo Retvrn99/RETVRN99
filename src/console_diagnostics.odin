@@ -110,7 +110,7 @@ dump_state :: proc(m: ^machine.Machine) {
 		fmt.printf("%02x", m.vm.irq_delivery_ins[index])
 	}
 	fmt.println()
-	kbd_diag := machine.i8042_diagnostics(&m.kbd)
+	kbd_diag := machine.i8042_diagnostics(&m.platform.kbd)
 	fmt.printfln(
 		"i8042: queued=%d keyboard=%d auxiliary=%d obf=%t aux=%t ibf=%t",
 		kbd_diag.queued,
@@ -122,7 +122,7 @@ dump_state :: proc(m: ^machine.Machine) {
 	)
 	fmt.printfln(
 		"a20: controller=%t applied=%t requested=%t requests=%d remaps=%d",
-		m.kbd.a20,
+		m.platform.kbd.a20,
 		m.vm.a20_enabled,
 		m.vm.a20_requested,
 		m.vm.a20_request_count,
@@ -147,20 +147,20 @@ dump_state :: proc(m: ^machine.Machine) {
 	}
 	fmt.printfln(
 		"pic: master irr=%02x imr=%02x isr=%02x base=%02x auto_eoi=%t init=%v slave irr=%02x imr=%02x isr=%02x base=%02x auto_eoi=%t init=%v",
-		m.pic.master.irr,
-		m.pic.master.imr,
-		m.pic.master.isr,
-		m.pic.master.base,
-		m.pic.master.auto_eoi,
-		m.pic.master.init,
-		m.pic.slave.irr,
-		m.pic.slave.imr,
-		m.pic.slave.isr,
-		m.pic.slave.base,
-		m.pic.slave.auto_eoi,
-		m.pic.slave.init,
+		m.platform.pic.master.irr,
+		m.platform.pic.master.imr,
+		m.platform.pic.master.isr,
+		m.platform.pic.master.base,
+		m.platform.pic.master.auto_eoi,
+		m.platform.pic.master.init,
+		m.platform.pic.slave.irr,
+		m.platform.pic.slave.imr,
+		m.platform.pic.slave.isr,
+		m.platform.pic.slave.base,
+		m.platform.pic.slave.auto_eoi,
+		m.platform.pic.slave.init,
 	)
-	if m.bus.diagnostic_tracing {
+	if m.platform.bus.diagnostic_tracing {
 		nide := int(min(m.ide_count, u64(machine.IDE_HISTORY)))
 		fmt.printf("last %d ide io (of %d):", nide, m.ide_count)
 		for i in 0 ..< nide {
@@ -180,7 +180,7 @@ dump_state :: proc(m: ^machine.Machine) {
 	stack_linear := r.ss_base + stack_offset
 	stack_lo := stack_linear >= 0x20 ? stack_linear - 0x20 : 0
 	dump_linear(m, "stack", stack_lo, 0xA0)
-	if m.bus.diagnostic_tracing {
+	if m.platform.bus.diagnostic_tracing {
 		ncmd := int(min(m.cmd_count, u64(machine.IDE_HISTORY)))
 		fmt.printf("last %d ide cmds (of %d):", ncmd, m.cmd_count)
 		for i in 0 ..< ncmd {

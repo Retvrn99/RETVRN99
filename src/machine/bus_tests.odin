@@ -95,20 +95,20 @@ test_bus_byte_decomposes_declared_handler :: proc(t: ^testing.T) {
 test_machine_unknown_mmio_is_open_bus_unless_strict :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	bus_init(&m.bus)
-	defer bus_destroy(&m.bus)
+	bus_init(&m.platform.bus)
+	defer bus_destroy(&m.platform.bus)
 	m.vm.a20_enabled = true
 	data := [4]u8{}
 	machine_mmio(m, 0x4000_0000, false, data[:])
 	testing.expect_value(t, data, [4]u8{0xFF, 0xFF, 0xFF, 0xFF})
-	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(1))
-	testing.expect(t, !m.bus.frozen)
+	testing.expect_value(t, m.platform.bus.unclassified_mmio_count, u64(1))
+	testing.expect(t, !m.platform.bus.frozen)
 
-	bus_set_strict_io(&m.bus, true)
+	bus_set_strict_io(&m.platform.bus, true)
 	context.logger = log.nil_logger()
 	machine_mmio(m, 0x4000_1000, true, data[:2])
-	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(2))
-	testing.expect(t, m.bus.frozen)
+	testing.expect_value(t, m.platform.bus.unclassified_mmio_count, u64(2))
+	testing.expect(t, m.platform.bus.frozen)
 }
 
 // A guest instruction against device memory that no decoder can execute is
@@ -118,10 +118,10 @@ test_machine_unknown_mmio_is_open_bus_unless_strict :: proc(t: ^testing.T) {
 test_undecodable_mmio_is_recorded_and_contained :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	bus_init(&m.bus)
-	defer bus_destroy(&m.bus)
-	bus_set_strict_io(&m.bus, false)
-	m.bus.diagnostic_tracing = true
+	bus_init(&m.platform.bus)
+	defer bus_destroy(&m.platform.bus)
+	bus_set_strict_io(&m.platform.bus, false)
+	m.platform.bus.diagnostic_tracing = true
 	context.logger = log.nil_logger()
 
 	detail := "MMIO emulation rip=0xffff gpa=0xae000 cs=[sel=0x9e9d] reject=unsupported MMIO opcode"
@@ -139,11 +139,11 @@ test_undecodable_mmio_is_recorded_and_contained :: proc(t: ^testing.T) {
 	)
 
 	testing.expect(t, !alive)
-	testing.expect_value(t, m.bus.unclassified_mmio_count, u64(1))
-	recorded := m.bus.unclassified_mmio_history[0]
+	testing.expect_value(t, m.platform.bus.unclassified_mmio_count, u64(1))
+	recorded := m.platform.bus.unclassified_mmio_history[0]
 	testing.expect_value(t, recorded.gpa, u64(0xAE000))
 	testing.expect_value(t, recorded.size, u32(1))
 	testing.expect(t, !recorded.write)
-	testing.expect(t, m.bus.frozen)
-	testing.expect_value(t, m.bus.freeze_msg, detail)
+	testing.expect(t, m.platform.bus.frozen)
+	testing.expect_value(t, m.platform.bus.freeze_msg, detail)
 }

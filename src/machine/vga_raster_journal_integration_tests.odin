@@ -26,8 +26,8 @@ test_machine_vga_records_mid_frame_palette_deltas :: proc(t: ^testing.T) {
 	// The GSW-VGA function decodes no port I/O until firmware enables it, so a
 	// write before this reaches no register at all. Bus 0, device 2, function 0,
 	// command register, I/O and memory space on.
-	bus_io_write(&m.bus, 0xCF8, 4, 0x8000_1004)
-	bus_io_write(&m.bus, 0xCFC, 2, 0x0003)
+	bus_io_write(&m.platform.bus, 0xCF8, 4, 0x8000_1004)
+	bus_io_write(&m.platform.bus, 0xCFC, 2, 0x0003)
 
 	line_ns := m.vga.timing.line_period_ns
 	if !testing.expect(t, line_ns > 0) {return}

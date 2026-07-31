@@ -105,14 +105,14 @@ test_machine_failed_initialization_cleans_resources_and_destroy_is_idempotent ::
 	testing.expect(t, m.vm.part == nil)
 	testing.expect_value(t, len(m.vm.ram), 0)
 	testing.expect_value(t, len(m.vm.device_mappings), 0)
-	testing.expect_value(t, len(m.bus.io), 0)
-	testing.expect_value(t, len(m.bus.passive), 0)
+	testing.expect_value(t, len(m.platform.bus.io), 0)
+	testing.expect_value(t, len(m.platform.bus.passive), 0)
 	testing.expect_value(t, len(m.vga.frame_pixels), 0)
 	testing.expect_value(t, m.governor.host_hz, u64(0))
 	machine_destroy(m)
 	machine_destroy(m)
 	testing.expect(t, m.vm.part == nil)
-	testing.expect_value(t, len(m.bus.io), 0)
+	testing.expect_value(t, len(m.platform.bus.io), 0)
 }
 
 @(test)
@@ -128,12 +128,12 @@ test_machine_hypervisor_create_failure_cleans_bus_and_destroy_is_idempotent :: p
 	testing.expect(t, !machine_init(m, max(int)))
 	testing.expect(t, m.vm.part == nil)
 	testing.expect_value(t, len(m.vm.ram), 0)
-	testing.expect_value(t, len(m.bus.io), 0)
-	testing.expect_value(t, len(m.bus.passive), 0)
+	testing.expect_value(t, len(m.platform.bus.io), 0)
+	testing.expect_value(t, len(m.platform.bus.passive), 0)
 	machine_destroy(m)
 	machine_destroy(m)
 	testing.expect(t, m.vm.part == nil)
-	testing.expect_value(t, len(m.bus.io), 0)
+	testing.expect_value(t, len(m.platform.bus.io), 0)
 }
 
 @(test)
@@ -156,7 +156,7 @@ test_machine_port_echo :: proc(t: ^testing.T) {
 		read = proc(ctx: rawptr, port: u16, size: u8) -> u32 {return (^u32)(ctx)^},
 		write = proc(ctx: rawptr, port: u16, size: u8, v: u32) {(^u32)(ctx)^ = v},
 	}
-	bus_register(&m.bus, 0x99, 0x99, h)
+	bus_register(&m.platform.bus, 0x99, 0x99, h)
 
 	// mov al, 0x42; out 0x99, al; hlt
 	copy(m.vm.ram[0x7C00:], []u8{0xB0, 0x42, 0xE6, 0x99, 0xF4})
@@ -165,7 +165,7 @@ test_machine_port_echo :: proc(t: ^testing.T) {
 	testing.expect(t, step(m))
 	testing.expect_value(t, seen, u32(0x42))
 	// reaching HLT past the OUT means the emulator advanced RIP
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, !m.platform.bus.frozen)
 }
 
 @(test)
@@ -180,7 +180,7 @@ test_machine_irq_delivery :: proc(t: ^testing.T) {
 	ok := machine_init(m, 64 * 1024 * 1024)
 	defer machine_destroy(m)
 	if !testing.expect(t, ok) {return}
-	pic_setup(&m.pic) // master base 0x08, everything unmasked
+	pic_setup(&m.platform.pic) // master base 0x08, everything unmasked
 
 	// IVT vector 8 -> 0000:0500
 	copy(m.vm.ram[0x20:], []u8{0x00, 0x05, 0x00, 0x00})
@@ -190,7 +190,7 @@ test_machine_irq_delivery :: proc(t: ^testing.T) {
 	copy(m.vm.ram[0x7C00:], []u8{0xBC, 0x00, 0x70, 0xFB, 0xF4, 0xB8, 0xEF, 0xBE, 0xF4})
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
 
-	pic_raise(&m.pic, 0)
+	pic_raise(&m.platform.pic, 0)
 	delivered := false
 	for _ in 0 ..< 100 {
 		if !step(m) {break}
@@ -201,7 +201,7 @@ test_machine_irq_delivery :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, delivered)
 	testing.expect_value(t, m.vm.ram[0x510], u8(1))
-	testing.expect(t, m.pic.master.isr & 0x01 != 0) // IRQ0 acked, in service
+	testing.expect(t, m.platform.pic.master.isr & 0x01 != 0) // IRQ0 acked, in service
 }
 
 Cancel_Ctx :: struct {
@@ -226,7 +226,7 @@ test_machine_irq_no_starvation :: proc(t: ^testing.T) {
 	ok := machine_init(m, 64 * 1024 * 1024)
 	defer machine_destroy(m)
 	if !testing.expect(t, ok) {return}
-	pic_setup(&m.pic)
+	pic_setup(&m.platform.pic)
 
 	// IVT: vector 8 -> 0000:0500, vector 9 -> 0000:0520
 	copy(m.vm.ram[0x20:], []u8{0x00, 0x05, 0x00, 0x00, 0x20, 0x05, 0x00, 0x00})
@@ -258,11 +258,11 @@ test_machine_irq_no_starvation :: proc(t: ^testing.T) {
 		thread.destroy(th)
 	}
 
-	pit_out(&m.pit, 0x43, 0x36)
-	pit_out(&m.pit, 0x40, 0xE8)
-	pit_out(&m.pit, 0x40, 0x03)
+	pit_out(&m.platform.pit, 0x43, 0x36)
+	pit_out(&m.platform.pit, 0x40, 0xE8)
+	pit_out(&m.platform.pit, 0x40, 0x03)
 	machine_advance_time_ns(m, 1_000_000)
-	pic_raise(&m.pic, 1)
+	pic_raise(&m.platform.pic, 1)
 	start := time.tick_now()
 	delivered := false
 	for time.duration_seconds(time.tick_since(start)) < 5 {
@@ -281,9 +281,9 @@ test_machine_fdc_dma_read :: proc(t: ^testing.T) {
 	// no WHPX needed: drives the FDC through the bus and the real 8237
 	m := new(Machine)
 	defer free(m)
-	bus_init(&m.bus)
-	defer bus_destroy(&m.bus)
-	pic_setup(&m.pic)
+	bus_init(&m.platform.bus)
+	defer bus_destroy(&m.platform.bus)
+	pic_setup(&m.platform.pic)
 	machine_init_fdc(m)
 	m.vm.ram = make([]u8, 1024 * 1024)
 	defer {delete(m.vm.ram); m.vm.ram = nil}
@@ -295,50 +295,50 @@ test_machine_fdc_dma_read :: proc(t: ^testing.T) {
 	defer machine_eject_floppy(m)
 
 	// DIR shows the media change from the mount
-	testing.expect_value(t, bus_io_read(&m.bus, 0x3F7, 1), u32(0x80))
+	testing.expect_value(t, bus_io_read(&m.platform.bus, 0x3F7, 1), u32(0x80))
 
 	// reset via DOR raises IRQ6 through machine glue
-	bus_io_write(&m.bus, 0x3F2, 1, 0x08)
-	bus_io_write(&m.bus, 0x3F2, 1, 0x1C)
-	testing.expect(t, m.pic.master.irr & 0x40 != 0)
+	bus_io_write(&m.platform.bus, 0x3F2, 1, 0x08)
+	bus_io_write(&m.platform.bus, 0x3F2, 1, 0x1C)
+	testing.expect(t, m.platform.pic.master.irr & 0x40 != 0)
 
 	sense :: proc(m: ^Machine) -> (st0, pcn: u8) {
-		bus_io_write(&m.bus, 0x3F5, 1, 0x08)
-		st0 = u8(bus_io_read(&m.bus, 0x3F5, 1))
-		pcn = u8(bus_io_read(&m.bus, 0x3F5, 1))
+		bus_io_write(&m.platform.bus, 0x3F5, 1, 0x08)
+		st0 = u8(bus_io_read(&m.platform.bus, 0x3F5, 1))
+		pcn = u8(bus_io_read(&m.platform.bus, 0x3F5, 1))
 		return
 	}
 	for _ in 0 ..< 4 {_, _ = sense(m)}
 
 	// RECALIBRATE then SENSE INTERRUPT: seek end at cylinder 0
-	bus_io_write(&m.bus, 0x3F5, 1, 0x07)
-	bus_io_write(&m.bus, 0x3F5, 1, 0x00)
+	bus_io_write(&m.platform.bus, 0x3F5, 1, 0x07)
+	bus_io_write(&m.platform.bus, 0x3F5, 1, 0x00)
 	st0, pcn := sense(m)
 	testing.expect_value(t, st0, u8(0x20))
 	testing.expect_value(t, pcn, u8(0x00))
-	testing.expect_value(t, bus_io_read(&m.bus, 0x3F7, 1), u32(0x00)) // DSKCHG cleared
+	testing.expect_value(t, bus_io_read(&m.platform.bus, 0x3F7, 1), u32(0x00)) // DSKCHG cleared
 
 	// program DMA ch2: single mode, write to memory, 512 bytes at 0x1000
-	dma_out(&m.dma, 0xD6, 0xC0) // channel 4 cascades the 8-bit controller
-	dma_out(&m.dma, 0xD4, 0x00)
-	dma_out(&m.dma, 0x0A, 0x06) // mask ch2
-	dma_out(&m.dma, 0x0C, 0x00) // clear flip-flop
-	dma_out(&m.dma, 0x0B, 0x46) // mode: single, write, ch2
-	dma_out(&m.dma, 0x04, 0x00)
-	dma_out(&m.dma, 0x04, 0x10) // addr 0x1000
-	dma_out(&m.dma, 0x05, 0xFF)
-	dma_out(&m.dma, 0x05, 0x01) // count 511 = 512 bytes
-	dma_out(&m.dma, 0x81, 0x00) // page 0
-	dma_out(&m.dma, 0x0A, 0x02) // unmask ch2
+	dma_out(&m.platform.dma, 0xD6, 0xC0) // channel 4 cascades the 8-bit controller
+	dma_out(&m.platform.dma, 0xD4, 0x00)
+	dma_out(&m.platform.dma, 0x0A, 0x06) // mask ch2
+	dma_out(&m.platform.dma, 0x0C, 0x00) // clear flip-flop
+	dma_out(&m.platform.dma, 0x0B, 0x46) // mode: single, write, ch2
+	dma_out(&m.platform.dma, 0x04, 0x00)
+	dma_out(&m.platform.dma, 0x04, 0x10) // addr 0x1000
+	dma_out(&m.platform.dma, 0x05, 0xFF)
+	dma_out(&m.platform.dma, 0x05, 0x01) // count 511 = 512 bytes
+	dma_out(&m.platform.dma, 0x81, 0x00) // page 0
+	dma_out(&m.platform.dma, 0x0A, 0x02) // unmask ch2
 
 	// READ C0/H0/S1
 	for b in ([]u8{0xE6, 0x00, 0, 0, 1, 2, 18, 0x1B, 0xFF}) {
-		bus_io_write(&m.bus, 0x3F5, 1, u32(b))
+		bus_io_write(&m.platform.bus, 0x3F5, 1, u32(b))
 	}
 	machine_test_run_fdc(m)
-	testing.expect_value(t, bus_io_read(&m.bus, 0x3F4, 1), u32(0xD0))
+	testing.expect_value(t, bus_io_read(&m.platform.bus, 0x3F4, 1), u32(0xD0))
 	res: [7]u8
-	for i in 0 ..< 7 {res[i] = u8(bus_io_read(&m.bus, 0x3F5, 1))}
+	for i in 0 ..< 7 {res[i] = u8(bus_io_read(&m.platform.bus, 0x3F5, 1))}
 	testing.expect_value(t, res[0] & 0xC0, u8(0x00))
 
 	ok := true
@@ -347,7 +347,7 @@ test_machine_fdc_dma_read :: proc(t: ^testing.T) {
 	}
 	testing.expect(t, ok)
 	testing.expect_value(t, m.vm.ram[0x1000 + 512], u8(0)) // TC stopped the transfer
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, !m.platform.bus.frozen)
 }
 
 // Regression for the Win98 SE boot-disk stall: after the boot-sector read
@@ -358,9 +358,9 @@ test_machine_fdc_dma_read :: proc(t: ^testing.T) {
 test_machine_fdc_dma_back_to_back :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	bus_init(&m.bus)
-	defer bus_destroy(&m.bus)
-	pic_setup(&m.pic)
+	bus_init(&m.platform.bus)
+	defer bus_destroy(&m.platform.bus)
+	pic_setup(&m.platform.pic)
 	machine_init_fdc(m)
 	m.vm.ram = make([]u8, 1024 * 1024)
 	defer {delete(m.vm.ram); m.vm.ram = nil}
@@ -371,33 +371,33 @@ test_machine_fdc_dma_back_to_back :: proc(t: ^testing.T) {
 	testing.expect(t, machine_mount_floppy(m, img))
 	defer machine_eject_floppy(m)
 
-	bus_io_write(&m.bus, 0x3F2, 1, 0x08)
-	bus_io_write(&m.bus, 0x3F2, 1, 0x1C)
+	bus_io_write(&m.platform.bus, 0x3F2, 1, 0x08)
+	bus_io_write(&m.platform.bus, 0x3F2, 1, 0x1C)
 	for _ in 0 ..< 4 {
-		bus_io_write(&m.bus, 0x3F5, 1, 0x08)
-		_ = bus_io_read(&m.bus, 0x3F5, 1)
-		_ = bus_io_read(&m.bus, 0x3F5, 1)
+		bus_io_write(&m.platform.bus, 0x3F5, 1, 0x08)
+		_ = bus_io_read(&m.platform.bus, 0x3F5, 1)
+		_ = bus_io_read(&m.platform.bus, 0x3F5, 1)
 	}
-	dma_out(&m.dma, 0xD6, 0xC0)
-	dma_out(&m.dma, 0xD4, 0x00)
+	dma_out(&m.platform.dma, 0xD6, 0xC0)
+	dma_out(&m.platform.dma, 0xD4, 0x00)
 
 	// programs ch2 the way SeaBIOS dma_floppy does, then runs one READ
 	read :: proc(m: ^Machine, addr: u32, count: int, params: []u8) -> [7]u8 {
-		dma_out(&m.dma, 0x0A, 0x06)
-		dma_out(&m.dma, 0x0C, 0x00)
-		dma_out(&m.dma, 0x04, u8(addr))
-		dma_out(&m.dma, 0x04, u8(addr >> 8))
-		dma_out(&m.dma, 0x0C, 0x00)
-		dma_out(&m.dma, 0x05, u8(count - 1))
-		dma_out(&m.dma, 0x05, u8((count - 1) >> 8))
-		dma_out(&m.dma, 0x0B, 0x46)
-		dma_out(&m.dma, 0x81, u8(addr >> 16))
-		dma_out(&m.dma, 0x0A, 0x02)
-		bus_io_write(&m.bus, 0x3F5, 1, 0xE6)
-		for p in params {bus_io_write(&m.bus, 0x3F5, 1, u32(p))}
+		dma_out(&m.platform.dma, 0x0A, 0x06)
+		dma_out(&m.platform.dma, 0x0C, 0x00)
+		dma_out(&m.platform.dma, 0x04, u8(addr))
+		dma_out(&m.platform.dma, 0x04, u8(addr >> 8))
+		dma_out(&m.platform.dma, 0x0C, 0x00)
+		dma_out(&m.platform.dma, 0x05, u8(count - 1))
+		dma_out(&m.platform.dma, 0x05, u8((count - 1) >> 8))
+		dma_out(&m.platform.dma, 0x0B, 0x46)
+		dma_out(&m.platform.dma, 0x81, u8(addr >> 16))
+		dma_out(&m.platform.dma, 0x0A, 0x02)
+		bus_io_write(&m.platform.bus, 0x3F5, 1, 0xE6)
+		for p in params {bus_io_write(&m.platform.bus, 0x3F5, 1, u32(p))}
 		machine_test_run_fdc(m)
 		res: [7]u8
-		for i in 0 ..< 7 {res[i] = u8(bus_io_read(&m.bus, 0x3F5, 1))}
+		for i in 0 ..< 7 {res[i] = u8(bus_io_read(&m.platform.bus, 0x3F5, 1))}
 		return res
 	}
 
@@ -413,7 +413,7 @@ test_machine_fdc_dma_back_to_back :: proc(t: ^testing.T) {
 		if m.vm.ram[0x2000 + i] != img[off + i] {ok = false; break}
 	}
 	testing.expect(t, ok)
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, !m.platform.bus.frozen)
 }
 
 @(test)
@@ -421,9 +421,9 @@ test_machine_attach_disk :: proc(t: ^testing.T) {
 	// no WHPX needed: drives the IDE through the bus directly
 	m := new(Machine)
 	defer free(m)
-	bus_init(&m.bus)
-	defer bus_destroy(&m.bus)
-	pic_setup(&m.pic)
+	bus_init(&m.platform.bus)
+	defer bus_destroy(&m.platform.bus)
+	pic_setup(&m.platform.pic)
 	pci_init(&m.pci)
 	pci_out(&m.pci, 0xCF8, 4, 0x8000_3940)
 	pci_out(&m.pci, 0xCFC, 1, u32(AMD756_IDE_PRIMARY_CHANNEL_ENABLE))
@@ -434,30 +434,30 @@ test_machine_attach_disk :: proc(t: ^testing.T) {
 	machine_attach_disk(m, machine_test_bd(&backing))
 
 	// IDENTIFY via the port protocol
-	bus_io_write(&m.bus, 0x1F6, 1, 0xE0)
-	bus_io_write(&m.bus, 0x1F7, 1, 0xEC)
-	st := bus_io_read(&m.bus, 0x1F7, 1)
+	bus_io_write(&m.platform.bus, 0x1F6, 1, 0xE0)
+	bus_io_write(&m.platform.bus, 0x1F7, 1, 0xEC)
+	st := bus_io_read(&m.platform.bus, 0x1F7, 1)
 	testing.expect_value(t, st, u32(disk.IDE_STATUS_BSY))
 	deadline, pending := disk.ide_next_deadline(&m.ide)
 	testing.expect(t, pending)
 	disk.ide_advance_to(&m.ide, deadline)
-	st = bus_io_read(&m.bus, 0x1F7, 1)
+	st = bus_io_read(&m.platform.bus, 0x1F7, 1)
 	testing.expect_value(t, st & 0x08, u32(0x08)) // DRQ
-	w0 := bus_io_read(&m.bus, 0x1F0, 2)
+	w0 := bus_io_read(&m.platform.bus, 0x1F0, 2)
 	testing.expect_value(t, w0, u32(0x0040))
-	testing.expect(t, m.pic.slave.irr & 0x40 != 0) // IRQ14 through machine glue
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, m.platform.pic.slave.irr & 0x40 != 0) // IRQ14 through machine glue
+	testing.expect(t, !m.platform.bus.frozen)
 }
 
 @(test)
 test_machine_mount_cdrom_secondary_ide :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	bus_init(&m.bus)
-	defer bus_destroy(&m.bus)
-	pic_setup(&m.pic)
+	bus_init(&m.platform.bus)
+	defer bus_destroy(&m.platform.bus)
+	pic_setup(&m.platform.pic)
 	pci_init(&m.pci)
-	pci_connect_pic(&m.pci, &m.pic)
+	pci_connect_pic(&m.pci, &m.platform.pic)
 	machine_init_atapi(m)
 	m.pci.functions[PCI_IDE_FUNCTION_INDEX].cfg[0x04] = 1
 	m.pci.functions[PCI_IDE_FUNCTION_INDEX].cfg[0x40] |=
@@ -469,13 +469,13 @@ test_machine_mount_cdrom_secondary_ide :: proc(t: ^testing.T) {
 	testing.expect(t, machine_mount_cdrom(m, path))
 	defer machine_eject_cdrom(m)
 
-	bus_io_write(&m.bus, 0x176, 1, 0xA0)
-	bus_io_write(&m.bus, 0x177, 1, 0xA1)
-	status := bus_io_read(&m.bus, 0x177, 1)
+	bus_io_write(&m.platform.bus, 0x176, 1, 0xA0)
+	bus_io_write(&m.platform.bus, 0x177, 1, 0xA1)
+	status := bus_io_read(&m.platform.bus, 0x177, 1)
 	testing.expect_value(t, status & disk.ATAPI_STATUS_DRQ, u32(disk.ATAPI_STATUS_DRQ))
-	testing.expect_value(t, bus_io_read(&m.bus, 0x170, 2), u32(0x85C0))
-	testing.expect(t, m.pic.slave.irr & 0x80 != 0)
-	testing.expect(t, !m.bus.frozen)
+	testing.expect_value(t, bus_io_read(&m.platform.bus, 0x170, 2), u32(0x85C0))
+	testing.expect(t, m.platform.pic.slave.irr & 0x80 != 0)
+	testing.expect(t, !m.platform.bus.frozen)
 
 	machine_eject_cdrom(m)
 	testing.expect(t, !disk.disc_image_present(&m.atapi.image))
@@ -492,17 +492,17 @@ test_machine_guest_reset_is_distinct_from_freeze :: proc(t: ^testing.T) {
 	}
 	m := new(Machine)
 	defer free(m)
-	i8042_init(&m.kbd, m, nil, nil, machine_guest_reset)
+	i8042_init(&m.platform.kbd, m, nil, nil, machine_guest_reset)
 	testing.expect(t, !machine_reset_requested(m))
-	i8042_out(&m.kbd, 0x64, 0xFE)
+	i8042_out(&m.platform.kbd, 0x64, 0xFE)
 	testing.expect(t, !machine_reset_requested(m))
-	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
+	i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS)
 	testing.expect(t, machine_reset_requested(m))
 	testing.expect_value(t, machine_reset_provenance(m), Reset_Provenance.Kbc_Controller_Pulse)
 	record, recorded := machine_reset_record(m, 0)
 	testing.expect(t, recorded)
 	testing.expect_value(t, record.source, Reset_Provenance.Kbc_Controller_Pulse)
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, !m.platform.bus.frozen)
 	testing.expect_value(
 		t,
 		machine_reset_reason(m),
@@ -525,15 +525,15 @@ test_machine_a20_controller_updates_hypervisor_mapping :: proc(t: ^testing.T) {
 	m.vm.ram[0x100500] = 0x22
 	copy(m.vm.ram[0x7C00:], []u8{0xB8, 0xFF, 0xFF, 0x8E, 0xD8, 0xA0, 0x10, 0x05, 0xF4})
 
-	testing.expect(t, m.kbd.a20 && !m.kbd.a20_kbc && m.kbd.a20_fast && m.vm.a20_enabled)
+	testing.expect(t, m.platform.kbd.a20 && !m.platform.kbd.a20_kbc && m.platform.kbd.a20_fast && m.vm.a20_enabled)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
 	testing.expect(t, step(m))
 	testing.expect_value(t, u8(hv.reg_rax(&m.vm)), u8(0x22))
 
-	bus_io_write(&m.bus, 0x92, 1, 0x00)
+	bus_io_write(&m.platform.bus, 0x92, 1, 0x00)
 	testing.expect(
 		t,
-		!m.kbd.a20 && !m.kbd.a20_kbc && !m.kbd.a20_fast && m.vm.a20_enabled && !m.vm.a20_requested,
+		!m.platform.kbd.a20 && !m.platform.kbd.a20_kbc && !m.platform.kbd.a20_fast && m.vm.a20_enabled && !m.vm.a20_requested,
 	)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
 	m.cpu_halted = false
@@ -541,13 +541,13 @@ test_machine_a20_controller_updates_hypervisor_mapping :: proc(t: ^testing.T) {
 	testing.expect(t, !m.vm.a20_enabled && !m.vm.a20_requested)
 	testing.expect_value(t, u8(hv.reg_rax(&m.vm)), u8(0x11))
 
-	bus_io_write(&m.bus, 0x64, 1, 0xD1)
-	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
-	bus_io_write(&m.bus, 0x60, 1, 0x03)
-	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
+	bus_io_write(&m.platform.bus, 0x64, 1, 0xD1)
+	i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS)
+	bus_io_write(&m.platform.bus, 0x60, 1, 0x03)
+	i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS)
 	testing.expect(
 		t,
-		m.kbd.a20 && m.kbd.a20_kbc && !m.kbd.a20_fast && !m.vm.a20_enabled && m.vm.a20_requested,
+		m.platform.kbd.a20 && m.platform.kbd.a20_kbc && !m.platform.kbd.a20_fast && !m.vm.a20_enabled && m.vm.a20_requested,
 	)
 	hv.set_realmode_entry(&m.vm, 0, 0x7C00)
 	m.cpu_halted = false
@@ -578,7 +578,7 @@ test_machine_guest_a20_toggle_invalidates_active_mapping :: proc(t: ^testing.T) 
 	defer machine_destroy(m)
 
 	probe: Machine_A20_Probe
-	bus_register(&m.bus, 0x99, 0x99, Io_Handler {
+	bus_register(&m.platform.bus, 0x99, 0x99, Io_Handler {
 		ctx = &probe,
 		read = proc(ctx: rawptr, port: u16, size: u8) -> u32 {return 0xFF},
 		write = proc(ctx: rawptr, port: u16, size: u8, value: u32) {
@@ -646,7 +646,7 @@ test_machine_guest_a20_toggle_stress_preserves_memory :: proc(t: ^testing.T) {
 	probe := Machine_A20_Stress_Probe {
 		valid = true,
 	}
-	bus_register(&m.bus, 0x99, 0x99, Io_Handler {
+	bus_register(&m.platform.bus, 0x99, 0x99, Io_Handler {
 		ctx = &probe,
 		read = proc(ctx: rawptr, port: u16, size: u8) -> u32 {return 0xFF},
 		write = proc(ctx: rawptr, port: u16, size: u8, value: u32) {
@@ -700,7 +700,7 @@ test_machine_guest_a20_toggle_stress_preserves_memory :: proc(t: ^testing.T) {
 	}
 	testing.expect_value(t, probe.count, 512)
 	testing.expect(t, probe.valid)
-	testing.expect(t, m.kbd.a20 && m.vm.a20_enabled)
+	testing.expect(t, m.platform.kbd.a20 && m.vm.a20_enabled)
 	testing.expect_value(t, m.vm.ram[0x20], u8(0xA5))
 	testing.expect_value(t, m.vm.ram[0x800], u8(0x5A))
 }
@@ -720,25 +720,25 @@ test_machine_hypervisor_reset_exit_requests_warm_cpu_reset :: proc(t: ^testing.T
 	testing.expect(t, !machine_reset_requested(m))
 	testing.expect(t, machine_cpu_reset_pending(m))
 	testing.expect_value(t, machine_cpu_reset_reason(m), "triple fault")
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, !m.platform.bus.frozen)
 }
 
 @(test)
 test_machine_ps2_mouse_routes_irq12 :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	pic_setup(&m.pic)
-	i8042_init(&m.kbd, m, nil, machine_irq12)
-	i8042_out(&m.kbd, 0x64, 0x60)
-	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
-	i8042_out(&m.kbd, 0x60, 0x02)
-	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
-	i8042_out(&m.kbd, 0x64, 0xD4)
-	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS)
-	i8042_out(&m.kbd, 0x60, 0xF2)
-	i8042_advance(&m.kbd, I8042_CONTROLLER_INPUT_NS + I8042_DEVICE_BYTE_NS)
-	testing.expect(t, m.pic.slave.irr & 0x10 != 0)
-	testing.expect(t, m.pic.master.irr & 0x04 != 0)
+	pic_setup(&m.platform.pic)
+	i8042_init(&m.platform.kbd, m, nil, machine_irq12)
+	i8042_out(&m.platform.kbd, 0x64, 0x60)
+	i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS)
+	i8042_out(&m.platform.kbd, 0x60, 0x02)
+	i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS)
+	i8042_out(&m.platform.kbd, 0x64, 0xD4)
+	i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS)
+	i8042_out(&m.platform.kbd, 0x60, 0xF2)
+	i8042_advance(&m.platform.kbd, I8042_CONTROLLER_INPUT_NS + I8042_DEVICE_BYTE_NS)
+	testing.expect(t, m.platform.pic.slave.irr & 0x10 != 0)
+	testing.expect(t, m.platform.pic.master.irr & 0x04 != 0)
 }
 
 @(test)
@@ -763,7 +763,7 @@ test_machine_scheduled_host_key_rearms_headless_device_deadline :: proc(t: ^test
 	}
 	time.sleep(20 * time.Millisecond)
 	machine_sync_time(m)
-	diagnostic := i8042_diagnostics(&m.kbd)
+	diagnostic := i8042_diagnostics(&m.platform.kbd)
 	testing.expect_value(t, diagnostic.scheduled_key_bytes, 0)
 	testing.expect(t, diagnostic.output_full)
 }
@@ -785,7 +785,7 @@ test_machine_reset_control_requests_guest_reset :: proc(t: ^testing.T) {
 	machine_reset_control_write(m, 0xCF9, 1, 0x06)
 	testing.expect(t, machine_reset_requested(m))
 	testing.expect_value(t, machine_reset_provenance(m), Reset_Provenance.Pci_Cf9)
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, !m.platform.bus.frozen)
 	testing.expect_value(
 		t,
 		machine_reset_reason(m),
@@ -809,7 +809,7 @@ test_machine_guest_cf9_reset_stops_without_freezing :: proc(t: ^testing.T) {
 	testing.expect(t, !step(m))
 	testing.expect(t, machine_reset_requested(m))
 	testing.expect_value(t, machine_reset_provenance(m), Reset_Provenance.Pci_Cf9)
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, !m.platform.bus.frozen)
 }
 
 @(test)
@@ -823,11 +823,11 @@ test_machine_port92_reset_has_independent_provenance :: proc(t: ^testing.T) {
 	}
 	m := new(Machine)
 	defer free(m)
-	i8042_init(&m.kbd, m, nil, nil, machine_guest_reset)
-	i8042_out(&m.kbd, 0x92, 0x03)
+	i8042_init(&m.platform.kbd, m, nil, nil, machine_guest_reset)
+	i8042_out(&m.platform.kbd, 0x92, 0x03)
 	testing.expect(t, machine_reset_requested(m))
 	testing.expect_value(t, machine_reset_provenance(m), Reset_Provenance.Port_92)
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, !m.platform.bus.frozen)
 }
 
 @(test)
@@ -1017,7 +1017,7 @@ test_machine_vga_vertical_interrupt_uses_at_irq9_redirect :: proc(t: ^testing.T)
 	defer delete(backing)
 	m := new(Machine)
 	defer free(m)
-	pic_setup(&m.pic)
+	pic_setup(&m.platform.pic)
 	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
 	defer video.vga_destroy(&m.vga)
 	video.vga_set_legacy_irq(&m.vga, m, machine_vga_legacy_irq)
@@ -1037,16 +1037,16 @@ test_machine_vga_vertical_interrupt_uses_at_irq9_redirect :: proc(t: ^testing.T)
 
 	video.vga_sync_to(&m.vga, 550)
 	source_bit := u8(1) << u8(Pic_Irq_Source.Vga_Retrace)
-	testing.expect(t, m.pic.source_asserted[9] & source_bit != 0)
+	testing.expect(t, m.platform.pic.source_asserted[9] & source_bit != 0)
 	testing.expect(t, m.yield_requested)
-	testing.expect(t, pic_has_pending(&m.pic))
-	vector, ok := pic_ack(&m.pic)
+	testing.expect(t, pic_has_pending(&m.platform.pic))
+	vector, ok := pic_ack(&m.platform.pic)
 	testing.expect(t, ok)
 	testing.expect_value(t, vector, u8(0x71))
 
 	video.vga_out(&m.vga, 0x3D4, 0x11)
 	video.vga_out(&m.vga, 0x3D5, 0)
-	testing.expect(t, m.pic.source_asserted[9] & source_bit == 0)
+	testing.expect(t, m.platform.pic.source_asserted[9] & source_bit == 0)
 }
 
 @(test)
@@ -1055,8 +1055,8 @@ test_machine_vga_irq9_level_mode_clears_after_spurious_cascade :: proc(t: ^testi
 	defer delete(backing)
 	m := new(Machine)
 	defer free(m)
-	pic_setup(&m.pic)
-	pic_out(&m.pic, 0x4D1, 0x02)
+	pic_setup(&m.platform.pic)
+	pic_out(&m.platform.pic, 0x4D1, 0x02)
 	if !testing.expect(t, video.vga_init(&m.vga, backing)) {return}
 	defer video.vga_destroy(&m.vga)
 	video.vga_set_legacy_irq(&m.vga, m, machine_vga_legacy_irq)
@@ -1075,22 +1075,22 @@ test_machine_vga_irq9_level_mode_clears_after_spurious_cascade :: proc(t: ^testi
 	m.vga.crtc[0x11] = 0x10
 
 	video.vga_sync_to(&m.vga, 550)
-	vector, ok := pic_ack(&m.pic)
+	vector, ok := pic_ack(&m.platform.pic)
 	testing.expect(t, ok)
 	testing.expect_value(t, vector, u8(0x71))
-	pic_out(&m.pic, 0xA0, 0x61)
-	pic_out(&m.pic, 0x20, 0x62)
-	testing.expect(t, pic_has_pending(&m.pic))
+	pic_out(&m.platform.pic, 0xA0, 0x61)
+	pic_out(&m.platform.pic, 0x20, 0x62)
+	testing.expect(t, pic_has_pending(&m.platform.pic))
 
 	video.vga_out(&m.vga, 0x3D4, 0x11)
 	video.vga_out(&m.vga, 0x3D5, 0)
-	testing.expect_value(t, m.pic.slave.irr & 0x02, u8(0))
-	testing.expect_value(t, m.pic.source_asserted[9], u8(0))
-	vector, ok = pic_ack(&m.pic)
+	testing.expect_value(t, m.platform.pic.slave.irr & 0x02, u8(0))
+	testing.expect_value(t, m.platform.pic.source_asserted[9], u8(0))
+	vector, ok = pic_ack(&m.platform.pic)
 	testing.expect(t, ok)
 	testing.expect_value(t, vector, u8(0x77))
-	pic_out(&m.pic, 0x20, 0x62)
-	testing.expect(t, !pic_has_pending(&m.pic))
+	pic_out(&m.platform.pic, 0x20, 0x62)
+	testing.expect(t, !pic_has_pending(&m.platform.pic))
 }
 
 @(test)
@@ -1102,7 +1102,7 @@ test_machine_one_shot_rearms_same_deadline_and_run_guard_disarms_after_run :: pr
 		trace := machine_hardware_trace_detach(m)
 		if trace != nil {free(trace)}
 	}
-	pit_init(&m.pit)
+	pit_init(&m.platform.pit)
 	probe: Machine_String_IO_Wake_Probe
 	m.wake_ctx = &probe
 	m.wake_schedule = machine_test_string_io_rearm
@@ -1140,7 +1140,7 @@ test_machine_one_shot_rearms_same_deadline_and_run_guard_disarms_after_run :: pr
 test_machine_active_run_guard_rearms_for_earlier_pit_deadline :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	pit_init(&m.pit)
+	pit_init(&m.platform.pit)
 	m.cpu_mode = .Turbo
 	probe: Machine_String_IO_Wake_Probe
 	m.wake_ctx = &probe
@@ -1153,9 +1153,9 @@ test_machine_active_run_guard_rearms_for_earlier_pit_deadline :: proc(t: ^testin
 	original_generation := m.wake_generation
 	original_delay := probe.last_delay_ns
 
-	pit_out(&m.pit, 0x43, 0x34)
-	pit_out(&m.pit, 0x40, 2)
-	pit_out(&m.pit, 0x40, 0)
+	pit_out(&m.platform.pit, 0x43, 0x34)
+	pit_out(&m.platform.pit, 0x40, 2)
+	pit_out(&m.platform.pit, 0x40, 0)
 	machine_rearm_wake(m)
 
 	testing.expect_value(t, probe.run_guards, 2)
@@ -1173,7 +1173,7 @@ test_machine_active_run_guard_rearms_for_earlier_pit_deadline :: proc(t: ^testin
 test_machine_running_without_guard_arms_pending_deadline :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	pit_init(&m.pit)
+	pit_init(&m.platform.pit)
 	probe: Machine_String_IO_Wake_Probe
 	m.wake_ctx = &probe
 	m.wake_schedule = machine_test_string_io_rearm
@@ -1192,7 +1192,7 @@ test_machine_running_without_guard_arms_pending_deadline :: proc(t: ^testing.T) 
 test_machine_run_guard_arm_failure_aborts_before_hypervisor_run :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)
-	pit_init(&m.pit)
+	pit_init(&m.platform.pit)
 	probe := Machine_String_IO_Wake_Probe {
 		fail_run_guard = true,
 	}
@@ -1203,7 +1203,7 @@ test_machine_run_guard_arm_failure_aborts_before_hypervisor_run :: proc(t: ^test
 	testing.expect(t, !machine_arm_run_guard(m))
 	testing.expect_value(t, m.vm.run_calls, before)
 	testing.expect_value(t, probe.run_guards, 1)
-	testing.expect(t, !m.bus.frozen)
+	testing.expect(t, !m.platform.bus.frozen)
 	testing.expect(t, !m.wake_scheduled)
 }
 
@@ -1218,7 +1218,7 @@ test_machine_failed_string_io_run_guard_rearm_forces_whpx_yield :: proc(t: ^test
 	}
 	m := new(Machine)
 	defer free(m)
-	pit_init(&m.pit)
+	pit_init(&m.platform.pit)
 	m.cpu_mode = .Turbo
 	probe: Machine_String_IO_Wake_Probe
 	m.wake_ctx = &probe
@@ -1228,19 +1228,19 @@ test_machine_failed_string_io_run_guard_rearm_forces_whpx_yield :: proc(t: ^test
 
 	probe.fail_run_guard = true
 	machine_io_string_begin(m)
-	pit_out(&m.pit, 0x43, 0x34)
-	pit_out(&m.pit, 0x40, 2)
-	pit_out(&m.pit, 0x40, 0)
+	pit_out(&m.platform.pit, 0x43, 0x34)
+	pit_out(&m.platform.pit, 0x40, 2)
+	pit_out(&m.platform.pit, 0x40, 0)
 	machine_io_string_end(m)
 
-	testing.expect(t, m.bus.frozen)
-	testing.expect(t, strings.contains(m.bus.freeze_msg, "run-guard rearm failed"))
+	testing.expect(t, m.platform.bus.frozen)
+	testing.expect(t, strings.contains(m.platform.bus.freeze_msg, "run-guard rearm failed"))
 	testing.expect(t, machine_io_should_yield(m))
-	m.bus.frozen = false
-	m.reset_requested = true
+	m.platform.bus.frozen = false
+	m.platform.reset.reset_requested = true
 	testing.expect(t, machine_io_should_yield(m))
-	m.reset_requested = false
-	m.power_off_requested = true
+	m.platform.reset.reset_requested = false
+	m.platform.power.power_off_requested = true
 	testing.expect(t, machine_io_should_yield(m))
 }
 

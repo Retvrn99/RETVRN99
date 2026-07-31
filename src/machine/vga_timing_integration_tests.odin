@@ -76,7 +76,7 @@ test_machine_halted_guest_wakes_on_vga_vertical_retrace :: proc(t: ^testing.T) {
 	vga_timing_test_program_mode(&m.vga)
 	testing.expect_value(t, m.vga.timing.total_lines, 525)
 	testing.expect_value(t, m.vga.timing.retrace_start, 490)
-	vga_retrace_halt_setup_irq9(&m.pic)
+	vga_retrace_halt_setup_irq9(&m.platform.pic)
 
 	// IRQ9 takes vector 71h through the AT redirect.
 	copy(m.vm.ram[0x1C4:], []u8{0x00, 0x05, 0x00, 0x00})
@@ -113,7 +113,7 @@ test_machine_halted_guest_wakes_on_vga_vertical_retrace :: proc(t: ^testing.T) {
 		0xF4, // hlt
 	})
 	seen: u32
-	bus_register(&m.bus, 0x99, 0x99, Io_Handler {
+	bus_register(&m.platform.bus, 0x99, 0x99, Io_Handler {
 		ctx = &seen,
 		write = proc(ctx: rawptr, port: u16, size: u8, value: u32) {(^u32)(ctx)^ = value},
 	})

@@ -264,7 +264,7 @@ hardware_trace_test_records_only_interrupt_acknowledging_ide_status_reads :: pro
 	backing := make([]u8, 1024 * 1024)
 	defer delete(backing)
 	machine_attach_disk(m, machine_test_bd(&backing))
-	if !testing.expect(t, !m.bus.frozen) {return}
+	if !testing.expect(t, !m.platform.bus.frozen) {return}
 
 	m.ide.irq_pending = true
 	m.ide.irq_signaled = true
@@ -290,7 +290,7 @@ hardware_trace_test_does_not_enable_diagnostic_string_io_path :: proc(t: ^testin
 	testing.expect(t, machine_set_hardware_trace(m, true))
 	testing.expect(t, m.hardware_trace != nil && m.hardware_trace.enabled)
 	testing.expect(t, !m.diagnostic_tracing)
-	testing.expect(t, !m.bus.diagnostic_tracing)
+	testing.expect(t, !m.platform.bus.diagnostic_tracing)
 	trace := machine_hardware_trace_detach(m)
 	if trace != nil {free(trace)}
 }
@@ -300,10 +300,10 @@ hardware_trace_test_bus_diagnostics_preserve_string_io_acceleration :: proc(t: ^
 	m := new(Machine)
 	defer free(m)
 	machine_set_bus_diagnostic_tracing(m, true)
-	testing.expect(t, m.bus.diagnostic_tracing)
+	testing.expect(t, m.platform.bus.diagnostic_tracing)
 	testing.expect(t, !m.diagnostic_tracing)
 	machine_set_bus_diagnostic_tracing(m, false)
-	testing.expect(t, !m.bus.diagnostic_tracing)
+	testing.expect(t, !m.platform.bus.diagnostic_tracing)
 }
 
 @(test)
@@ -325,7 +325,7 @@ hardware_trace_test_bus_only_diagnostics_record_bounded_ide_histories :: proc(
 	defer delete(backing)
 	machine_attach_disk(m, machine_test_bd(&backing))
 	machine_set_bus_diagnostic_tracing(m, true)
-	testing.expect(t, m.bus.diagnostic_tracing)
+	testing.expect(t, m.platform.bus.diagnostic_tracing)
 	testing.expect(t, !m.diagnostic_tracing)
 
 	stream_data := []u8{0x11, 0x22, 0x33, 0x44}
@@ -376,7 +376,7 @@ hardware_trace_test_bus_only_diagnostics_record_bounded_ide_histories :: proc(
 	for entry in m.io_hist {
 		testing.expect_value(t, entry, Io_Trace{})
 	}
-	testing.expect(t, m.bus.diagnostic_tracing)
+	testing.expect(t, m.platform.bus.diagnostic_tracing)
 	testing.expect(t, !m.diagnostic_tracing)
 }
 

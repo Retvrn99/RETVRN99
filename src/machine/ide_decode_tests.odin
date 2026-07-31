@@ -6,7 +6,7 @@ import "core:testing"
 
 @(private = "file")
 machine_ide_decode_test_init :: proc(m: ^Machine, backing: ^[]u8) {
-	bus_init(&m.bus)
+	bus_init(&m.platform.bus)
 	pci_init(&m.pci)
 	disk.bmide_init(&m.bmide)
 	machine_init_atapi(m)
@@ -15,7 +15,7 @@ machine_ide_decode_test_init :: proc(m: ^Machine, backing: ^[]u8) {
 		ctx   = m,
 		write = machine_pci_write,
 	}
-	bus_register(&m.bus, 0xCF8, 0xCFF, pci_handler)
+	bus_register(&m.platform.bus, 0xCF8, 0xCFF, pci_handler)
 }
 
 @(private = "file")
@@ -48,7 +48,7 @@ machine_ide_decode_test_mixed_native_and_compatibility_channels :: proc(t: ^test
 	m := new(Machine)
 	defer free(m)
 	machine_ide_decode_test_init(m, &backing)
-	defer bus_destroy(&m.bus)
+	defer bus_destroy(&m.platform.bus)
 	if !testing.expect(
 		t,
 		machine_ide_decode_test_configure_primary_native(m, 0x0000_01E1, 0x0000_03E5, 0x03),
@@ -75,7 +75,7 @@ machine_ide_decode_test_native_control_uses_only_bar_base_plus_two :: proc(t: ^t
 	m := new(Machine)
 	defer free(m)
 	machine_ide_decode_test_init(m, &backing)
-	defer bus_destroy(&m.bus)
+	defer bus_destroy(&m.platform.bus)
 	if !testing.expect(
 		t,
 		machine_ide_decode_test_configure_primary_native(m, 0x0000_01E1, 0x0000_03E5),
@@ -100,7 +100,7 @@ machine_ide_decode_test_iose_and_channel_enable_gate_native_ports :: proc(t: ^te
 	m := new(Machine)
 	defer free(m)
 	machine_ide_decode_test_init(m, &backing)
-	defer bus_destroy(&m.bus)
+	defer bus_destroy(&m.platform.bus)
 	if !testing.expect(
 		t,
 		machine_ide_decode_test_configure_primary_native(m, 0x0000_01E1, 0x0000_03E5),
@@ -136,14 +136,14 @@ machine_ide_decode_test_rep_io_and_bus_trace_follow_native_bar :: proc(t: ^testi
 	m := new(Machine)
 	defer free(m)
 	machine_ide_decode_test_init(m, &backing)
-	defer bus_destroy(&m.bus)
+	defer bus_destroy(&m.platform.bus)
 	if !testing.expect(
 		t,
 		machine_ide_decode_test_configure_primary_native(m, 0x0000_01E1, 0x0000_03E5),
 	) {
 		return
 	}
-	m.bus.diagnostic_tracing = true
+	m.platform.bus.diagnostic_tracing = true
 
 	data := [?]u8{0x11, 0x22, 0x33, 0x44}
 	completed, handled, ok := machine_io_stream_write(m, 0x1E0, 2, data[:])
@@ -175,7 +175,7 @@ machine_ide_decode_test_pci_config_ports_take_precedence :: proc(t: ^testing.T) 
 	m := new(Machine)
 	defer free(m)
 	machine_ide_decode_test_init(m, &backing)
-	defer bus_destroy(&m.bus)
+	defer bus_destroy(&m.platform.bus)
 	if !testing.expect(
 		t,
 		machine_ide_decode_test_configure_primary_native(m, 0x0000_0CF9, 0x0000_03E5),
