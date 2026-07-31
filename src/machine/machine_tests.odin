@@ -3,6 +3,7 @@ package machine
 
 import disk "../disk"
 import hv "../hv"
+import opticalmedia "../opticalmedia"
 import contract "../presentation"
 import video "../vga"
 import "core:fmt"
@@ -478,7 +479,7 @@ test_machine_mount_cdrom_secondary_ide :: proc(t: ^testing.T) {
 	testing.expect(t, !m.platform.bus.frozen)
 
 	machine_eject_cdrom(m)
-	testing.expect(t, !disk.disc_image_present(&m.atapi.image))
+	testing.expect(t, !opticalmedia.optical_media_present(&m.atapi.media))
 }
 
 @(test)

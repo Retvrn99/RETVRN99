@@ -5,9 +5,9 @@ import "base:runtime"
 import "core:os"
 import "core:strings"
 import "core:sync"
-import "disk"
 import "machine"
 import "opticaldrive"
+import "opticalmedia"
 import "profile"
 
 Media_Kind :: enum u8 {
@@ -49,9 +49,10 @@ media_path_status :: proc(path: string) -> Media_Path_Status {
 }
 
 cdrom_path_supported :: proc(path: string) -> bool {
-	image: disk.Disc_Image
-	defer disk.disc_image_eject(&image)
-	return disk.disc_image_mount(&image, path)
+	if opticaldrive.is_path(path) {return media_path_status(path) == .Present}
+	media: opticalmedia.Optical_Media
+	defer opticalmedia.optical_media_destroy(&media)
+	return opticalmedia.optical_media_mount(&media, path)
 }
 
 media_state_publish_result :: proc(

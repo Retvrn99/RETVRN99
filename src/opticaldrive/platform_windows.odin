@@ -13,7 +13,6 @@ foreign kernel32 {
 
 DRIVE_CDROM :: 5
 IOCTL_SCSI_PASS_THROUGH_DIRECT :: win32.DWORD(0x0004D014)
-SCSI_IOCTL_DATA_OUT :: u8(0)
 SCSI_IOCTL_DATA_IN :: u8(1)
 SCSI_IOCTL_DATA_UNSPECIFIED :: u8(2)
 
@@ -85,15 +84,14 @@ is_open :: proc(drive: ^Drive) -> bool {
 	return drive != nil && drive.handle != 0 && drive.handle != ~uintptr(0)
 }
 
-execute :: proc(drive: ^Drive, cdb: []u8, data: []u8, data_in: bool) -> Command_Result {
+execute_read_only :: proc(drive: ^Drive, cdb: []u8, data: []u8) -> Command_Result {
 	result: Command_Result
 	if !is_open(drive) || len(cdb) == 0 || len(cdb) > 16 {return result}
 	request: Scsi_Request
 	request.packet.length = u16(size_of(Scsi_Pass_Through_Direct))
 	request.packet.cdb_length = u8(len(cdb))
 	request.packet.sense_info_length = u8(len(request.sense))
-	request.packet.data_in =
-		len(data) == 0 ? SCSI_IOCTL_DATA_UNSPECIFIED : data_in ? SCSI_IOCTL_DATA_IN : SCSI_IOCTL_DATA_OUT
+	request.packet.data_in = len(data) == 0 ? SCSI_IOCTL_DATA_UNSPECIFIED : SCSI_IOCTL_DATA_IN
 	request.packet.data_transfer_length = u32(len(data))
 	request.packet.time_out_value = 30
 	if len(data) > 0 {request.packet.data_buffer = raw_data(data)}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package disk
 
-import opticaldrive "../opticaldrive"
+import opticalmedia "../opticalmedia"
 import persona "../persona"
 
 // ATAPI bus-master DMA command handling is adapted from IzarraVM commit
@@ -59,8 +59,7 @@ Atapi_Cdda_State :: enum u8 {
 Atapi_Cdda_Frame_Proc :: proc(ctx: rawptr, pcm: []u8)
 
 Atapi :: struct {
-	image:                    Disc_Image,
-	physical:                 opticaldrive.Drive,
+	media:                    opticalmedia.Optical_Media,
 	state:                    Atapi_State,
 	data_kind:                Atapi_Data_Kind,
 	buf:                      [ATAPI_MAX_SECTOR_BYTES]u8,
@@ -77,8 +76,7 @@ Atapi :: struct {
 	read_raw:                 bool,
 	read_cd_selection:        u8,
 	read_sector_size:         int,
-	physical_cdb:             [ATAPI_PACKET_BYTES]u8,
-	physical_read:            bool,
+	packet_backed_read:       bool,
 	data_pending:             bool,
 	data_ready_tick:          u64,
 	now_tick:                 u64,
@@ -126,6 +124,7 @@ Atapi :: struct {
 }
 
 atapi_init :: proc(a: ^Atapi) {
+	opticalmedia.optical_media_init(&a.media)
 	a.io_space_enabled = true
 	a.channel_enabled = true
 	atapi_reset_signature(a)
@@ -197,9 +196,7 @@ atapi_mount :: proc(a: ^Atapi, path: string) -> bool {
 }
 
 atapi_mount_classified :: proc(a: ^Atapi, path: string, media_class: Disc_Media_Class) -> bool {
-	changed :=
-		a != nil &&
-		(a.media_changed || disc_image_present(&a.image) || opticaldrive.is_open(&a.physical))
+	changed := a != nil && (a.media_changed || opticalmedia.optical_media_present(&a.media))
 	return atapi_set_media(a, path, changed, media_class)
 }
 
@@ -221,16 +218,7 @@ atapi_set_media :: proc(
 	if a == nil {
 		return false
 	}
-	if opticaldrive.is_path(path) {
-		candidate: opticaldrive.Drive
-		if !opticaldrive.open(&candidate, path) {return false}
-		disc_image_eject(&a.image)
-		opticaldrive.close(&a.physical)
-		a.physical = candidate
-	} else {
-		if !disc_image_mount_classified(&a.image, path, media_class) {return false}
-		opticaldrive.close(&a.physical)
-	}
+	if !opticalmedia.optical_media_mount_classified(&a.media, path, media_class) {return false}
 	atapi_cancel_transfer(a)
 	atapi_stop_audio(a, .Stopped)
 	a.media_changed = changed
@@ -243,8 +231,7 @@ atapi_eject :: proc(a: ^Atapi) {
 	if a == nil {
 		return
 	}
-	disc_image_eject(&a.image)
-	opticaldrive.close(&a.physical)
+	opticalmedia.optical_media_eject(&a.media)
 	atapi_cancel_transfer(a)
 	atapi_stop_audio(a, .Stopped)
 	a.media_changed = true
@@ -388,8 +375,7 @@ atapi_cancel_transfer :: proc(a: ^Atapi) {
 	a.read_raw = false
 	a.read_cd_selection = 0
 	a.read_sector_size = 0
-	a.physical_cdb = {}
-	a.physical_read = false
+	a.packet_backed_read = false
 	a.data_pending = false
 	a.data_ready_tick = 0
 	a.data_out_remaining = 0
@@ -589,7 +575,7 @@ atapi_media_attention :: proc(a: ^Atapi) -> bool {
 @(private = "file")
 atapi_media_ready :: proc(a: ^Atapi) -> bool {
 	if atapi_media_attention(a) {return false}
-	if !disc_image_present(&a.image) && !opticaldrive.is_open(&a.physical) {
+	if !opticalmedia.optical_media_present(&a.media) {
 		atapi_check_condition(a, 0x02, 0x3A, 0)
 		return false
 	}
@@ -611,8 +597,8 @@ atapi_packet_command :: proc(a: ^Atapi) {
 		trace.dispatch_asc = a.sense_asc
 		trace.dispatch_ascq = a.sense_ascq
 	}
-	if opticaldrive.is_open(&a.physical) {
-		atapi_physical_packet_command(a)
+	if opticalmedia.optical_media_has_packet_transport(&a.media) {
+		atapi_packet_transport_command(a)
 		return
 	}
 	switch a.packet[0] {
@@ -643,7 +629,7 @@ atapi_packet_command :: proc(a: ^Atapi) {
 	case 0x2B:
 		if atapi_media_ready(a) {
 			lba := atapi_be32(a.packet[2:6])
-			if lba >= a.image.total_sectors {
+			if lba >= opticalmedia.optical_media_observe(&a.media).total_sectors {
 				atapi_check_condition(a, 0x05, 0x21, 0)
 			} else {
 				atapi_complete(a)
@@ -692,57 +678,30 @@ atapi_packet_command :: proc(a: ^Atapi) {
 }
 
 @(private = "file")
-atapi_physical_check_result :: proc(a: ^Atapi, result: opticaldrive.Command_Result) -> bool {
-	if result.ok && result.scsi_status == 0 {return true}
-	key, asc, ascq := u8(0x04), u8(0x44), u8(0)
-	if result.sense_length >= 14 {
-		key = result.sense[2] & 0x0F
-		asc = result.sense[12]
-		ascq = result.sense[13]
+atapi_packet_read_sector :: proc(a: ^Atapi, lba: u32, out: []u8) -> bool {
+	result := opticalmedia.optical_media_read_packet_sector(&a.media, lba, out)
+	if result.status == .Data && result.transferred == len(out) {return true}
+	if result.status == .Check_Condition {
+		atapi_check_condition(a, result.sense.key, result.sense.asc, result.sense.ascq)
+	} else {
+		atapi_check_condition(a, 0x05, 0x24, 0)
 	}
-	atapi_check_condition(a, key, asc, ascq)
 	return false
 }
 
 @(private = "file")
-atapi_physical_read_sector :: proc(a: ^Atapi, lba: u32, out: []u8) -> bool {
-	cdb := a.physical_cdb
-	switch cdb[0] {
-	case 0x28:
-		atapi_put_be32(cdb[:], 2, lba)
-		cdb[7], cdb[8] = 0, 1
-	case 0xA8:
-		atapi_put_be32(cdb[:], 2, lba)
-		cdb[6], cdb[7], cdb[8], cdb[9] = 0, 0, 0, 1
-	case 0xBE:
-		atapi_put_be32(cdb[:], 2, lba)
-		cdb[6], cdb[7], cdb[8] = 0, 0, 1
-	case:
-		return false
-	}
-	result := opticaldrive.execute(&a.physical, cdb[:], out, true)
-	return atapi_physical_check_result(a, result) && result.transferred == len(out)
-}
-
-@(private = "file")
-atapi_physical_begin_read :: proc(a: ^Atapi, lba, count: u32) {
+atapi_packet_begin_read :: proc(a: ^Atapi, lba, count: u32) {
 	if count == 0 {atapi_complete(a); return}
-	a.physical_cdb = a.packet
 	probe: [ATAPI_MAX_SECTOR_BYTES]u8
-	cdb := a.physical_cdb
-	switch cdb[0] {
-	case 0x28:
-		atapi_put_be32(cdb[:], 2, lba)
-		cdb[7], cdb[8] = 0, 1
-	case 0xA8:
-		atapi_put_be32(cdb[:], 2, lba)
-		cdb[6], cdb[7], cdb[8], cdb[9] = 0, 0, 0, 1
-	case 0xBE:
-		atapi_put_be32(cdb[:], 2, lba)
-		cdb[6], cdb[7], cdb[8] = 0, 0, 1
+	result := opticalmedia.optical_media_begin_packet_read(&a.media, a.packet[:], lba, probe[:])
+	if result.status == .Check_Condition {
+		atapi_check_condition(a, result.sense.key, result.sense.asc, result.sense.ascq)
+		return
 	}
-	result := opticaldrive.execute(&a.physical, cdb[:], probe[:], true)
-	if !atapi_physical_check_result(a, result) {return}
+	if result.status != .Data {
+		atapi_check_condition(a, 0x05, 0x24, 0)
+		return
+	}
 	if result.transferred <= 0 || result.transferred > len(a.buf) {
 		atapi_check_condition(a, 0x05, 0x24, 0)
 		return
@@ -752,7 +711,7 @@ atapi_physical_begin_read :: proc(a: ^Atapi, lba, count: u32) {
 	a.read_sector_size = result.transferred
 	a.read_raw = a.packet[0] == 0xBE
 	a.read_cd_selection = 0
-	a.physical_read = true
+	a.packet_backed_read = true
 	a.data_kind = .Blocks
 	if a.reg_features & 0x01 != 0 {
 		atapi_begin_dma_read(a, lba, count, a.read_raw, result.transferred, 0)
@@ -769,83 +728,42 @@ atapi_physical_begin_read :: proc(a: ^Atapi, lba, count: u32) {
 	}
 }
 
-@(private)
-atapi_physical_allocation_length :: proc(packet: []u8) -> int {
-	if len(packet) < ATAPI_PACKET_BYTES {return 0}
-	switch packet[0] {
-	case 0x03, 0x12, 0x1A:
-		return int(packet[4])
-	case 0x25:
-		return 8
-	case 0x42, 0x43, 0x44, 0x46, 0x5A:
-		return int(atapi_be16(packet[7:9]))
-	case 0xAD:
-		return int(atapi_be16(packet[8:10]))
-	}
-	return 0
-}
-
-@(private)
-atapi_physical_packet_allowed :: proc(opcode: u8) -> bool {
-	switch opcode {
-	case 0x00,
-	     0x03,
-	     0x12,
-	     0x1A,
-	     0x1E,
-	     0x25,
-	     0x28,
-	     0x2B,
-	     0x42,
-	     0x43,
-	     0x44,
-	     0x45,
-	     0x46,
-	     0x47,
-	     0x4B,
-	     0x4E,
-	     0x5A,
-	     0xA8,
-	     0xAD,
-	     0xBE:
-		return true
-	}
-	return false
-}
-
 @(private = "file")
-atapi_physical_packet_command :: proc(a: ^Atapi) {
+atapi_packet_transport_command :: proc(a: ^Atapi) {
 	opcode := a.packet[0]
 	if opcode == 0x03 && a.sense_key != 0 {
 		atapi_request_sense(a)
 		return
 	}
-	if !atapi_physical_packet_allowed(opcode) {
-		atapi_check_condition(a, 0x05, 0x20, 0)
-		return
-	}
 	if opcode == 0x28 {
-		atapi_physical_begin_read(a, atapi_be32(a.packet[2:6]), u32(atapi_be16(a.packet[7:9])))
+		atapi_packet_begin_read(a, atapi_be32(a.packet[2:6]), u32(atapi_be16(a.packet[7:9])))
 		return
 	}
 	if opcode == 0xA8 {
-		atapi_physical_begin_read(a, atapi_be32(a.packet[2:6]), atapi_be32(a.packet[6:10]))
+		atapi_packet_begin_read(a, atapi_be32(a.packet[2:6]), atapi_be32(a.packet[6:10]))
 		return
 	}
 	if opcode == 0xBE {
 		count := u32(a.packet[6]) << 16 | u32(a.packet[7]) << 8 | u32(a.packet[8])
-		atapi_physical_begin_read(a, atapi_be32(a.packet[2:6]), count)
+		atapi_packet_begin_read(a, atapi_be32(a.packet[2:6]), count)
 		return
 	}
-	length := min(atapi_physical_allocation_length(a.packet[:]), len(a.buf))
 	a.buf = {}
-	result := opticaldrive.execute(&a.physical, a.packet[:], a.buf[:length], true)
-	if !atapi_physical_check_result(a, result) {return}
-	if result.transferred > 0 {
+	result := opticalmedia.optical_media_execute_read_only_packet(&a.media, a.packet[:], a.buf[:])
+	switch result.status {
+	case .Data:
+		if result.transferred <= 0 || result.transferred > len(a.buf) {
+			atapi_check_condition(a, 0x05, 0x24, 0)
+			return
+		}
 		a.data_kind = .Reply
-		atapi_start_data(a, min(result.transferred, length))
-	} else {
+		atapi_start_data(a, result.transferred)
+	case .Complete:
 		atapi_complete(a)
+	case .Check_Condition:
+		atapi_check_condition(a, result.sense.key, result.sense.asc, result.sense.ascq)
+	case .Rejected, .Not_Handled:
+		atapi_check_condition(a, 0x05, 0x20, 0)
 	}
 }
 
@@ -881,7 +799,7 @@ atapi_inquiry :: proc(a: ^Atapi) {
 @(private = "file")
 atapi_read_capacity :: proc(a: ^Atapi) {
 	a.buf = {}
-	last := a.image.total_sectors - 1
+	last := opticalmedia.optical_media_observe(&a.media).total_sectors - 1
 	atapi_put_be32(a.buf[:], 0, last)
 	atapi_put_be32(a.buf[:], 4, CDROM_SECTOR_SIZE)
 	a.data_kind = .Reply
@@ -894,7 +812,7 @@ atapi_read_blocks :: proc(a: ^Atapi, lba, count: u32) {
 		atapi_complete(a)
 		return
 	}
-	if u64(lba) + u64(count) > u64(a.image.total_sectors) {
+	if u64(lba) + u64(count) > u64(opticalmedia.optical_media_observe(&a.media).total_sectors) {
 		atapi_check_condition(a, 0x05, 0x21, 0)
 		return
 	}
@@ -928,19 +846,27 @@ atapi_publish_read_sector :: proc(a: ^Atapi) {
 	if !a.data_pending {return}
 	a.data_pending = false
 	ok := false
-	if a.physical_read {
-		ok = atapi_physical_read_sector(a, a.read_lba, a.buf[:a.read_sector_size])
+	if a.packet_backed_read {
+		ok = atapi_packet_read_sector(a, a.read_lba, a.buf[:a.read_sector_size])
 	} else if a.read_cd_selection != 0 {
 		ok = atapi_read_cd_sector(
-			&a.image,
+			&a.media,
 			a.read_lba,
 			a.read_cd_selection,
 			a.buf[:a.read_sector_size],
 		)
 	} else if a.read_raw {
-		ok = disc_image_read_raw_sector(&a.image, a.read_lba, a.buf[:DISC_RAW_SECTOR_SIZE])
+		ok = opticalmedia.optical_media_read_raw_sector(
+			&a.media,
+			a.read_lba,
+			a.buf[:DISC_RAW_SECTOR_SIZE],
+		)
 	} else {
-		ok = disc_image_read_data_sector(&a.image, a.read_lba, a.buf[:DISC_DATA_SECTOR_SIZE])
+		ok = opticalmedia.optical_media_read_data_sector(
+			&a.media,
+			a.read_lba,
+			a.buf[:DISC_DATA_SECTOR_SIZE],
+		)
 	}
 	if !ok {
 		atapi_check_condition(a, 0x03, 0x11, 0)
@@ -1036,7 +962,7 @@ atapi_read_cd_layout :: proc(
 
 @(private = "file")
 atapi_read_cd_span_layout :: proc(
-	image: ^Disc_Image,
+	media: ^opticalmedia.Optical_Media,
 	lba, count: u32,
 	expected_type, selection: u8,
 ) -> (
@@ -1048,7 +974,7 @@ atapi_read_cd_span_layout :: proc(
 	result: Atapi_Read_Cd_Layout
 	has_result := false
 	for remaining > 0 {
-		track, found := disc_image_track_at_lba(image, cursor)
+		track, found := opticalmedia.optical_media_track_at_lba(media, cursor)
 		if !found {return {}, false}
 		layout, supported := atapi_read_cd_layout(track.mode, expected_type, selection)
 		if !supported || has_result && layout.sector_size != result.sector_size {
@@ -1068,13 +994,18 @@ atapi_read_cd_span_layout :: proc(
 }
 
 @(private = "file")
-atapi_read_cd_sector :: proc(image: ^Disc_Image, lba: u32, selection: u8, out: []u8) -> bool {
-	track, found := disc_image_track_at_lba(image, lba)
+atapi_read_cd_sector :: proc(
+	media: ^opticalmedia.Optical_Media,
+	lba: u32,
+	selection: u8,
+	out: []u8,
+) -> bool {
+	track, found := opticalmedia.optical_media_track_at_lba(media, lba)
 	if !found {return false}
 	layout, supported := atapi_read_cd_layout(track.mode, 0, selection)
 	if !supported || len(out) != layout.sector_size {return false}
 	raw: [DISC_RAW_SECTOR_SIZE]u8
-	if !disc_image_read_raw_sector(image, lba, raw[:]) {return false}
+	if !opticalmedia.optical_media_read_raw_sector(media, lba, raw[:]) {return false}
 	if layout.audio {
 		copy(out, raw[:])
 		return true
@@ -1110,7 +1041,8 @@ atapi_read_cd :: proc(a: ^Atapi) {
 	lba := atapi_be32(a.packet[2:6])
 	count := u32(a.packet[6]) << 16 | u32(a.packet[7]) << 8 | u32(a.packet[8])
 	selection := a.packet[9]
-	if a.image.media_class != .Compact_Disc || selection & 0x07 != 0 || a.packet[10] != 0 {
+	observation := opticalmedia.optical_media_observe(&a.media)
+	if observation.media_class != .Compact_Disc || selection & 0x07 != 0 || a.packet[10] != 0 {
 		atapi_check_condition(a, 0x05, 0x24, 0)
 		return
 	}
@@ -1118,12 +1050,12 @@ atapi_read_cd :: proc(a: ^Atapi) {
 		atapi_complete(a)
 		return
 	}
-	if u64(lba) + u64(count) > u64(a.image.total_sectors) {
+	if u64(lba) + u64(count) > u64(observation.total_sectors) {
 		atapi_check_condition(a, 0x05, 0x21, 0)
 		return
 	}
 	expected_type := (a.packet[1] >> 2) & 7
-	layout, supported := atapi_read_cd_span_layout(&a.image, lba, count, expected_type, selection)
+	layout, supported := atapi_read_cd_span_layout(&a.media, lba, count, expected_type, selection)
 	if !supported {
 		atapi_check_condition(a, 0x05, 0x24, 0)
 		return
@@ -1185,7 +1117,7 @@ atapi_dma_begin_adapter :: proc(
 		direction == .Device_To_Memory &&
 		a.dma_pending &&
 		byte_count == a.dma_byte_count &&
-		(disc_image_present(&a.image) || opticaldrive.is_open(&a.physical)) \
+		opticalmedia.optical_media_present(&a.media) \
 	)
 }
 
@@ -1193,19 +1125,27 @@ atapi_dma_begin_adapter :: proc(
 atapi_dma_load_cache :: proc(a: ^Atapi, lba: u32) -> bool {
 	if a.dma_cache_valid && a.dma_cache_lba == lba {return true}
 	ok := false
-	if a.physical_read {
-		ok = atapi_physical_read_sector(a, lba, a.dma_cache[:a.dma_sector_size])
+	if a.packet_backed_read {
+		ok = atapi_packet_read_sector(a, lba, a.dma_cache[:a.dma_sector_size])
 	} else if a.dma_cd_selection != 0 {
 		ok = atapi_read_cd_sector(
-			&a.image,
+			&a.media,
 			lba,
 			a.dma_cd_selection,
 			a.dma_cache[:a.dma_sector_size],
 		)
 	} else if a.dma_raw {
-		ok = disc_image_read_raw_sector(&a.image, lba, a.dma_cache[:DISC_RAW_SECTOR_SIZE])
+		ok = opticalmedia.optical_media_read_raw_sector(
+			&a.media,
+			lba,
+			a.dma_cache[:DISC_RAW_SECTOR_SIZE],
+		)
 	} else {
-		ok = disc_image_read_data_sector(&a.image, lba, a.dma_cache[:DISC_DATA_SECTOR_SIZE])
+		ok = opticalmedia.optical_media_read_data_sector(
+			&a.media,
+			lba,
+			a.dma_cache[:DISC_DATA_SECTOR_SIZE],
+		)
 	}
 	if !ok {return false}
 	a.activity_generation += 1
@@ -1224,14 +1164,14 @@ atapi_dma_read_adapter :: proc(ctx: rawptr, channel: u8, offset: u32, data: []u8
 	   u32(len(data)) > a.dma_byte_count - offset {
 		return false
 	}
-	if !a.physical_read &&
+	if !a.packet_backed_read &&
 	   !a.dma_raw &&
 	   a.dma_cd_selection == 0 &&
 	   offset % u32(DISC_DATA_SECTOR_SIZE) == 0 &&
 	   len(data) % DISC_DATA_SECTOR_SIZE == 0 {
 		lba := a.dma_lba + offset / u32(DISC_DATA_SECTOR_SIZE)
-		if !disc_image_read_data_sectors(
-			&a.image,
+		if !opticalmedia.optical_media_read_data_sectors(
+			&a.media,
 			lba,
 			u32(len(data) / DISC_DATA_SECTOR_SIZE),
 			data,
@@ -1275,7 +1215,9 @@ atapi_dma_abort_adapter :: proc(ctx: rawptr, channel: u8) {
 @(private = "file")
 atapi_dma_bytes_per_second :: proc(a: ^Atapi) -> u64 {
 	if a == nil {return 0}
-	if a.image.media_class == .Dvd_Rom {return ATAPI_DVD_DATA_BYTES_PER_SECOND}
+	if opticalmedia.optical_media_observe(&a.media).media_class == .Dvd_Rom {
+		return ATAPI_DVD_DATA_BYTES_PER_SECOND
+	}
 	return u64(max(a.dma_sector_size, 1)) * ATAPI_CD_DATA_SECTORS_PER_SECOND
 }
 
@@ -1311,7 +1253,7 @@ atapi_irq_enabled :: proc(a: ^Atapi) -> bool {
 @(private = "file")
 atapi_read_header :: proc(a: ^Atapi) {
 	lba := atapi_be32(a.packet[2:6])
-	track, ok := disc_image_track_at_lba(&a.image, lba)
+	track, ok := opticalmedia.optical_media_track_at_lba(&a.media, lba)
 	if !ok {
 		atapi_check_condition(a, 0x05, 0x21, 0)
 		return
@@ -1330,10 +1272,10 @@ atapi_read_header :: proc(a: ^Atapi) {
 
 @(private = "file")
 atapi_play_audio_msf :: proc(a: ^Atapi) {
-	start, start_ok := disc_image_msf_to_lba(
+	start, start_ok := opticalmedia.optical_media_msf_to_lba(
 		Disc_Msf{minute = a.packet[3], second = a.packet[4], frame = a.packet[5]},
 	)
-	end, end_ok := disc_image_msf_to_lba(
+	end, end_ok := opticalmedia.optical_media_msf_to_lba(
 		Disc_Msf{minute = a.packet[6], second = a.packet[7], frame = a.packet[8]},
 	)
 	if !start_ok || !end_ok || end < start {
@@ -1350,12 +1292,12 @@ atapi_play_audio :: proc(a: ^Atapi, lba, count: u32) {
 		atapi_complete(a)
 		return
 	}
-	if u64(lba) + u64(count) > u64(a.image.total_sectors) {
+	if u64(lba) + u64(count) > u64(opticalmedia.optical_media_observe(&a.media).total_sectors) {
 		atapi_check_condition(a, 0x05, 0x21, 0)
 		return
 	}
 	for sector in lba ..< lba + count {
-		track, ok := disc_image_track_at_lba(&a.image, sector)
+		track, ok := opticalmedia.optical_media_track_at_lba(&a.media, sector)
 		if !ok || track.mode != .Audio_2352 {
 			atapi_check_condition(a, 0x05, 0x64, 0)
 			return
@@ -1397,7 +1339,7 @@ atapi_emit_cdda_frame :: proc(a: ^Atapi) {
 		return
 	}
 	pcm: [DISC_RAW_SECTOR_SIZE]u8
-	if !disc_image_read_audio_frame(&a.image, a.cdda_lba, pcm[:]) {
+	if !opticalmedia.optical_media_read_audio_frame(&a.media, a.cdda_lba, pcm[:]) {
 		atapi_stop_audio(a, .Stopped)
 		return
 	}
@@ -1414,6 +1356,7 @@ atapi_emit_cdda_frame :: proc(a: ^Atapi) {
 
 @(private = "file")
 atapi_read_toc :: proc(a: ^Atapi) {
+	observation := opticalmedia.optical_media_observe(&a.media)
 	format := a.packet[2] & 0x0F
 	legacy_format := a.packet[9] >> 6
 	if format == 0 && legacy_format != 0 {
@@ -1424,7 +1367,7 @@ atapi_read_toc :: proc(a: ^Atapi) {
 		a.buf = {}
 		atapi_put_be16(a.buf[:], 0, 10)
 		a.buf[2], a.buf[3] = 1, 1
-		first := &a.image.tracks[0]
+		first := observation.tracks[0]
 		a.buf[5], a.buf[6] = atapi_track_control(first), first.number
 		if a.packet[1] & 0x02 != 0 {
 			atapi_put_msf(a.buf[:], 8, first.start_lba)
@@ -1444,15 +1387,15 @@ atapi_read_toc :: proc(a: ^Atapi) {
 		return
 	}
 	a.buf = {}
-	first_number := a.image.tracks[0].number
-	last_number := a.image.tracks[int(a.image.track_count) - 1].number
+	first_number := observation.tracks[0].number
+	last_number := observation.tracks[int(observation.track_count) - 1].number
 	a.buf[2], a.buf[3] = first_number, last_number
 	start_track := a.packet[6]
 	if start_track == 0 {start_track = first_number}
 	offset := 4
 	if start_track != 0xAA {
-		for i in 0 ..< int(a.image.track_count) {
-			track := &a.image.tracks[i]
+		for i in 0 ..< int(observation.track_count) {
+			track := observation.tracks[i]
 			if track.number < start_track {continue}
 			a.buf[offset + 1] = atapi_track_control(track)
 			a.buf[offset + 2] = track.number
@@ -1464,13 +1407,13 @@ atapi_read_toc :: proc(a: ^Atapi) {
 			offset += 8
 		}
 	}
-	last := &a.image.tracks[int(a.image.track_count) - 1]
+	last := observation.tracks[int(observation.track_count) - 1]
 	a.buf[offset + 1] = atapi_track_control(last)
 	a.buf[offset + 2] = 0xAA
 	if a.packet[1] & 0x02 != 0 {
-		atapi_put_msf(a.buf[:], offset + 4, a.image.total_sectors)
+		atapi_put_msf(a.buf[:], offset + 4, observation.total_sectors)
 	} else {
-		atapi_put_be32(a.buf[:], offset + 4, a.image.total_sectors)
+		atapi_put_be32(a.buf[:], offset + 4, observation.total_sectors)
 	}
 	offset += 8
 	atapi_put_be16(a.buf[:], 0, u16(offset - 2))
@@ -1479,17 +1422,18 @@ atapi_read_toc :: proc(a: ^Atapi) {
 }
 
 @(private = "file")
-atapi_track_control :: proc(track: ^Disc_Track) -> u8 {
+atapi_track_control :: proc(track: Disc_Track) -> u8 {
 	return track.mode == .Audio_2352 ? 0x10 : 0x14
 }
 
 @(private = "file")
 atapi_read_full_toc :: proc(a: ^Atapi, allocation: int) {
+	observation := opticalmedia.optical_media_observe(&a.media)
 	a.buf = {}
 	a.buf[2], a.buf[3] = 1, 1
 	offset := 4
-	first := a.image.tracks[0].number
-	last := a.image.tracks[int(a.image.track_count) - 1].number
+	first := observation.tracks[0].number
+	last := observation.tracks[int(observation.track_count) - 1].number
 	points := [3]u8{0xA0, 0xA1, 0xA2}
 	for point in points {
 		a.buf[offset + 1] = 0x14
@@ -1498,15 +1442,15 @@ atapi_read_full_toc :: proc(a: ^Atapi, allocation: int) {
 		if point == 0xA0 {a.buf[offset + 8] = first}
 		if point == 0xA1 {a.buf[offset + 8] = last}
 		if point == 0xA2 {
-			msf := disc_image_lba_to_msf(a.image.total_sectors)
+			msf := opticalmedia.optical_media_lba_to_msf(observation.total_sectors)
 			a.buf[offset + 8], a.buf[offset + 9], a.buf[offset + 10] =
 				msf.minute, msf.second, msf.frame
 		}
 		offset += 11
 	}
-	for i in 0 ..< int(a.image.track_count) {
-		track := &a.image.tracks[i]
-		msf := disc_image_lba_to_msf(track.start_lba)
+	for i in 0 ..< int(observation.track_count) {
+		track := observation.tracks[i]
+		msf := opticalmedia.optical_media_lba_to_msf(track.start_lba)
 		a.buf[offset + 1] = atapi_track_control(track)
 		a.buf[offset + 2] = 1
 		a.buf[offset + 3] = track.number
@@ -1540,8 +1484,11 @@ atapi_read_subchannel :: proc(a: ^Atapi) {
 			return
 		}
 		lba := a.cdda_lba
-		track, ok := disc_image_track_at_lba(&a.image, lba)
-		if !ok {track = &a.image.tracks[0]; lba = track.start_lba}
+		track, ok := opticalmedia.optical_media_track_at_lba(&a.media, lba)
+		if !ok {
+			track = opticalmedia.optical_media_observe(&a.media).tracks[0]
+			lba = track.start_lba
+		}
 		a.buf[3] = 12
 		a.buf[4] = 1
 		a.buf[5] = atapi_track_control(track)
@@ -1594,8 +1541,9 @@ atapi_get_configuration :: proc(a: ^Atapi) {
 	allocation := int(atapi_be16(a.packet[7:9]))
 	a.buf = {}
 	current_profile: u16
-	if disc_image_present(&a.image) {
-		current_profile = a.image.media_class == .Dvd_Rom ? u16(0x0010) : u16(0x0008)
+	observation := opticalmedia.optical_media_observe(&a.media)
+	if observation.present {
+		current_profile = observation.media_class == .Dvd_Rom ? u16(0x0010) : u16(0x0008)
 	}
 	atapi_put_be16(a.buf[:], 6, current_profile)
 	offset := 8
@@ -1647,7 +1595,8 @@ atapi_put_be24 :: proc(data: []u8, offset: int, value: u32) {
 
 @(private = "file")
 atapi_read_dvd_structure :: proc(a: ^Atapi) {
-	if a.image.media_class != .Dvd_Rom {
+	observation := opticalmedia.optical_media_observe(&a.media)
+	if observation.media_class != .Dvd_Rom {
 		atapi_check_condition(a, 0x05, 0x30, 0x02)
 		return
 	}
@@ -1661,7 +1610,7 @@ atapi_read_dvd_structure :: proc(a: ^Atapi) {
 		a.buf[5] = 0x0F
 		a.buf[6] = 0x01
 		start_sector := u32(0x030000)
-		end_sector := start_sector + max(a.image.total_sectors, u32(1)) - 1
+		end_sector := start_sector + max(observation.total_sectors, u32(1)) - 1
 		atapi_put_be24(a.buf[:], 9, start_sector)
 		atapi_put_be24(a.buf[:], 12, end_sector)
 		atapi_put_be24(a.buf[:], 15, end_sector)
@@ -1708,14 +1657,15 @@ atapi_mode_sense_10 :: proc(a: ^Atapi) {
 	}
 	a.buf = {}
 	atapi_put_be16(a.buf[:], 0, 26)
-	a.buf[2] = 0x01 if disc_image_present(&a.image) else 0x70
+	observation := opticalmedia.optical_media_observe(&a.media)
+	a.buf[2] = 0x01 if observation.present else 0x70
 	a.buf[8] = 0x2A
 	a.buf[9] = 18
 	a.buf[14] = 0x20
 	atapi_put_be16(a.buf[:], 16, ATAPI_DVD_SPEED_KBPS)
 	atapi_put_be16(a.buf[:], 20, 2)
 	current_speed := ATAPI_CD_SPEED_KBPS
-	if a.image.media_class == .Dvd_Rom {current_speed = ATAPI_DVD_SPEED_KBPS}
+	if observation.media_class == .Dvd_Rom {current_speed = ATAPI_DVD_SPEED_KBPS}
 	atapi_put_be16(a.buf[:], 22, current_speed)
 	allocation := int(atapi_be16(a.packet[7:9]))
 	a.data_kind = .Reply

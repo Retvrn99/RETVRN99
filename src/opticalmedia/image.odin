@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package disk
+package opticalmedia
 
 import "core:fmt"
 import "core:os"
@@ -43,6 +43,7 @@ Disc_Msf :: struct {
 	frame:  u8,
 }
 
+@(private)
 Disc_Image :: struct {
 	file:          ^os.File,
 	extra_files:   [DISC_MAX_TRACKS - 1]^os.File,
@@ -55,10 +56,12 @@ Disc_Image :: struct {
 
 // Track parsing and sector layout are adapted from IzarraVM cdimage.rs,
 // commit d930de57acccbc6a70cda8cc5a603173bf23cd1c.
+@(private)
 disc_image_mount :: proc(image: ^Disc_Image, path: string) -> bool {
 	return disc_image_mount_classified(image, path, .Auto)
 }
 
+@(private)
 disc_image_mount_classified :: proc(
 	image: ^Disc_Image,
 	path: string,
@@ -112,6 +115,7 @@ disc_image_mount_companion :: proc(
 	return false
 }
 
+@(private)
 disc_image_eject :: proc(image: ^Disc_Image) {
 	if image == nil {
 		return
@@ -123,6 +127,7 @@ disc_image_eject :: proc(image: ^Disc_Image) {
 	image^ = {}
 }
 
+@(private)
 disc_image_present :: proc(image: ^Disc_Image) -> bool {
 	return image != nil && image.file != nil && image.file_count > 0 && image.track_count > 0
 }
@@ -134,6 +139,7 @@ disc_image_file :: proc(image: ^Disc_Image, index: u8) -> ^os.File {
 	return image.extra_files[index - 1]
 }
 
+@(private)
 disc_image_track_at_lba :: proc(image: ^Disc_Image, lba: u32) -> (^Disc_Track, bool) {
 	if !disc_image_present(image) {
 		return nil, false
@@ -148,6 +154,7 @@ disc_image_track_at_lba :: proc(image: ^Disc_Image, lba: u32) -> (^Disc_Track, b
 	return nil, false
 }
 
+@(private)
 disc_image_read_data_sector :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> bool {
 	if len(out) != DISC_DATA_SECTOR_SIZE {
 		return false
@@ -167,6 +174,7 @@ disc_image_read_data_sector :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> 
 	return disc_image_read_exact(disc_image_file(image, track.file_index), offset, out)
 }
 
+@(private)
 disc_image_read_data_sectors :: proc(image: ^Disc_Image, lba, count: u32, out: []u8) -> bool {
 	if count == 0 {return len(out) == 0}
 	if u64(count) * DISC_DATA_SECTOR_SIZE != u64(len(out)) {return false}
@@ -201,6 +209,7 @@ disc_image_read_data_sectors :: proc(image: ^Disc_Image, lba, count: u32, out: [
 	return true
 }
 
+@(private)
 disc_image_read_audio_frame :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> bool {
 	if len(out) != DISC_RAW_SECTOR_SIZE {
 		return false
@@ -213,6 +222,7 @@ disc_image_read_audio_frame :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> 
 	return disc_image_read_exact(disc_image_file(image, track.file_index), offset, out)
 }
 
+@(private)
 disc_image_read_raw_sector :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> bool {
 	if len(out) != DISC_RAW_SECTOR_SIZE {return false}
 	track, ok := disc_image_track_at_lba(image, lba)
@@ -231,6 +241,7 @@ disc_image_read_raw_sector :: proc(image: ^Disc_Image, lba: u32, out: []u8) -> b
 	return disc_image_read_data_sector(image, lba, out[16:16 + DISC_DATA_SECTOR_SIZE])
 }
 
+@(private)
 disc_image_lba_to_msf :: proc(lba: u32) -> Disc_Msf {
 	total := u64(lba) + DISC_LEAD_IN_FRAMES
 	return Disc_Msf {
@@ -240,6 +251,7 @@ disc_image_lba_to_msf :: proc(lba: u32) -> Disc_Msf {
 	}
 }
 
+@(private)
 disc_image_msf_to_lba :: proc(msf: Disc_Msf) -> (u32, bool) {
 	if msf.second >= 60 || msf.frame >= DISC_FRAMES_PER_SECOND {
 		return 0, false
