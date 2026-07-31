@@ -5,6 +5,7 @@ import "core:time"
 import "host"
 import presentation "presentation"
 import "vga"
+import "videopresentation"
 
 Graphics_Frame_Consumer_Result :: struct {
 	graphics_epoch:         Graphics_Frame_Epoch,
@@ -54,9 +55,36 @@ Graphics_Frame_Stage_Proc :: proc(
 	frame: ^vga.Display_Frame,
 ) -> host.Host_Presentation_Staged_Texture
 
+Graphics_Frame_Expand_Proc :: proc(
+	ctx: rawptr,
+	descriptor: ^vga.Scanout_Descriptor,
+) -> ^vga.Display_Frame
+
 Graphics_Frame_Consumer_Ops :: struct {
-	ctx:   rawptr,
-	stage: Graphics_Frame_Stage_Proc,
+	ctx:           rawptr,
+	expand_legacy: Graphics_Frame_Expand_Proc,
+	expand_gsw:    Graphics_Frame_Expand_Proc,
+	stage:         Graphics_Frame_Stage_Proc,
+}
+
+graphics_frame_expand_legacy :: proc(
+	shared: ^Shared,
+	descriptor: ^vga.Scanout_Descriptor,
+	ops: ^Graphics_Frame_Consumer_Ops,
+) -> ^vga.Display_Frame {
+	if ops != nil && ops.expand_legacy != nil {
+		return ops.expand_legacy(ops.ctx, descriptor)
+	}
+	return videopresentation.expand_legacy(&shared.frames.expansion, descriptor)
+}
+
+graphics_frame_expand_gsw :: proc(
+	shared: ^Shared,
+	descriptor: ^vga.Scanout_Descriptor,
+	ops: ^Graphics_Frame_Consumer_Ops,
+) -> ^vga.Display_Frame {
+	if ops != nil && ops.expand_gsw != nil {return ops.expand_gsw(ops.ctx, descriptor)}
+	return videopresentation.expand_gsw(&shared.frames.expansion, descriptor)
 }
 
 graphics_legacy_staged_commit :: proc(ctx: rawptr) -> bool {
@@ -183,7 +211,7 @@ graphics_frame_consume_gsw_present :: proc(
 	}
 
 	graphics_frame_epoch_render_begin(&frame_slot.epoch, .Gsw2d, time.tick_now())
-	gsw_frame := vga.scanout_descriptor_render_gsw(&frame_slot.scanout)
+	gsw_frame := graphics_frame_expand_gsw(shared, &frame_slot.scanout, ops)
 	graphics_frame_epoch_render_complete(&frame_slot.epoch, gsw_frame, time.tick_now())
 	host.host_presentation_record_conversion(target, gsw_frame)
 	if gsw_frame == nil {
@@ -402,7 +430,7 @@ graphics_frame_consume :: proc(
 		   legacy_admission.valid &&
 		   frame_slot.epoch.result == .Incomplete {
 			graphics_frame_epoch_render_begin(&frame_slot.epoch, .Legacy_Scanout, time.tick_now())
-			frame := vga.scanout_descriptor_render(&frame_slot.scanout)
+			frame := graphics_frame_expand_legacy(shared, &frame_slot.scanout, ops)
 			graphics_frame_epoch_render_complete(&frame_slot.epoch, frame, time.tick_now())
 			host.host_presentation_record_conversion(target, frame)
 			if frame == nil {

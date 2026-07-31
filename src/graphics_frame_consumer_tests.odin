@@ -15,6 +15,45 @@ Graphics_Frame_Consumer_Test_Stage_Probe :: struct {
 	next_texture:    uintptr,
 	fail_kind:       host.Host_Presentation_Kind,
 	reset_on_legacy: bool,
+	pixels:          [1]u32,
+	legacy_frame:    vga.Display_Frame,
+	gsw_frame:       vga.Display_Frame,
+}
+
+graphics_frame_consumer_test_expand_legacy :: proc(
+	ctx: rawptr,
+	descriptor: ^vga.Scanout_Descriptor,
+) -> ^vga.Display_Frame {
+	probe := (^Graphics_Frame_Consumer_Test_Stage_Probe)(ctx)
+	if probe == nil || descriptor == nil {return nil}
+	probe.pixels[0] = 0xFF112233
+	probe.legacy_frame = {
+		kind           = .Xrgb_8888,
+		width          = 1,
+		height         = 1,
+		pixels         = probe.pixels[:],
+		dirty          = descriptor.legacy_update.header.dirty,
+		updated_pixels = 1,
+	}
+	return &probe.legacy_frame
+}
+
+graphics_frame_consumer_test_expand_gsw :: proc(
+	ctx: rawptr,
+	descriptor: ^vga.Scanout_Descriptor,
+) -> ^vga.Display_Frame {
+	probe := (^Graphics_Frame_Consumer_Test_Stage_Probe)(ctx)
+	if probe == nil || descriptor == nil {return nil}
+	probe.pixels[0] = 0xFF665544
+	probe.gsw_frame = {
+		kind           = .Xrgb_8888,
+		width          = 1,
+		height         = 1,
+		pixels         = probe.pixels[:],
+		dirty          = descriptor.gsw_presentation.present.header.dirty,
+		updated_pixels = 1,
+	}
+	return &probe.gsw_frame
 }
 
 graphics_frame_consumer_test_stage :: proc(
@@ -150,17 +189,6 @@ graphics_frame_consumer_test_prepare_combined :: proc(
 	slot.scanout.legacy_update.header.mode_generation = 2
 	slot.scanout.legacy_update.header.surface.generation = 2
 	slot.scanout.vram = make([]u8, 1)
-	slot.scanout.frame_pixels = make([]u32, 1)
-	slot.scanout.frame_pixels[0] = 0xFF112233
-	slot.scanout.preconverted = true
-	slot.scanout.frame = {
-		kind           = .Xrgb_8888,
-		width          = 1,
-		height         = 1,
-		pixels         = slot.scanout.frame_pixels,
-		dirty          = slot.scanout.legacy_update.header.dirty,
-		updated_pixels = 1,
-	}
 	gsw := &slot.scanout.gsw_presentation
 	gsw.present = graphics_frame_consumer_test_gsw_present(gsw_sequence, lifecycle, 2)
 	gsw.present_valid = true
@@ -271,9 +299,7 @@ graphics_frame_consumer_test_single_source_and_zero_sequence_order_is_stable :: 
 }
 
 @(test)
-graphics_frame_consumer_test_single_legacy_commits_and_acks_only_legacy :: proc(
-	t: ^testing.T,
-) {
+graphics_frame_consumer_test_single_legacy_commits_and_acks_only_legacy :: proc(t: ^testing.T) {
 	shared := new(Shared)
 	defer {
 		frame_mailbox_destroy(&shared.frames)
@@ -288,8 +314,10 @@ graphics_frame_consumer_test_single_legacy_commits_and_acks_only_legacy :: proc(
 		next_texture = 50,
 	}
 	ops := Graphics_Frame_Consumer_Ops {
-		ctx   = &probe,
-		stage = graphics_frame_consumer_test_stage,
+		ctx           = &probe,
+		expand_legacy = graphics_frame_consumer_test_expand_legacy,
+		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
+		stage         = graphics_frame_consumer_test_stage,
 	}
 	slot, reserved := frame_mailbox_begin(&shared.frames, 10)
 	if !testing.expect(t, reserved) {return}
@@ -331,8 +359,10 @@ graphics_frame_consumer_test_single_gsw_commits_and_acks_only_gsw :: proc(t: ^te
 		next_texture = 75,
 	}
 	ops := Graphics_Frame_Consumer_Ops {
-		ctx   = &probe,
-		stage = graphics_frame_consumer_test_stage,
+		ctx           = &probe,
+		expand_legacy = graphics_frame_consumer_test_expand_legacy,
+		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
+		stage         = graphics_frame_consumer_test_stage,
 	}
 	slot, reserved := frame_mailbox_begin(&shared.frames, 10)
 	if !testing.expect(t, reserved) {return}
@@ -483,21 +513,16 @@ graphics_frame_consumer_test_gsw_then_hidden_legacy_commits_and_acks_in_order ::
 		mailbox      = &shared.frames,
 		next_texture = 100,
 	}
-	if !graphics_frame_consumer_test_seed_legacy(
-		t,
-		&target,
-		lifecycle,
-		&probe,
-		{2, 2},
-	) {return}
+	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe, {2, 2}) {return}
 	ops := Graphics_Frame_Consumer_Ops {
-		ctx   = &probe,
-		stage = graphics_frame_consumer_test_stage,
+		ctx           = &probe,
+		expand_legacy = graphics_frame_consumer_test_expand_legacy,
+		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
+		stage         = graphics_frame_consumer_test_stage,
 	}
 	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
 	if !testing.expect(t, reserved) {return}
 	graphics_frame_consumer_test_prepare_combined(slot, lifecycle, 10, 11)
-	slot.scanout.frame.kind = .Rgb_565
 	if !testing.expect(t, frame_mailbox_commit(&shared.frames, slot, true)) {return}
 	checkpoint: time.Tick
 	consumed := graphics_frame_consume(shared, &target, false, &checkpoint, &ops)
@@ -543,8 +568,10 @@ graphics_frame_consumer_test_first_gsw_stage_failure_blocks_legacy_and_retries :
 	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe) {return}
 	probe.fail_kind = .Gsw_Snapshot
 	ops := Graphics_Frame_Consumer_Ops {
-		ctx   = &probe,
-		stage = graphics_frame_consumer_test_stage,
+		ctx           = &probe,
+		expand_legacy = graphics_frame_consumer_test_expand_legacy,
+		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
+		stage         = graphics_frame_consumer_test_stage,
 	}
 	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
 	if !testing.expect(t, reserved) {return}
@@ -586,8 +613,10 @@ graphics_frame_consumer_test_legacy_then_gsw_commits_and_acks_in_order :: proc(t
 	}
 	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe) {return}
 	ops := Graphics_Frame_Consumer_Ops {
-		ctx   = &probe,
-		stage = graphics_frame_consumer_test_stage,
+		ctx           = &probe,
+		expand_legacy = graphics_frame_consumer_test_expand_legacy,
+		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
+		stage         = graphics_frame_consumer_test_stage,
 	}
 	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
 	if !testing.expect(t, reserved) {return}
@@ -634,8 +663,10 @@ graphics_frame_consumer_test_first_legacy_stage_failure_blocks_gsw_and_retries :
 	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe) {return}
 	probe.fail_kind = .Legacy
 	ops := Graphics_Frame_Consumer_Ops {
-		ctx   = &probe,
-		stage = graphics_frame_consumer_test_stage,
+		ctx           = &probe,
+		expand_legacy = graphics_frame_consumer_test_expand_legacy,
+		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
+		stage         = graphics_frame_consumer_test_stage,
 	}
 	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
 	if !testing.expect(t, reserved) {return}
@@ -681,8 +712,10 @@ graphics_frame_consumer_test_reset_after_gsw_commit_clears_pending_epoch_and_ack
 	if !graphics_frame_consumer_test_seed_legacy(t, &target, lifecycle, &probe) {return}
 	probe.reset_on_legacy = true
 	ops := Graphics_Frame_Consumer_Ops {
-		ctx   = &probe,
-		stage = graphics_frame_consumer_test_stage,
+		ctx           = &probe,
+		expand_legacy = graphics_frame_consumer_test_expand_legacy,
+		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
+		stage         = graphics_frame_consumer_test_stage,
 	}
 	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
 	if !testing.expect(t, reserved) {return}
@@ -719,8 +752,10 @@ graphics_frame_consumer_test_exact_stale_gsw_duplicate_requeues_ack :: proc(t: ^
 		fail_kind = .Legacy,
 	}
 	ops := Graphics_Frame_Consumer_Ops {
-		ctx   = &probe,
-		stage = graphics_frame_consumer_test_stage,
+		ctx           = &probe,
+		expand_legacy = graphics_frame_consumer_test_expand_legacy,
+		expand_gsw    = graphics_frame_consumer_test_expand_gsw,
+		stage         = graphics_frame_consumer_test_stage,
 	}
 	slot, reserved := frame_mailbox_begin(&shared.frames, 11)
 	if !testing.expect(t, reserved) {return}

@@ -29,7 +29,10 @@ Video presentation is the sole owner of descriptor admission, ordering,
 expansion, staging transactions, selection, commit, retirement,
 acknowledgement, retry, lifecycle invalidation, telemetry, postmortem state,
 and last-good restoration. A Scanout descriptor is immutable after publication
-and contains raw source state rather than expanded host pixels. The host Adapter
+and contains a self-describing raw update rather than expanded host pixels.
+Dirty descriptors declare their bounded valid source ranges; bytes outside those
+ranges are not snapshot state. Video presentation retains the identity-checked
+expanded baseline needed to apply them. The host Adapter
 owns SDL resources. SDL creation, upload, and destruction occur only on the
 main thread and never while the Video-presentation mutex is held.
 

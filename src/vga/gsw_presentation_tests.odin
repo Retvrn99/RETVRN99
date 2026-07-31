@@ -3,6 +3,7 @@ package vga
 
 import contract "../presentation"
 
+import "core:mem"
 import "core:testing"
 
 @(test)
@@ -68,7 +69,7 @@ gsw_presentation_test_external_backing_writes_refresh_full_active_surface :: pro
 		descriptor.gsw_presentation.full_reason,
 		contract.Damage_Full_Reason.External_Tracking,
 	)
-	frame := scanout_descriptor_render_gsw(&descriptor)
+	frame := scanout_test_expand_gsw(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame.updated_pixels, u64(8))
 	testing.expect_value(t, frame.pixels[5], u32(0xFF332211))
@@ -114,7 +115,7 @@ gsw_presentation_test_surface_damage_captures_and_converts_exact_rect :: proc(t:
 	)
 	testing.expect_value(t, descriptor.gsw_presentation.bytes_copied, 4)
 	for i in 0 ..< len(framebuffer) {framebuffer[i] = 0}
-	frame := scanout_descriptor_render_gsw(&descriptor)
+	frame := scanout_test_expand_gsw(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame.updated_pixels, u64(1))
 	testing.expect_value(t, frame.pixels[5], u32(0xFF332211))
@@ -122,7 +123,7 @@ gsw_presentation_test_surface_damage_captures_and_converts_exact_rect :: proc(t:
 }
 
 @(test)
-gsw_presentation_test_palette_only_preconverts_without_framebuffer_copy :: proc(t: ^testing.T) {
+gsw_presentation_test_palette_only_copies_raw_source_without_conversion :: proc(t: ^testing.T) {
 	framebuffer := make([]u8, 8)
 	defer delete(framebuffer)
 	framebuffer[0], framebuffer[1] = 1, 2
@@ -154,18 +155,22 @@ gsw_presentation_test_palette_only_preconverts_without_framebuffer_copy :: proc(
 	g.palette.entries[6], g.palette.entries[7], g.palette.entries[8] = 0, 0xFF, 0
 	testing.expect(t, gsw_presentation_note_palette_damage(&g))
 
+	tracker: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&tracker, context.allocator)
+	defer mem.tracking_allocator_destroy(&tracker)
 	descriptor: Scanout_Descriptor
+	descriptor.gsw_presentation.allocator = mem.tracking_allocator(&tracker)
 	defer scanout_descriptor_destroy(&descriptor)
 	testing.expect(
 		t,
 		gsw_presentation_descriptor_capture(&descriptor.gsw_presentation, &g, 1, nil),
 	)
-	testing.expect_value(t, descriptor.gsw_presentation.bytes_copied, 0)
-	testing.expect(t, descriptor.gsw_presentation.preconverted)
-	testing.expect_value(t, descriptor.gsw_presentation.converted_pixels, u64(8))
+	testing.expect_value(t, descriptor.gsw_presentation.bytes_copied, 8)
+	testing.expect_value(t, tracker.total_allocation_count, i64(1))
+	testing.expect_value(t, tracker.current_memory_allocated, i64(8))
 	for &value in framebuffer {value = 0}
 	g.palette = {}
-	frame := scanout_descriptor_render_gsw(&descriptor)
+	frame := scanout_test_expand_gsw(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame.updated_pixels, u64(8))
 	testing.expect_value(t, frame.pixels[0], u32(0xFFFF0000))

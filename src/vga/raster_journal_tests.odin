@@ -132,7 +132,7 @@ raster_journal_test_palette_splits_replay_above_and_below_the_split :: proc(t: ^
 	}
 	for entry, i in expected {testing.expect_value(t, descriptor.journal.entries[i], entry)}
 
-	frame := scanout_descriptor_render(&descriptor)
+	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame.width, 64)
 	testing.expect_value(t, frame.height, 32)
@@ -181,7 +181,7 @@ raster_journal_test_frame_without_mid_frame_writes_expands_identically :: proc(t
 	testing.expect_value(t, descriptor.journal.count, u32(0))
 	testing.expect(t, !descriptor.journal.truncated)
 
-	frame := scanout_descriptor_render(&descriptor)
+	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	reference := vga_display_frame(&v)
 	if !testing.expect(t, reference != nil) {return}
@@ -225,7 +225,7 @@ raster_journal_test_overflow_truncates_and_expands_from_final_state :: proc(t: ^
 	testing.expect_value(t, descriptor.journal.count, u32(0))
 	testing.expect_value(t, descriptor.mode_observability.raster_journal_truncations, u64(1))
 
-	frame := scanout_descriptor_render(&descriptor)
+	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	reference := vga_display_frame(&v)
 	if !testing.expect(t, reference != nil) {return}
@@ -293,7 +293,7 @@ raster_journal_test_pel_pan_split_shifts_only_the_rows_below_it :: proc(t: ^test
 		Raster_Delta{line = 12, index = 0, kind = .Pel_Pan, value = 0x04, previous = 0x00},
 	)
 
-	frame := scanout_descriptor_render(&descriptor)
+	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	above_left := frame.pixels[4 * 640 + 0]
 	above_stripe := frame.pixels[4 * 640 + 4]
@@ -333,7 +333,7 @@ raster_journal_test_byte_pan_split_moves_only_the_rows_below_it :: proc(t: ^test
 		Raster_Delta{line = 12, index = 0, kind = .Byte_Pan, value = 0x20, previous = 0x00},
 	)
 
-	frame := scanout_descriptor_render(&descriptor)
+	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	above_left := frame.pixels[4 * 640 + 0]
 	above_stripe := frame.pixels[4 * 640 + 4]
@@ -363,7 +363,7 @@ raster_journal_test_display_start_write_waits_for_vertical_retrace :: proc(t: ^t
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
 	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
-	frame := scanout_descriptor_render(&descriptor)
+	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	before := frame.pixels[0]
 
@@ -376,7 +376,7 @@ raster_journal_test_display_start_write_waits_for_vertical_retrace :: proc(t: ^t
 
 	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
 	testing.expect_value(t, descriptor.journal.count, u32(0))
-	frame = scanout_descriptor_render(&descriptor)
+	frame = scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame.pixels[0], before)
 
@@ -385,7 +385,7 @@ raster_journal_test_display_start_write_waits_for_vertical_retrace :: proc(t: ^t
 	testing.expect_value(t, v.latched_start, u16(100))
 	testing.expect(t, !v.start_pending)
 	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
-	frame = scanout_descriptor_render(&descriptor)
+	frame = scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect(t, frame.pixels[0] != before)
 }
@@ -426,7 +426,7 @@ raster_journal_test_attribute_palette_split_replays_below_the_split :: proc(t: ^
 	}
 	for entry, i in expected {testing.expect_value(t, descriptor.journal.entries[i], entry)}
 
-	frame := scanout_descriptor_render(&descriptor)
+	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	// Above the split the two indices still resolve differently.
 	testing.expect(t, frame.pixels[4 * 640 + 0] != frame.pixels[4 * 640 + 4])
@@ -466,7 +466,7 @@ raster_journal_test_palette_source_blanks_the_rows_it_is_held_off_for :: proc(t:
 	if !testing.expect_value(t, descriptor.journal.count, u32(3)) {return}
 	testing.expect_value(t, descriptor.journal.entries[2].line, u16(20))
 
-	frame := scanout_descriptor_render(&descriptor)
+	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	// Before the source is cleared the old palette is still on screen.
 	testing.expect(t, frame.pixels[4 * 640 + 0] != frame.pixels[4 * 640 + 4])

@@ -8,6 +8,124 @@ import "machine"
 import contract "presentation"
 import vga "vga"
 
+frame_mailbox_test_pixel_hash :: proc(pixels: []u32) -> u64 {
+	hash := u64(14_695_981_039_346_656_037)
+	for pixel in pixels {
+		for shift: u32 = 0; shift < 32; shift += 8 {
+			hash = (hash ~ u64(u8(pixel >> shift))) * u64(1_099_511_628_211)
+		}
+	}
+	return hash
+}
+
+frame_mailbox_test_raw_update_hash :: proc(descriptor: ^vga.Scanout_Descriptor) -> u64 {
+	if descriptor == nil {return 0}
+	hash := u64(14_695_981_039_346_656_037)
+	for range_index in 0 ..< int(descriptor.valid_ranges.count) {
+		range := descriptor.valid_ranges.ranges[range_index]
+		for value in descriptor.vram[int(range.start):int(range.end)] {
+			hash = (hash ~ u64(value)) * u64(1_099_511_628_211)
+		}
+	}
+	return hash
+}
+
+frame_mailbox_test_dispi_write :: proc(target: ^vga.Vga, index, value: u16) {
+	vga.vga_io_write(target, vga.DISPI_PORT_INDEX, 2, u32(index))
+	vga.vga_io_write(target, vga.DISPI_PORT_DATA, 2, u32(value))
+}
+
+frame_mailbox_test_set_vbe_mode :: proc(target: ^vga.Vga, width, height, bpp: u16) {
+	frame_mailbox_test_dispi_write(target, vga.DISPI_INDEX_ENABLE, 0)
+	frame_mailbox_test_dispi_write(target, vga.DISPI_INDEX_XRES, width)
+	frame_mailbox_test_dispi_write(target, vga.DISPI_INDEX_YRES, height)
+	frame_mailbox_test_dispi_write(target, vga.DISPI_INDEX_BPP, bpp)
+	frame_mailbox_test_dispi_write(target, vga.DISPI_INDEX_VIRT_WIDTH, width)
+	frame_mailbox_test_dispi_write(
+		target,
+		vga.DISPI_INDEX_ENABLE,
+		vga.DISPI_ENABLED | vga.DISPI_NOCLEARMEM,
+	)
+}
+
+frame_mailbox_test_publish_legacy :: proc(
+	mailbox: ^Frame_Mailbox,
+	source: ^vga.Vga,
+	generation: u64,
+) -> (
+	^Frame_Slot,
+	bool,
+) {
+	slot, reserved := frame_mailbox_begin(mailbox, generation)
+	if !reserved {return nil, false}
+	if !vga.scanout_descriptor_capture(&slot.scanout, source) {
+		_ = frame_mailbox_commit(mailbox, slot, false)
+		return nil, false
+	}
+	slot.scanout.generation = generation
+	slot.scanout.legacy_update.header.lifecycle_generation = slot.reserved_lifecycle_generation
+	return slot, frame_mailbox_commit(mailbox, slot, true)
+}
+
+frame_mailbox_test_publish_gsw :: proc(
+	mailbox: ^Frame_Mailbox,
+	generation: u64,
+	source: []u8,
+	dirty: contract.Rect_Set,
+	bytes_copied: int,
+) -> (
+	^Frame_Slot,
+	bool,
+) {
+	slot, reserved := frame_mailbox_begin(mailbox, generation)
+	if !reserved {return nil, false}
+	full := contract.Rect{0, 0, 3, 1}
+	mode_key := contract.Mode_Key {
+		format         = .Bgrx_8888,
+		surface_extent = {3, 1},
+		canvas_extent  = {3, 1},
+		source         = full,
+		destination    = full,
+	}
+	clips: contract.Rect_Set
+	_ = contract.rect_set_append(&clips, full)
+	vga.gsw_presentation_descriptor_destroy(&slot.scanout.gsw_presentation)
+	slot.scanout.generation = generation
+	slot.scanout.legacy_update = {}
+	slot.scanout.gsw_presentation = {
+		allocator = context.allocator,
+		present_valid = true,
+		present = {
+			clip_mode = .Windowed,
+			header = {
+				sequence = generation,
+				lifecycle_generation = slot.reserved_lifecycle_generation,
+				mode_generation = 1,
+				mode_key = mode_key,
+				identity_namespace = .Gsw2d,
+				device_generation = 1,
+				surface = {1, 1},
+				format = .Bgrx_8888,
+				surface_extent = {3, 1},
+				canvas_extent = {3, 1},
+				source = full,
+				destination = full,
+				dirty = dirty,
+				source_kind = .Gsw_Snapshot,
+				ownership = .Mailbox_Surface,
+			},
+			clips = clips,
+			source_pitch = 12,
+		},
+		source = make([]u8, len(source)),
+		raw_complete = dirty.count == 1 && contract.rect_equal(dirty.rects[0], full),
+		bytes_copied = bytes_copied,
+		damage_kind = .Pixel_Memory,
+	}
+	copy(slot.scanout.gsw_presentation.source, source)
+	return slot, frame_mailbox_commit(mailbox, slot, true)
+}
+
 Frame_Mailbox_Test_Current_Commit :: struct {
 	calls:  int,
 	result: bool,
@@ -565,4 +683,192 @@ frame_mailbox_test_current_commit_is_gated_by_lifecycle_lock :: proc(t: ^testing
 		Frame_Mailbox_Current_Commit_Result.Stale,
 	)
 	testing.expect_value(t, commit.calls, 2)
+}
+
+@(test)
+frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t: ^testing.T) {
+	shared := new(Shared)
+	defer free(shared)
+	defer frame_mailbox_destroy(&shared.frames)
+	mailbox := &shared.frames
+	backing := make([]u8, vga.VRAM_SIZE)
+	defer delete(backing)
+	source: vga.Vga
+	if !testing.expect(t, vga.vga_init(&source, backing)) {return}
+	defer vga.vga_destroy(&source)
+	frame_mailbox_test_set_vbe_mode(&source, 4, 1, 32)
+	copy(
+		source.vram[:16],
+		[]u8{0x11, 0x22, 0x33, 0, 0x21, 0x32, 0x43, 0, 0x31, 0x42, 0x53, 0, 0x41, 0x52, 0x63, 0},
+	)
+	vga.vga_note_content_change(&source)
+	seed_slot, seeded := frame_mailbox_test_publish_legacy(mailbox, &source, 1)
+	if !testing.expect(t, seeded) {return}
+	seed := frame_mailbox_acquire(mailbox)
+	if !testing.expect(t, seed == seed_slot) {return}
+	seed_frame := graphics_frame_expand_legacy(shared, &seed.scanout, nil)
+	if !testing.expect(t, seed_frame != nil) {return}
+	if !testing.expect(
+		t,
+		vga.vga_damage_acknowledge(&source, source.legacy_presentation_sequence),
+	) {
+		return
+	}
+
+	if !testing.expect(t, vga.vga_mmio_write(&source, source.framebuffer_base + 4, 1, 0x44)) {
+		return
+	}
+	skipped_slot, skipped := frame_mailbox_test_publish_legacy(mailbox, &source, 2)
+	if !testing.expect(t, skipped) {return}
+	testing.expect(t, skipped_slot != seed_slot)
+	frame_mailbox_release(mailbox, seed)
+	if !testing.expect(t, vga.vga_mmio_write(&source, source.framebuffer_base + 8, 1, 0x55)) {
+		return
+	}
+	latest_slot, published := frame_mailbox_test_publish_legacy(mailbox, &source, 3)
+	if !testing.expect(t, published) {return}
+	testing.expect(t, latest_slot == seed_slot)
+	testing.expect_value(t, skipped_slot.state, Frame_Slot_State.Free)
+	latest := frame_mailbox_acquire(mailbox)
+	if !testing.expect(t, latest == latest_slot) {return}
+	testing.expect_value(
+		t,
+		latest.scanout.legacy_update.header.dirty.rects[0],
+		contract.Rect{1, 0, 2, 1},
+	)
+	reference := vga.vga_display_frame(&source)
+	if !testing.expect(t, reference != nil) {return}
+	reference_hash := frame_mailbox_test_pixel_hash(reference.pixels)
+	raw_hash := frame_mailbox_test_raw_update_hash(&latest.scanout)
+	ranges_before := latest.scanout.valid_ranges
+	update_before := latest.scanout.legacy_update
+	frame := graphics_frame_expand_legacy(shared, &latest.scanout, nil)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect_value(t, frame_mailbox_test_pixel_hash(frame.pixels), reference_hash)
+	testing.expect_value(t, frame_mailbox_test_raw_update_hash(&latest.scanout), raw_hash)
+	testing.expect(t, latest.scanout.valid_ranges == ranges_before)
+	testing.expect(t, latest.scanout.legacy_update == update_before)
+	if !testing.expect(
+		t,
+		vga.vga_damage_acknowledge(&source, source.legacy_presentation_sequence),
+	) {
+		return
+	}
+	frame_mailbox_release(mailbox, latest)
+
+	frame_mailbox_reset(mailbox)
+	if !testing.expect(t, vga.vga_mmio_write(&source, source.framebuffer_base + 12, 1, 0x66)) {
+		return
+	}
+	post_reset_slot, post_reset_published := frame_mailbox_test_publish_legacy(mailbox, &source, 4)
+	if !testing.expect(t, post_reset_published) {return}
+	post_reset := frame_mailbox_acquire(mailbox)
+	if !testing.expect(t, post_reset == post_reset_slot) {return}
+	testing.expect(t, !post_reset.scanout.raw_complete)
+	testing.expect(t, graphics_frame_expand_legacy(shared, &post_reset.scanout, nil) == nil)
+	frame_mailbox_release(mailbox, post_reset)
+
+	vga.vga_note_content_change(&source)
+	recovery_slot, recovery_published := frame_mailbox_test_publish_legacy(mailbox, &source, 5)
+	if !testing.expect(t, recovery_published) {return}
+	recovery := frame_mailbox_acquire(mailbox)
+	if !testing.expect(t, recovery == recovery_slot) {return}
+	testing.expect(t, recovery.scanout.raw_complete)
+	recovered := graphics_frame_expand_legacy(shared, &recovery.scanout, nil)
+	if !testing.expect(t, recovered != nil) {return}
+	testing.expect_value(t, recovered.pixels[3], u32(0xFF63_5266))
+	frame_mailbox_release(mailbox, recovery)
+}
+
+@(test)
+frame_mailbox_test_gsw_expansion_crosses_slots_coalescing_and_reset :: proc(t: ^testing.T) {
+	shared := new(Shared)
+	defer free(shared)
+	defer frame_mailbox_destroy(&shared.frames)
+	mailbox := &shared.frames
+	full_dirty := contract.rect_set_full({3, 1})
+	full_source := []u8{0x11, 0x22, 0x33, 0, 0x21, 0x32, 0x43, 0, 0x31, 0x42, 0x53, 0}
+	seed_slot, seeded := frame_mailbox_test_publish_gsw(mailbox, 1, full_source, full_dirty, 12)
+	if !testing.expect(t, seeded) {return}
+	seed := frame_mailbox_acquire(mailbox)
+	if !testing.expect(t, seed == seed_slot) {return}
+	seed_frame := graphics_frame_expand_gsw(shared, &seed.scanout, nil)
+	if !testing.expect(t, seed_frame != nil) {return}
+
+	skipped_dirty: contract.Rect_Set
+	_ = contract.rect_set_append(&skipped_dirty, {1, 0, 1, 1})
+	skipped_source := []u8{0, 0, 0, 0, 0x44, 0x32, 0x43, 0, 0, 0, 0, 0}
+	skipped_slot, skipped := frame_mailbox_test_publish_gsw(
+		mailbox,
+		2,
+		skipped_source,
+		skipped_dirty,
+		4,
+	)
+	if !testing.expect(t, skipped) {return}
+	testing.expect(t, skipped_slot != seed_slot)
+	frame_mailbox_release(mailbox, seed)
+
+	latest_dirty: contract.Rect_Set
+	_ = contract.rect_set_append(&latest_dirty, {1, 0, 2, 1})
+	latest_source := []u8{0, 0, 0, 0, 0x44, 0x32, 0x43, 0, 0x55, 0x42, 0x53, 0}
+	latest_slot, published := frame_mailbox_test_publish_gsw(
+		mailbox,
+		3,
+		latest_source,
+		latest_dirty,
+		8,
+	)
+	if !testing.expect(t, published) {return}
+	testing.expect(t, latest_slot == seed_slot)
+	testing.expect_value(t, skipped_slot.state, Frame_Slot_State.Free)
+	latest := frame_mailbox_acquire(mailbox)
+	if !testing.expect(t, latest == latest_slot) {return}
+	present_before := latest.scanout.gsw_presentation.present
+	raw_before := [12]u8{}
+	copy(raw_before[:], latest.scanout.gsw_presentation.source)
+	frame := graphics_frame_expand_gsw(shared, &latest.scanout, nil)
+	if !testing.expect(t, frame != nil) {return}
+	testing.expect_value(t, frame.pixels[0], u32(0xFF33_2211))
+	testing.expect_value(t, frame.pixels[1], u32(0xFF43_3244))
+	testing.expect_value(t, frame.pixels[2], u32(0xFF53_4255))
+	testing.expect(t, latest.scanout.gsw_presentation.present == present_before)
+	for value, index in latest.scanout.gsw_presentation.source {
+		testing.expect_value(t, value, raw_before[index])
+	}
+	frame_mailbox_release(mailbox, latest)
+
+	frame_mailbox_reset(mailbox)
+	post_reset_slot, post_reset_published := frame_mailbox_test_publish_gsw(
+		mailbox,
+		4,
+		latest_source,
+		latest_dirty,
+		8,
+	)
+	if !testing.expect(t, post_reset_published) {return}
+	post_reset := frame_mailbox_acquire(mailbox)
+	if !testing.expect(t, post_reset == post_reset_slot) {return}
+	testing.expect(t, !post_reset.scanout.gsw_presentation.raw_complete)
+	testing.expect(t, graphics_frame_expand_gsw(shared, &post_reset.scanout, nil) == nil)
+	frame_mailbox_release(mailbox, post_reset)
+
+	full_source[4] = 0x44
+	full_source[8] = 0x55
+	recovery_slot, recovery_published := frame_mailbox_test_publish_gsw(
+		mailbox,
+		5,
+		full_source,
+		full_dirty,
+		12,
+	)
+	if !testing.expect(t, recovery_published) {return}
+	recovery := frame_mailbox_acquire(mailbox)
+	if !testing.expect(t, recovery == recovery_slot) {return}
+	testing.expect(t, recovery.scanout.gsw_presentation.raw_complete)
+	recovered := graphics_frame_expand_gsw(shared, &recovery.scanout, nil)
+	if !testing.expect(t, recovered != nil) {return}
+	testing.expect_value(t, recovered.pixels[1], u32(0xFF43_3244))
+	testing.expect_value(t, recovered.pixels[2], u32(0xFF53_4255))
+	frame_mailbox_release(mailbox, recovery)
 }

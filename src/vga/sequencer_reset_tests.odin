@@ -122,7 +122,7 @@ vga_test_sequencer_reset_drives_damage_generation_and_descriptor_restore :: proc
 	reset_descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&reset_descriptor)
 	testing.expect(t, scanout_descriptor_capture(&reset_descriptor, &v))
-	testing.expect(t, sequencer_reset_test_black(scanout_descriptor_render(&reset_descriptor)))
+	testing.expect(t, sequencer_reset_test_black(scanout_test_expand_legacy(&reset_descriptor)))
 	testing.expect(t, vga_damage_acknowledge(&v, v.legacy_presentation_sequence))
 	sequence = v.legacy_presentation_sequence
 	content = v.content_generation
@@ -139,7 +139,7 @@ vga_test_sequencer_reset_drives_damage_generation_and_descriptor_restore :: proc
 	release_descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&release_descriptor)
 	testing.expect(t, scanout_descriptor_capture(&release_descriptor, &v))
-	restored := scanout_descriptor_render(&release_descriptor)
+	restored := scanout_test_expand_legacy(&release_descriptor)
 	if testing.expect(t, restored != nil) {
 		testing.expect_value(t, vga_test_pixels_crc32(restored.pixels), baseline)
 	}

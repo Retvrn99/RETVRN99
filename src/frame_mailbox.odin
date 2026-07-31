@@ -7,6 +7,7 @@ import host "host"
 import machine "machine"
 import contract "presentation"
 import vga "vga"
+import "videopresentation"
 
 Frame_Slot_State :: enum {
 	Free,
@@ -64,6 +65,7 @@ Frame_Mailbox :: struct {
 	gsw_ack:              Frame_Mailbox_Gsw_Ack,
 	legacy_committed:     Frame_Mailbox_Legacy_Commit,
 	gsw_committed:        Frame_Mailbox_Gsw_Commit,
+	expansion:            videopresentation.Expansion,
 }
 
 Frame_Mailbox_Current_Commit_Proc :: proc(ctx: rawptr) -> bool
@@ -667,6 +669,7 @@ frame_mailbox_destroy :: proc(mailbox: ^Frame_Mailbox) {
 		vga.scanout_descriptor_destroy(&slot.scanout)
 		slot = {}
 	}
+	videopresentation.expansion_destroy(&mailbox.expansion)
 	graphics_telemetry_destroy(&mailbox.telemetry)
 	mailbox^ = {}
 }
