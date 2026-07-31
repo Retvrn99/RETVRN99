@@ -6,8 +6,10 @@ import "core:sync"
 import "host"
 
 input_control_event_current :: proc(event: ^host.Host_Input_Event, generation: u64) -> bool {
-	return event != nil &&
-	       (event.control_generation == 0 || event.control_generation == generation)
+	return(
+		event != nil &&
+		(event.control_generation == 0 || event.control_generation == generation) \
+	)
 }
 
 input_control_note_reset_cancelled_locked :: proc(s: ^Shared) {
@@ -82,7 +84,7 @@ input_control_enqueue_shared :: proc(
 		s.input_control_stats.queued = saturating_counter_add(s.input_control_stats.queued, 1)
 	}
 	sync.unlock(&s.mu)
-	if accepted {vm_guard_kick(s.guard)}
+	if accepted {vm_lifetime_kick(s.lifetime)}
 	return accepted ? .Accepted : .Backpressure
 }
 
@@ -98,6 +100,6 @@ input_control_release_mouse :: proc(control: ^Input_Control, s: ^Shared) {
 		s.input_control_stats.queued = saturating_counter_add(s.input_control_stats.queued, 1)
 	}
 	sync.unlock(&s.mu)
-	if accepted {vm_guard_kick(s.guard)}
+	if accepted {vm_lifetime_kick(s.lifetime)}
 	control.buttons = 0
 }

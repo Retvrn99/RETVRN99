@@ -327,7 +327,7 @@ push_cmd :: proc(s: ^Shared, cmd: Command) -> bool {
 	}
 	append(&s.cmds, cmd)
 	sync.unlock(&s.mu)
-	vm_guard_kick(s.guard)
+	vm_lifetime_kick(s.lifetime)
 	return true
 }
 
@@ -354,33 +354,33 @@ push_host_key :: proc(
 	sync.lock(&s.mu)
 	_ = host.host_input_push_key(&s.input, keyboard, scancode, down, false)
 	sync.unlock(&s.mu)
-	vm_guard_kick(s.guard)
+	vm_lifetime_kick(s.lifetime)
 }
 
 release_held_keys :: proc(s: ^Shared, keyboard: ^host.Host_Keyboard) {
 	sync.lock(&s.mu)
 	_ = host.host_input_release_held_keys(&s.input, keyboard)
 	sync.unlock(&s.mu)
-	vm_guard_kick(s.guard)
+	vm_lifetime_kick(s.lifetime)
 }
 
 push_mouse_motion :: proc(s: ^Shared, dx, dy: i32, buttons: u8) {
 	sync.lock(&s.mu)
 	_ = host.host_input_push_motion(&s.input, dx, dy, buttons)
 	sync.unlock(&s.mu)
-	vm_guard_kick(s.guard)
+	vm_lifetime_kick(s.lifetime)
 }
 
 push_mouse_buttons :: proc(s: ^Shared, buttons: u8, durable_release: bool = false) {
 	sync.lock(&s.mu)
 	_ = host.host_input_push_buttons(&s.input, buttons, durable_release)
 	sync.unlock(&s.mu)
-	vm_guard_kick(s.guard)
+	vm_lifetime_kick(s.lifetime)
 }
 
 push_mouse_wheel :: proc(s: ^Shared, wheel: i32, buttons: u8) {
 	sync.lock(&s.mu)
 	_ = host.host_input_push_wheel(&s.input, wheel, buttons)
 	sync.unlock(&s.mu)
-	vm_guard_kick(s.guard)
+	vm_lifetime_kick(s.lifetime)
 }

@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package main
 
-import "acceptance"
 import "core:fmt"
 import "fat32session"
 import "host"
 import "machine"
 import "profile"
 import video "videopresentation"
-import sdl3 "vendor:sdl3"
 
 graphics_presentation_sync_lifecycle :: proc(
 	h: ^host.Host,
@@ -20,34 +18,24 @@ graphics_presentation_sync_lifecycle :: proc(
 	return video.video_presentation_start(presentation, &adapter)
 }
 
-vm_open_volume :: proc(c: ^Vm_Ctx) -> bool {
-	return vm_open_volume_with_adapter(c, fat32session.DEFAULT_ADAPTER)
+gui_vm_lifetime_log :: proc(ctx: rawptr, message: string) {
+	c := (^Vm_Ctx)(ctx)
+	if c != nil {vm_log(c.shared, message)}
 }
 
-vm_open_volume_with_adapter :: proc(c: ^Vm_Ctx, adapter: fat32session.Adapter_Kind) -> bool {
-	if c == nil {return false}
-	c.volume_open_error = {}
-	if !c.attach {return true}
-	if vm_volume_ready(c) {return true}
-	if c.fat_session != nil {return false}
-	session, open_error := fat32session.open_machine(
-		c.hard_drive_path,
-		c.machine_session_id,
-		adapter,
-	)
-	if open_error.code != .None {
-		c.volume_open_error = open_error
-		vm_log(
-			c.shared,
-			fmt.tprintf(
-				"disk: FAT32 session open failed: %s",
-				fat32session.error_text(&open_error),
-			),
-		)
+gui_vm_lifetime_configure :: proc(ctx: rawptr, m: ^machine.Machine, cmos: []u8) -> bool {
+	c := (^Vm_Ctx)(ctx)
+	if c == nil || m == nil {return false}
+	if c.gsw3d_host != nil {
+		backend, backend_ready := host.host_gsw3d_proof_machine_backend(c.gsw3d_host)
+		if !backend_ready || !machine.machine_set_gsw3d_backend(m, backend) {return false}
+	}
+	video.video_presentation_reset(&c.shared.video_presentation)
+	if profile.install_state_active(&c.install_state) && !install_prepare_boot_cmos(c, cmos) {
 		return false
 	}
-	c.fat_session = session
-	return true
+	machine.machine_set_cpu_mode(m, install_runtime_cpu_mode(c.cpu_mode, &c.install_state))
+	return machine.load_roms(&m.vm)
 }
 
 vm_volume_open_failure_message :: proc(c: ^Vm_Ctx, operation: string) -> string {
@@ -63,117 +51,31 @@ vm_volume_open_failure_message :: proc(c: ^Vm_Ctx, operation: string) -> string 
 }
 
 vm_volume_ready :: proc(c: ^Vm_Ctx) -> bool {
-	if c == nil {return false}
-	if !c.attach {return true}
-	return fat32session.session_ready(c.fat_session)
-}
-
-vm_ensure_volume :: proc(c: ^Vm_Ctx) -> bool {
-	if vm_volume_ready(c) {return true}
-	return vm_open_volume(c)
-}
-
-vm_close_volume :: proc(c: ^Vm_Ctx) -> bool {
-	if c == nil || c.fat_session == nil {return true}
-	close_error := fat32session.close(c.fat_session, .Commit)
-	if close_error.outcome == .Completed {
-		c.fat_session = nil
-		vm_log(
-			c.shared,
-			fmt.tprintf(
-				"disk: close completed with a companion cleanup warning: %s",
-				fat32session.error_text(&close_error),
-			),
-		)
-		return true
-	}
-	if close_error.code != .None {
-		vm_log(
-			c.shared,
-			fmt.tprintf(
-				"disk: close failed; FAT32 session retained: %s",
-				fat32session.error_text(&close_error),
-			),
-		)
-		return false
-	}
-	c.fat_session = nil
-	return true
-}
-
-vm_release_failed_boot_volume :: proc(c: ^Vm_Ctx) -> bool {
-	if c == nil || c.fat_session == nil {return true}
-	if vm_close_volume(c) {return true}
-	retain_error := fat32session.close(c.fat_session, .Retain)
-	c.fat_session = nil
-	if retain_error.code != .None {
-		vm_log(
-			c.shared,
-			fmt.tprintf(
-				"disk: failed boot session released with recovery evidence: %s",
-				fat32session.error_text(&retain_error),
-			),
-		)
-		return false
-	}
-	vm_log(c.shared, "disk: failed boot session retained for recovery and released")
-	return true
-}
-
-machine_session_release_after_failed_reset :: proc(
-	session: ^^fat32session.Machine_Session,
-) -> bool {
-	if session == nil || session^ == nil {return true}
-	close_error := fat32session.close(session^, .Commit)
-	if close_error.code == .None || close_error.outcome == .Completed {
-		session^ = nil
-		return true
-	}
-	retain_error := fat32session.close(session^, .Retain)
-	session^ = nil
-	return retain_error.code == .None
+	if c == nil || c.lifetime.state == .Uninitialized {return false}
+	return !c.attach || vm_lifetime_observation(&c.lifetime).session_ready
 }
 
 vm_volume_terminal_error :: proc(c: ^Vm_Ctx) -> (fat32session.Session_Error, bool) {
-	if c == nil || c.fat_session == nil {return {}, false}
-	return fat32session.session_terminal_error(c.fat_session)
+	if c == nil || c.lifetime.state == .Uninitialized {return {}, false}
+	return vm_lifetime_session_terminal_error(&c.lifetime)
 }
 
-vm_close_then_shutdown :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: ^bool) -> bool {
-	if c == nil {return false}
-	if machine_live != nil && machine_live^ {
-		if c.fat_session != nil {
-			disk_attached := m != nil && m.has_disk
-			_, barrier_error := fat32session.barrier(c.fat_session, .Clean_Close)
-			if barrier_error.code != .None || (disk_attached && !machine.machine_detach_disk(m)) {
-				vm_log(
-					c.shared,
-					fmt.tprintf(
-						"disk: clean-close barrier failed: %s",
-						fat32session.error_text(&barrier_error),
-					),
-				)
-				return false
-			}
-			if !vm_close_volume(c) {
-				if disk_attached {machine.machine_attach_disk(m, fat32session.block_device(c.fat_session))}
-				return false
-			}
-		}
-		vm_shutdown(c, m)
+vm_close_then_shutdown :: proc(c: ^Vm_Ctx, machine_live: ^bool) -> bool {
+	if c == nil || machine_live == nil || c.lifetime.state == .Uninitialized {return false}
+	if c.lifetime.state == .Stopped {
 		machine_live^ = false
 		return true
 	}
-	return vm_close_volume(c)
+	result := vm_lifetime_stop(&c.lifetime)
+	machine_live^ = result.state == .Running
+	c.volume_open_error = result.storage_error
+	return result.completed
 }
 
-vm_start_machine :: proc(
-	c: ^Vm_Ctx,
-	m: ^machine.Machine,
-	machine_live: ^bool,
-	clock_running: bool = true,
-) -> bool {
-	if c == nil || m == nil || machine_live == nil || machine_live^ {return false}
+vm_start_machine :: proc(c: ^Vm_Ctx, machine_live: ^bool, clock_running: bool = true) -> bool {
+	if c == nil || machine_live == nil || machine_live^ || c.lifetime.state == .Uninitialized {
+		return false
+	}
 	selected_image_path := c.attach ? c.hard_drive_path : ""
 	install_gate := install_image_boot_gate_loaded(
 		&c.install_state,
@@ -190,22 +92,23 @@ vm_start_machine :: proc(
 		)
 		return false
 	}
-	if !vm_ensure_volume(c) {return false}
-	if !vm_boot(c, m, clock_running) {
-		_ = vm_release_failed_boot_volume(c)
-		return false
-	}
-	machine_live^ = true
-	return true
+	vm_lifetime_set_clock_running(&c.lifetime, clock_running)
+	result := vm_lifetime_start(&c.lifetime)
+	c.volume_open_error = result.storage_error
+	machine_live^ = result.state == .Running
+	return result.completed
 }
 
-vm_begin_volume_maintenance :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: ^bool) -> bool {
-	if c == nil || m == nil || machine_live == nil {return false}
-	return vm_close_then_shutdown(c, m, machine_live)
+vm_begin_volume_maintenance :: proc(c: ^Vm_Ctx, machine_live: ^bool) -> bool {
+	if c == nil || machine_live == nil || c.lifetime.state == .Uninitialized {return false}
+	result := vm_lifetime_begin_storage_maintenance(&c.lifetime)
+	machine_live^ = result.state == .Running
+	return result.completed
 }
 
 vm_end_volume_maintenance :: proc(c: ^Vm_Ctx) -> bool {
-	return c != nil && c.fat_session == nil
+	if c == nil || c.lifetime.state == .Uninitialized {return false}
+	return vm_lifetime_end_storage_maintenance(&c.lifetime).completed
 }
 
 Vm_Reinitialize_Diagnostic :: enum {
@@ -218,246 +121,35 @@ Vm_Reinitialize_Diagnostic :: enum {
 
 vm_reinitialize_machine :: proc(
 	c: ^Vm_Ctx,
-	m: ^machine.Machine,
 	machine_live: ^bool,
 	clock_running: bool = true,
 	install_state_changed: bool = false,
 ) -> Vm_Reinitialize_Diagnostic {
-	if c == nil || m == nil || machine_live == nil {return .Invalid_State}
-	if !machine_live^ || (c.attach && c.fat_session == nil) {return .Invalid_State}
-	if c.attach {
-		_, reset_error := fat32session.barrier(c.fat_session, .Reset)
-		if reset_error.code != .None {return .Durability_Failed}
-		if m.has_disk && !machine.machine_detach_disk(m) {return .Durability_Failed}
-	}
-	vm_shutdown(c, m)
-	machine_live^ = false
-	if install_state_changed && !profile.install_state_active(&c.install_state) {
-		_ = vm_release_failed_boot_volume(c)
+	if c == nil || machine_live == nil || c.lifetime.state == .Uninitialized {
 		return .Invalid_State
 	}
-	if !vm_boot(c, m, clock_running) {
-		_ = vm_release_failed_boot_volume(c)
+	if install_state_changed && !profile.install_state_active(&c.install_state) {
+		return .Invalid_State
+	}
+	vm_lifetime_set_clock_running(&c.lifetime, clock_running)
+	result := vm_lifetime_reset(&c.lifetime)
+	c.volume_open_error = result.storage_error
+	machine_live^ = result.state == .Running
+	switch result.diagnostic {
+	case .None:
+		return .None
+	case .Durability_Failed, .Clean_Close_Failed:
+		return .Durability_Failed
+	case .Volume_Open_Failed:
+		return .Volume_Open_Failed
+	case .Invalid_State,
+	     .Guard_Init_Failed,
+	     .Machine_Init_Failed,
+	     .Machine_Configure_Failed,
+	     .Hardware_Trace_Failed,
+	     .Media_Failed,
+	     .Guard_Destroy_Failed:
 		return .Machine_Init_Failed
 	}
-	machine_live^ = true
-	return .None
-}
-
-vm_boot :: proc(c: ^Vm_Ctx, m: ^machine.Machine, clock_running: bool = true) -> bool {
-	if c == nil ||
-	   m == nil ||
-	   !install_state_boot_allowed(&c.install_state) ||
-	   !vm_volume_ready(c) {
-		return false
-	}
-	hardware_trace := machine.machine_hardware_trace_detach(m)
-	booted := false
-	defer if !booted {
-		vm_guard_unbind(&c.guard)
-		host.host_audio_close(&c.audio)
-		current_trace := machine.machine_hardware_trace_detach(m)
-		if current_trace != nil {
-			if hardware_trace == nil {
-				hardware_trace = current_trace
-			} else if hardware_trace != current_trace {
-				free(current_trace)
-			}
-		}
-		machine.machine_destroy(m)
-		if hardware_trace != nil && !machine.machine_hardware_trace_attach(m, hardware_trace) {
-			free(hardware_trace)
-		}
-	}
-	vm_guard_unbind(&c.guard)
-	host.host_audio_close(&c.audio)
-	m^ = {}
-	if !machine.machine_init(m, RAM_SIZE) {return false}
-	if c.gsw3d_host != nil {
-		backend, backend_ready := host.host_gsw3d_proof_machine_backend(c.gsw3d_host)
-		if !backend_ready || !machine.machine_set_gsw3d_backend(m, backend) {return false}
-	}
-	if hardware_trace != nil {
-		if !machine.machine_hardware_trace_attach(m, hardware_trace) {return false}
-		hardware_trace = nil
-	}
-	if !machine.machine_set_hardware_trace(m, true) {return false}
-	if !clock_running {machine.machine_clock_set_running(m, false)}
-	video.video_presentation_reset(&c.shared.video_presentation)
-	if c.has_cmos {_ = machine.machine_cmos_import(m, c.cmos[:])}
-	if profile.install_state_active(&c.install_state) {
-		if !install_prepare_boot_cmos(c, m.cmos.ram[:]) {
-			return false
-		}
-	}
-	machine.machine_set_cpu_mode(m, install_runtime_cpu_mode(c.cpu_mode, &c.install_state))
-	if !machine.load_roms(&m.vm) {
-		return false
-	}
-	if c.attach {machine.machine_attach_disk(m, fat32session.block_device(c.fat_session))}
-	if c.floppy != nil {_ = machine.machine_mount_floppy(m, c.floppy)}
-	if c.cdrom_path != "" {
-		if machine.machine_attach_cdrom(m, c.cdrom_path) {
-			publish_cdrom_state(c.shared, true, c.cdrom_path)
-		} else {
-			publish_cdrom_state(
-				c.shared,
-				false,
-				"",
-				c.cdrom_path,
-				"The selected disc image could not be reopened",
-			)
-			vm_log(c.shared, fmt.tprintf("CD-ROM: cannot reopen %s", c.cdrom_path))
-		}
-	}
-	if c.audio_enabled && !host.host_audio_open(&c.audio, machine.machine_audio_output(m)) {
-		vm_log(c.shared, fmt.tprintf("audio: SDL3 output unavailable (%s)", sdl3.GetError()))
-	}
-	_ = host.host_audio_set_gain(&c.audio, c.volume_gain)
-	vm_guard_bind(&c.guard, &m.vm)
-	machine.machine_set_wake_adapter(m, &c.guard, vm_guard_schedule)
-	if m.bus.frozen {
-		return false
-	}
-	booted = true
-	return true
-}
-
-vm_shutdown :: proc(c: ^Vm_Ctx, m: ^machine.Machine) {
-	if c == nil {return}
-	vm_guard_unbind(&c.guard)
-	host.host_audio_close(&c.audio)
-	if m == nil || m.vm.part == nil {return}
-	saved_cmos := machine.machine_cmos_export(m)
-	copy(c.cmos[:], saved_cmos[:])
-	c.has_cmos = true
-	if diag := profile.cmos_save(c.paths.cmos, c.cmos); diag != .None {
-		vm_log(c.shared, fmt.tprintf("CMOS: save failed (%v)", diag))
-	}
-	hardware_trace := machine.machine_hardware_trace_detach(m)
-	machine.machine_destroy(m)
-	if hardware_trace != nil && !machine.machine_hardware_trace_attach(m, hardware_trace) {
-		free(hardware_trace)
-	}
-}
-
-console_reinitialize_machine :: proc(
-	m: ^machine.Machine,
-	guard: ^Vm_Guard,
-	machine_live: ^bool,
-	session: ^^fat32session.Machine_Session,
-	paths: ^profile.Paths,
-	settings: profile.Settings,
-	cmos: []u8,
-	attach: bool,
-	cdrom_path: string,
-	floppy: []u8,
-	options: ^acceptance.Options,
-	install_state_changed: bool = false,
-) -> bool {
-	return console_reinitialize_machine_with_ram(
-		m,
-		guard,
-		machine_live,
-		session,
-		paths,
-		settings,
-		cmos,
-		attach,
-		cdrom_path,
-		floppy,
-		options,
-		RAM_SIZE,
-		install_state_changed,
-	)
-}
-
-@(private)
-console_reinitialize_machine_with_ram :: proc(
-	m: ^machine.Machine,
-	guard: ^Vm_Guard,
-	machine_live: ^bool,
-	session: ^^fat32session.Machine_Session,
-	paths: ^profile.Paths,
-	settings: profile.Settings,
-	cmos: []u8,
-	attach: bool,
-	cdrom_path: string,
-	floppy: []u8,
-	options: ^acceptance.Options,
-	ram_size: int,
-	install_state_changed: bool = false,
-) -> bool {
-	if m == nil ||
-	   guard == nil ||
-	   machine_live == nil ||
-	   !machine_live^ ||
-	   session == nil ||
-	   paths == nil ||
-	   options == nil {
-		return false
-	}
-	if attach && session^ == nil {return false}
-	if session^ != nil {
-		_, reset_error := fat32session.barrier(session^, .Reset)
-		if reset_error.code != .None {return false}
-		if m.has_disk && !machine.machine_detach_disk(m) {return false}
-	}
-	reinitialized := false
-	success := false
-	vm_guard_unbind(guard)
-	hardware_trace := machine.machine_hardware_trace_detach(m)
-	defer if !success {
-		if reinitialized {
-			current_trace := machine.machine_hardware_trace_detach(m)
-			if current_trace != nil {
-				if hardware_trace == nil {
-					hardware_trace = current_trace
-				} else if hardware_trace != current_trace {
-					free(current_trace)
-				}
-			}
-			vm_guard_unbind(guard)
-			machine.machine_destroy(m)
-		}
-		if hardware_trace != nil {
-			if machine.machine_hardware_trace_attach(m, hardware_trace) {
-				hardware_trace = nil
-			} else {
-				free(hardware_trace)
-				hardware_trace = nil
-			}
-		}
-		_ = machine_session_release_after_failed_reset(session)
-		machine_live^ = false
-	}
-	machine.machine_destroy(m)
-	machine_live^ = false
-	m^ = {}
-	if !machine.machine_init(m, ram_size) {return false}
-	reinitialized = true
-	if hardware_trace != nil {
-		if !machine.machine_hardware_trace_attach(m, hardware_trace) {return false}
-		hardware_trace = nil
-	} else {
-		if !machine.machine_set_hardware_trace(m, true) {return false}
-	}
-	if len(cmos) > 0 {_ = machine.machine_cmos_import(m, cmos)}
-	if !machine.load_roms(&m.vm) {return false}
-	machine.machine_set_cpu_mode(m, settings.cpu_mode)
-	machine.bus_set_strict_io(&m.bus, options.strict_io)
-	machine.machine_set_diagnostic_tracing(m, options.strict_io)
-	machine.machine_set_bus_diagnostic_tracing(m, options.setup_diagnostics == .Hardware)
-	if options.test_device {machine.machine_enable_test_device(m)}
-	if attach {
-		machine.machine_attach_disk(m, fat32session.block_device(session^))
-	}
-	if cdrom_path != "" && !machine.machine_attach_cdrom(m, cdrom_path) {return false}
-	if len(floppy) > 0 && !machine.machine_mount_floppy(m, floppy) {return false}
-	vm_guard_bind(guard, &m.vm)
-	machine.machine_set_wake_adapter(m, guard, vm_guard_schedule)
-	if m.bus.frozen {return false}
-	success = true
-	machine_live^ = true
-	return true
+	return .Machine_Init_Failed
 }

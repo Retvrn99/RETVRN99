@@ -16,10 +16,10 @@ Install_Session_Finish_Diagnostic :: enum {
 Install_Session_Finish_Result :: struct {
 	cmos:                     profile.Cmos_Data,
 	have_cmos:                bool,
-	restored_boot_order:       bool,
+	restored_boot_order:      bool,
 	milestone:                profile.Install_Milestone,
-	cmos_diagnostic:           profile.Cmos_Diagnostic,
-	install_state_diagnostic:  profile.Install_State_Diagnostic,
+	cmos_diagnostic:          profile.Cmos_Diagnostic,
+	install_state_diagnostic: profile.Install_State_Diagnostic,
 }
 
 install_session_finish_persist :: proc(
@@ -27,7 +27,10 @@ install_session_finish_persist :: proc(
 	state: ^profile.Install_State,
 	current_cmos: profile.Cmos_Data,
 	have_cmos: bool,
-) -> (result: Install_Session_Finish_Result, diagnostic: Install_Session_Finish_Diagnostic) {
+) -> (
+	result: Install_Session_Finish_Result,
+	diagnostic: Install_Session_Finish_Diagnostic,
+) {
 	result.have_cmos = have_cmos
 	result.cmos = current_cmos
 	if state != nil {result.milestone = state.milestone}
@@ -57,15 +60,7 @@ install_session_finish :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 	if c == nil || m == nil || !profile.install_state_active(&c.install_state) {return false}
 
 	live := vm_machine_live(c, m)
-	current_cmos: profile.Cmos_Data
-	have_cmos := false
-	if live {
-		current_cmos = machine.machine_cmos_export(m)
-		have_cmos = true
-	} else if c.has_cmos {
-		current_cmos = c.cmos
-		have_cmos = true
-	}
+	current_cmos, have_cmos := vm_lifetime_cmos_snapshot(&c.lifetime)
 	finish, diagnostic := install_session_finish_persist(
 		&c.paths,
 		&c.install_state,
@@ -96,8 +91,7 @@ install_session_finish :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
 	}
 
 	if finish.have_cmos {
-		copy(c.cmos[:], finish.cmos[:])
-		c.has_cmos = true
+		vm_lifetime_cmos_replace(&c.lifetime, finish.cmos, true)
 	}
 	c.install_state_diagnostic = .None
 	if live {

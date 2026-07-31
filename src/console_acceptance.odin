@@ -1288,6 +1288,19 @@ console_desktop_marker_evidence :: proc(
 	if observe_error.code != .None || batch.pending || len(batch.items) != len(probes) {
 		return {}, false, false
 	}
+	return console_desktop_marker_evidence_batch(&batch, len(probes))
+}
+
+console_desktop_marker_evidence_batch :: proc(
+	batch: ^fat32session.Observation_Batch,
+	expected_items: int,
+) -> (
+	evidence: Console_Enum_Evidence,
+	marker_seen, enum_valid: bool,
+) {
+	if batch == nil || batch.pending || len(batch.items) != expected_items || expected_items != 3 {
+		return {}, false, false
+	}
 	marker := &batch.items[0]
 	if marker.type != .Regular ||
 	   marker.size == 0 ||
@@ -1387,8 +1400,9 @@ console_artifact_append_log :: proc(
 console_artifact_append_setup_logs :: proc(
 	builder: ^strings.Builder,
 	session: ^fat32session.Machine_Session,
+	lifetime: ^Vm_Lifetime = nil,
 ) {
-	if builder == nil || session == nil {return}
+	if builder == nil || (session == nil && lifetime == nil) {return}
 	roots := [?]struct {
 		path, label: string,
 	}{{"", "C:\\"}, {"WINDOWS/", "C:\\WINDOWS\\"}}
@@ -1407,7 +1421,13 @@ console_artifact_append_setup_logs :: proc(
 			index += 1
 		}
 	}
-	batch, observe_error := fat32session.observe(session, probes[:], context.temp_allocator)
+	batch: fat32session.Observation_Batch
+	observe_error: fat32session.Session_Error
+	if lifetime != nil {
+		batch, observe_error = vm_lifetime_storage_observe(lifetime, probes[:])
+	} else {
+		batch, observe_error = fat32session.observe(session, probes[:], context.temp_allocator)
+	}
 	defer fat32session.observation_batch_destroy(&batch, context.temp_allocator)
 	if observe_error.code != .None || batch.pending {return}
 	for &item, item_index in batch.items {
@@ -1575,6 +1595,7 @@ console_artifact_diagnostics :: proc(
 	m: ^machine.Machine,
 	firmware_text: string,
 	session: ^fat32session.Machine_Session,
+	lifetime: ^Vm_Lifetime = nil,
 ) -> string {
 	builder := strings.builder_make()
 	fmt.sbprintfln(&builder, "stop_reason=%s", acceptance.stop_reason_name(result.stop_reason))
@@ -1916,7 +1937,9 @@ console_artifact_diagnostics :: proc(
 			fmt.sbprintfln(&builder, "%s", string(line[:columns]))
 		}
 	}
-	if session != nil {console_artifact_append_setup_logs(&builder, session)}
+	if session != nil || lifetime != nil {
+		console_artifact_append_setup_logs(&builder, session, lifetime)
+	}
 	fmt.sbprintfln(&builder, "\nfirmware:\n%s", firmware_text)
 	return strings.to_string(builder)
 }
@@ -1932,6 +1955,7 @@ console_acceptance_finalize :: proc(
 	start: time.Tick,
 	return_code: ^int,
 	machine_segment_accumulated: ^bool = nil,
+	lifetime: ^Vm_Lifetime = nil,
 ) {
 	if options == nil || run_result == nil {return}
 	active_session := session != nil ? session^ : nil
@@ -1963,8 +1987,12 @@ console_acceptance_finalize :: proc(
 			run_result.installation_milestone = console_install_milestone_name(state.milestone)
 		}
 		profile.install_state_destroy(&state)
-		if options.accept_until == .Desktop && active_session != nil {
-			console_result_refresh_desktop_evidence(run_result, active_session)
+		if options.accept_until == .Desktop {
+			if lifetime != nil {
+				console_result_refresh_desktop_evidence_lifetime(run_result, lifetime)
+			} else if active_session != nil {
+				console_result_refresh_desktop_evidence(run_result, active_session)
+			}
 		}
 	}
 	console_acceptance_enforce_result_invariants(options, run_result, return_code)
@@ -1983,6 +2011,7 @@ console_acceptance_finalize :: proc(
 			live ? m : nil,
 			firmware_text,
 			active_session,
+			lifetime,
 		)
 		defer delete(diagnostics)
 		hardware_trace := machine.machine_hardware_trace_text(m)
@@ -2019,6 +2048,73 @@ console_acceptance_finalize :: proc(
 	}
 }
 
+console_lifetime_desktop_marker_evidence :: proc(
+	lifetime: ^Vm_Lifetime,
+) -> (
+	evidence: Console_Enum_Evidence,
+	marker_seen, enum_valid: bool,
+) {
+	probes := [?]fat32session.Probe {
+		{.Read_Range, fmt.tprintf("GSWSETUP/%s", win98imageprep.DESKTOP_MARKER_FILE), 0, 64},
+		{
+			.Read_Range,
+			fmt.tprintf("GSWSETUP/%s", win98imageprep.DESKTOP_ENUM_FILE),
+			0,
+			DESKTOP_ENUM_MAX_BYTES,
+		},
+		{
+			.Read_Range,
+			fmt.tprintf("GSWSETUP/%s", win98imageprep.DESKTOP_DYNAMIC_ENUM_FILE),
+			0,
+			DESKTOP_ENUM_MAX_BYTES,
+		},
+	}
+	batch, observe_error := vm_lifetime_storage_observe(lifetime, probes[:])
+	defer fat32session.observation_batch_destroy(&batch, context.temp_allocator)
+	if observe_error.code != .None || batch.pending || len(batch.items) != len(probes) {
+		return {}, false, false
+	}
+	return console_desktop_marker_evidence_batch(&batch, len(probes))
+}
+
+console_result_refresh_desktop_evidence_lifetime :: proc(
+	result: ^acceptance.Result,
+	lifetime: ^Vm_Lifetime,
+) {
+	if result == nil {return}
+	evidence, marker_seen, enum_valid := console_lifetime_desktop_marker_evidence(lifetime)
+	result.desktop_marker_seen = marker_seen
+	result.desktop_enum_valid = enum_valid
+	result.desktop_vga_irq11_seen = evidence.vga_irq11_seen
+}
+
+console_acceptance_finalize_lifetime :: proc(
+	options: ^acceptance.Options,
+	run_result: ^acceptance.Result,
+	m: ^machine.Machine,
+	machine_live: ^bool,
+	firmware: ^Firmware_Log,
+	lifetime: ^Vm_Lifetime,
+	paths: ^profile.Paths,
+	start: time.Tick,
+	return_code: ^int,
+	machine_segment_accumulated: ^bool = nil,
+) {
+	console_acceptance_finalize(
+		options,
+		run_result,
+		m,
+		machine_live,
+		firmware,
+		nil,
+		paths,
+		start,
+		return_code,
+		machine_segment_accumulated,
+		lifetime,
+	)
+}
+
 console_log_total_size :: proc(session: ^fat32session.Machine_Session, names: []string) -> i64 {
 	if session == nil || len(names) == 0 {return 0}
 	probes := make([]fat32session.Probe, len(names) * 2, context.temp_allocator)
@@ -2034,6 +2130,30 @@ console_log_total_size :: proc(session: ^fat32session.Machine_Session, names: []
 		}
 	}
 	batch, observe_error := fat32session.observe(session, probes, context.temp_allocator)
+	defer fat32session.observation_batch_destroy(&batch, context.temp_allocator)
+	if observe_error.code != .None || batch.pending {return 0}
+	total: i64
+	for item in batch.items {
+		if item.type == .Regular && item.size > 0 {total += i64(item.size)}
+	}
+	return total
+}
+
+console_lifetime_log_total_size :: proc(lifetime: ^Vm_Lifetime, names: []string) -> i64 {
+	if lifetime == nil || len(names) == 0 {return 0}
+	probes := make([]fat32session.Probe, len(names) * 2, context.temp_allocator)
+	index := 0
+	roots := [?]string{"", "WINDOWS/"}
+	for prefix in roots {
+		for name in names {
+			probes[index] = fat32session.Probe {
+				kind = .Stat,
+				path = fmt.tprintf("%s%s", prefix, name),
+			}
+			index += 1
+		}
+	}
+	batch, observe_error := vm_lifetime_storage_observe(lifetime, probes)
 	defer fat32session.observation_batch_destroy(&batch, context.temp_allocator)
 	if observe_error.code != .None || batch.pending {return 0}
 	total: i64

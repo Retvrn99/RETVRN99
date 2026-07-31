@@ -12,8 +12,8 @@ import "host"
 import "hv"
 import "machine"
 import "profile"
-import "vmconfig"
 import video "videopresentation"
+import "vmconfig"
 import "win98imageprep"
 
 GUI_INSTALL_COMPLETION_POLL_INTERVAL :: 2 * time.Second
@@ -34,12 +34,30 @@ gui_install_completion_poll_due :: proc(
 	)
 }
 
-gui_install_completion_marker_exists :: proc(session: ^fat32session.Machine_Session) -> bool {
+gui_install_completion_marker_exists_session :: proc(
+	session: ^fat32session.Machine_Session,
+) -> bool {
 	if session == nil {return false}
 	probes := [?]fat32session.Probe {
 		{.Read_Range, fmt.tprintf("GSWSETUP/%s", win98imageprep.DESKTOP_MARKER_FILE), 0, 64},
 	}
 	batch, observe_error := fat32session.observe(session, probes[:], context.temp_allocator)
+	defer fat32session.observation_batch_destroy(&batch, context.temp_allocator)
+	if observe_error.code != .None || batch.pending || len(batch.items) != 1 {return false}
+	marker := &batch.items[0]
+	return(
+		marker.type == .Regular &&
+		marker.size > 0 &&
+		marker.size <= 64 &&
+		strings.trim_space(string(marker.data)) == "READY" \
+	)
+}
+
+gui_install_completion_marker_exists :: proc(lifetime: ^Vm_Lifetime) -> bool {
+	probes := [?]fat32session.Probe {
+		{.Read_Range, fmt.tprintf("GSWSETUP/%s", win98imageprep.DESKTOP_MARKER_FILE), 0, 64},
+	}
+	batch, observe_error := vm_lifetime_storage_observe(lifetime, probes[:])
 	defer fat32session.observation_batch_destroy(&batch, context.temp_allocator)
 	if observe_error.code != .None || batch.pending || len(batch.items) != 1 {return false}
 	marker := &batch.items[0]
@@ -63,7 +81,7 @@ gui_guest_power_off_complete :: proc(s: ^Shared, reason: string) {
 vm_thread_proc :: proc(c: ^Vm_Ctx) {
 	context.logger = log.create_console_logger(.Info, {.Level})
 	s := c.shared
-	m := new(machine.Machine)
+	m: ^machine.Machine
 	pause_state: host.Pause_State
 
 	preparation_blocked := !install_state_boot_allowed(&c.install_state)
@@ -154,7 +172,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				launch_ready := state_ready && install_launch_prepare(c)
 				reset_diagnostic := Vm_Reinitialize_Diagnostic.None
 				if launch_ready && starting {
-					if !vm_start_machine(c, m, &machine_live, !host.pause_active(&pause_state)) {
+					if !vm_start_machine(c, &machine_live, !host.pause_active(&pause_state)) {
 						reset_diagnostic = .Machine_Init_Failed
 						if c.volume_open_error.code != .None {
 							reset_diagnostic = .Volume_Open_Failed
@@ -164,12 +182,12 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					publish_machine_reinitializing(s)
 					reset_diagnostic = vm_reinitialize_machine(
 						c,
-						m,
 						&machine_live,
 						!host.pause_active(&pause_state),
 					)
 				}
 				if launch_ready && reset_diagnostic == .None && machine_live {
+					m, _ = vm_lifetime_running_machine(&c.lifetime)
 					storage_activity_session += 1
 					stats = {}
 					frozen = false
@@ -222,7 +240,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				publish_machine_running(s, machine_live)
 			case .Stop:
 				if !machine_live {continue}
-				if !vm_close_then_shutdown(c, m, &machine_live) {
+				if !vm_close_then_shutdown(c, &machine_live) {
 					frozen = true
 					publish_freeze(
 						s,
@@ -236,7 +254,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				publish_machine_running(s, false)
 				vm_log(s, "machine: stopped")
 			case .Power_Off:
-				if !vm_close_then_shutdown(c, m, &machine_live) {
+				if !vm_close_then_shutdown(c, &machine_live) {
 					frozen = true
 					publish_freeze(s, "disk close failed; recovery state retained; retry Exit", "")
 					continue
@@ -264,16 +282,15 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				if img, err := os.read_entire_file_from_path(cmd.path, context.allocator);
 				   err == nil {
 					valid := len(img) == 1_474_560
-					if valid && (!machine_live || machine.machine_mount_floppy(m, img)) {
-						delete(c.floppy)
-						c.floppy = img
-						delete(c.floppy_path)
-						c.floppy_path = strings.clone(cmd.path)
+					mounted :=
+						valid &&
+						vm_lifetime_mount_removable(&c.lifetime, .Floppy, cmd.path, img).completed
+					if mounted {
 						delete(c.user_floppy)
-						c.user_floppy = media_clone_bytes(img)
+						c.user_floppy = img
 						delete(c.user_floppy_path)
 						c.user_floppy_path = strings.clone(cmd.path)
-						publish_floppy_state(s, true, c.floppy_path, "", "", true)
+						publish_floppy_state(s, true, cmd.path, "", "", true)
 						vm_log(s, fmt.tprintf("floppy: mounted %s", cmd.path))
 					} else {
 						diagnostic := fmt.tprintf("%s is not a readable 1.44MB image", cmd.path)
@@ -294,11 +311,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					)
 					continue
 				}
-				if machine_live {machine.machine_eject_floppy(m)}
-				delete(c.floppy)
-				c.floppy = nil
-				delete(c.floppy_path)
-				c.floppy_path = ""
+				_ = vm_lifetime_eject_removable(&c.lifetime, .Floppy)
 				delete(c.user_floppy)
 				c.user_floppy = nil
 				delete(c.user_floppy_path)
@@ -335,22 +348,19 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 						delete(cmd.path)
 						continue
 					}
-					delete(c.cdrom_path)
-					c.cdrom_path = strings.clone(cmd.path)
+					_ = vm_lifetime_mount_removable(&c.lifetime, .Optical, cmd.path)
 					delete(c.user_cdrom_path)
 					c.user_cdrom_path = strings.clone(cmd.path)
-					publish_cdrom_state(s, true, c.cdrom_path, "", "", true)
-					vm_log(s, fmt.tprintf("CD-ROM: selected %s", c.cdrom_path))
+					publish_cdrom_state(s, true, cmd.path, "", "", true)
+					vm_log(s, fmt.tprintf("CD-ROM: selected %s", cmd.path))
 					delete(cmd.path)
 					continue
 				}
-				if machine.machine_mount_cdrom(m, cmd.path) {
-					delete(c.cdrom_path)
-					c.cdrom_path = strings.clone(cmd.path)
+				if vm_lifetime_mount_removable(&c.lifetime, .Optical, cmd.path).completed {
 					delete(c.user_cdrom_path)
 					c.user_cdrom_path = strings.clone(cmd.path)
-					publish_cdrom_state(s, true, c.cdrom_path, "", "", true)
-					vm_log(s, fmt.tprintf("CD-ROM: mounted %s", c.cdrom_path))
+					publish_cdrom_state(s, true, cmd.path, "", "", true)
+					vm_log(s, fmt.tprintf("CD-ROM: mounted %s", cmd.path))
 				} else {
 					publish_media_failure(
 						s,
@@ -370,17 +380,14 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					continue
 				}
 				if !machine_live {
-					delete(c.cdrom_path)
-					c.cdrom_path = ""
+					_ = vm_lifetime_eject_removable(&c.lifetime, .Optical)
 					delete(c.user_cdrom_path)
 					c.user_cdrom_path = ""
 					publish_cdrom_state(s, false, "", "", "", true)
 					vm_log(s, "CD-ROM: ejected")
 					continue
 				}
-				machine.machine_eject_cdrom(m)
-				delete(c.cdrom_path)
-				c.cdrom_path = ""
+				_ = vm_lifetime_eject_removable(&c.lifetime, .Optical)
 				delete(c.user_cdrom_path)
 				c.user_cdrom_path = ""
 				publish_cdrom_state(s, false, "", "", "", true)
@@ -427,18 +434,19 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				_ = install_prepare_status_begin(s)
 				vm_log(s, fmt.tprintf("Windows 98: preparing %s through RETVRN99-FAT32", cmd.path))
 				boot_path := cmd.boot_path
-				if boot_path == "" {boot_path = c.floppy_path}
+				if boot_path == "" {boot_path = vm_lifetime_media_path(&c.lifetime, .Floppy)}
 				prepare_options := guided_install_prepare_options(
 					{language = cmd.locale_language, country = cmd.locale_country},
 				)
+				install_cmos, install_has_cmos := vm_lifetime_cmos_snapshot(&c.lifetime)
 				flow := install_image_prepare(
 					&c.paths,
 					&c.install_state,
 					c.hard_drive_path,
 					cmd.path,
 					boot_path,
-					c.cmos[:],
-					c.has_cmos,
+					install_cmos[:],
+					install_has_cmos,
 					prepare_options,
 					win98imageprep.Cancellation{ctx = s, check = install_prepare_cancel_check},
 				)
@@ -488,14 +496,10 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					),
 				)
 				install_prepare_status_finish(s, true, "Windows 98 installation is ready")
-				delete(c.cdrom_path)
-				c.cdrom_path = strings.clone(cmd.path)
-				publish_cdrom_state(s, true, c.cdrom_path)
-				if c.floppy_path != "" {
-					delete(c.floppy)
-					c.floppy = nil
-					delete(c.floppy_path)
-					c.floppy_path = ""
+				_ = vm_lifetime_mount_removable(&c.lifetime, .Optical, cmd.path)
+				publish_cdrom_state(s, true, cmd.path)
+				if vm_lifetime_media_path(&c.lifetime, .Floppy) != "" {
+					_ = vm_lifetime_eject_removable(&c.lifetime, .Floppy)
 					publish_floppy_state(s, false)
 				}
 				install_image_flow_result_destroy(&flow)
@@ -512,9 +516,10 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				)
 				launch_state_ready := install_gate.allowed && install_launch_prepare(c)
 				if launch_state_ready {
-					_ = vm_start_machine(c, m, &machine_live, !host.pause_active(&pause_state))
+					_ = vm_start_machine(c, &machine_live, !host.pause_active(&pause_state))
 				}
 				if machine_live {
+					m, _ = vm_lifetime_running_machine(&c.lifetime)
 					storage_activity_session += 1
 					frozen = false
 					publish_freeze(s, "", "")
@@ -613,8 +618,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				}
 				publish_pause_state(s, pause_state)
 			case .Set_Volume:
-				c.volume_gain = clamp(cmd.volume_gain, 0, 1)
-				_ = host.host_audio_set_gain(&c.audio, c.volume_gain)
+				_ = vm_lifetime_set_volume(&c.lifetime, clamp(cmd.volume_gain, 0, 1))
 			}
 		}
 		delete(cmds)
@@ -701,10 +705,10 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 				publish_freeze(s, fmt.tprintf("storage helper failed: %s", diagnostic), "")
 				continue loop
 			}
-			vm_guard_flush_wake_evidence(&c.guard, m)
+			vm_lifetime_flush_guard(&c.lifetime)
 			stats[m.exit_hist[(m.exit_count - 1) % machine.EXIT_HISTORY]] += 1
 			firmware_log_drain(&firmware, m, s)
-			if vm_guard_failed(&c.guard) {
+			if vm_lifetime_guard_failed(&c.lifetime) {
 				frozen = true
 				publish_freeze(s, "vCPU watchdog scheduling failed", "")
 				continue loop
@@ -712,7 +716,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			if !alive {
 				if machine.machine_power_off_requested(m) {
 					power_reason := machine.machine_power_off_reason(m)
-					if vm_close_then_shutdown(c, m, &machine_live) {
+					if vm_close_then_shutdown(c, &machine_live) {
 						frozen = false
 						gui_guest_power_off_complete(s, power_reason)
 						continue loop
@@ -727,14 +731,7 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					reason := machine.machine_cpu_reset_reason(m)
 					reset_code := m.cpu_reset_cmos_0f
 					publish_machine_reinitializing(s)
-					sync.lock(&c.guard.mu)
-					c.guard.valid = false
-					reset_ok := machine.machine_cpu_reset(m)
-					c.guard.valid = reset_ok
-					sync.unlock(&c.guard.mu)
-					if reset_ok {
-						machine.machine_rearm_wake(m)
-					}
+					reset_ok := vm_lifetime_warm_cpu_reset(&c.lifetime)
 					if reset_ok {
 						frozen = false
 						vm_log(
@@ -781,7 +778,6 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 					publish_machine_reinitializing(s)
 					reset_diagnostic := vm_reinitialize_machine(
 						c,
-						m,
 						&machine_live,
 						!host.pause_active(&pause_state),
 						reset_transaction.state_changed,
@@ -845,12 +841,12 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 			&c.install_state,
 			machine_live,
 			frozen,
-			c.fat_session != nil,
+			vm_lifetime_storage_ready(&c.lifetime),
 			last_install_completion_check,
 			now,
 		) {
 			last_install_completion_check = now
-			if gui_install_completion_marker_exists(c.fat_session) {
+			if gui_install_completion_marker_exists(&c.lifetime) {
 				if !install_session_finish(c, m) {
 					vm_log(
 						s,
@@ -886,14 +882,9 @@ vm_thread_proc :: proc(c: ^Vm_Ctx) {
 	s.exit_stats = stats
 	sync.unlock(&s.mu)
 	firmware_log_host_flush(&firmware, s)
-	if machine_live {vm_shutdown(c, m)}
-	machine.machine_destroy(m)
+	if machine_live {_ = vm_close_then_shutdown(c, &machine_live)}
 	publish_machine_running(s, false)
-	delete(c.floppy)
-	delete(c.floppy_path)
-	delete(c.cdrom_path)
 	delete(c.user_floppy)
 	delete(c.user_floppy_path)
 	delete(c.user_cdrom_path)
-	free(m)
 }

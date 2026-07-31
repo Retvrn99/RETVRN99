@@ -33,6 +33,12 @@ SNAP_PERIOD :: 8 * time.Millisecond
 MAX_LOG_LINES :: 2000
 HOST_SDL_EVENTS_PER_FRAME :: 512
 HOST_INPUTS_PER_VM_STEP :: 256
+RETVRN99_VM_LIFETIME_ACCEPTANCE :: #config(RETVRN99_VM_LIFETIME_ACCEPTANCE, false)
+
+Vm_Lifetime_Acceptance_Schedule :: struct {
+	reset_after_ms: int,
+	stop_after_ms:  int,
+}
 
 Command_Kind :: enum {
 	Start,
@@ -94,30 +100,21 @@ Shared :: struct {
 	input_generation:                 u64,
 	input_generation_exhausted:       bool,
 	input_control_stats:              Input_Control_Stats,
-	guard:                            ^Vm_Guard,
+	lifetime:                         ^Vm_Lifetime,
 }
 
 Vm_Ctx :: struct {
 	shared:                   ^Shared,
-	guard:                    Vm_Guard,
-	audio:                    host.Host_Audio,
-	audio_enabled:            bool,
-	volume_gain:              f32,
-	fat_session:              ^fat32session.Machine_Session,
+	lifetime:                 Vm_Lifetime,
 	volume_open_error:        fat32session.Session_Error,
 	machine_session_id:       string,
 	attach:                   bool,
 	allow_hard_drive:         bool,
-	floppy:                   []u8, // retained copy of the mounted image so Reset keeps it in the drive
-	floppy_path:              string,
-	cdrom_path:               string, // retained path; each machine instance opens its own handle
 	user_floppy:              []u8,
 	user_floppy_path:         string,
 	user_cdrom_path:          string,
 	cpu_mode:                 vmconfig.Cpu_Mode,
 	paths:                    profile.Paths,
-	cmos:                     profile.Cmos_Data,
-	has_cmos:                 bool,
 	install_state:            profile.Install_State,
 	install_state_diagnostic: profile.Install_State_Diagnostic,
 	preparation_interrupted:  bool,
@@ -171,6 +168,11 @@ run_main :: proc() -> int {
 	graphics_trace := false
 	control_script_path := ""
 	control_script_seen := false
+	lifetime_acceptance := Vm_Lifetime_Acceptance_Schedule {
+		reset_after_ms = -1,
+		stop_after_ms  = -1,
+	}
+	lifetime_acceptance_seen := false
 	acceptance_options, acceptance_diagnostic := acceptance.options_parse(os.args[1:])
 	if acceptance_diagnostic != .None {
 		fmt.eprintfln("acceptance option error: %v", acceptance_diagnostic)
@@ -225,6 +227,18 @@ run_main :: proc() -> int {
 				return 1
 			}
 		}
+		if strings.has_prefix(a, "--lifetime-reset-after-ms:") {
+			lifetime_acceptance_seen = true
+			value, ok := strconv.parse_int(a[len("--lifetime-reset-after-ms:"):], 10)
+			if !ok {value = -1}
+			lifetime_acceptance.reset_after_ms = value
+		}
+		if strings.has_prefix(a, "--lifetime-stop-after-ms:") {
+			lifetime_acceptance_seen = true
+			value, ok := strconv.parse_int(a[len("--lifetime-stop-after-ms:"):], 10)
+			if !ok {value = -1}
+			lifetime_acceptance.stop_after_ms = value
+		}
 	}
 	if acceptance_options.accept_until == .Hardware_Detection && !seconds_explicit {
 		run_seconds = 30 * 60
@@ -257,6 +271,25 @@ run_main :: proc() -> int {
 	if control_script_path != "" && profile_root == "" {
 		fmt.eprintln("--control-script requires an explicit --profile-root")
 		return 1
+	}
+	if lifetime_acceptance_seen {
+		if !RETVRN99_VM_LIFETIME_ACCEPTANCE {
+			fmt.eprintln(
+				"lifetime acceptance options require a RETVRN99_VM_LIFETIME_ACCEPTANCE build",
+			)
+			return 1
+		}
+		if !console || profile_root == "" || !attach {
+			fmt.eprintln(
+				"lifetime acceptance requires --console, --profile-root, and attached storage",
+			)
+			return 1
+		}
+		if lifetime_acceptance.reset_after_ms <= 0 ||
+		   lifetime_acceptance.stop_after_ms <= lifetime_acceptance.reset_after_ms {
+			fmt.eprintln("lifetime acceptance requires positive reset and later stop deadlines")
+			return 1
+		}
 	}
 
 	paths: profile.Paths
@@ -386,6 +419,7 @@ run_main :: proc() -> int {
 			has_cmos,
 			frame_dump_path,
 			acceptance_options,
+			lifetime_acceptance,
 		)
 	}
 	return gui_main(
@@ -467,23 +501,6 @@ gui_main :: proc(
 	shared := new(Shared)
 	guard_storage_retained := false
 	defer {
-		if ctx.fat_session != nil {
-			close_error := fat32session.close(ctx.fat_session, .Commit)
-			if close_error.code == .None || close_error.outcome == .Completed {
-				ctx.fat_session = nil
-				if close_error.code != .None {
-					fmt.eprintfln(
-						"disk: close completed with a companion cleanup warning: %s",
-						fat32session.error_text(&close_error),
-					)
-				}
-			} else {
-				fmt.eprintfln("disk: close failed: %s", fat32session.error_text(&close_error))
-				_ = fat32session.close(ctx.fat_session, .Retain)
-				ctx.fat_session = nil
-				if result == 0 {result = 1}
-			}
-		}
 		delete(ctx.machine_session_id)
 		delete(ctx.hard_drive_path)
 		profile.install_state_destroy(&ctx.install_state)
@@ -530,8 +547,6 @@ gui_main :: proc(
 		)
 		return 1
 	}
-	ctx.cmos = cmos
-	ctx.has_cmos = has_cmos
 	ctx.firmware_log_all = firmware_log_all
 	ctx.hard_drive_path = strings.clone(active_settings.hard_drive_path)
 	ctx.user_floppy_path = strings.clone(active_settings.floppy_path)
@@ -543,10 +558,11 @@ gui_main :: proc(
 	shared.install_recovery_required = profile.install_state_recovery_required(install_diagnostic)
 	ctx.preparation_interrupted = false
 	ctx.preparation_recovered = true
+	initial_optical_path := ""
 	if profile.install_state_active(&ctx.install_state) {
 		shared.installing_windows_98 = true
-		ctx.cdrom_path = strings.clone(ctx.install_state.source_path)
-		media_state_publish_result(shared, .Cdrom, true, true, ctx.cdrom_path, "", "", false)
+		initial_optical_path = ctx.install_state.source_path
+		media_state_publish_result(shared, .Cdrom, true, true, initial_optical_path, "", "", false)
 	}
 	if install_diagnostic != .None && install_diagnostic != .Missing {
 		vm_log(
@@ -607,18 +623,37 @@ gui_main :: proc(
 	imgui_impl_sdl3.InitForSDLRenderer(h.win, h.ren)
 	imgui_impl_sdlrenderer3.Init(h.ren)
 
-	if !vm_guard_init(&ctx.guard) {
-		fmt.eprintln("vCPU wake adapter initialization failed")
+	lifetime_result := vm_lifetime_init(
+		&ctx.lifetime,
+		{
+			ram_size = RAM_SIZE,
+			attach_storage = ctx.attach,
+			hard_drive_path = ctx.hard_drive_path,
+			machine_session_id = ctx.machine_session_id,
+			cmos_path = ctx.paths.cmos,
+			cmos = cmos,
+			has_cmos = has_cmos,
+			audio_enabled = true,
+			volume_gain = 1,
+			clock_running = true,
+			optical_path = initial_optical_path,
+		},
+		{ctx = ctx, configure = gui_vm_lifetime_configure, log = gui_vm_lifetime_log},
+	)
+	if !lifetime_result.completed {
+		fmt.eprintfln("VM lifetime initialization failed (%v)", lifetime_result.diagnostic)
 		return 1
 	}
-	shared.guard = &ctx.guard
-	ctx.audio_enabled = true
-	ctx.volume_gain = 1
+	shared.lifetime = &ctx.lifetime
 	defer {
-		shared.guard = nil
-		if !vm_guard_destroy(&ctx.guard) {
+		shared.lifetime = nil
+		lifetime_destroyed := vm_lifetime_destroy(&ctx.lifetime)
+		if !lifetime_destroyed.completed {
 			guard_storage_retained = true
-			fmt.eprintln("vCPU wake adapter teardown failed; callback storage retained")
+			fmt.eprintfln(
+				"VM lifetime teardown failed (%v); callback storage retained",
+				lifetime_destroyed.diagnostic,
+			)
 			if result == 0 {result = 1}
 		}
 	}
@@ -1120,10 +1155,7 @@ gui_main :: proc(
 			input_control_note_reset_cancelled_locked(shared)
 			host.host_input_discard_after_stop(&shared.input, &keyboard)
 			sync.unlock(&shared.mu)
-			video.video_presentation_stop(
-				&shared.video_presentation,
-				&presentation_host_adapter,
-			)
+			video.video_presentation_stop(&shared.video_presentation, &presentation_host_adapter)
 		}
 		st.machine_running = machine_running
 		st.storage_actions_blocked =
@@ -1206,11 +1238,19 @@ gui_main :: proc(
 		graphics_epoch_reset := false
 		postmortem_state := frame_consumer.postmortem_state
 		postmortem_state_valid := frame_consumer.postmortem_state_valid
-		_ = graphics_presentation_sync_lifecycle(&h, &shared.video_presentation, st.machine_running)
+		_ = graphics_presentation_sync_lifecycle(
+			&h,
+			&shared.video_presentation,
+			st.machine_running,
+		)
 		gpu_drain_started := time.tick_now()
 		gpu_drain := host.host_gsw3d_proof_drain(&h)
 		gpu_drain_ended := time.tick_now()
-		_ = graphics_presentation_sync_lifecycle(&h, &shared.video_presentation, st.machine_running)
+		_ = graphics_presentation_sync_lifecycle(
+			&h,
+			&shared.video_presentation,
+			st.machine_running,
+		)
 		graphics_presentation_note_gpu_drain(
 			&shared.video_presentation,
 			&presentation_host_adapter,
@@ -1254,7 +1294,11 @@ gui_main :: proc(
 				.Gpu_Drain,
 			)
 			postmortem_state_valid = true
-			_ = graphics_presentation_postmortem_state(&shared.video_presentation, &presentation_host_adapter, postmortem_state)
+			_ = graphics_presentation_postmortem_state(
+				&shared.video_presentation,
+				&presentation_host_adapter,
+				postmortem_state,
+			)
 		} else if graphics_epoch_pending && postmortem_state_valid {
 			postmortem_state = graphics_presentation_measured_state(
 				&shared.video_presentation,
@@ -1265,7 +1309,11 @@ gui_main :: proc(
 				graphics_epoch.sequence,
 				.Gpu_Drain,
 			)
-			_ = graphics_presentation_postmortem_state(&shared.video_presentation, &presentation_host_adapter, postmortem_state)
+			_ = graphics_presentation_postmortem_state(
+				&shared.video_presentation,
+				&presentation_host_adapter,
+				postmortem_state,
+			)
 		}
 		if graphics_trace && selection.has_terminal {
 			terminal := selection.terminal_epoch
@@ -1282,21 +1330,30 @@ gui_main :: proc(
 				terminal.sequence,
 				terminal_stage,
 			)
-			_ = graphics_presentation_postmortem_state(&shared.video_presentation, &presentation_host_adapter, terminal_state)
+			_ = graphics_presentation_postmortem_state(
+				&shared.video_presentation,
+				&presentation_host_adapter,
+				terminal_state,
+			)
 		}
 		if graphics_epoch_pending &&
 		   (!st.machine_running ||
 				   !graphics_presentation_epoch_current(
-					   &shared.video_presentation,
-					   &presentation_host_adapter,
-					   &graphics_epoch,
-				   )) {
+						   &shared.video_presentation,
+						   &presentation_host_adapter,
+						   &graphics_epoch,
+					   )) {
 			graphics_epoch_reset = true
-			_ = graphics_presentation_sync_lifecycle(&h, &shared.video_presentation, st.machine_running)
+			_ = graphics_presentation_sync_lifecycle(
+				&h,
+				&shared.video_presentation,
+				st.machine_running,
+			)
 			if postmortem_state_valid {
 				postmortem_state.host_stage = .Failed
 				_ = graphics_presentation_postmortem_state(
-					&shared.video_presentation, &presentation_host_adapter,
+					&shared.video_presentation,
+					&presentation_host_adapter,
 					postmortem_state,
 				)
 			}
@@ -1304,7 +1361,11 @@ gui_main :: proc(
 		compose_started := time.tick_now()
 		if graphics_epoch_pending && postmortem_state_valid {
 			postmortem_state.host_stage = .Compose
-			_ = graphics_presentation_postmortem_state(&shared.video_presentation, &presentation_host_adapter, postmortem_state)
+			_ = graphics_presentation_postmortem_state(
+				&shared.video_presentation,
+				&presentation_host_adapter,
+				postmortem_state,
+			)
 		}
 		compose_ok := host.host_render_guest(&h, st.machine_running)
 		compose_ended := time.tick_now()
@@ -1329,7 +1390,8 @@ gui_main :: proc(
 				if postmortem_state_valid {
 					postmortem_state.host_stage = .Failed
 					_ = graphics_presentation_postmortem_state(
-						&shared.video_presentation, &presentation_host_adapter,
+						&shared.video_presentation,
+						&presentation_host_adapter,
 						postmortem_state,
 					)
 				}
@@ -1734,16 +1796,21 @@ gui_main :: proc(
 		if graphics_epoch_pending &&
 		   (!st.machine_running ||
 				   !graphics_presentation_epoch_current(
-					   &shared.video_presentation,
-					   &presentation_host_adapter,
-					   &graphics_epoch,
-				   )) {
+						   &shared.video_presentation,
+						   &presentation_host_adapter,
+						   &graphics_epoch,
+					   )) {
 			graphics_epoch_reset = true
-			_ = graphics_presentation_sync_lifecycle(&h, &shared.video_presentation, st.machine_running)
+			_ = graphics_presentation_sync_lifecycle(
+				&h,
+				&shared.video_presentation,
+				st.machine_running,
+			)
 			if postmortem_state_valid {
 				postmortem_state.host_stage = .Failed
 				_ = graphics_presentation_postmortem_state(
-					&shared.video_presentation, &presentation_host_adapter,
+					&shared.video_presentation,
+					&presentation_host_adapter,
 					postmortem_state,
 				)
 			}
@@ -1755,7 +1822,8 @@ gui_main :: proc(
 			if postmortem_state_valid {
 				postmortem_state.host_stage = .Present
 				_ = graphics_presentation_postmortem_state(
-					&shared.video_presentation, &presentation_host_adapter,
+					&shared.video_presentation,
+					&presentation_host_adapter,
 					postmortem_state,
 				)
 			}
@@ -1790,7 +1858,8 @@ gui_main :: proc(
 			if postmortem_state_valid {
 				postmortem_state.host_stage = result == .Presented ? .Complete : .Failed
 				_ = graphics_presentation_postmortem_state(
-					&shared.video_presentation, &presentation_host_adapter,
+					&shared.video_presentation,
+					&presentation_host_adapter,
 					postmortem_state,
 				)
 			}
@@ -1808,7 +1877,8 @@ gui_main :: proc(
 					fmt.println(text)
 				}
 				_ = graphics_presentation_postmortem_window(
-					&shared.video_presentation, &presentation_host_adapter,
+					&shared.video_presentation,
+					&presentation_host_adapter,
 					text,
 					graphics_window.latest_epoch,
 					.Derived,
@@ -1856,9 +1926,8 @@ gui_main :: proc(
 		control_stats := shared.input_control_stats
 		control_pending := host.host_input_control_pending(&shared.input)
 		sync.unlock(&shared.mu)
-		correlation := video.video_presentation_telemetry_snapshot(
-			&shared.video_presentation,
-		).correlation
+		correlation :=
+			video.video_presentation_telemetry_snapshot(&shared.video_presentation).correlation
 		resolved := input_control_stats_resolved(control_stats)
 		unresolved := u64(0)
 		if control_stats.queued > resolved {unresolved = control_stats.queued - resolved}
@@ -1906,10 +1975,8 @@ gui_main :: proc(
 		)
 	}
 	if graphics_trace {
-		trace := video.video_presentation_telemetry_snapshot(
-			&shared.video_presentation,
-			true,
-		).trace_text
+		trace :=
+			video.video_presentation_telemetry_snapshot(&shared.video_presentation, true).trace_text
 		if trace != "" {
 			fmt.println("graphics trace:")
 			fmt.print(trace)
@@ -2061,11 +2128,9 @@ install_launch_prepare :: proc(c: ^Vm_Ctx) -> bool {
 }
 
 vm_machine_live :: proc(c: ^Vm_Ctx, m: ^machine.Machine) -> bool {
-	if c == nil || m == nil {return false}
-	sync.lock(&c.guard.mu)
-	live := c.guard.valid && m.vm.part != nil
-	sync.unlock(&c.guard.mu)
-	return live
+	if c == nil || m == nil || c.lifetime.state == .Uninitialized {return false}
+	running_machine, running := vm_lifetime_running_machine(&c.lifetime)
+	return running && running_machine == m
 }
 
 install_apply_boot_order :: proc(cmos: []u8) {
@@ -2166,6 +2231,33 @@ cpu_mode_log :: proc(mode: vmconfig.Cpu_Mode) -> string {
 
 // --- console harness (--console) ---
 
+Console_Vm_Lifetime_Config :: struct {
+	settings:      profile.Settings,
+	options:       ^acceptance.Options,
+	install_state: ^profile.Install_State,
+	loaded_cmos:   profile.Cmos_Data,
+	has_cmos:      bool,
+}
+
+console_vm_lifetime_configure :: proc(ctx: rawptr, m: ^machine.Machine, _: []u8) -> bool {
+	config := (^Console_Vm_Lifetime_Config)(ctx)
+	if config == nil || config.options == nil || config.install_state == nil {return false}
+	install_apply_initial_boot_order(
+		m.cmos.ram[:],
+		config.loaded_cmos[:],
+		config.has_cmos,
+		config.install_state,
+	)
+	if config.has_cmos {_ = machine.machine_cmos_import(m, config.loaded_cmos[:])}
+	if !machine.load_roms(&m.vm) {return false}
+	machine.machine_set_cpu_mode(m, config.settings.cpu_mode)
+	machine.bus_set_strict_io(&m.bus, config.options.strict_io)
+	machine.machine_set_diagnostic_tracing(m, config.options.strict_io)
+	machine.machine_set_bus_diagnostic_tracing(m, config.options.setup_diagnostics == .Hardware)
+	if config.options.test_device {machine.machine_enable_test_device(m)}
+	return !m.bus.frozen
+}
+
 console_main :: proc(
 	attach: bool,
 	run_seconds: int,
@@ -2177,6 +2269,7 @@ console_main :: proc(
 	has_cmos: bool,
 	frame_dump_path: string,
 	options: acceptance.Options,
+	lifetime_acceptance: Vm_Lifetime_Acceptance_Schedule,
 ) -> (
 	result: int,
 ) {
@@ -2217,76 +2310,37 @@ console_main :: proc(
 	if install_diagnostic != .None && install_diagnostic != .Missing {
 		fmt.eprintfln("Windows 98: install state ignored (%v)", install_diagnostic)
 	}
-	fat_session: ^fat32session.Machine_Session
 	machine_session_id := strings.clone(machine_session_id_now(.Console))
 	defer delete(machine_session_id)
 	floppy_image: []u8
 	defer delete(floppy_image)
-	m := new(machine.Machine)
-	if !machine.machine_init(m, RAM_SIZE) {
-		fmt.eprintln("machine_init failed (WHPX unavailable?)")
-		console_acceptance_finalize(
-			&run_options,
-			&run_result,
-			m,
-			nil,
-			&firmware,
-			nil,
-			paths,
-			start,
-			&result,
-		)
-		firmware_log_destroy(&firmware)
-		free(m)
-		return 1
-	}
-	machine_live := true
+	lifetime: Vm_Lifetime
+	lifetime_initialized := false
+	m: ^machine.Machine
+	machine_live := false
 	defer {
-		if machine_live {
-			saved_cmos := machine.machine_cmos_export(m)
-			stored: profile.Cmos_Data
-			copy(stored[:], saved_cmos[:])
-			if diag := profile.cmos_save(paths.cmos, stored); diag != .None {
-				fmt.eprintfln("CMOS save failed: %v", diag)
+		if lifetime_initialized {
+			destroyed := vm_lifetime_destroy(&lifetime)
+			if !destroyed.completed {
+				fmt.eprintfln("VM lifetime teardown failed (%v)", destroyed.diagnostic)
+				if run_result.exit_code == 0 {
+					run_result.stop_reason = .Fatal_Virtualization_Failure
+					run_result.last_progress_reason = "vm_lifetime_teardown_failed"
+				}
+				run_result.exit_code = 2
+				result = 2
 			}
-			machine.machine_destroy(m)
 		}
-		free(m)
 	}
 	defer firmware_log_destroy(&firmware)
 	machine_segment_accumulated := false
-	defer {
-		if fat_session != nil {
-			if machine_live {_ = machine.machine_detach_disk(m)}
-			close_error := fat32session.close(fat_session, .Commit)
-			if close_error.code == .None || close_error.outcome == .Completed {
-				fat_session = nil
-			}
-			if close_error.code != .None && close_error.outcome != .Completed {
-				fmt.eprintfln(
-					"disk: close failed; FAT32 session retained: %s",
-					fat32session.error_text(&close_error),
-				)
-				_ = fat32session.close(fat_session, .Retain)
-				fat_session = nil
-				result = 2
-				run_result.stop_reason = .Fatal_Virtualization_Failure
-				run_result.exit_code = result
-			} else if close_error.code != .None {
-				fmt.eprintfln(
-					"disk: close completed with a companion cleanup warning: %s",
-					fat32session.error_text(&close_error),
-				)
-			}
-		}
-	}
-	defer console_acceptance_finalize(
+	defer console_acceptance_finalize_lifetime(
 		&run_options,
 		&run_result,
 		m,
 		&machine_live,
 		&firmware,
-		&fat_session,
+		&lifetime,
 		paths,
 		start,
 		&result,
@@ -2334,52 +2388,10 @@ console_main :: proc(
 		}
 		fmt.println("Windows 98: direct unattended Setup launch armed")
 	}
-	install_apply_initial_boot_order(m.cmos.ram[:], loaded_cmos[:], has_cmos, &install_state)
-	if has_cmos {_ = machine.machine_cmos_import(m, loaded_cmos[:])}
-	if !machine.load_roms(&m.vm) {
-		fmt.eprintln("load_roms failed")
-		return 1
-	}
-	machine.machine_set_cpu_mode(m, runtime_cpu_mode)
-	machine.bus_set_strict_io(&m.bus, options.strict_io)
-	machine.machine_set_diagnostic_tracing(m, options.strict_io)
-	machine.machine_set_bus_diagnostic_tracing(m, options.setup_diagnostics == .Hardware)
-	if !machine.machine_set_hardware_trace(m, true) {
-		fmt.eprintln("hardware flight recorder allocation failed")
-		return 1
-	}
-	if options.test_device {machine.machine_enable_test_device(m)}
-	fmt.println(cpu_mode_log(runtime_cpu_mode))
-	if cdrom_path != "" {
-		if !machine.machine_attach_cdrom(m, cdrom_path) {
-			fmt.eprintfln("CD-ROM: unsupported or unreadable image %s", cdrom_path)
-			return 1
-		}
-		fmt.printfln("CD-ROM: mounted %s", cdrom_path)
-	}
-
-	if attach && settings.hard_drive_path != "" {
-		open_error: fat32session.Session_Error
-		fat_session, open_error = fat32session.open_machine(
-			settings.hard_drive_path,
-			machine_session_id,
-		)
-		if open_error.code != .None {
-			fmt.eprintfln("FAT32 session open failed: %s", fat32session.error_text(&open_error))
-			return 1
-		}
-		machine.machine_attach_disk(m, fat32session.block_device(fat_session))
-		fmt.printfln("disk: %s", settings.hard_drive_path)
-	} else {
-		fmt.println("disk: none")
-	}
-
 	if floppy_path != "" {
 		if img, err := os.read_entire_file_from_path(floppy_path, context.allocator); err == nil {
 			floppy_image = img
-			if machine.machine_mount_floppy(m, floppy_image) {
-				fmt.printfln("floppy: mounted %s", floppy_path)
-			} else {
+			if len(floppy_image) != 1_474_560 {
 				fmt.eprintfln("floppy: %s is not a 1.44MB image", floppy_path)
 				return 1
 			}
@@ -2388,32 +2400,63 @@ console_main :: proc(
 			return 1
 		}
 	}
-
-	// a guest that stops doing I/O never leaves WHvRunVirtualProcessor;
-	// periodic cancels keep the clock and the time cap alive
-	guard := new(Vm_Guard)
-	if !vm_guard_init(guard) {
-		free(guard)
-		fmt.eprintln("vCPU wake adapter initialization failed")
+	console_lifetime_config := Console_Vm_Lifetime_Config {
+		settings      = runtime_settings,
+		options       = &run_options,
+		install_state = &install_state,
+		loaded_cmos   = loaded_cmos,
+		has_cmos      = has_cmos,
+	}
+	lifetime_result := vm_lifetime_init(
+		&lifetime,
+		{
+			ram_size = RAM_SIZE,
+			attach_storage = attach && settings.hard_drive_path != "",
+			hard_drive_path = settings.hard_drive_path,
+			machine_session_id = machine_session_id,
+			cmos_path = paths.cmos,
+			cmos = loaded_cmos,
+			has_cmos = has_cmos,
+			clock_running = true,
+			floppy = floppy_image,
+			floppy_path = floppy_path,
+			optical_path = cdrom_path,
+		},
+		{ctx = &console_lifetime_config, configure = console_vm_lifetime_configure},
+	)
+	if !lifetime_result.completed {
+		fmt.eprintfln("VM lifetime initialization failed (%v)", lifetime_result.diagnostic)
 		return 1
 	}
-	defer {
-		if vm_guard_destroy(guard) {
-			free(guard)
+	lifetime_initialized = true
+	started := vm_lifetime_start(&lifetime)
+	if !started.completed {
+		if started.storage_error.code != .None {
+			fmt.eprintfln(
+				"FAT32 session open failed: %s",
+				fat32session.error_text(&started.storage_error),
+			)
 		} else {
-			fmt.eprintln("vCPU wake adapter teardown failed; callback storage retained")
-			if run_result.exit_code == 0 {
-				run_result.stop_reason = .Fatal_Virtualization_Failure
-				run_result.last_progress_reason = "wake_guard_teardown_failed"
-			}
-			run_result.exit_code = 2
-			result = 2
+			fmt.eprintfln("machine start failed (%v)", started.diagnostic)
 		}
+		return 1
 	}
+	m, machine_live = vm_lifetime_running_machine(&lifetime)
+	if !machine_live {
+		fmt.eprintln("VM lifetime did not publish a running Machine view")
+		return 1
+	}
+	fmt.println(cpu_mode_log(runtime_cpu_mode))
+	if cdrom_path != "" {fmt.printfln("CD-ROM: mounted %s", cdrom_path)}
+	if attach && settings.hard_drive_path != "" {
+		fmt.printfln("disk: %s", settings.hard_drive_path)
+	} else {
+		fmt.println("disk: none")
+	}
+	if floppy_path != "" {fmt.printfln("floppy: mounted %s", floppy_path)}
 	defer {
-		quiesced := vm_guard_quiesce(guard)
-		vm_guard_flush_wake_evidence(guard, m)
-		stats := vm_guard_stats(guard)
+		quiesced := vm_lifetime_quiesce_guard(&lifetime)
+		stats := vm_lifetime_observation(&lifetime).guard
 		run_result.wake_guard.generations = stats.generation
 		run_result.wake_guard.callbacks = stats.callbacks
 		run_result.wake_guard.retry_callbacks = stats.retry_callbacks
@@ -2430,8 +2473,6 @@ console_main :: proc(
 			result = 2
 		}
 	}
-	vm_guard_bind(guard, &m.vm)
-	machine.machine_set_wake_adapter(m, guard, vm_guard_schedule)
 
 	last_vga := start
 	prev: vga.Text_Snapshot
@@ -2442,8 +2483,8 @@ console_main :: proc(
 	iterations := 0
 	setup_log_names := []string{"SETUPLOG.TXT"}
 	detection_log_names := []string{"DETLOG.TXT", "DETCRASH.LOG"}
-	setup_log_baseline := console_log_total_size(fat_session, setup_log_names)
-	detection_log_baseline := console_log_total_size(fat_session, detection_log_names)
+	setup_log_baseline := console_lifetime_log_total_size(&lifetime, setup_log_names)
+	detection_log_baseline := console_lifetime_log_total_size(&lifetime, detection_log_names)
 	last_setup_artifact_check := start
 	setup_artifact_reset_count: u32
 	last_progress_check := start
@@ -2479,6 +2520,8 @@ console_main :: proc(
 	input_visual_since := start
 	input_visual_changed := false
 	input_memory_next := start
+	lifetime_acceptance_started := time.tick_now()
+	lifetime_acceptance_reset := false
 	if !console_acceptance_profile_ready(
 		options.accept_until,
 		&install_state,
@@ -2489,6 +2532,70 @@ console_main :: proc(
 	}
 
 	loop: for {
+		lifetime_acceptance_now := time.tick_now()
+		lifetime_acceptance_elapsed_ms := int(
+			time.tick_diff(lifetime_acceptance_started, lifetime_acceptance_now) /
+			time.Millisecond,
+		)
+		if lifetime_acceptance.reset_after_ms > 0 &&
+		   !lifetime_acceptance_reset &&
+		   lifetime_acceptance_elapsed_ms >= lifetime_acceptance.reset_after_ms {
+			_ = console_result_accumulate_machine_segment(
+				&run_result,
+				m,
+				&machine_segment_accumulated,
+			)
+			reset_result := vm_lifetime_reset(&lifetime)
+			machine_live = reset_result.state == .Running
+			if !reset_result.completed {
+				fmt.eprintfln("VM lifetime acceptance reset failed (%v)", reset_result.diagnostic)
+				run_result.stop_reason = .Fatal_Virtualization_Failure
+				run_result.last_progress_reason = "vm_lifetime_acceptance_reset_failed"
+				run_result.exit_code = 2
+				result = 2
+				break loop
+			}
+			machine_segment_accumulated = false
+			lifetime_acceptance_reset = true
+			input_reset_count += 1
+			input_phase_start = time.tick_now()
+			observation := vm_lifetime_observation(&lifetime)
+			fmt.printfln(
+				"VM lifetime acceptance: reset complete generation=%d state=%v",
+				observation.machine_generation,
+				observation.state,
+			)
+			free_all(context.temp_allocator)
+			continue
+		}
+		if lifetime_acceptance.stop_after_ms > 0 &&
+		   lifetime_acceptance_reset &&
+		   lifetime_acceptance_elapsed_ms >= lifetime_acceptance.stop_after_ms {
+			stopped := vm_lifetime_stop(&lifetime)
+			machine_live = stopped.state == .Running
+			if !stopped.completed {
+				fmt.eprintfln("VM lifetime acceptance stop failed (%v)", stopped.diagnostic)
+				run_result.stop_reason = .Fatal_Virtualization_Failure
+				run_result.last_progress_reason = "vm_lifetime_acceptance_stop_failed"
+				run_result.exit_code = 2
+				result = 2
+				break loop
+			}
+			machine_live = false
+			observation := vm_lifetime_observation(&lifetime)
+			fmt.printfln(
+				"VM lifetime acceptance: stop complete generation=%d state=%v cmos_once=%v trace=%v",
+				observation.machine_generation,
+				observation.state,
+				observation.cmos_retained_once,
+				observation.hardware_trace_retained,
+			)
+			run_result.stop_reason = .Acceptance_Reached
+			run_result.last_progress_reason = "vm_lifetime_acceptance_stop"
+			run_result.exit_code = 0
+			result = 0
+			break loop
+		}
 		input_now := time.tick_now()
 		input_phase_ms := i64(time.tick_diff(input_phase_start, input_now) / time.Millisecond)
 		input_frame_crc: u32
@@ -2605,7 +2712,7 @@ console_main :: proc(
 			stress_next = time.tick_now()
 		}
 		alive := machine.step(m)
-		if storage_error, terminal := fat32session.session_terminal_error(fat_session); terminal {
+		if storage_error, terminal := vm_lifetime_session_terminal_error(&lifetime); terminal {
 			fmt.eprintfln(
 				"disk: terminal FAT32 session failure: %s",
 				fat32session.error_text(&storage_error),
@@ -2615,11 +2722,11 @@ console_main :: proc(
 			run_result.exit_code = result
 			break loop
 		}
-		vm_guard_flush_wake_evidence(guard, m)
+		vm_lifetime_flush_guard(&lifetime)
 		iterations += 1
 		firmware_log_drain(&firmware, m, nil)
 		now := time.tick_now()
-		if vm_guard_failed(guard) {
+		if vm_lifetime_guard_failed(&lifetime) {
 			fmt.eprintln("vCPU watchdog scheduling failed")
 			run_result.stop_reason = .Fatal_Virtualization_Failure
 			result = 2
@@ -2732,12 +2839,7 @@ console_main :: proc(
 				}
 				reason := strings.clone(machine.machine_cpu_reset_reason(m))
 				reset_code := m.cpu_reset_cmos_0f
-				sync.lock(&guard.mu)
-				guard.valid = false
-				reset_ok := machine.machine_cpu_reset(m)
-				guard.valid = reset_ok
-				sync.unlock(&guard.mu)
-				if reset_ok {machine.machine_rearm_wake(m)}
+				reset_ok := vm_lifetime_warm_cpu_reset(&lifetime)
 				if !reset_ok {
 					firmware_log_host_flush(&firmware, nil)
 					fmt.printfln("CPU reset failed: %s", m.bus.freeze_msg)
@@ -2813,20 +2915,12 @@ console_main :: proc(
 					}
 					install_apply_boot_order(reboot_cmos[:])
 				}
-				if !console_reinitialize_machine(
-					m,
-					guard,
-					&machine_live,
-					&fat_session,
-					paths,
-					runtime_settings,
-					reboot_cmos[:],
-					attach,
-					cdrom_path,
-					floppy_image,
-					&run_options,
-					reset_transaction.state_changed,
-				) {
+				console_lifetime_config.loaded_cmos = reboot_cmos
+				console_lifetime_config.has_cmos = true
+				vm_lifetime_cmos_replace(&lifetime, reboot_cmos, true)
+				reset_result := vm_lifetime_reset(&lifetime)
+				machine_live = reset_result.state == .Running
+				if !reset_result.completed {
 					rollback_diagnostic := install_reset_transaction_rollback(
 						paths.install_state,
 						&install_state,
@@ -2953,11 +3047,14 @@ console_main :: proc(
 			&last_setup_artifact_check,
 			now,
 		) {
-			materialized := fat_session == nil
+			materialized := !vm_lifetime_storage_ready(&lifetime)
 			barrier_error: fat32session.Session_Error
-			if fat_session != nil {
+			if vm_lifetime_storage_ready(&lifetime) {
 				barrier_result: fat32session.Barrier_Result
-				barrier_result, barrier_error = fat32session.barrier(fat_session, .Observation)
+				barrier_result, barrier_error = vm_lifetime_storage_barrier(
+					&lifetime,
+					.Observation,
+				)
 				materialized =
 					barrier_error.code == .None && barrier_result.materialization == .Materialized
 			}
@@ -2973,8 +3070,8 @@ console_main :: proc(
 				break loop
 			}
 			if materialized && detection_pending {
-				setup_size := console_log_total_size(fat_session, setup_log_names)
-				detection_size := console_log_total_size(fat_session, detection_log_names)
+				setup_size := console_lifetime_log_total_size(&lifetime, setup_log_names)
+				detection_size := console_lifetime_log_total_size(&lifetime, detection_log_names)
 				logs_changed :=
 					setup_size > 0 &&
 					detection_size > 0 &&
@@ -2995,8 +3092,8 @@ console_main :: proc(
 				}
 			}
 			if materialized && desktop_pending {
-				enum_evidence, marker_seen, enum_valid := console_desktop_marker_evidence(
-					fat_session,
+				enum_evidence, marker_seen, enum_valid := console_lifetime_desktop_marker_evidence(
+					&lifetime,
 				)
 				primary_dma_transactions, primary_dma_bytes :=
 					console_primary_ide_kernel_dma_evidence(

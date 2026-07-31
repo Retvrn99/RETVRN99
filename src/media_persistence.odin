@@ -200,14 +200,8 @@ gui_media_queue_before_start :: proc(
 
 vm_restore_user_media :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: bool) {
 	if c == nil || c.shared == nil {return}
-	if machine_live && m != nil {
-		machine.machine_eject_floppy(m)
-		machine.machine_eject_cdrom(m)
-	}
-	delete(c.floppy)
-	c.floppy = nil
-	delete(c.floppy_path)
-	c.floppy_path = ""
+	_ = vm_lifetime_eject_removable(&c.lifetime, .Floppy)
+	_ = vm_lifetime_eject_removable(&c.lifetime, .Optical)
 
 	floppy_status := media_path_status(c.user_floppy_path)
 	if floppy_status == .Missing {
@@ -235,16 +229,15 @@ vm_restore_user_media :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: boo
 			}
 		}
 		if len(c.user_floppy) == 1_474_560 {
-			c.floppy = media_clone_bytes(c.user_floppy)
-			c.floppy_path = strings.clone(c.user_floppy_path)
-			mounted := !machine_live || (m != nil && machine.machine_mount_floppy(m, c.floppy))
+			mounted := vm_lifetime_mount_removable(
+				&c.lifetime,
+				.Floppy,
+				c.user_floppy_path,
+				c.user_floppy,
+			).completed
 			if mounted {
-				publish_floppy_state(c.shared, true, c.floppy_path)
+				publish_floppy_state(c.shared, true, c.user_floppy_path)
 			} else {
-				delete(c.floppy)
-				c.floppy = nil
-				delete(c.floppy_path)
-				c.floppy_path = ""
 				publish_floppy_state(
 					c.shared,
 					false,
@@ -266,21 +259,20 @@ vm_restore_user_media :: proc(c: ^Vm_Ctx, m: ^machine.Machine, machine_live: boo
 		publish_floppy_state(c.shared, false)
 	}
 
-	delete(c.cdrom_path)
-	c.cdrom_path = ""
 	cdrom_status := media_path_status(c.user_cdrom_path)
 	if cdrom_status == .Missing {
 		delete(c.user_cdrom_path)
 		c.user_cdrom_path = ""
 		publish_cdrom_state(c.shared, false, "", "", "The saved disc image no longer exists", true)
 	} else if c.user_cdrom_path != "" {
-		c.cdrom_path = strings.clone(c.user_cdrom_path)
-		mounted := !machine_live || (m != nil && machine.machine_mount_cdrom(m, c.cdrom_path))
+		mounted := vm_lifetime_mount_removable(
+			&c.lifetime,
+			.Optical,
+			c.user_cdrom_path,
+		).completed
 		if mounted {
-			publish_cdrom_state(c.shared, true, c.cdrom_path)
+			publish_cdrom_state(c.shared, true, c.user_cdrom_path)
 		} else {
-			delete(c.cdrom_path)
-			c.cdrom_path = ""
 			publish_cdrom_state(
 				c.shared,
 				false,

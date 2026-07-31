@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package main
 
-import "core:os"
 import "core:fmt"
+import "core:os"
 import "core:testing"
 import "core:time"
 import "fat32session"
@@ -31,7 +31,9 @@ gui_vm_thread_test_guest_power_off_stops_machine_without_closing_gui :: proc(t: 
 }
 
 @(test)
-gui_vm_thread_test_freeze_diagnostic_survives_publisher_temp_allocator_reset :: proc(t: ^testing.T) {
+gui_vm_thread_test_freeze_diagnostic_survives_publisher_temp_allocator_reset :: proc(
+	t: ^testing.T,
+) {
 	shared: Shared
 	defer vm_log_destroy(&shared)
 	message := fmt.tprintf("disk recovery failed at checkpoint %d", 414)
@@ -106,7 +108,7 @@ gui_vm_thread_test_completion_marker_is_observed_without_acceptance_enumeration 
 	)
 	if !testing.expect_value(t, open_error.code, fat32session.Error_Code.None) {return}
 	defer fat32session.close(session, .Retain)
-	testing.expect(t, gui_install_completion_marker_exists(session))
+	testing.expect(t, gui_install_completion_marker_exists_session(session))
 	testing.expect_value(
 		t,
 		fat32session.close(session, .Commit).code,
