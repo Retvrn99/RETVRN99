@@ -282,7 +282,16 @@ run_main :: proc() -> int {
 		paths.root,
 		fmt.tprintf("retvrn99-%d", os.get_pid()),
 	); lock_diagnostic != .None {
-		fmt.eprintfln("profile lock failed: %v", lock_diagnostic)
+		if lock_diagnostic == .Owned {
+			fmt.eprintfln(
+				"profile lock: process %d owns this Profile (lock file %s); close that RETVRN99 and try again",
+				profile_lock.owner_pid,
+				profile_lock.path,
+			)
+		} else {
+			fmt.eprintfln("profile lock failed: %v", lock_diagnostic)
+		}
+		profile.lock_release(&profile_lock)
 		return console_acceptance_configuration_error(
 			&acceptance_options,
 			&paths,
