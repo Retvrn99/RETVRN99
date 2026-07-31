@@ -9,6 +9,7 @@ import stbi "vendor:stb/image"
 
 ARTIFACT_TEXT_MAX_BYTES :: 256 * 1024
 ARTIFACT_HARDWARE_TRACE_MAX_BYTES :: 512 * 1024
+ARTIFACT_SHUTDOWN_TRACE_MAX_BYTES :: 8 * 1024 * 1024
 ARTIFACT_FRAME_MAX_PIXELS :: 2_000_000
 
 Artifact_Diagnostic :: enum {
@@ -53,6 +54,7 @@ artifact_write_bundle :: proc(
 	frame_width: int = 0,
 	frame_height: int = 0,
 	hardware_trace: string = "",
+	shutdown_trace: string = "",
 ) -> Artifact_Diagnostic {
 	if directory == "" {return .Invalid_Path}
 	if os.make_directory_all(directory) != nil {return .Create_Directory_Failed}
@@ -71,6 +73,16 @@ artifact_write_bundle :: proc(
 		trace_bytes := transmute([]u8)hardware_trace
 		trace_bytes = artifact_recent_text(trace_bytes, ARTIFACT_HARDWARE_TRACE_MAX_BYTES)
 		if os.write_entire_file(hardware_trace_path, trace_bytes) != nil {return .Write_Failed}
+	}
+	shutdown_trace_path, shutdown_path_error := filepath.join({directory, "shutdown-trace.tsv"})
+	if shutdown_path_error != nil {return .Path_Failed}
+	defer delete(shutdown_trace_path)
+	if shutdown_trace == "" {
+		if !artifact_remove_if_present(shutdown_trace_path) {return .Write_Failed}
+	} else {
+		shutdown_bytes := transmute([]u8)shutdown_trace
+		if len(shutdown_bytes) > ARTIFACT_SHUTDOWN_TRACE_MAX_BYTES {return .Write_Failed}
+		if os.write_entire_file(shutdown_trace_path, shutdown_bytes) != nil {return .Write_Failed}
 	}
 	frame_path, path_err := filepath.join({directory, "final-frame.png"})
 	if path_err != nil {return .Path_Failed}

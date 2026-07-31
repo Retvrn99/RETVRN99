@@ -549,9 +549,62 @@ console_acceptance_should_write_artifacts :: proc(
 	}
 	return(
 		options.setup_diagnostics == .Hardware ||
+		options.shutdown_trace ||
 		trace_count > 0 ||
 		console_artifact_failed(result) \
 	)
+}
+
+@(private = "file")
+console_shutdown_trace_kind_name :: proc(kind: hv.Shutdown_Trace_Event_Kind) -> string {
+	switch kind {
+	case .Marker:         return "marker"
+	case .Mmio:           return "mmio"
+	case .Irq_Injected:   return "irq-injected"
+	case .Irq_Deferred:   return "irq-deferred"
+	case .Fault_Injected: return "fault-injected"
+	}
+	return "unknown"
+}
+
+console_shutdown_trace_text :: proc(m: ^machine.Machine) -> string {
+	if m == nil {return ""}
+	snapshot := hv.shutdown_trace_snapshot(&m.vm)
+	if !snapshot.enabled {return ""}
+	events := make([]hv.Shutdown_Trace_Event, int(snapshot.count), context.temp_allocator)
+	count := hv.shutdown_trace_export(&m.vm, events)
+	builder := strings.builder_make()
+	fmt.sbprintfln(
+		&builder,
+		"enabled\tarmed\tcapacity\tcount\trecorded\tdropped_unarmed\toverwritten",
+	)
+	fmt.sbprintfln(
+		&builder,
+		"%t\t%t\t%d\t%d\t%d\t%d\t%d",
+		snapshot.enabled,
+		snapshot.armed,
+		snapshot.capacity,
+		count,
+		snapshot.recorded,
+		snapshot.dropped_unarmed,
+		snapshot.overwritten,
+	)
+	fmt.sbprintfln(&builder, "sequence\tkind\tvalue\tcs\tflags\trip\taddress\tdetail")
+	for event in events[:count] {
+		fmt.sbprintfln(
+			&builder,
+			"%d\t%s\t%02x\t%04x\t%08x\t%016x\t%016x\t%016x",
+			event.sequence,
+			console_shutdown_trace_kind_name(event.kind),
+			event.value,
+			event.cs,
+			event.flags,
+			event.rip,
+			event.address,
+			event.detail,
+		)
+	}
+	return strings.to_string(builder)
 }
 
 console_acceptance_artifact_directory :: proc(
@@ -2016,6 +2069,8 @@ console_acceptance_finalize :: proc(
 		defer delete(diagnostics)
 		hardware_trace := machine.machine_hardware_trace_text(m)
 		defer if hardware_trace != "" {delete(hardware_trace)}
+		shutdown_trace := options.shutdown_trace ? console_shutdown_trace_text(m) : ""
+		defer if shutdown_trace != "" {delete(shutdown_trace)}
 		pixels: []u32
 		width, height := 0, 0
 		if frame != nil {pixels, width, height = frame.pixels, frame.width, frame.height}
@@ -2026,6 +2081,7 @@ console_acceptance_finalize :: proc(
 			width,
 			height,
 			hardware_trace,
+			shutdown_trace,
 		)
 		if diagnostic != .None {
 			fmt.eprintfln("acceptance artifact write failed: %v", diagnostic)

@@ -16,6 +16,9 @@ acceptance_options_test_all_headless_flags :: proc(t: ^testing.T) {
 		"--mouse-stress",
 		"--input-script:setup.input",
 		"--firmware-log:all",
+		"--guest-report-kind:legacy-vga",
+		"--legacy-aperture-mode:scalar",
+		"--shutdown-trace",
 	}
 	options, diagnostic := options_parse(args)
 	testing.expect_value(t, diagnostic, Options_Diagnostic.None)
@@ -30,6 +33,11 @@ acceptance_options_test_all_headless_flags :: proc(t: ^testing.T) {
 	testing.expect(t, options.mouse_stress)
 	testing.expect_value(t, options.input_script, "setup.input")
 	testing.expect(t, options.firmware_log_all)
+	testing.expect_value(t, options.guest_report_kind, Guest_Report_Kind.Legacy_VGA)
+	testing.expect(t, options.guest_report_kind_set)
+	testing.expect_value(t, options.legacy_aperture_mode, Legacy_Aperture_Mode.Scalar)
+	testing.expect(t, options.legacy_aperture_mode_set)
+	testing.expect(t, options.shutdown_trace)
 	testing.expect(t, options_request_headless(&options))
 }
 
@@ -41,6 +49,8 @@ acceptance_options_test_bare_output_flags_have_bounded_defaults :: proc(t: ^test
 	testing.expect_value(t, options.artifacts, DEFAULT_ARTIFACTS_DIRECTORY)
 	testing.expect(t, options.install_windows)
 	testing.expect_value(t, options.install_windows_path, "")
+	testing.expect_value(t, options.guest_report_kind, Guest_Report_Kind.GSWGFX)
+	testing.expect_value(t, options.legacy_aperture_mode, Legacy_Aperture_Mode.Auto)
 }
 
 @(test)
@@ -62,6 +72,46 @@ acceptance_options_test_rejects_invalid_values :: proc(t: ^testing.T) {
 	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
 	_, diagnostic = options_parse({"--input-script:"})
 	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
+	_, diagnostic = options_parse({"--guest-report-kind:vbe"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Invalid_Guest_Report_Kind)
+	_, diagnostic = options_parse({"--legacy-aperture-mode:native"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Invalid_Legacy_Aperture_Mode)
+	_, diagnostic = options_parse({"--guest-report-kind"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
+	_, diagnostic = options_parse({"--legacy-aperture-mode="})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Missing_Value)
+}
+
+@(test)
+acceptance_options_test_report_and_shutdown_controls_fail_closed :: proc(t: ^testing.T) {
+	_, diagnostic := options_parse({"--guest-report-kind:legacy-vga"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Test_Device_Required)
+	_, diagnostic = options_parse({"--test-device", "--guest-report-kind:legacy-vga"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Artifacts_Required)
+	_, diagnostic = options_parse({"--shutdown-trace"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Artifacts_Required)
+	options: Options
+	options, diagnostic = options_parse({"--shutdown-trace", "--artifacts:out"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.None)
+	testing.expect(t, options.shutdown_trace)
+	options, diagnostic = options_parse({
+		"--test-device",
+		"--artifacts:out",
+		"--guest-report-kind:gswgfx",
+		"--shutdown-trace",
+	})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.None)
+	testing.expect_value(t, options.guest_report_kind, Guest_Report_Kind.GSWGFX)
+	testing.expect(t, options.shutdown_trace)
+}
+
+@(test)
+acceptance_options_test_aperture_mode_requests_headless :: proc(t: ^testing.T) {
+	options, diagnostic := options_parse({"--legacy-aperture-mode:auto"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.None)
+	testing.expect_value(t, options.legacy_aperture_mode, Legacy_Aperture_Mode.Auto)
+	testing.expect(t, options.legacy_aperture_mode_set)
+	testing.expect(t, options_request_headless(&options))
 }
 
 @(test)

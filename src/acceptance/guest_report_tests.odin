@@ -59,6 +59,51 @@ guest_report_test_commit_publishes_exact_bytes :: proc(t: ^testing.T) {
 }
 
 @(test)
+guest_report_test_legacy_kind_uses_distinct_fixed_names :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	directory := guest_report_test_directory(t)
+	if directory == "" {return}
+	defer acceptance_test_remove_tree(directory)
+	collector: Guest_Report_Collector
+	guest_report_init(&collector, directory, .Legacy_VGA)
+	defer guest_report_destroy(&collector)
+	testing.expect_value(t, guest_report_begin(&collector), Guest_Report_Status.Ok)
+	testing.expect_value(
+		t,
+		guest_report_append(&collector, guest_report_test_bytes("legacy\r\n")),
+		Guest_Report_Status.Ok,
+	)
+	testing.expect_value(t, guest_report_commit(&collector), Guest_Report_Status.Ok)
+	payload := guest_report_test_read(t, directory, LEGACY_VGA_GUEST_REPORT_FILE)
+	testing.expect_value(t, string(payload), "legacy\r\n")
+	gswgfx_path, path_error := filepath.join({directory, GUEST_REPORT_FILE})
+	if testing.expect(t, path_error == nil) {
+		defer delete(gswgfx_path)
+		testing.expect(t, !os.exists(gswgfx_path))
+	}
+}
+
+@(test)
+guest_report_test_legacy_partial_uses_distinct_fixed_name :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	directory := guest_report_test_directory(t)
+	if directory == "" {return}
+	defer acceptance_test_remove_tree(directory)
+	collector: Guest_Report_Collector
+	guest_report_init(&collector, directory, .Legacy_VGA)
+	defer guest_report_destroy(&collector)
+	testing.expect_value(t, guest_report_begin(&collector), Guest_Report_Status.Ok)
+	testing.expect_value(
+		t,
+		guest_report_append(&collector, guest_report_test_bytes("partial")),
+		Guest_Report_Status.Ok,
+	)
+	testing.expect_value(t, guest_report_finalize_partial(&collector), Guest_Report_Status.Ok)
+	payload := guest_report_test_read(t, directory, LEGACY_VGA_GUEST_REPORT_PARTIAL_FILE)
+	testing.expect_value(t, string(payload), "partial")
+}
+
+@(test)
 guest_report_test_state_length_and_artifact_errors_fail_closed :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	directory := guest_report_test_directory(t)

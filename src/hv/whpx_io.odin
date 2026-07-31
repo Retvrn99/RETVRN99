@@ -266,18 +266,37 @@ whpx_io_inject_fault :: proc(vm: ^Vm, fault: Whpx_IO_Fault) -> bool {
 	pending: WHV_REGISTER_VALUE
 	pending.Reg128[0] = u64(1) | u64(1) << 8 | u64(vector) << 16 | u64(fault.error_code) << 32
 	pending.Reg128[1] = fault.linear
+	injected: bool
 	if fault.kind == .Page {
 		names := [?]WHV_REGISTER_NAME{.Cr2, .PendingEvent}
 		values: [len(names)]WHV_REGISTER_VALUE
 		values[0].Reg64 = fault.linear
 		values[1] = pending
-		return(
+		injected =
 			WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >=
-			0 \
+			0
+	} else {
+		name := WHV_REGISTER_NAME.PendingEvent
+		injected = WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &pending) >= 0
+	}
+	if injected && vm.shutdown_trace.armed {
+		names := [?]WHV_REGISTER_NAME{.Cs, .Rip, .Rflags}
+		values: [len(names)]WHV_REGISTER_VALUE
+		_ = WHvGetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0])
+		shutdown_trace_record(
+			vm,
+			Shutdown_Trace_Event {
+				kind    = .Fault_Injected,
+				value   = u8(vector),
+				cs      = values[0].Segment.Selector,
+				flags   = values[2].Reg64 & 0x2_0000 != 0 ? SHUTDOWN_TRACE_FLAG_V86 : 0,
+				rip     = values[1].Reg64,
+				address = fault.linear,
+				detail  = u64(fault.error_code),
+			},
 		)
 	}
-	name := WHV_REGISTER_NAME.PendingEvent
-	return WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &pending) >= 0
+	return injected
 }
 
 @(private = "package")

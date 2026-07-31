@@ -8,6 +8,13 @@ import "core:path/filepath"
 GUEST_REPORT_MAX_BYTES :: 256 * 1024
 GUEST_REPORT_FILE :: "gswgfx-result.tsv"
 GUEST_REPORT_PARTIAL_FILE :: "gswgfx-result.partial.tsv"
+LEGACY_VGA_GUEST_REPORT_FILE :: "legacy-vga-result.tsv"
+LEGACY_VGA_GUEST_REPORT_PARTIAL_FILE :: "legacy-vga-result.partial.tsv"
+
+Guest_Report_Kind :: enum u8 {
+	GSWGFX,
+	Legacy_VGA,
+}
 
 Guest_Report_Status :: enum u8 {
 	Unprocessed       = 0,
@@ -21,15 +28,21 @@ Guest_Report_Status :: enum u8 {
 
 Guest_Report_Collector :: struct {
 	artifacts: string,
+	kind:      Guest_Report_Kind,
 	bytes:     [dynamic]u8,
 	active:    bool,
 	committed: bool,
 }
 
-guest_report_init :: proc(collector: ^Guest_Report_Collector, artifacts: string) {
+guest_report_init :: proc(
+	collector: ^Guest_Report_Collector,
+	artifacts: string,
+	kind: Guest_Report_Kind = .GSWGFX,
+) {
 	if collector == nil {return}
 	collector^ = {}
 	collector.artifacts = artifacts
+	collector.kind = kind
 }
 
 guest_report_destroy :: proc(collector: ^Guest_Report_Collector) {
@@ -43,6 +56,17 @@ guest_report_path :: proc(collector: ^Guest_Report_Collector, name: string) -> (
 	if collector == nil || collector.artifacts == "" {return "", false}
 	path, path_error := filepath.join({collector.artifacts, name})
 	return path, path_error == nil
+}
+
+@(private = "file")
+guest_report_names :: proc(kind: Guest_Report_Kind) -> (final, partial: string) {
+	switch kind {
+	case .GSWGFX:
+		return GUEST_REPORT_FILE, GUEST_REPORT_PARTIAL_FILE
+	case .Legacy_VGA:
+		return LEGACY_VGA_GUEST_REPORT_FILE, LEGACY_VGA_GUEST_REPORT_PARTIAL_FILE
+	}
+	return "", ""
 }
 
 @(private = "file")
@@ -66,7 +90,7 @@ guest_report_publish :: proc(
 	if !path_ok {return false}
 	defer delete(path)
 	if os.make_directory_all(collector.artifacts) != nil {return false}
-	temporary_name := fmt.tprintf(".gswgfx-report.%d.tmp", os.get_pid())
+	temporary_name := fmt.tprintf(".guest-report.%d.tmp", os.get_pid())
 	temporary, temporary_error := filepath.join({collector.artifacts, temporary_name})
 	if temporary_error != nil {return false}
 	defer delete(temporary)
@@ -89,7 +113,9 @@ guest_report_publish :: proc(
 guest_report_begin :: proc(collector: ^Guest_Report_Collector) -> Guest_Report_Status {
 	if collector == nil || collector.artifacts == "" {return .Artifacts_Disabled}
 	if collector.active || collector.committed {return .Bad_State}
-	final_path, path_ok := guest_report_path(collector, GUEST_REPORT_FILE)
+	final_name, _ := guest_report_names(collector.kind)
+	if final_name == "" {return .Bad_State}
+	final_path, path_ok := guest_report_path(collector, final_name)
 	if !path_ok {return .Host_Io}
 	defer delete(final_path)
 	if os.make_directory_all(collector.artifacts) != nil || os.exists(final_path) {
@@ -117,7 +143,8 @@ guest_report_commit :: proc(collector: ^Guest_Report_Collector) -> Guest_Report_
 	if !collector.active || collector.committed || len(collector.bytes) == 0 {
 		return .Bad_State
 	}
-	if !guest_report_publish(collector, GUEST_REPORT_FILE, collector.bytes[:]) {
+	final_name, _ := guest_report_names(collector.kind)
+	if final_name == "" || !guest_report_publish(collector, final_name, collector.bytes[:]) {
 		return .Host_Io
 	}
 	collector.active = false
@@ -140,7 +167,8 @@ guest_report_finalize_partial :: proc(collector: ^Guest_Report_Collector) -> Gue
 		return .Bad_State
 	}
 	status := Guest_Report_Status.Ok
-	if !guest_report_publish(collector, GUEST_REPORT_PARTIAL_FILE, collector.bytes[:]) {
+	_, partial_name := guest_report_names(collector.kind)
+	if partial_name == "" || !guest_report_publish(collector, partial_name, collector.bytes[:]) {
 		status = .Host_Io
 	}
 	collector.active = false

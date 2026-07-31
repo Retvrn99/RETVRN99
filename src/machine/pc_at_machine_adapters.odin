@@ -111,6 +111,7 @@ machine_pc_at_event :: proc(ctx: rawptr, event: Pc_At_Event) {
 	switch event.kind {
 	case .Shutdown_Marker:
 		machine_runtime_diagnostic_note_shutdown_marker(m, u8(event.a))
+		hv.shutdown_trace_note_marker(&m.vm, u8(event.a))
 	case .Apm_Write:
 		machine_runtime_diagnostic_note_apm_write(m, u8(event.a), u32(event.b))
 	case .Progress:

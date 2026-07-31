@@ -8,6 +8,7 @@ import "core:strings"
 import "core:testing"
 import "core:time"
 import "fat32session"
+import "hv"
 import "machine"
 import "profile"
 import "vga"
@@ -474,6 +475,9 @@ console_acceptance_test_hardware_diagnostics_always_requests_artifacts :: proc(t
 	testing.expect(t, console_acceptance_should_write_artifacts(&options, &result, 0))
 	options.setup_diagnostics = .None
 	testing.expect(t, !console_acceptance_should_write_artifacts(&options, &result, 0))
+	options.shutdown_trace = true
+	testing.expect(t, console_acceptance_should_write_artifacts(&options, &result, 0))
+	options.shutdown_trace = false
 	testing.expect(t, console_acceptance_should_write_artifacts(&options, &result, 1))
 	result.stop_reason = .Timeout
 	testing.expect(t, console_acceptance_should_write_artifacts(&options, &result, 0))
@@ -493,6 +497,32 @@ console_acceptance_test_hardware_diagnostics_always_requests_artifacts :: proc(t
 	)
 	result.stop_reason = .No_Progress
 	testing.expect(t, console_acceptance_should_write_artifacts(&options, &result, 1))
+}
+
+@(test)
+console_acceptance_test_shutdown_trace_text_is_marker_armed_tsv :: proc(t: ^testing.T) {
+	m := new(machine.Machine)
+	defer free(m)
+	hv.shutdown_trace_set_enabled(&m.vm, true)
+	defer hv.shutdown_trace_set_enabled(&m.vm, false)
+	hv.shutdown_trace_record(&m.vm, {kind = .Mmio, address = 0xA0000})
+	hv.shutdown_trace_note_marker(&m.vm, 0xD5)
+	hv.shutdown_trace_record(
+		&m.vm,
+		{kind = .Irq_Deferred, value = 9, cs = 0x28, flags = 3, rip = 0x1234},
+	)
+	trace := console_shutdown_trace_text(m)
+	defer delete(trace)
+	testing.expect(
+		t,
+		strings.contains(
+			trace,
+			"true\ttrue\t65536\t2\t2\t1\t0\nsequence\tkind\tvalue\tcs\tflags\trip\taddress\tdetail",
+		),
+	)
+	testing.expect(t, strings.contains(trace, "1\tmarker\td5\t0000"))
+	testing.expect(t, strings.contains(trace, "2\tirq-deferred\t09\t0028\t00000003"))
+	testing.expect(t, len(trace) <= acceptance.ARTIFACT_SHUTDOWN_TRACE_MAX_BYTES)
 }
 
 @(test)

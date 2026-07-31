@@ -37,6 +37,7 @@ Interrupt_Injection_Result :: enum {
 Vm_Create_Options :: struct {
 	trace_ud_gp_exits:       bool,
 	guest_ymm_state_enabled: bool, // guest task switching preserves YMM state
+	shutdown_trace_enabled:  bool,
 }
 
 Exception_Trace_Record :: struct {
@@ -216,6 +217,7 @@ Vm :: struct {
 	mmio:                        proc(ctx: rawptr, gpa: u64, write: bool, data: []u8),
 	trace_ud_gp_exits:           bool,
 	guest_ymm_state_enabled:     bool,
+	shutdown_trace:              Shutdown_Trace_State,
 	exception_trace:             [dynamic]Exception_Trace_Record,
 	exception_count:             u64,
 }

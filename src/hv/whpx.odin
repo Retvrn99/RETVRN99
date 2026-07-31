@@ -38,6 +38,7 @@ whpx_create :: proc(vm: ^Vm, ram_size: int, options: Vm_Create_Options) -> bool 
 	}
 	vm.part = part
 	vm.guest_ymm_state_enabled = options.guest_ymm_state_enabled
+	shutdown_trace_set_enabled(vm, options.shutdown_trace_enabled)
 
 	count: u32 = 1
 	if WHvSetPartitionProperty(part, .ProcessorCount, &count, size_of(count)) < 0 {
@@ -153,6 +154,7 @@ whpx_destroy :: proc(vm: ^Vm) {
 	delete(vm.exception_trace)
 	vm.exception_trace = nil
 	vm.exception_count = 0
+	shutdown_trace_set_enabled(vm, false)
 	vm.trace_ud_gp_exits = false
 	vm.guest_ymm_state_enabled = false
 	if held_gate {
@@ -1255,13 +1257,44 @@ whpx_try_inject_irq :: proc(vm: ^Vm, vector: u8) -> Interrupt_Injection_Result {
 		vm.irq_pending_event_low = values[3].Reg128[0]
 		vm.irq_pending_event_high = values[3].Reg128[1]
 	}
-	if !if_set || pending || shadow || event_pending {return .Deferred}
+	if !if_set || pending || shadow || event_pending {
+		if vm.shutdown_trace.armed {
+			shutdown_trace_record(
+				vm,
+				Shutdown_Trace_Event {
+					kind  = .Irq_Deferred,
+					value = vector,
+					cs    = values[4].Segment.Selector,
+					flags = u32(if_set ? 0 : 1) |
+						u32(pending ? 2 : 0) |
+						u32(shadow ? 4 : 0) |
+						u32(event_pending ? 8 : 0) |
+						(values[0].Reg64 & 0x2_0000 != 0 ? SHUTDOWN_TRACE_FLAG_V86 : 0),
+					rip    = values[5].Reg64,
+					detail = values[3].Reg128[0],
+				},
+			)
+		}
+		return .Deferred
+	}
 
 	name := WHV_REGISTER_NAME.PendingInterruption
 	value: WHV_REGISTER_VALUE
 	value.Reg64 = 0x1 | u64(vector) << 16
 	if WHvSetVirtualProcessorRegisters(vm.part, 0, &name, 1, &value) < 0 {
 		return .Failed
+	}
+	if vm.shutdown_trace.armed {
+		shutdown_trace_record(
+			vm,
+			Shutdown_Trace_Event {
+				kind  = .Irq_Injected,
+				value = vector,
+				cs    = values[4].Segment.Selector,
+				flags = values[0].Reg64 & 0x2_0000 != 0 ? SHUTDOWN_TRACE_FLAG_V86 : 0,
+				rip   = values[5].Reg64,
+			},
+		)
 	}
 	vm.irq_queued = true
 	vm.irq_vector = vector

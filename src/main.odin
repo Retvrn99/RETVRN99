@@ -2264,6 +2264,7 @@ console_vm_lifetime_configure :: proc(ctx: rawptr, m: ^machine.Machine, _: []u8)
 	machine.bus_set_strict_io(&m.platform.bus, config.options.strict_io)
 	machine.machine_set_diagnostic_tracing(m, config.options.strict_io)
 	machine.machine_set_bus_diagnostic_tracing(m, config.options.setup_diagnostics == .Hardware)
+	hv.shutdown_trace_set_enabled(&m.vm, config.options.shutdown_trace)
 	if config.options.test_device {machine.machine_enable_test_device(m)}
 	return !m.platform.bus.frozen
 }
@@ -2358,7 +2359,11 @@ console_main :: proc(
 	)
 	guest_report: acceptance.Guest_Report_Collector
 	guest_report_artifacts := run_options.test_device ? run_options.artifacts : ""
-	acceptance.guest_report_init(&guest_report, guest_report_artifacts)
+	acceptance.guest_report_init(
+		&guest_report,
+		guest_report_artifacts,
+		run_options.guest_report_kind,
+	)
 	defer acceptance.guest_report_destroy(&guest_report)
 	defer {
 		_ = acceptance.guest_report_finalize_partial(&guest_report)

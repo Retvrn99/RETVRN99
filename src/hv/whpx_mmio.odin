@@ -100,6 +100,20 @@ whpx_emulate_mmio :: proc(
 	bool,
 	string,
 ) {
+	if vm.shutdown_trace.armed {
+		shutdown_trace_record(
+			vm,
+			Shutdown_Trace_Event {
+				kind    = .Mmio,
+				value   = u8(mmio.AccessInfo & 0xFF),
+				cs      = vp.Cs.Selector,
+				flags   = vp.Rflags & 0x2_0000 != 0 ? SHUTDOWN_TRACE_FLAG_V86 : 0,
+				rip     = vp.Rip,
+				address = mmio.Gpa,
+				detail  = u64(mmio.AccessInfo),
+			},
+		)
+	}
 	status: WHV_EMULATOR_STATUS
 	hr := WHvEmulatorTryMmioEmulation(vm.emu, vm, vp, mmio, &status)
 	if hr >= 0 && status.AsUINT32 & 1 != 0 {return true, ""}

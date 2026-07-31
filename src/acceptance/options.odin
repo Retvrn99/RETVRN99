@@ -17,6 +17,11 @@ Setup_Diagnostics :: enum {
 	Hardware,
 }
 
+Legacy_Aperture_Mode :: enum {
+	Auto,
+	Scalar,
+}
+
 Options :: struct {
 	test_device:         bool,
 	strict_io:           bool,
@@ -29,6 +34,11 @@ Options :: struct {
 	mouse_stress:        bool,
 	input_script:         string,
 	firmware_log_all:    bool,
+	guest_report_kind:   Guest_Report_Kind,
+	guest_report_kind_set: bool,
+	legacy_aperture_mode: Legacy_Aperture_Mode,
+	legacy_aperture_mode_set: bool,
+	shutdown_trace:      bool,
 }
 
 Options_Diagnostic :: enum {
@@ -37,6 +47,10 @@ Options_Diagnostic :: enum {
 	Invalid_Accept_Until,
 	Invalid_Setup_Diagnostics,
 	Invalid_Firmware_Log,
+	Invalid_Guest_Report_Kind,
+	Invalid_Legacy_Aperture_Mode,
+	Test_Device_Required,
+	Artifacts_Required,
 }
 
 options_parse :: proc(args: []string) -> (Options, Options_Diagnostic) {
@@ -55,7 +69,10 @@ options_parse :: proc(args: []string) -> (Options, Options_Diagnostic) {
 			options.install_windows = true
 		case "--mouse-stress":
 			options.mouse_stress = true
-		case "--accept-until", "--setup-diagnostics", "--firmware-log", "--input-script":
+		case "--shutdown-trace":
+			options.shutdown_trace = true
+		case "--accept-until", "--setup-diagnostics", "--firmware-log", "--input-script",
+		     "--guest-report-kind", "--legacy-aperture-mode":
 			return {}, .Missing_Value
 		}
 		if strings.has_prefix(argument, "--result-json:") ||
@@ -111,9 +128,45 @@ options_parse :: proc(args: []string) -> (Options, Options_Diagnostic) {
 			options.input_script = argument[len("--input-script:"):]
 			if options.input_script == "" {return {}, .Missing_Value}
 		}
+		if strings.has_prefix(argument, "--guest-report-kind:") ||
+		   strings.has_prefix(argument, "--guest-report-kind=") {
+			value := argument[len("--guest-report-kind:"):]
+			switch value {
+			case "gswgfx":
+				options.guest_report_kind = .GSWGFX
+			case "legacy-vga":
+				options.guest_report_kind = .Legacy_VGA
+			case "":
+				return {}, .Missing_Value
+			case:
+				return {}, .Invalid_Guest_Report_Kind
+			}
+			options.guest_report_kind_set = true
+		}
+		if strings.has_prefix(argument, "--legacy-aperture-mode:") ||
+		   strings.has_prefix(argument, "--legacy-aperture-mode=") {
+			value := argument[len("--legacy-aperture-mode:"):]
+			switch value {
+			case "auto":
+				options.legacy_aperture_mode = .Auto
+			case "scalar":
+				options.legacy_aperture_mode = .Scalar
+			case "":
+				return {}, .Missing_Value
+			case:
+				return {}, .Invalid_Legacy_Aperture_Mode
+			}
+			options.legacy_aperture_mode_set = true
+		}
 	}
 	if options.setup_diagnostics == .Hardware && options.artifacts == "" {
 		options.artifacts = DEFAULT_ARTIFACTS_DIRECTORY
+	}
+	if options.guest_report_kind_set && !options.test_device {
+		return {}, .Test_Device_Required
+	}
+	if (options.guest_report_kind_set || options.shutdown_trace) && options.artifacts == "" {
+		return {}, .Artifacts_Required
 	}
 	return options, .None
 }
@@ -129,6 +182,9 @@ options_request_headless :: proc(options: ^Options) -> bool {
 	       options.accept_until != .None ||
 	       options.setup_diagnostics != .None ||
 		options.mouse_stress ||
-		options.input_script != "" \
+		options.input_script != "" ||
+		options.guest_report_kind_set ||
+		options.legacy_aperture_mode_set ||
+		options.shutdown_trace \
 	)
 }

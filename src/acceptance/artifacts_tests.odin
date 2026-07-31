@@ -23,12 +23,30 @@ acceptance_artifacts_test_bundle_is_fixed_name_and_bounded :: proc(t: ^testing.T
 	diagnostics_path, _ := filepath.join({dir, "diagnostics.txt"})
 	frame_path, _ := filepath.join({dir, "final-frame.png"})
 	trace_path, _ := filepath.join({dir, "hardware-trace.txt"})
+	shutdown_path, _ := filepath.join({dir, "shutdown-trace.tsv"})
 	diagnostics, _ := os.read_entire_file(diagnostics_path, context.temp_allocator)
 	frame, _ := os.read_entire_file(frame_path, context.temp_allocator)
 	testing.expect_value(t, len(diagnostics), ARTIFACT_TEXT_MAX_BYTES)
 	testing.expect(t, len(frame) > 6)
 	trace, _ := os.read_entire_file(trace_path, context.temp_allocator)
 	testing.expect_value(t, string(trace), "tick=1 pit\n")
+	testing.expect(t, !os.exists(shutdown_path))
+	testing.expect_value(
+		t,
+		artifact_write_bundle(
+			dir,
+			"trace diagnostics",
+			nil,
+			0,
+			0,
+			"",
+			"sequence\tkind\n1\tmarker\n",
+		),
+		Artifact_Diagnostic.None,
+	)
+	shutdown, shutdown_error := os.read_entire_file(shutdown_path, context.temp_allocator)
+	testing.expect(t, shutdown_error == nil)
+	testing.expect_value(t, string(shutdown), "sequence\tkind\n1\tmarker\n")
 	testing.expect_value(
 		t,
 		artifact_write_bundle(dir, "new diagnostics", nil, max(int), 2),
@@ -36,6 +54,7 @@ acceptance_artifacts_test_bundle_is_fixed_name_and_bounded :: proc(t: ^testing.T
 	)
 	testing.expect(t, !os.exists(frame_path))
 	testing.expect(t, !os.exists(trace_path))
+	testing.expect(t, !os.exists(shutdown_path))
 }
 
 @(test)
