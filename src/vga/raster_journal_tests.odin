@@ -104,7 +104,7 @@ raster_journal_test_palette_splits_replay_above_and_below_the_split :: proc(t: ^
 
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	testing.expect_value(t, descriptor.journal.count, u32(0))
 	raster_journal_test_acknowledge(t, &v, &descriptor)
 
@@ -113,7 +113,7 @@ raster_journal_test_palette_splits_replay_above_and_below_the_split :: proc(t: ^
 	raster_journal_test_dac(&v, split_a, 1, 0x00, 0x3F, 0x20)
 	raster_journal_test_dac(&v, split_b, 1, 0x10, 0x00, 0x3F)
 
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	// Nothing but the palette moved, which is the path a real split takes.
 	testing.expect_value(
 		t,
@@ -122,6 +122,22 @@ raster_journal_test_palette_splits_replay_above_and_below_the_split :: proc(t: ^
 	)
 	testing.expect(t, !descriptor.journal.truncated)
 	if !testing.expect_value(t, descriptor.journal.count, u32(6)) {return}
+	testing.expect_value(t, descriptor.capture_plan.coverage, Scanout_Capture_Coverage.Full)
+	testing.expect_value(
+		t,
+		descriptor.capture_plan.full_reason,
+		contract.Damage_Full_Reason.Raster_Journal,
+	)
+	testing.expect_value(
+		t,
+		descriptor.legacy_update.full_reason,
+		contract.Damage_Full_Reason.Raster_Journal,
+	)
+	testing.expect_value(
+		t,
+		descriptor.legacy_update.header.dirty,
+		contract.rect_set_full(descriptor.legacy_update.header.surface_extent),
+	)
 	expected := [6]Raster_Delta {
 		{line = 8, index = 3, kind = .Dac_Entry, value = 0x00, previous = 0x3F},
 		{line = 8, index = 4, kind = .Dac_Entry, value = 0x3F, previous = 0x00},
@@ -177,7 +193,7 @@ raster_journal_test_frame_without_mid_frame_writes_expands_identically :: proc(t
 
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	testing.expect_value(t, descriptor.journal.count, u32(0))
 	testing.expect(t, !descriptor.journal.truncated)
 
@@ -220,10 +236,16 @@ raster_journal_test_overflow_truncates_and_expands_from_final_state :: proc(t: ^
 
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	testing.expect(t, descriptor.journal.truncated)
 	testing.expect_value(t, descriptor.journal.count, u32(0))
 	testing.expect_value(t, descriptor.mode_observability.raster_journal_truncations, u64(1))
+	testing.expect_value(t, descriptor.capture_plan.coverage, Scanout_Capture_Coverage.Full)
+	testing.expect_value(
+		t,
+		descriptor.capture_plan.full_reason,
+		contract.Damage_Full_Reason.Raster_Journal,
+	)
 
 	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
@@ -252,18 +274,18 @@ raster_journal_test_stale_journal_is_dropped_after_one_frame :: proc(t: ^testing
 
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	testing.expect_value(t, descriptor.journal.count, u32(3))
 
 	// The next frame still carries it, the one after that does not.
 	vga_advance(&v, v.timing.frame_period_ns + raster_journal_test_line_ns(&v, 8))
 	vga_note_content_change(&v)
-	testing.expect(t, scanout_descriptor_capture(&descriptor, &v))
+	testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1))
 	testing.expect_value(t, descriptor.journal.count, u32(3))
 
 	vga_advance(&v, 2 * v.timing.frame_period_ns + raster_journal_test_line_ns(&v, 8))
 	vga_note_content_change(&v)
-	testing.expect(t, scanout_descriptor_capture(&descriptor, &v))
+	testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1))
 	testing.expect_value(t, descriptor.journal.count, u32(0))
 }
 
@@ -285,7 +307,7 @@ raster_journal_test_pel_pan_split_shifts_only_the_rows_below_it :: proc(t: ^test
 
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	if !testing.expect_value(t, descriptor.journal.count, u32(1)) {return}
 	testing.expect_value(
 		t,
@@ -325,7 +347,7 @@ raster_journal_test_byte_pan_split_moves_only_the_rows_below_it :: proc(t: ^test
 
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	if !testing.expect_value(t, descriptor.journal.count, u32(1)) {return}
 	testing.expect_value(
 		t,
@@ -362,7 +384,7 @@ raster_journal_test_display_start_write_waits_for_vertical_retrace :: proc(t: ^t
 
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	frame := scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	before := frame.pixels[0]
@@ -374,7 +396,7 @@ raster_journal_test_display_start_write_waits_for_vertical_retrace :: proc(t: ^t
 	testing.expect_value(t, v.latched_start, u16(0))
 	vga_note_content_change(&v)
 
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	testing.expect_value(t, descriptor.journal.count, u32(0))
 	frame = scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
@@ -384,7 +406,7 @@ raster_journal_test_display_start_write_waits_for_vertical_retrace :: proc(t: ^t
 	vga_advance(&v, v.timing.frame_period_ns + raster_journal_test_line_ns(&v, 495))
 	testing.expect_value(t, v.latched_start, u16(100))
 	testing.expect(t, !v.start_pending)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	frame = scanout_test_expand_legacy(&descriptor)
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect(t, frame.pixels[0] != before)
@@ -417,7 +439,7 @@ raster_journal_test_attribute_palette_split_replays_below_the_split :: proc(t: ^
 
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	if !testing.expect_value(t, descriptor.journal.count, u32(3)) {return}
 	expected := [3]Raster_Delta {
 		{line = 12, index = 0, kind = .Palette_Source, value = 0, previous = 1},
@@ -462,7 +484,7 @@ raster_journal_test_palette_source_blanks_the_rows_it_is_held_off_for :: proc(t:
 
 	descriptor: Scanout_Descriptor
 	defer scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v)) {return}
+	if !testing.expect(t, scanout_descriptor_capture(&descriptor, &v, 1)) {return}
 	if !testing.expect_value(t, descriptor.journal.count, u32(3)) {return}
 	testing.expect_value(t, descriptor.journal.entries[2].line, u16(20))
 

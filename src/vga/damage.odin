@@ -48,29 +48,6 @@ vga_damage_kind :: proc(pixels, palette: bool) -> contract.Damage_Kind {
 	return .Invalid
 }
 
-@(private = "file")
-vga_damage_reason_priority :: proc(reason: contract.Damage_Full_Reason) -> u8 {
-	#partial switch reason {
-	case .Initial_Surface:
-		return 1
-	case .Mode_Boundary:
-		return 2
-	case .External_Tracking:
-		return 3
-	case .Ambiguous_Mapping:
-		return 4
-	case .Capacity_Exceeded:
-		return 5
-	case:
-		return 0
-	}
-}
-
-@(private = "file")
-vga_damage_reason_merge :: proc(a, b: contract.Damage_Full_Reason) -> contract.Damage_Full_Reason {
-	return vga_damage_reason_priority(b) > vga_damage_reason_priority(a) ? b : a
-}
-
 vga_damage_record_full :: proc(
 	v: ^Vga,
 	kind: contract.Damage_Kind,
@@ -80,7 +57,10 @@ vga_damage_record_full :: proc(
 	v.legacy_damage.range_count = 0
 	for &entry in v.legacy_damage.ranges {entry = {}}
 	v.legacy_damage.palette = v.legacy_damage.palette || contract.damage_kind_has_palette(kind)
-	v.legacy_damage.full_reason = vga_damage_reason_merge(v.legacy_damage.full_reason, reason)
+	v.legacy_damage.full_reason = contract.damage_full_reason_merge(
+		v.legacy_damage.full_reason,
+		reason,
+	)
 	v.legacy_damage.write_serial = contract.generation_next(v.legacy_damage.write_serial)
 }
 
@@ -121,7 +101,10 @@ vga_damage_state_has_damage :: proc(state: ^Vga_Damage_State) -> bool {
 vga_damage_state_merge :: proc(destination, source: ^Vga_Damage_State) {
 	if destination == nil || source == nil || !vga_damage_state_has_damage(source) {return}
 	destination.palette = destination.palette || source.palette
-	destination.full_reason = vga_damage_reason_merge(destination.full_reason, source.full_reason)
+	destination.full_reason = contract.damage_full_reason_merge(
+		destination.full_reason,
+		source.full_reason,
+	)
 	if destination.full_reason != .None {
 		destination.range_count = 0
 		for &entry in destination.ranges {entry = {}}

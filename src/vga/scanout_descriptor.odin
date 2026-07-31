@@ -30,6 +30,24 @@ Scanout_State :: struct {
 	legacy_presentation_sequence: u64,
 }
 
+Scanout_Capture_Coverage :: enum u8 {
+	None,
+	Partial,
+	Full,
+}
+
+Scanout_Capture_Plan :: struct {
+	coverage:           Scanout_Capture_Coverage,
+	required_ranges:    Vga_Capture_Range_Set,
+	full_reason:        contract.Damage_Full_Reason,
+	owner:              contract.Display_Owner,
+	observed_owner:     contract.Display_Owner,
+	owner_generation:   u64,
+	mode_generation:    u64,
+	surface_id:         u64,
+	surface_generation: u64,
+}
+
 Scanout_Descriptor :: struct {
 	allocator:          runtime.Allocator,
 	state:              Scanout_State,
@@ -43,6 +61,7 @@ Scanout_Descriptor :: struct {
 	bytes_copied:       int,
 	copy_duration_ns:   u64,
 	legacy_update:      contract.Legacy_Frame_Update,
+	capture_plan:       Scanout_Capture_Plan,
 	gsw_presentation:   Gsw_Presentation_Descriptor,
 }
 
@@ -132,8 +151,35 @@ scanout_state_to_vga :: proc(
 	}
 }
 
-scanout_descriptor_capture :: proc(descriptor: ^Scanout_Descriptor, source: ^Vga) -> bool {
-	if descriptor == nil || source == nil || source.vram == nil {return false}
+@(private = "file")
+scanout_capture_identity_reason :: proc(
+	previous, current: Scanout_Capture_Plan,
+) -> contract.Damage_Full_Reason {
+	if previous.owner_generation == 0 ||
+	   previous.mode_generation == 0 ||
+	   previous.surface_id == 0 ||
+	   previous.surface_generation == 0 {return .Initial_Surface}
+	if previous.owner_generation != current.owner_generation {return .Initial_Surface}
+	if previous.owner != current.owner ||
+	   previous.observed_owner != current.observed_owner ||
+	   previous.mode_generation != current.mode_generation {
+		return .Mode_Boundary
+	}
+	if previous.surface_id != current.surface_id ||
+	   previous.surface_generation != current.surface_generation {return .Initial_Surface}
+	return .None
+}
+
+scanout_descriptor_capture :: proc(
+	descriptor: ^Scanout_Descriptor,
+	source: ^Vga,
+	owner_generation: u64,
+) -> bool {
+	if descriptor == nil ||
+	   source == nil ||
+	   source.vram == nil ||
+	   owner_generation == 0 {return false}
+	previous_plan := descriptor.capture_plan
 	if descriptor.allocator.procedure == nil {descriptor.allocator = context.allocator}
 	if len(descriptor.vram) != VRAM_SIZE {
 		if descriptor.vram != nil {delete(descriptor.vram, descriptor.allocator)}
@@ -150,35 +196,87 @@ scanout_descriptor_capture :: proc(descriptor: ^Scanout_Descriptor, source: ^Vga
 	descriptor.valid_ranges = {}
 	descriptor.raw_complete = false
 	update := &descriptor.legacy_update
-	if update.damage_kind == .Invalid || update.header.dirty.count == 0 {return true}
+	owner := contract.Display_Owner.Legacy
+	descriptor.capture_plan = {
+		owner              = owner,
+		observed_owner     = source.presentation_mode_clock.owner,
+		owner_generation   = owner_generation,
+		mode_generation    = source.legacy_presentation_mode_generation,
+		surface_id         = LEGACY_PRESENTATION_SURFACE_ID,
+		surface_generation = source.legacy_presentation_surface_generation,
+	}
+	plan := &descriptor.capture_plan
+	if update.header.mode_generation != 0 {
+		update.header.lifecycle_generation = owner_generation
+		plan.mode_generation = update.header.mode_generation
+		plan.surface_id = update.header.surface.id
+		plan.surface_generation = update.header.surface.generation
+	}
+	reason := scanout_capture_identity_reason(previous_plan, plan^)
+	if previous_plan.coverage == .None && previous_plan.full_reason != .None {
+		reason = contract.damage_full_reason_merge(reason, previous_plan.full_reason)
+	}
+	if raster_journal_active(&descriptor.journal) || descriptor.journal.truncated {
+		reason = contract.damage_full_reason_merge(reason, .Raster_Journal)
+	}
+	if update.damage_kind == .Invalid || update.header.dirty.count == 0 {
+		if reason == .None {
+			plan.full_reason = reason
+			return true
+		}
+		if !vga_request_full_baseline(
+			source,
+			plan.mode_generation,
+			plan.surface_id,
+			plan.surface_generation,
+			reason,
+		) {return false}
+		scanout_state_capture(&descriptor.state, source)
+		descriptor.legacy_update = vga_legacy_frame_update(source)
+		descriptor.generation = source.presentation_sequence
+		update = &descriptor.legacy_update
+		if update.damage_kind == .Invalid || update.header.dirty.count == 0 {return false}
+		update.header.lifecycle_generation = owner_generation
+	}
+	reason = contract.damage_full_reason_merge(update.full_reason, reason)
 	full :=
-		raster_journal_active(&descriptor.journal) ||
 		update.damage_kind == .Palette_Only ||
-		update.full_reason != .None ||
+		update.damage_kind == .Pixel_And_Palette ||
+		reason != .None ||
 		(update.header.dirty.count == 1 &&
 				contract.rect_equal(update.header.dirty.rects[0], update.header.source))
 	copy_started := time.tick_now()
 	if full {
+		update.full_reason = reason
+		update.header.dirty = contract.rect_set_full(update.header.surface_extent)
 		bytes := scanout_required_vram(source)
 		copy(descriptor.vram[:bytes], source.vram[:bytes])
-		descriptor.valid_ranges.count = 1
-		descriptor.valid_ranges.ranges[0] = {0, u32(bytes)}
+		plan.coverage = .Full
+		plan.full_reason = reason
+		plan.required_ranges.count = 1
+		plan.required_ranges.ranges[0] = {0, u32(bytes)}
+		descriptor.valid_ranges = plan.required_ranges
 		descriptor.raw_complete = true
 		descriptor.bytes_copied = bytes
 	} else {
-		if !vga_damage_capture_ranges(source, update.header.dirty, &descriptor.valid_ranges) {
+		if !vga_damage_capture_ranges(source, update.header.dirty, &plan.required_ranges) {
 			update.full_reason = .Capacity_Exceeded
 			update.header.dirty = contract.rect_set_full(update.header.surface_extent)
 			bytes := scanout_required_vram(source)
 			copy(descriptor.vram[:bytes], source.vram[:bytes])
-			descriptor.valid_ranges = {}
-			descriptor.valid_ranges.count = 1
-			descriptor.valid_ranges.ranges[0] = {0, u32(bytes)}
+			plan.coverage = .Full
+			plan.full_reason = .Capacity_Exceeded
+			plan.required_ranges = {}
+			plan.required_ranges.count = 1
+			plan.required_ranges.ranges[0] = {0, u32(bytes)}
+			descriptor.valid_ranges = plan.required_ranges
 			descriptor.raw_complete = true
 			descriptor.bytes_copied = bytes
 		} else {
-			for i in 0 ..< int(descriptor.valid_ranges.count) {
-				range := descriptor.valid_ranges.ranges[i]
+			plan.coverage = .Partial
+			descriptor.valid_ranges = plan.required_ranges
+			for i in 0 ..< int(plan.required_ranges.count) {
+				range := plan.required_ranges.ranges[i]
 				start, end := int(range.start), int(range.end)
 				copy(descriptor.vram[start:end], source.vram[start:end])
 				descriptor.bytes_copied += end - start
@@ -216,9 +314,17 @@ scanout_descriptor_expand_legacy :: proc(
 	   frame_pixels == nil ||
 	   frame == nil ||
 	   descriptor.vram == nil ||
-	   descriptor.legacy_update.damage_kind == .Invalid {
+	   descriptor.legacy_update.damage_kind == .Invalid ||
+	   descriptor.capture_plan.coverage == .None {
 		return nil
 	}
+	plan := &descriptor.capture_plan
+	header := descriptor.legacy_update.header
+	if plan.owner_generation == 0 ||
+	   plan.owner_generation != header.lifecycle_generation ||
+	   plan.mode_generation != header.mode_generation ||
+	   plan.surface_id != header.surface.id ||
+	   plan.surface_generation != header.surface.generation {return nil}
 	target_allocator := allocator
 	if target_allocator.procedure == nil {target_allocator = context.allocator}
 	state := scanout_state_to_vga(
@@ -233,29 +339,17 @@ scanout_descriptor_expand_legacy :: proc(
 	   height <= 0 ||
 	   width > DISPI_MAX_XRES ||
 	   height > DISPI_MAX_YRES ||
-	   u32(width) != descriptor.legacy_update.header.surface_extent.width ||
-	   u32(height) != descriptor.legacy_update.header.surface_extent.height {return nil}
+	   u32(width) != header.surface_extent.width ||
+	   u32(height) != header.surface_extent.height {return nil}
 	needed := width * height
-	full :=
-		raster_journal_active(&descriptor.journal) ||
-		descriptor.legacy_update.full_reason != .None ||
-		(descriptor.legacy_update.header.dirty.count == 1 &&
-				contract.rect_equal(
-					descriptor.legacy_update.header.dirty.rects[0],
-					descriptor.legacy_update.header.source,
-				))
-	required_ranges: Vga_Capture_Range_Set
-	if full {
-		required_ranges.count = 1
-		required_ranges.ranges[0] = {0, u32(scanout_required_vram(&state))}
-	} else if !vga_damage_capture_ranges(
-		&state,
-		descriptor.legacy_update.header.dirty,
-		&required_ranges,
-	) {
+	full := plan.coverage == .Full
+	if !full && plan.coverage != .Partial {return nil}
+	if full &&
+	   (header.dirty.count != 1 ||
+		   !contract.rect_equal(header.dirty.rects[0], header.source)) {return nil}
+	if !scanout_descriptor_ranges_cover(&descriptor.valid_ranges, &plan.required_ranges) {
 		return nil
 	}
-	if !scanout_descriptor_ranges_cover(&descriptor.valid_ranges, &required_ranges) {return nil}
 	if len(state.frame_pixels) != needed {
 		if state.frame_pixels != nil {delete(state.frame_pixels, target_allocator)}
 		state.frame_pixels = make([]u32, needed, target_allocator)
@@ -282,7 +376,7 @@ scanout_descriptor_expand_legacy :: proc(
 			}
 			converted_pixels += u64(rect.width) * u64(rect.height)
 		}
-		display_aspect := descriptor.legacy_update.header.display_aspect
+		display_aspect := header.display_aspect
 		frame^ = {
 			kind                      = kind,
 			width                     = width,
@@ -298,7 +392,7 @@ scanout_descriptor_expand_legacy :: proc(
 	frame_pixels^ = state.frame_pixels
 	frame.pixels = frame_pixels^
 	frame.text = descriptor.text
-	frame.dirty = descriptor.legacy_update.header.dirty
+	frame.dirty = header.dirty
 	return frame
 }
 

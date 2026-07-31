@@ -75,7 +75,7 @@ machine_capture_scanout :: proc(
 	descriptor.gsw_presentation.copy_duration_ns = 0
 	machine_vga_sync(m)
 	if !machine_publish_vbe_writes(m) {return false}
-	if !video.scanout_descriptor_capture(descriptor, &m.vga) {return false}
+	if !video.scanout_descriptor_capture(descriptor, &m.vga, lifecycle_generation) {return false}
 	gsw_captured := video.gsw_presentation_descriptor_capture(
 		&descriptor.gsw_presentation,
 		&m.gsw_vga,

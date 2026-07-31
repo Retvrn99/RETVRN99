@@ -67,6 +67,7 @@ Graphics_Frame_Stage_Proc :: proc(
 	target: ^host.Host,
 	admission: ^host.Host_Presentation_Admission,
 	frame: ^vga.Display_Frame,
+	capture_plan: ^vga.Scanout_Capture_Plan,
 ) -> host.Host_Presentation_Staged_Texture
 
 @(private = "package")
@@ -84,15 +85,17 @@ Graphics_Frame_Consumer_Ops :: struct {
 }
 
 @(private = "package")
-graphics_frame_expand_legacy :: proc(
+graphics_frame_expand_legacy_result :: proc(
 	video: ^Video_Presentation,
 	descriptor: ^vga.Scanout_Descriptor,
 	ops: ^Graphics_Frame_Consumer_Ops,
-) -> ^vga.Display_Frame {
+) -> Expansion_Result {
 	if ops != nil && ops.expand_legacy != nil {
-		return ops.expand_legacy(ops.ctx, descriptor)
+		frame := ops.expand_legacy(ops.ctx, descriptor)
+		if frame == nil {return {}}
+		return {status = .Ready, frame = frame}
 	}
-	return expand_legacy(&video.expansion, descriptor)
+	return expand_legacy_result(&video.expansion, descriptor)
 }
 
 @(private = "package")
@@ -162,14 +165,15 @@ graphics_frame_stage :: proc(
 	adapter: ^Video_Presentation_Host_Adapter,
 	admission: ^host.Host_Presentation_Admission,
 	frame: ^vga.Display_Frame,
+	capture_plan: ^vga.Scanout_Capture_Plan = nil,
 ) -> host.Host_Presentation_Staged_Texture {
 	if adapter == nil {return {}}
 	if ops != nil && ops.stage != nil {
-		return ops.stage(ops.ctx, adapter.target, admission, frame)
+		return ops.stage(ops.ctx, adapter.target, admission, frame, capture_plan)
 	}
 	if admission != nil && admission.kind == .Legacy {
 		if adapter.stage_legacy == nil {return {}}
-		return adapter.stage_legacy(adapter.ctx, admission, frame)
+		return adapter.stage_legacy(adapter.ctx, admission, frame, capture_plan)
 	}
 	if adapter.stage_gsw == nil {return {}}
 	return adapter.stage_gsw(adapter.ctx, admission, frame)
@@ -466,10 +470,24 @@ graphics_frame_consume_with_adapter :: proc(
 		   legacy_admission.valid &&
 		   frame_slot.epoch.result == .Incomplete {
 			graphics_frame_epoch_render_begin(&frame_slot.epoch, .Legacy_Scanout, time.tick_now())
-			frame := graphics_frame_expand_legacy(video, &frame_slot.scanout, ops)
+			expanded := graphics_frame_expand_legacy_result(video, &frame_slot.scanout, ops)
+			frame := expanded.frame
 			graphics_frame_epoch_render_complete(&frame_slot.epoch, frame, time.tick_now())
 			host.host_presentation_record_conversion(target, frame)
-			if frame == nil {
+			if expanded.status == .Needs_Full_Baseline {
+				_ = frame_mailbox_request_legacy_full_baseline(
+					video,
+					frame_slot.scanout.capture_plan,
+				)
+				if !graphics_epoch_pending {
+					_ = frame_mailbox_graphics_epoch_complete_and_record(
+						video,
+						&frame_slot.epoch,
+						.Superseded,
+						time.tick_now(),
+					)
+				}
+			} else if frame == nil {
 				retry_latest = true
 				if !graphics_epoch_pending {
 					_ = frame_mailbox_graphics_epoch_complete_and_record(
@@ -488,14 +506,27 @@ graphics_frame_consume_with_adapter :: proc(
 					)
 				}
 				graphics_frame_epoch_upload_begin(&frame_slot.epoch, time.tick_now())
-				staged := graphics_frame_stage(ops, adapter, &legacy_admission, frame)
+				staged := graphics_frame_stage(
+					ops,
+					adapter,
+					&legacy_admission,
+					frame,
+					&frame_slot.scanout.capture_plan,
+				)
+				needs_full_baseline := staged.status == .Needs_Full_Baseline
+				if needs_full_baseline {
+					_ = frame_mailbox_request_legacy_full_baseline(
+						video,
+						frame_slot.scanout.capture_plan,
+					)
+				}
 				commit := Graphics_Legacy_Staged_Commit {
 					adapter   = adapter,
 					admission = legacy_admission,
 					staged    = staged,
 				}
 				commit_result := Frame_Mailbox_Current_Commit_Result.Invalid
-				if staged.valid {
+				if staged.valid && !needs_full_baseline {
 					commit_result = frame_mailbox_graphics_epoch_commit_current(
 						video,
 						&frame_slot.epoch,
@@ -525,6 +556,10 @@ graphics_frame_consume_with_adapter :: proc(
 						video,
 						frame_slot.scanout.legacy_update,
 					)
+					_ = frame_mailbox_complete_legacy_full_baseline(
+						video,
+						frame_slot.scanout.capture_plan,
+					)
 					disposition := graphics_legacy_upload_disposition(
 						legacy_admission.result.action,
 						gsw_transition,
@@ -542,6 +577,15 @@ graphics_frame_consume_with_adapter :: proc(
 						graphics_epoch.kind = visible_kind
 						graphics_epoch.width = visible_width
 						graphics_epoch.height = visible_height
+					}
+				} else if needs_full_baseline {
+					if !graphics_epoch_pending {
+						_ = frame_mailbox_graphics_epoch_complete_and_record(
+							video,
+							&frame_slot.epoch,
+							.Superseded,
+							time.tick_now(),
+						)
 					}
 				} else {
 					retry_latest = retry_latest || still_current

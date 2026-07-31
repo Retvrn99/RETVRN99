@@ -72,18 +72,21 @@ vga_vbe_bank_alias :: proc(v: ^Vga) -> (Vbe_Bank_Alias, bool) {
 
 vga_publish_external_lfb_writes :: proc(v: ^Vga, dirty: bool) -> bool {
 	if v == nil || !dirty || !vga_vbe_lfb_enabled(v) {return false}
+	v.frame_valid = false
 	vga_note_content_change(v)
 	return true
 }
 
 vga_publish_external_vbe_writes :: proc(v: ^Vga, dirty: bool) -> bool {
 	if v == nil || !dirty || !vga_vbe_enabled(v) {return false}
+	v.frame_valid = false
 	vga_note_content_change(v)
 	return true
 }
 
 vga_publish_external_backing_writes :: proc(v: ^Vga, dirty: bool) -> bool {
 	if v == nil || !dirty {return false}
+	v.frame_valid = false
 	vga_note_memory_change(v)
 	return true
 }

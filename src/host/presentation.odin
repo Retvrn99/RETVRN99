@@ -12,6 +12,12 @@ Host_Presentation_Kind :: enum u8 {
 	Gsw_Resident,
 }
 
+Host_Presentation_Stage_Status :: enum u8 {
+	Invalid,
+	Ready,
+	Needs_Full_Baseline,
+}
+
 Host_Presentation_Texture_Slot :: struct {
 	texture:          ^sdl3.Texture,
 	width:            int,
@@ -21,6 +27,7 @@ Host_Presentation_Texture_Slot :: struct {
 
 Host_Presentation_Staged_Texture :: struct {
 	valid:                bool,
+	status:               Host_Presentation_Stage_Status,
 	kind:                 Host_Presentation_Kind,
 	texture:              ^sdl3.Texture,
 	width:                int,
@@ -45,6 +52,7 @@ Host_Presentation_State :: struct {
 	mode_clock:                          contract.Mode_Clock,
 	selector:                            contract.Selector,
 	legacy:                              contract.Legacy_Frame_Update,
+	legacy_source_mode_generation:       u64,
 	gsw:                                 contract.Gsw_Present,
 	gsw_snapshot:                        contract.Gsw_Present,
 	gsw_source_mode_generation:          u64,
@@ -190,6 +198,8 @@ host_presentation_record_full_reason :: proc(h: ^Host, reason: contract.Damage_F
 		host_presentation_metric_add(&h.presentation_metrics.source_full_capacity, 1)
 	case .External_Tracking:
 		host_presentation_metric_add(&h.presentation_metrics.source_full_external, 1)
+	case .Raster_Journal:
+		host_presentation_metric_add(&h.presentation_metrics.source_full_raster_journal, 1)
 	case .None:
 	}
 }
@@ -238,6 +248,7 @@ host_presentation_stop :: proc(h: ^Host) {
 	_ = contract.selector_vm_stop(&state.selector)
 	state.accepting = false
 	state.legacy = {}
+	state.legacy_source_mode_generation = 0
 	state.gsw = {}
 	state.gsw_snapshot = {}
 	state.gsw_source_mode_generation = 0
@@ -489,7 +500,8 @@ host_presentation_admit_gsw :: proc(
 	     .Mode_Boundary,
 	     .Ambiguous_Mapping,
 	     .Capacity_Exceeded,
-	     .External_Tracking:
+	     .External_Tracking,
+	     .Raster_Journal:
 	case:
 		host_presentation_note_invalid(h)
 		return {rejection = .Invalid}
@@ -658,7 +670,9 @@ host_presentation_commit_common :: proc(h: ^Host, admission: ^Host_Presentation_
 	if admission.source_sequence != 0 && admission.kind != .Gsw_Resident {
 		state.last_vga_sequence = admission.source_sequence
 	}
-	if admission.kind == .Gsw_Snapshot || admission.kind == .Gsw_Resident {
+	if admission.kind == .Legacy {
+		state.legacy_source_mode_generation = admission.source_mode_generation
+	} else if admission.kind == .Gsw_Snapshot || admission.kind == .Gsw_Resident {
 		state.gsw_source_mode_generation = admission.source_mode_generation
 	}
 }
@@ -718,6 +732,7 @@ host_presentation_stage_texture :: proc(
 	frame: ^vga.Display_Frame,
 	admission: ^Host_Presentation_Admission,
 	ops: ^Host_Presentation_Upload_Ops = nil,
+	capture_plan: ^vga.Scanout_Capture_Plan = nil,
 ) -> Host_Presentation_Staged_Texture {
 	if h == nil ||
 	   slot == nil ||
@@ -729,11 +744,16 @@ host_presentation_stage_texture :: proc(
 	   (ops == nil && !sdl3.IsMainThread()) {return {}}
 	header := admission.kind == .Legacy ? admission.legacy.header : admission.gsw.header
 	resource_header := header
-	if admission.kind == .Gsw_Snapshot {
+	if admission.kind == .Legacy || admission.kind == .Gsw_Snapshot {
 		resource_header.mode_generation = admission.source_mode_generation
 	}
 	if frame.width > int(max(i32)) || frame.height > int(max(i32)) {return {}}
-	plan := host_presentation_upload_plan(frame, header)
+	plan: Host_Presentation_Upload_Plan
+	if admission.kind == .Legacy {
+		plan = host_presentation_upload_plan_from_capture(frame, resource_header, capture_plan)
+	} else {
+		plan = host_presentation_upload_plan(frame, header)
+	}
 	if !plan.valid {return {}}
 	state := host_presentation_state(h)
 	shadow: ^Host_Presentation_Resource_Shadow
@@ -751,6 +771,7 @@ host_presentation_stage_texture :: proc(
 		selected_height = h.tex_height
 		resource_generation = &state.legacy_resource_generation
 		current_header = state.legacy.header
+		current_header.mode_generation = state.legacy_source_mode_generation
 	case .Gsw_Snapshot:
 		if state.gsw_shadow == nil {state.gsw_shadow = new(Host_Presentation_Resource_Shadow)}
 		shadow = state.gsw_shadow
@@ -764,7 +785,13 @@ host_presentation_stage_texture :: proc(
 		return {}
 	}
 	if !plan.full && !host_presentation_shadow_matches(shadow, admission.kind, resource_header) {
-		return {}
+		if admission.kind != .Legacy {return {}}
+		return {
+			status               = .Needs_Full_Baseline,
+			kind                 = admission.kind,
+			lifecycle_generation = header.lifecycle_generation,
+			admission_sequence   = header.sequence,
+		}
 	}
 	state.texture_stage_generation = contract.generation_next(state.texture_stage_generation)
 	stage_generation := state.texture_stage_generation
@@ -811,6 +838,7 @@ host_presentation_stage_texture :: proc(
 		result.valid =
 			result.upload_regions == plan.regions &&
 			host_presentation_shadow_apply(shadow, admission.kind, resource_header, frame, plan)
+		if result.valid {result.status = .Ready}
 		return result
 	}
 	if slot.texture != nil && !host_presentation_upload_destroy_texture(ops, slot.texture) {
@@ -853,6 +881,7 @@ host_presentation_stage_texture :: proc(
 		host_presentation_metric_add(&h.presentation_metrics.full_fallback_uploads, 1)
 	}
 	result.valid = true
+	result.status = .Ready
 	result.upload_bytes = upload_bytes
 	result.upload_regions = 1
 	return result
@@ -862,6 +891,7 @@ host_presentation_stage_legacy :: proc(
 	h: ^Host,
 	admission: ^Host_Presentation_Admission,
 	frame: ^vga.Display_Frame,
+	capture_plan: ^vga.Scanout_Capture_Plan,
 ) -> Host_Presentation_Staged_Texture {
 	current := host_presentation_admission_state(h, admission)
 	if current != .Current {
@@ -879,6 +909,8 @@ host_presentation_stage_legacy :: proc(
 		&host_presentation_state(h).legacy_staging,
 		frame,
 		admission,
+		nil,
+		capture_plan,
 	)
 }
 

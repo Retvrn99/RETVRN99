@@ -59,7 +59,11 @@ frame_mailbox_test_publish_legacy :: proc(
 ) {
 	slot, reserved := frame_mailbox_begin(mailbox, generation)
 	if !reserved {return nil, false}
-	if !vga.scanout_descriptor_capture(&slot.scanout, source) {
+	if !vga.scanout_descriptor_capture(
+		&slot.scanout,
+		source,
+		slot.reserved_lifecycle_generation,
+	) {
 		_ = frame_mailbox_commit(mailbox, slot, false)
 		return nil, false
 	}
@@ -153,6 +157,29 @@ frame_mailbox_test_publish_generation :: proc(mailbox: ^Frame_Mailbox, generatio
 	return frame_mailbox_commit(mailbox, slot, true)
 }
 
+frame_mailbox_test_baseline_plan :: proc(
+	owner_generation, mode_generation, surface_generation: u64,
+	coverage: vga.Scanout_Capture_Coverage = .Partial,
+) -> vga.Scanout_Capture_Plan {
+	return {
+		coverage           = coverage,
+		owner              = .Legacy,
+		owner_generation   = owner_generation,
+		mode_generation    = mode_generation,
+		surface_id         = 1,
+		surface_generation = surface_generation,
+	}
+}
+
+frame_mailbox_test_baseline_snapshot :: proc(
+	mailbox: ^Frame_Mailbox,
+) -> Frame_Mailbox_Legacy_Baseline_Request {
+	if mailbox == nil {return {}}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	return mailbox.legacy_baseline
+}
+
 @(test)
 frame_mailbox_test_legacy_ack_is_lifecycle_bound_and_single_use :: proc(t: ^testing.T) {
 	mailbox: Frame_Mailbox
@@ -218,6 +245,146 @@ frame_mailbox_test_gsw_ack_is_lifecycle_bound_and_single_use :: proc(t: ^testing
 	_, valid = frame_mailbox_take_gsw_ack(&mailbox)
 	testing.expect(t, !valid)
 	testing.expect(t, !frame_mailbox_note_gsw_applied(&mailbox, present))
+}
+
+@(test)
+frame_mailbox_test_full_baseline_request_is_one_shot_and_identity_bound :: proc(
+	t: ^testing.T,
+) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	m := new(machine.Machine)
+	defer free(m)
+	backing := make([]u8, vga.VRAM_SIZE)
+	defer delete(backing)
+	if !testing.expect(t, vga.vga_init(&m.vga, backing)) {return}
+	defer vga.vga_destroy(&m.vga)
+	lifecycle := frame_mailbox_lifecycle_generation(&mailbox)
+	plan := frame_mailbox_test_baseline_plan(
+		lifecycle,
+		m.vga.legacy_presentation_mode_generation,
+		m.vga.legacy_presentation_surface_generation,
+	)
+	testing.expect(t, frame_mailbox_request_legacy_full_baseline(&mailbox, plan))
+	testing.expect(t, frame_mailbox_request_legacy_full_baseline(&mailbox, plan))
+	request := frame_mailbox_test_baseline_snapshot(&mailbox)
+	if !testing.expect(t, request.valid) {return}
+	testing.expect(t, !request.issued)
+	testing.expect_value(t, request.owner_generation, lifecycle)
+	testing.expect_value(t, request.mode_generation, plan.mode_generation)
+	testing.expect_value(t, request.surface_generation, plan.surface_generation)
+	sequence := vga.vga_presentation_sequence(&m.vga)
+	testing.expect(t, frame_mailbox_apply_legacy_full_baseline(&mailbox, m))
+	testing.expect_value(t, vga.vga_presentation_sequence(&m.vga), sequence + 1)
+	request = frame_mailbox_test_baseline_snapshot(&mailbox)
+	testing.expect(t, request.valid && request.issued)
+	testing.expect(t, !frame_mailbox_apply_legacy_full_baseline(&mailbox, m))
+	testing.expect_value(t, vga.vga_presentation_sequence(&m.vga), sequence + 1)
+	testing.expect(t, frame_mailbox_request_legacy_full_baseline(&mailbox, plan))
+	request = frame_mailbox_test_baseline_snapshot(&mailbox)
+	testing.expect(t, request.valid && request.issued)
+
+	older := plan
+	older.coverage = .Full
+	older.mode_generation -= 1
+	testing.expect(t, !frame_mailbox_complete_legacy_full_baseline(&mailbox, older))
+	full := plan
+	full.coverage = .Full
+	testing.expect(t, frame_mailbox_complete_legacy_full_baseline(&mailbox, full))
+	testing.expect(t, !frame_mailbox_test_baseline_snapshot(&mailbox).valid)
+}
+
+@(test)
+frame_mailbox_test_newer_full_baseline_clears_stale_request :: proc(t: ^testing.T) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	lifecycle := frame_mailbox_lifecycle_generation(&mailbox)
+	requested := frame_mailbox_test_baseline_plan(lifecycle, 3, 5)
+	if !testing.expect(
+		t,
+		frame_mailbox_request_legacy_full_baseline(&mailbox, requested),
+	) {return}
+	newer := frame_mailbox_test_baseline_plan(lifecycle, 4, 1, .Full)
+	testing.expect(t, frame_mailbox_complete_legacy_full_baseline(&mailbox, newer))
+	testing.expect(t, !frame_mailbox_test_baseline_snapshot(&mailbox).valid)
+}
+
+@(test)
+frame_mailbox_test_older_full_baseline_preserves_newer_request :: proc(t: ^testing.T) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	lifecycle := frame_mailbox_lifecycle_generation(&mailbox)
+	requested := frame_mailbox_test_baseline_plan(lifecycle, 4, 1)
+	if !testing.expect(
+		t,
+		frame_mailbox_request_legacy_full_baseline(&mailbox, requested),
+	) {return}
+	older := frame_mailbox_test_baseline_plan(lifecycle, 3, 5, .Full)
+	testing.expect(t, !frame_mailbox_complete_legacy_full_baseline(&mailbox, older))
+	request := frame_mailbox_test_baseline_snapshot(&mailbox)
+	testing.expect(t, request.valid)
+	testing.expect_value(t, request.mode_generation, requested.mode_generation)
+	testing.expect_value(t, request.surface_generation, requested.surface_generation)
+}
+
+@(test)
+frame_mailbox_test_full_baseline_request_replaces_only_newer_identity_and_resets :: proc(
+	t: ^testing.T,
+) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	lifecycle := frame_mailbox_lifecycle_generation(&mailbox)
+	first := frame_mailbox_test_baseline_plan(lifecycle, 3, 5)
+	if !testing.expect(t, frame_mailbox_request_legacy_full_baseline(&mailbox, first)) {return}
+	older := first
+	older.surface_generation -= 1
+	testing.expect(t, !frame_mailbox_request_legacy_full_baseline(&mailbox, older))
+	newer := first
+	newer.mode_generation += 1
+	newer.surface_generation = 1
+	testing.expect(t, frame_mailbox_request_legacy_full_baseline(&mailbox, newer))
+	request := frame_mailbox_test_baseline_snapshot(&mailbox)
+	if !testing.expect(t, request.valid) {return}
+	testing.expect_value(t, request.mode_generation, newer.mode_generation)
+	testing.expect_value(t, request.surface_generation, newer.surface_generation)
+
+	frame_mailbox_reset(&mailbox)
+	testing.expect(t, !frame_mailbox_test_baseline_snapshot(&mailbox).valid)
+	testing.expect(t, !frame_mailbox_request_legacy_full_baseline(&mailbox, newer))
+	current := newer
+	current.owner_generation = frame_mailbox_lifecycle_generation(&mailbox)
+	testing.expect(t, frame_mailbox_request_legacy_full_baseline(&mailbox, current))
+}
+
+@(test)
+frame_mailbox_test_stale_lifecycle_baseline_cannot_apply_after_reset :: proc(t: ^testing.T) {
+	mailbox: Frame_Mailbox
+	defer frame_mailbox_destroy(&mailbox)
+	m := new(machine.Machine)
+	defer free(m)
+	backing := make([]u8, vga.VRAM_SIZE)
+	defer delete(backing)
+	if !testing.expect(t, vga.vga_init(&m.vga, backing)) {return}
+	defer vga.vga_destroy(&m.vga)
+
+	lifecycle := frame_mailbox_lifecycle_generation(&mailbox)
+	plan := frame_mailbox_test_baseline_plan(
+		lifecycle,
+		m.vga.legacy_presentation_mode_generation,
+		m.vga.legacy_presentation_surface_generation,
+	)
+	if !testing.expect(t, frame_mailbox_request_legacy_full_baseline(&mailbox, plan)) {return}
+	sequence := vga.vga_presentation_sequence(&m.vga)
+
+	frame_mailbox_reset(&mailbox)
+	testing.expect(t, !frame_mailbox_apply_legacy_full_baseline(&mailbox, m))
+	testing.expect_value(t, vga.vga_presentation_sequence(&m.vga), sequence)
+
+	current := plan
+	current.owner_generation = frame_mailbox_lifecycle_generation(&mailbox)
+	if !testing.expect(t, frame_mailbox_request_legacy_full_baseline(&mailbox, current)) {return}
+	testing.expect(t, frame_mailbox_apply_legacy_full_baseline(&mailbox, m))
+	testing.expect_value(t, vga.vga_presentation_sequence(&m.vga), sequence + 1)
 }
 
 @(test)
@@ -718,7 +885,7 @@ frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t
 	if !testing.expect(t, seeded) {return}
 	seed := frame_mailbox_acquire(mailbox)
 	if !testing.expect(t, seed == seed_slot) {return}
-	seed_frame := graphics_frame_expand_legacy(video, &seed.scanout, nil)
+	seed_frame := graphics_frame_expand_legacy_result(video, &seed.scanout, nil).frame
 	if !testing.expect(t, seed_frame != nil) {return}
 	if !testing.expect(
 		t,
@@ -754,7 +921,7 @@ frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t
 	raw_hash := frame_mailbox_test_raw_update_hash(&latest.scanout)
 	ranges_before := latest.scanout.valid_ranges
 	update_before := latest.scanout.legacy_update
-	frame := graphics_frame_expand_legacy(video, &latest.scanout, nil)
+	frame := graphics_frame_expand_legacy_result(video, &latest.scanout, nil).frame
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame_mailbox_test_pixel_hash(frame.pixels), reference_hash)
 	testing.expect_value(t, frame_mailbox_test_raw_update_hash(&latest.scanout), raw_hash)
@@ -776,8 +943,10 @@ frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t
 	if !testing.expect(t, post_reset_published) {return}
 	post_reset := frame_mailbox_acquire(mailbox)
 	if !testing.expect(t, post_reset == post_reset_slot) {return}
-	testing.expect(t, !post_reset.scanout.raw_complete)
-	testing.expect(t, graphics_frame_expand_legacy(video, &post_reset.scanout, nil) == nil)
+	testing.expect(t, post_reset.scanout.raw_complete)
+	post_reset_frame := graphics_frame_expand_legacy_result(video, &post_reset.scanout, nil).frame
+	if !testing.expect(t, post_reset_frame != nil) {return}
+	testing.expect_value(t, post_reset_frame.pixels[3], u32(0xFF63_5266))
 	frame_mailbox_release(mailbox, post_reset)
 
 	vga.vga_note_content_change(&source)
@@ -786,7 +955,7 @@ frame_mailbox_test_legacy_expansion_crosses_slots_coalescing_and_reset :: proc(t
 	recovery := frame_mailbox_acquire(mailbox)
 	if !testing.expect(t, recovery == recovery_slot) {return}
 	testing.expect(t, recovery.scanout.raw_complete)
-	recovered := graphics_frame_expand_legacy(video, &recovery.scanout, nil)
+	recovered := graphics_frame_expand_legacy_result(video, &recovery.scanout, nil).frame
 	if !testing.expect(t, recovered != nil) {return}
 	testing.expect_value(t, recovered.pixels[3], u32(0xFF63_5266))
 	frame_mailbox_release(mailbox, recovery)

@@ -363,12 +363,23 @@ vga_damage_test_full_and_palette_accumulation_is_order_independent :: proc(t: ^t
 
 	v.legacy_damage = {}
 	vga_damage_record_full(&v, .Pixel_Memory, .Ambiguous_Mapping)
-	vga_damage_record_full(&v, .Pixel_Memory, .Capacity_Exceeded)
+	vga_damage_record_full(&v, .Pixel_Memory, .Raster_Journal)
 	forward := vga_damage_snapshot(&v)
 	v.legacy_damage = {}
-	vga_damage_record_full(&v, .Pixel_Memory, .Capacity_Exceeded)
+	vga_damage_record_full(&v, .Pixel_Memory, .Raster_Journal)
 	vga_damage_record_full(&v, .Pixel_Memory, .Ambiguous_Mapping)
 	reverse := vga_damage_snapshot(&v)
+	testing.expect_value(t, forward, reverse)
+	testing.expect_value(t, forward.full_reason, contract.Damage_Full_Reason.Raster_Journal)
+
+	v.legacy_damage = {}
+	vga_damage_record_full(&v, .Pixel_Memory, .Raster_Journal)
+	vga_damage_record_full(&v, .Pixel_Memory, .Capacity_Exceeded)
+	forward = vga_damage_snapshot(&v)
+	v.legacy_damage = {}
+	vga_damage_record_full(&v, .Pixel_Memory, .Capacity_Exceeded)
+	vga_damage_record_full(&v, .Pixel_Memory, .Raster_Journal)
+	reverse = vga_damage_snapshot(&v)
 	testing.expect_value(t, forward, reverse)
 	testing.expect_value(t, forward.full_reason, contract.Damage_Full_Reason.Capacity_Exceeded)
 }
@@ -437,6 +448,26 @@ vga_damage_test_accumulated_fragment_budget_and_acknowledgement :: proc(t: ^test
 	remaining := vga_damage_snapshot(&v)
 	testing.expect_value(t, remaining.full_reason, contract.Damage_Full_Reason.None)
 	testing.expect_value(t, remaining.rects.count, u32(17))
+}
+
+@(test)
+vga_damage_test_sorted_ranges_bridge_during_batch_merge :: proc(t: ^testing.T) {
+	v: Vga
+	backing := damage_test_vga(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	v.legacy_damage = {}
+
+	testing.expect(t, vga_damage_record_backing_range(&v, 0, 2))
+	testing.expect(t, vga_damage_record_backing_range(&v, 4, 2))
+	testing.expect(t, vga_damage_seal_pending(&v, 1))
+	testing.expect(t, vga_damage_record_backing_range(&v, 2, 2))
+	testing.expect(t, vga_damage_seal_pending(&v, 1))
+
+	state := &v.legacy_damage_batches[0].state
+	testing.expect_value(t, v.legacy_damage_batch_count, u32(1))
+	testing.expect_value(t, state.range_count, u32(1))
+	testing.expect_value(t, state.ranges[0], Vga_Damage_Range{0, 6})
 }
 
 @(test)

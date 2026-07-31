@@ -29,6 +29,7 @@ Host_Presentation_Metrics :: struct {
 	source_full_ambiguous:        u64,
 	source_full_capacity:         u64,
 	source_full_external:         u64,
+	source_full_raster_journal:   u64,
 }
 
 host_presentation_resident_zero_work :: proc(before, after: Host_Presentation_Metrics) -> bool {

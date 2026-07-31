@@ -195,6 +195,12 @@ graphics_host_presentation_interval :: proc(
 	)
 	result.source_full_external = delta
 	reset = reset || wrapped
+	delta, wrapped = graphics_counter_delta(
+		current.source_full_raster_journal,
+		previous.source_full_raster_journal,
+	)
+	result.source_full_raster_journal = delta
+	reset = reset || wrapped
 	return result, reset
 }
 
@@ -246,6 +252,10 @@ graphics_host_presentation_interval_add :: proc(
 	graphics_interval_add_counter(&target.source_full_ambiguous, addition.source_full_ambiguous)
 	graphics_interval_add_counter(&target.source_full_capacity, addition.source_full_capacity)
 	graphics_interval_add_counter(&target.source_full_external, addition.source_full_external)
+	graphics_interval_add_counter(
+		&target.source_full_raster_journal,
+		addition.source_full_raster_journal,
+	)
 }
 
 @(private = "package")

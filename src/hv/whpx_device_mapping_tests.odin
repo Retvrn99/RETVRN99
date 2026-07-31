@@ -1,8 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package hv
 
+import persona "../persona"
+
 import "core:log"
 import "core:testing"
+
+@(test)
+whpx_dirty_page_set_covers_guest_video_persona :: proc(t: ^testing.T) {
+	tracked_bytes := u64(DEVICE_DIRTY_MAX_PAGES) * DEVICE_DIRTY_PAGE_SIZE
+	testing.expect(t, tracked_bytes >= u64(persona.GUEST_PERSONA.vram_bytes))
+	last_page := u32(persona.GUEST_PERSONA.vram_bytes / int(DEVICE_DIRTY_PAGE_SIZE) - 1)
+	set: Dirty_Page_Set
+	set.words[last_page / 64] = u64(1) << uint(last_page & 63)
+	set.count = 1
+	testing.expect(t, dirty_page_set_contains(&set, last_page))
+	testing.expect(t, !dirty_page_set_contains(&set, u32(DEVICE_DIRTY_MAX_PAGES)))
+}
 
 @(private = "file")
 whpx_device_mapping_test_read :: proc(t: ^testing.T, vm: ^Vm, gpa: u64) -> (u8, bool) {
@@ -158,6 +172,29 @@ whpx_tracked_device_mapping_reports_and_clears_guest_writes :: proc(t: ^testing.
 }
 
 @(test)
+whpx_tracked_device_mapping_reports_final_video_page :: proc(t: ^testing.T) {
+	if !available() {
+		log.warn("WHPX not available")
+		return
+	}
+	vm: Vm
+	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
+	defer destroy(&vm)
+
+	base: u64 = 0xE000_0000
+	vram_size := persona.GUEST_PERSONA.vram_bytes
+	backing, mapped := map_device_memory_tracked(&vm, base, vram_size)
+	if !testing.expect(t, mapped) {return}
+	last_page := u32(vram_size / int(DEVICE_DIRTY_PAGE_SIZE) - 1)
+	if !whpx_device_mapping_test_write(t, &vm, base + u64(vram_size - 1), 0x5A) {return}
+	exact: Dirty_Page_Set
+	testing.expect(t, query_device_memory_dirty_page_set(&vm, backing, &exact))
+	testing.expect_value(t, exact.count, u32(1))
+	testing.expect(t, dirty_page_set_contains(&exact, last_page))
+	testing.expect_value(t, backing[vram_size - 1], u8(0x5A))
+}
+
+@(test)
 whpx_device_alias_maps_banked_subrange_and_tracks_writes :: proc(t: ^testing.T) {
 	if !available() {
 		log.warn("WHPX not available")
@@ -299,20 +336,34 @@ whpx_device_alias_sustains_production_sized_bank_churn :: proc(t: ^testing.T) {
 	aperture: u64 = 0xA0000
 	bank_size: u64 = 64 * 1024
 	if !testing.expect(t, reserve_mmio(&vm, aperture, 2 * bank_size)) {return}
-	backing, mapped := map_device_memory_tracked(&vm, 0xE000_0000, 32 * 1024 * 1024)
+	vram_size := persona.GUEST_PERSONA.vram_bytes
+	backing, mapped := map_device_memory_tracked(&vm, 0xE000_0000, vram_size)
 	if !testing.expect(t, mapped) {return}
-	for iteration in 0 ..< 256 {
-		offset := u64(iteration % 128) * bank_size
+	bank_count := vram_size / int(bank_size)
+	for bank in 0 ..< bank_count {
+		offset := u64(bank) * bank_size
+		value := u8(bank % 255 + 1)
 		if !testing.expect(
 			t,
 			set_device_memory_alias(&vm, backing, aperture, offset, bank_size, true),
 		) {
 			return
 		}
-		if !whpx_device_mapping_test_write(t, &vm, aperture, u8(iteration)) {return}
-		dirty, ok := query_device_memory_alias_dirty(&vm, aperture, bank_size)
-		if !testing.expect(t, ok && dirty) {return}
+		if !whpx_device_mapping_test_write(t, &vm, aperture + bank_size - 1, value) {
+			return
+		}
+		exact: Dirty_Page_Set
+		if !testing.expect(
+			t,
+			query_device_memory_alias_dirty_page_set(&vm, aperture, bank_size, &exact),
+		) {
+			return
+		}
+		expected_page := u32((offset + bank_size - 1) >> DEVICE_DIRTY_PAGE_SHIFT)
+		if !testing.expect_value(t, exact.count, u32(1)) {return}
+		if !testing.expect(t, dirty_page_set_contains(&exact, expected_page)) {return}
 	}
+	testing.expect_value(t, backing[vram_size - 1], u8((bank_count - 1) % 255 + 1))
 }
 
 @(test)

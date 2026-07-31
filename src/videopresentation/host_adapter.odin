@@ -13,6 +13,12 @@ Video_Presentation_Host_Stage_Proc :: proc(
 	admission: ^host.Host_Presentation_Admission,
 	frame: ^vga.Display_Frame,
 ) -> host.Host_Presentation_Staged_Texture
+Video_Presentation_Host_Legacy_Stage_Proc :: proc(
+	ctx: rawptr,
+	admission: ^host.Host_Presentation_Admission,
+	frame: ^vga.Display_Frame,
+	capture_plan: ^vga.Scanout_Capture_Plan,
+) -> host.Host_Presentation_Staged_Texture
 Video_Presentation_Host_Activate_Proc :: proc(
 	ctx: rawptr,
 	admission: ^host.Host_Presentation_Admission,
@@ -33,7 +39,7 @@ Video_Presentation_Host_Adapter :: struct {
 	start:           Video_Presentation_Host_Start_Proc,
 	stop:            Video_Presentation_Host_Stop_Proc,
 	clear:           Video_Presentation_Host_Clear_Proc,
-	stage_legacy:    Video_Presentation_Host_Stage_Proc,
+	stage_legacy:    Video_Presentation_Host_Legacy_Stage_Proc,
 	stage_gsw:       Video_Presentation_Host_Stage_Proc,
 	activate_legacy: Video_Presentation_Host_Activate_Proc,
 	activate_gsw:    Video_Presentation_Host_Activate_Proc,
@@ -61,8 +67,9 @@ video_presentation_host_stage_legacy :: proc(
 	ctx: rawptr,
 	admission: ^host.Host_Presentation_Admission,
 	frame: ^vga.Display_Frame,
+	capture_plan: ^vga.Scanout_Capture_Plan,
 ) -> host.Host_Presentation_Staged_Texture {
-	return host.host_presentation_stage_legacy((^host.Host)(ctx), admission, frame)
+	return host.host_presentation_stage_legacy((^host.Host)(ctx), admission, frame, capture_plan)
 }
 
 @(private = "package")

@@ -270,6 +270,9 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 		sdl_gpu_fence_capacity_wait_ns = 100,
 		direct_presents                = 1,
 		resident_gpu_surface_bytes     = 4096,
+		presentation = {
+			source_full_raster_journal = 4,
+		},
 	}
 	host_after := host_before
 	host_after.sdl_gpu_submission_calls = 6
@@ -311,6 +314,7 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	host_after.direct_present_latest_draw_token = 42
 	host_after.direct_present_latest_draw_generation = 3
 	host_after.resident_gpu_surface_bytes = 8192
+	host_after.presentation.source_full_raster_journal = 7
 	_ = graphics_telemetry_note_host_gpu(&telemetry, host_before, time.Tick{108})
 	_ = graphics_telemetry_note_host_gpu(&telemetry, host_after, time.Tick{109})
 	epoch := graphics_telemetry_begin_epoch(&telemetry, 1, 9, started)
@@ -397,6 +401,7 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	testing.expect_value(t, window.host_gpu.direct_present_commands, u64(2))
 	testing.expect_value(t, window.host_gpu.direct_present_commands_coalesced, u64(1))
 	testing.expect_value(t, window.host_gpu.resident_gpu_surface_bytes_current, u64(8192))
+	testing.expect_value(t, window.host_gpu.presentation.source_full_raster_journal, u64(3))
 	testing.expect_value(t, window.capture_ns, u64(100))
 	testing.expect_value(t, window.queue_ns, u64(100))
 	testing.expect_value(t, window.render_ns, u64(200))
@@ -425,6 +430,7 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	testing.expect_value(t, retained.producer.native_pcm_starvation_frames, u64(3))
 	testing.expect_value(t, retained.host_gpu.sdl_gpu_fence_submissions, u64(2))
 	testing.expect_value(t, retained.host_gpu.direct_present_surface_id, u32(23))
+	testing.expect_value(t, retained.host_gpu.presentation.source_full_raster_journal, u64(3))
 	snapshot := graphics_telemetry_snapshot(&telemetry, time.tick_add(started, time.Second))
 	testing.expect(t, snapshot.trace_enabled)
 	testing.expect_value(t, snapshot.trace_observed, u64(1))
@@ -438,6 +444,7 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	testing.expect(t, strings.contains(text, "native_pcm_starvation_frames=3"))
 	testing.expect(t, strings.contains(text, "direct_physical_fences=2/3 completion_ns=100"))
 	testing.expect(t, strings.contains(text, "direct_sdl_gpu_submissions=2/1/260ns"))
+	testing.expect(t, strings.contains(text, "source_full:0/0/0/0/0/3"))
 	testing.expect(t, strings.contains(text, "tracked_sdl_render_present="))
 	testing.expect(t, strings.contains(text, "direct_present_commands=2"))
 	testing.expect(t, strings.contains(text, "input_to_present=1/1us/1us"))
@@ -453,6 +460,7 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	testing.expect(t, strings.contains(trace_text, "gsw_control_writes=2/8_bytes"))
 	testing.expect(t, strings.contains(trace_text, "latest_completion=41/3/30ns/discarded:0"))
 	testing.expect(t, strings.contains(trace_text, "physical_flight_0=42/3/discarded:0"))
+	testing.expect(t, strings.contains(trace_text, "source_full:0/0/0/0/0/3"))
 }
 
 @(test)

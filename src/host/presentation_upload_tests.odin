@@ -3,6 +3,7 @@ package host
 
 import contract "../presentation"
 import vga "../vga"
+import "core:hash"
 import "core:testing"
 import sdl3 "vendor:sdl3"
 
@@ -77,6 +78,21 @@ host_upload_test_header :: proc() -> contract.Header {
 	}
 }
 
+host_upload_test_capture_plan :: proc(
+	header: contract.Header,
+	coverage: vga.Scanout_Capture_Coverage,
+) -> vga.Scanout_Capture_Plan {
+	return {
+		coverage           = coverage,
+		required_ranges    = {count = 1, ranges = {0 = {0, 1}}},
+		owner              = .Legacy,
+		owner_generation   = header.lifecycle_generation,
+		mode_generation    = header.mode_generation,
+		surface_id         = header.surface.id,
+		surface_generation = header.surface.generation,
+	}
+}
+
 @(test)
 host_presentation_upload_plan_accounts_disjoint_regions_exactly :: proc(t: ^testing.T) {
 	header := host_upload_test_header()
@@ -132,6 +148,73 @@ host_presentation_upload_plan_rejects_mismatched_or_unaccounted_damage :: proc(t
 }
 
 @(test)
+host_presentation_capture_plan_coverage_is_authoritative :: proc(t: ^testing.T) {
+	header := host_upload_test_header()
+	pixels := make([]u32, 8)
+	defer delete(pixels)
+	frame := vga.Display_Frame {
+		width          = 4,
+		height         = 2,
+		pixels         = pixels,
+		dirty          = header.dirty,
+		updated_pixels = 8,
+	}
+	capture := host_upload_test_capture_plan(header, .Full)
+	full := host_presentation_upload_plan_from_capture(&frame, header, &capture)
+	testing.expect(t, full.valid)
+	testing.expect(t, full.full)
+	testing.expect_value(t, full.rects, contract.rect_set_full(header.surface_extent))
+	testing.expect_value(t, full.pixels, u64(8))
+
+	capture.coverage = .Partial
+	testing.expect(t, !host_presentation_upload_plan_from_capture(&frame, header, &capture).valid)
+
+	header.dirty = {}
+	_ = contract.rect_set_append(&header.dirty, {1, 0, 1, 1})
+	frame.dirty = header.dirty
+	frame.updated_pixels = 1
+	capture = host_upload_test_capture_plan(header, .Partial)
+	partial := host_presentation_upload_plan_from_capture(&frame, header, &capture)
+	testing.expect(t, partial.valid)
+	testing.expect(t, !partial.full)
+	testing.expect_value(t, partial.rects, header.dirty)
+	testing.expect_value(t, partial.pixels, u64(1))
+
+	capture.coverage = .Full
+	testing.expect(t, !host_presentation_upload_plan_from_capture(&frame, header, &capture).valid)
+}
+
+@(test)
+host_presentation_capture_plan_rejects_identity_and_rectangle_mismatch :: proc(t: ^testing.T) {
+	header := host_upload_test_header()
+	pixels := make([]u32, 8)
+	defer delete(pixels)
+	header.dirty = {}
+	_ = contract.rect_set_append(&header.dirty, {1, 0, 1, 1})
+	frame := vga.Display_Frame {
+		width          = 4,
+		height         = 2,
+		pixels         = pixels,
+		dirty          = header.dirty,
+		updated_pixels = 1,
+	}
+	capture := host_upload_test_capture_plan(header, .Partial)
+
+	wrong_identity := capture
+	wrong_identity.owner_generation += 1
+	testing.expect(
+		t,
+		!host_presentation_upload_plan_from_capture(&frame, header, &wrong_identity).valid,
+	)
+
+	frame.dirty.rects[0] = {2, 0, 1, 1}
+	testing.expect(t, !host_presentation_upload_plan_from_capture(&frame, header, &capture).valid)
+	frame.dirty = header.dirty
+	header.dirty.rects[0] = {4, 0, 1, 1}
+	testing.expect(t, !host_presentation_upload_plan_from_capture(&frame, header, &capture).valid)
+}
+
+@(test)
 host_presentation_shadow_merges_partial_pixels_and_rejects_stale_identity :: proc(t: ^testing.T) {
 	header := host_upload_test_header()
 	pixels := make([]u32, 8)
@@ -171,6 +254,407 @@ host_presentation_shadow_merges_partial_pixels_and_rejects_stale_identity :: pro
 	testing.expect(
 		t,
 		!host_presentation_shadow_apply(&shadow, .Legacy, header, &frame, partial_plan),
+	)
+}
+
+host_upload_test_fill_desktop_sentinel_17_33_64_48 :: proc(pixels: []u32, pitch: int) {
+	if pitch < 81 || len(pixels) < pitch * 81 {return}
+	for y in 0 ..< 48 {
+		for x in 0 ..< 64 {
+			red := u32((x * 17 + y * 3) & 0xFF)
+			green := u32((x * 5 + y * 11) & 0xFF)
+			blue := u32((x * 13 + y * 7) & 0xFF)
+			pixels[(33 + y) * pitch + 17 + x] = 0xFF00_0000 | red << 16 | green << 8 | blue
+		}
+	}
+	pixels[80 * pitch + 80] = 0xDDBF_84D3
+}
+
+host_upload_test_roi_crc32 :: proc(
+	pixels: []u32,
+	pitch: int,
+	rect: contract.Rect,
+) -> u32 {
+	if pitch <= 0 ||
+	   rect.width == 0 ||
+	   rect.height == 0 ||
+	   int(rect.x + rect.width) > pitch ||
+	   int(rect.y + rect.height) > len(pixels) / pitch {return 0}
+	bytes := make([]u8, int(rect.width) * int(rect.height) * size_of(u32))
+	defer delete(bytes)
+	offset := 0
+	for y in int(rect.y) ..< int(rect.y + rect.height) {
+		for x in int(rect.x) ..< int(rect.x + rect.width) {
+			pixel := pixels[y * pitch + x]
+			bytes[offset + 0] = u8(pixel)
+			bytes[offset + 1] = u8(pixel >> 8)
+			bytes[offset + 2] = u8(pixel >> 16)
+			bytes[offset + 3] = u8(pixel >> 24)
+			offset += 4
+		}
+	}
+	return hash.crc32(bytes)
+}
+
+@(test)
+host_presentation_legacy_capture_uses_source_generation_after_host_translation :: proc(
+	t: ^testing.T,
+) {
+	h: Host
+	if !testing.expect(t, host_presentation_start(&h, 1)) {return}
+	defer {
+		shadow := h.presentation_state.legacy_shadow
+		if shadow != nil {
+			if shadow.pixels != nil {delete(shadow.pixels)}
+			free(shadow)
+			h.presentation_state.legacy_shadow = nil
+		}
+	}
+	key := host_presentation_test_mode_key(4, 2)
+	initial := host_presentation_test_legacy(1, 1, key)
+	initial.header.mode_generation = 7
+	initial_admission := host_presentation_admit_legacy(&h, initial)
+	if !testing.expect(t, initial_admission.valid) {return}
+	testing.expect_value(t, initial_admission.source_mode_generation, u64(7))
+	testing.expect(t, initial_admission.legacy.header.mode_generation != u64(7))
+
+	pixels := make([]u32, 8)
+	defer delete(pixels)
+	for &pixel, index in pixels {pixel = u32(index + 1)}
+	frame := vga.Display_Frame {
+		width          = 4,
+		height         = 2,
+		pixels         = pixels,
+		dirty          = initial.header.dirty,
+		updated_pixels = 8,
+	}
+	probe := Host_Presentation_Upload_Failure_Probe {
+		next_texture = transmute(^sdl3.Texture)(uintptr(120)),
+	}
+	ops := Host_Presentation_Upload_Ops {
+		ctx             = &probe,
+		create_texture  = host_presentation_upload_test_create,
+		write_rect      = host_presentation_upload_test_write,
+		destroy_texture = host_presentation_upload_test_destroy,
+	}
+	initial_capture := host_upload_test_capture_plan(initial.header, .Full)
+	staged := host_presentation_stage_texture(
+		&h,
+		&h.presentation_state.legacy_staging,
+		&frame,
+		&initial_admission,
+		&ops,
+		&initial_capture,
+	)
+	if !testing.expect(t, staged.valid) {return}
+	if !testing.expect(
+		t,
+		host_presentation_commit_legacy_staged(&h, &initial_admission, staged),
+	) {return}
+	testing.expect_value(t, h.presentation_state.legacy_source_mode_generation, u64(7))
+	testing.expect_value(t, h.presentation_state.legacy_shadow.mode_generation, u64(7))
+
+	partial := host_presentation_test_legacy(2, 1, key)
+	partial.header.mode_generation = 7
+	partial.header.dirty = {}
+	_ = contract.rect_set_append(&partial.header.dirty, {1, 0, 1, 1})
+	partial_admission := host_presentation_admit_legacy(&h, partial)
+	if !testing.expect(t, partial_admission.valid) {return}
+	testing.expect_value(t, partial_admission.source_mode_generation, u64(7))
+	testing.expect(t, partial_admission.legacy.header.mode_generation != u64(7))
+	pixels[1] = 100
+	frame.dirty = partial.header.dirty
+	frame.updated_pixels = 1
+	partial_capture := host_upload_test_capture_plan(partial.header, .Partial)
+	staged = host_presentation_stage_texture(
+		&h,
+		&h.presentation_state.legacy_staging,
+		&frame,
+		&partial_admission,
+		&ops,
+		&partial_capture,
+	)
+	testing.expect(t, staged.valid)
+	testing.expect_value(t, staged.status, Host_Presentation_Stage_Status.Ready)
+	testing.expect(t, staged.in_place)
+	testing.expect_value(t, staged.upload_bytes, u64(4))
+	testing.expect_value(t, h.presentation_state.legacy_shadow.pixels[1], u32(100))
+}
+
+@(test)
+host_presentation_partial_without_shadow_requests_full_baseline :: proc(t: ^testing.T) {
+	h: Host
+	key := host_presentation_test_mode_key(4, 2)
+	if !testing.expect(t, host_presentation_start(&h, 1)) {return}
+	initial := host_presentation_test_legacy(1, 1, key)
+	initial_admission := host_presentation_admit_legacy(&h, initial)
+	if !testing.expect(t, initial_admission.valid) {return}
+	host_presentation_test_apply_legacy(&h, initial_admission)
+	defer {
+		shadow := h.presentation_state.legacy_shadow
+		if shadow != nil {
+			if shadow.pixels != nil {delete(shadow.pixels)}
+			free(shadow)
+			h.presentation_state.legacy_shadow = nil
+		}
+	}
+
+	partial := host_presentation_test_legacy(2, 1, key)
+	partial.header.dirty = {}
+	_ = contract.rect_set_append(&partial.header.dirty, {1, 0, 1, 1})
+	partial_admission := host_presentation_admit_legacy(&h, partial)
+	if !testing.expect(t, partial_admission.valid) {return}
+	pixels := make([]u32, 8)
+	defer delete(pixels)
+	partial_frame := vga.Display_Frame {
+		width          = 4,
+		height         = 2,
+		pixels         = pixels,
+		dirty          = partial.header.dirty,
+		updated_pixels = 1,
+	}
+	probe := Host_Presentation_Upload_Failure_Probe {
+		next_texture = transmute(^sdl3.Texture)(uintptr(96)),
+	}
+	ops := Host_Presentation_Upload_Ops {
+		ctx             = &probe,
+		create_texture  = host_presentation_upload_test_create,
+		write_rect      = host_presentation_upload_test_write,
+		destroy_texture = host_presentation_upload_test_destroy,
+	}
+	stage_generation := h.presentation_state.texture_stage_generation
+	partial_capture := host_upload_test_capture_plan(partial.header, .Partial)
+	staged := host_presentation_stage_texture(
+		&h,
+		&h.presentation_state.legacy_staging,
+		&partial_frame,
+		&partial_admission,
+		&ops,
+		&partial_capture,
+	)
+	testing.expect(t, !staged.valid)
+	testing.expect_value(t, staged.status, Host_Presentation_Stage_Status.Needs_Full_Baseline)
+	testing.expect_value(t, staged.kind, Host_Presentation_Kind.Legacy)
+	testing.expect_value(t, staged.lifecycle_generation, partial.header.lifecycle_generation)
+	testing.expect_value(t, staged.admission_sequence, partial.header.sequence)
+	testing.expect_value(t, h.presentation_state.texture_stage_generation, stage_generation)
+	testing.expect_value(t, probe.creates, 0)
+	testing.expect_value(t, probe.writes, 0)
+
+	full := host_presentation_test_legacy(2, 1, key)
+	full_admission := host_presentation_admit_legacy(&h, full)
+	if !testing.expect(t, full_admission.valid) {return}
+	full_frame := partial_frame
+	full_frame.dirty = full.header.dirty
+	full_frame.updated_pixels = 8
+	full_capture := host_upload_test_capture_plan(full.header, .Full)
+	recovered := host_presentation_stage_texture(
+		&h,
+		&h.presentation_state.legacy_staging,
+		&full_frame,
+		&full_admission,
+		&ops,
+		&full_capture,
+	)
+	testing.expect(t, recovered.valid)
+	testing.expect_value(t, recovered.status, Host_Presentation_Stage_Status.Ready)
+	testing.expect(t, h.presentation_state.legacy_shadow.valid)
+	testing.expect(
+		t,
+		host_presentation_shadow_matches(
+			h.presentation_state.legacy_shadow,
+			.Legacy,
+			full.header,
+		),
+	)
+}
+
+@(test)
+host_presentation_restores_800x600_sentinel_roi_17_33_64_48_after_320x240_partial :: proc(
+	t: ^testing.T,
+) {
+	h: Host
+	if !testing.expect(t, host_presentation_start(&h, 1)) {return}
+	defer {
+		shadow := h.presentation_state.legacy_shadow
+		if shadow != nil {
+			if shadow.pixels != nil {delete(shadow.pixels)}
+			free(shadow)
+			h.presentation_state.legacy_shadow = nil
+		}
+	}
+	probe := Host_Presentation_Upload_Failure_Probe {
+		next_texture = transmute(^sdl3.Texture)(uintptr(110)),
+	}
+	ops := Host_Presentation_Upload_Ops {
+		ctx             = &probe,
+		create_texture  = host_presentation_upload_test_create,
+		write_rect      = host_presentation_upload_test_write,
+		destroy_texture = host_presentation_upload_test_destroy,
+	}
+
+	desktop_pixels := make([]u32, 800 * 600)
+	defer delete(desktop_pixels)
+	for &pixel, index in desktop_pixels {
+		pixel = 0xFF00_0000 | u32(index)
+	}
+	host_upload_test_fill_desktop_sentinel_17_33_64_48(desktop_pixels, 800)
+	sentinel := contract.Rect{17, 33, 64, 48}
+	testing.expect_value(
+		t,
+		host_upload_test_roi_crc32(desktop_pixels, 800, sentinel),
+		u32(0xF0D0_99D4),
+	)
+
+	desktop := host_presentation_test_legacy(
+		1,
+		1,
+		host_presentation_test_mode_key(800, 600),
+	)
+	desktop_admission := host_presentation_admit_legacy(&h, desktop)
+	if !testing.expect(t, desktop_admission.valid) {return}
+	desktop_frame := vga.Display_Frame {
+		width          = 800,
+		height         = 600,
+		pixels         = desktop_pixels,
+		dirty          = desktop.header.dirty,
+		updated_pixels = 800 * 600,
+	}
+	desktop_capture := host_upload_test_capture_plan(desktop.header, .Full)
+	desktop_stage := host_presentation_stage_texture(
+		&h,
+		&h.presentation_state.legacy_staging,
+		&desktop_frame,
+		&desktop_admission,
+		&ops,
+		&desktop_capture,
+	)
+	if !testing.expect(t, desktop_stage.valid) {return}
+	if !testing.expect(
+		t,
+		host_presentation_commit_legacy_staged(&h, &desktop_admission, desktop_stage),
+	) {return}
+
+	mode_x := host_presentation_test_legacy(
+		2,
+		1,
+		host_presentation_test_mode_key(320, 240),
+	)
+	mode_x.header.mode_generation = 2
+	mode_x.header.surface.generation = 2
+	mode_x_admission := host_presentation_admit_legacy(&h, mode_x)
+	if !testing.expect(t, mode_x_admission.valid) {return}
+	mode_x_pixels := make([]u32, 320 * 240)
+	defer delete(mode_x_pixels)
+	for &pixel in mode_x_pixels {pixel = 0xFF44_5566}
+	mode_x_frame := vga.Display_Frame {
+		width          = 320,
+		height         = 240,
+		pixels         = mode_x_pixels,
+		dirty          = mode_x.header.dirty,
+		updated_pixels = 320 * 240,
+	}
+	probe.next_texture = transmute(^sdl3.Texture)(uintptr(111))
+	mode_x_capture := host_upload_test_capture_plan(mode_x.header, .Full)
+	mode_x_stage := host_presentation_stage_texture(
+		&h,
+		&h.presentation_state.legacy_staging,
+		&mode_x_frame,
+		&mode_x_admission,
+		&ops,
+		&mode_x_capture,
+	)
+	if !testing.expect(t, mode_x_stage.valid) {return}
+	if !testing.expect(
+		t,
+		host_presentation_commit_legacy_staged(&h, &mode_x_admission, mode_x_stage),
+	) {return}
+
+	partial := host_presentation_test_legacy(
+		3,
+		1,
+		host_presentation_test_mode_key(800, 600),
+	)
+	partial.header.mode_generation = 3
+	partial.header.surface.generation = 3
+	partial.header.dirty = {}
+	_ = contract.rect_set_append(&partial.header.dirty, {17, 33, 1, 1})
+	partial_admission := host_presentation_admit_legacy(&h, partial)
+	if !testing.expect(t, partial_admission.valid) {return}
+	partial_frame := desktop_frame
+	partial_frame.dirty = partial.header.dirty
+	partial_frame.updated_pixels = 1
+	stage_generation := h.presentation_state.texture_stage_generation
+	creates := probe.creates
+	writes := probe.writes
+	partial_capture := host_upload_test_capture_plan(partial.header, .Partial)
+	partial_stage := host_presentation_stage_texture(
+		&h,
+		&h.presentation_state.legacy_staging,
+		&partial_frame,
+		&partial_admission,
+		&ops,
+		&partial_capture,
+	)
+	testing.expect(t, !partial_stage.valid)
+	testing.expect_value(
+		t,
+		partial_stage.status,
+		Host_Presentation_Stage_Status.Needs_Full_Baseline,
+	)
+	testing.expect_value(t, h.presentation_state.texture_stage_generation, stage_generation)
+	testing.expect_value(t, probe.creates, creates)
+	testing.expect_value(t, probe.writes, writes)
+
+	recovery := host_presentation_test_legacy(
+		4,
+		1,
+		host_presentation_test_mode_key(800, 600),
+	)
+	recovery.header.mode_generation = 3
+	recovery.header.surface.generation = 3
+	recovery_admission := host_presentation_admit_legacy(&h, recovery)
+	if !testing.expect(t, recovery_admission.valid) {return}
+	recovery_frame := desktop_frame
+	recovery_frame.dirty = recovery.header.dirty
+	recovery_frame.updated_pixels = 800 * 600
+	probe.next_texture = transmute(^sdl3.Texture)(uintptr(112))
+	recovery_capture := host_upload_test_capture_plan(recovery.header, .Full)
+	recovered := host_presentation_stage_texture(
+		&h,
+		&h.presentation_state.legacy_staging,
+		&recovery_frame,
+		&recovery_admission,
+		&ops,
+		&recovery_capture,
+	)
+	if !testing.expect(t, recovered.valid) {return}
+	testing.expect_value(t, recovered.status, Host_Presentation_Stage_Status.Ready)
+	testing.expect_value(t, recovered.upload_bytes, u64(1_920_000))
+	testing.expect_value(t, recovered.upload_regions, u64(1))
+	if !testing.expect(
+		t,
+		host_presentation_commit_legacy_staged(&h, &recovery_admission, recovered),
+	) {return}
+
+	shadow := h.presentation_state.legacy_shadow
+	if !testing.expect(t, shadow != nil && shadow.valid) {return}
+	testing.expect_value(t, shadow.width, 800)
+	testing.expect_value(t, shadow.height, 600)
+	exact := len(shadow.pixels) == len(desktop_pixels)
+	if exact {
+		for pixel, index in shadow.pixels {
+			if pixel != desktop_pixels[index] {
+				exact = false
+				break
+			}
+		}
+	}
+	testing.expect(t, exact)
+	testing.expect_value(
+		t,
+		host_upload_test_roi_crc32(shadow.pixels, shadow.width, sentinel),
+		u32(0xF0D0_99D4),
 	)
 }
 
@@ -249,6 +733,7 @@ host_presentation_in_place_upload_failure_is_transactional :: proc(t: ^testing.T
 	selected_sequence := h.presentation_state.sequence
 	selected_legacy := h.presentation_state.legacy
 	selected_selector := h.presentation_state.selector
+	capture_plan := host_upload_test_capture_plan(update.header, .Partial)
 
 	staged := host_presentation_stage_texture(
 		&h,
@@ -256,6 +741,7 @@ host_presentation_in_place_upload_failure_is_transactional :: proc(t: ^testing.T
 		&frame,
 		&admission,
 		&ops,
+		&capture_plan,
 	)
 	testing.expect(t, !staged.valid)
 	testing.expect(t, staged.in_place)
@@ -302,6 +788,7 @@ host_presentation_in_place_upload_failure_is_transactional :: proc(t: ^testing.T
 		&frame,
 		&admission,
 		&ops,
+		&capture_plan,
 	)
 	testing.expect(t, !failed_recreation.valid)
 	testing.expect_value(t, probe.creates, 1)
@@ -318,6 +805,7 @@ host_presentation_in_place_upload_failure_is_transactional :: proc(t: ^testing.T
 		&frame,
 		&admission,
 		&ops,
+		&capture_plan,
 	)
 	testing.expect(t, recovered.valid)
 	testing.expect(t, recovered.texture_recreated)
@@ -397,12 +885,14 @@ host_presentation_stale_in_place_upload_retains_reconstruction_shadow :: proc(t:
 		write_rect      = host_presentation_upload_test_write,
 		destroy_texture = host_presentation_upload_test_destroy,
 	}
+	capture_plan := host_upload_test_capture_plan(update.header, .Partial)
 	staged := host_presentation_stage_texture(
 		&h,
 		&h.presentation_state.legacy_staging,
 		&frame,
 		&admission,
 		&ops,
+		&capture_plan,
 	)
 	if !testing.expect(t, staged.valid) {return}
 	if !testing.expect(t, host_presentation_retire_mutated(&h, staged, &ops)) {return}
@@ -415,6 +905,7 @@ host_presentation_stale_in_place_upload_retains_reconstruction_shadow :: proc(t:
 		&frame,
 		&admission,
 		&ops,
+		&capture_plan,
 	)
 	testing.expect(t, recovered.valid)
 	testing.expect(t, recovered.texture_recreated)

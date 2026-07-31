@@ -209,6 +209,39 @@ vga_test_aperture_slice_access_is_one_visible_transaction :: proc(t: ^testing.T)
 	testing.expect_value(t, v.content_generation, initial_content + 1)
 }
 
+@(test)
+vga_test_aperture_write_invalidates_cached_frame_during_raster_fallback :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	test_planar_mode(&v)
+	v.frame_valid = true
+	content := v.content_generation
+	data := [1]u8{0x5A}
+
+	testing.expect(t, vga_aperture_access(&v, 0xA0000, true, data[:], 500_000))
+	testing.expect(t, v.raster_fallback)
+	testing.expect(t, !v.frame_valid)
+	testing.expect_value(t, v.content_generation, content + 1)
+
+	v.frame_valid = true
+	content = v.content_generation
+	sequence := v.legacy_presentation_sequence
+	testing.expect(t, vga_aperture_access(&v, 0xA0000, true, data[:], 500_001))
+	testing.expect(t, !v.frame_valid)
+	testing.expect_value(t, v.content_generation, content)
+	testing.expect_value(t, v.legacy_presentation_sequence, sequence)
+
+	v.frame_valid = true
+	content = v.content_generation
+	sequence = v.legacy_presentation_sequence
+	testing.expect(t, vga_mmio_write(&v, 0xA0000, 1, u32(data[0])))
+	testing.expect(t, !v.frame_valid)
+	testing.expect_value(t, v.content_generation, content)
+	testing.expect_value(t, v.legacy_presentation_sequence, sequence)
+}
+
 @(private = "file")
 vga_test_paired_aperture_present :: proc(t: ^testing.T, v: ^Vga, g: ^Gsw_Vga) -> bool {
 	if !test_set_vbe_mode(v, 4, 2, 32) {return false}

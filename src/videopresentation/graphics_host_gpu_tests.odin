@@ -48,6 +48,7 @@ graphics_host_gpu_test_interval_tracks_physical_fences_and_present_coalescing ::
 			source_full_ambiguous = 1,
 			source_full_capacity = 1,
 			source_full_external = 1,
+			source_full_raster_journal = 2,
 		},
 	}
 	current := previous
@@ -118,6 +119,7 @@ graphics_host_gpu_test_interval_tracks_physical_fences_and_present_coalescing ::
 		source_full_ambiguous        = 3,
 		source_full_capacity         = 5,
 		source_full_external         = 2,
+		source_full_raster_journal   = 5,
 	}
 
 	interval := graphics_host_gpu_interval(current, previous, true)
@@ -180,6 +182,7 @@ graphics_host_gpu_test_interval_tracks_physical_fences_and_present_coalescing ::
 	testing.expect_value(t, interval.presentation.source_full_ambiguous, u64(2))
 	testing.expect_value(t, interval.presentation.source_full_capacity, u64(4))
 	testing.expect_value(t, interval.presentation.source_full_external, u64(1))
+	testing.expect_value(t, interval.presentation.source_full_raster_journal, u64(3))
 }
 
 @(test)
@@ -212,6 +215,7 @@ graphics_host_gpu_test_reset_and_addition_are_explicit_and_bounded :: proc(t: ^t
 			overlay_invalidated_regions = max(u64) - 1,
 			overlay_full_invalidations = max(u64) - 1,
 			source_full_capacity = max(u64) - 1,
+			source_full_raster_journal = max(u64) - 1,
 		},
 	}
 	interval.sdl_gpu_fence_completion_ns = 600
@@ -224,6 +228,7 @@ graphics_host_gpu_test_reset_and_addition_are_explicit_and_bounded :: proc(t: ^t
 	interval.presentation.overlay_invalidated_regions = 600
 	interval.presentation.overlay_full_invalidations = 600
 	interval.presentation.source_full_capacity = 600
+	interval.presentation.source_full_raster_journal = 600
 	graphics_host_gpu_interval_add(&total, interval)
 	testing.expect(t, total.valid)
 	testing.expect_value(t, total.sdl_gpu_fence_submissions, max(u64))
@@ -241,4 +246,5 @@ graphics_host_gpu_test_reset_and_addition_are_explicit_and_bounded :: proc(t: ^t
 	testing.expect_value(t, total.presentation.overlay_invalidated_regions, max(u64))
 	testing.expect_value(t, total.presentation.overlay_full_invalidations, max(u64))
 	testing.expect_value(t, total.presentation.source_full_capacity, max(u64))
+	testing.expect_value(t, total.presentation.source_full_raster_journal, max(u64))
 }

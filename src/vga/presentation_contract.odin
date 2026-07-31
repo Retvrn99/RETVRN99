@@ -83,7 +83,7 @@ vga_legacy_presentation_mode_generation :: proc(v: ^Vga, claim: bool = false) ->
 }
 
 @(private = "package")
-vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
+vga_legacy_frame_header :: proc(v: ^Vga) -> contract.Header {
 	if v == nil {return {}}
 	_, width, height := display_geometry(v)
 	if width <= 0 || height <= 0 {return {}}
@@ -104,30 +104,37 @@ vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
 		   ) {
 		return {}
 	}
+	border_left, border_right, border_top, border_bottom := border_extents(v)
+	return {
+		sequence = v.legacy_presentation_sequence,
+		mode_generation = mode_generation,
+		mode_key = mode_key,
+		surface = {id = LEGACY_PRESENTATION_SURFACE_ID, generation = surface_generation},
+		format = .Bgra_8888,
+		display_aspect = display_aspect,
+		surface_extent = extent,
+		canvas_extent = extent,
+		overscan = overscan_color(v),
+		border = {u32(border_left), u32(border_right), u32(border_top), u32(border_bottom)},
+		source = full,
+		destination = full,
+		interval = 0,
+		source_kind = .Legacy_Snapshot,
+		ownership = .Mailbox_Descriptor,
+	}
+}
+
+@(private = "package")
+vga_legacy_frame_update :: proc(v: ^Vga) -> contract.Legacy_Frame_Update {
+	header := vga_legacy_frame_header(v)
+	if header.mode_generation == 0 {return {}}
 	_ = vga_damage_seal_pending(v, v.legacy_presentation_sequence)
 	damage := vga_damage_snapshot(v)
 	if damage.kind == .Invalid || damage.rects.count == 0 {return {}}
-	border_left, border_right, border_top, border_bottom := border_extents(v)
+	header.dirty = damage.rects
 	return {
 		damage_kind = damage.kind,
 		full_reason = damage.full_reason,
-		header = {
-			sequence = v.legacy_presentation_sequence,
-			mode_generation = mode_generation,
-			mode_key = mode_key,
-			surface = {id = LEGACY_PRESENTATION_SURFACE_ID, generation = surface_generation},
-			format = .Bgra_8888,
-			display_aspect = display_aspect,
-			surface_extent = extent,
-			canvas_extent = extent,
-			overscan = overscan_color(v),
-			border = {u32(border_left), u32(border_right), u32(border_top), u32(border_bottom)},
-			source = full,
-			destination = full,
-			dirty = damage.rects,
-			interval = 0,
-			source_kind = .Legacy_Snapshot,
-			ownership = .Mailbox_Descriptor,
-		},
+		header = header,
 	}
 }

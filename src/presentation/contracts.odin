@@ -772,7 +772,8 @@ validate_legacy :: proc(update: Legacy_Frame_Update, current: Validation_Context
 	     .Mode_Boundary,
 	     .Ambiguous_Mapping,
 	     .Capacity_Exceeded,
-	     .External_Tracking:
+	     .External_Tracking,
+	     .Raster_Journal:
 	case:
 		return diagnostic_make(.Invalid_Damage_Full_Reason)
 	}

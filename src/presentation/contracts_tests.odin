@@ -130,6 +130,8 @@ test_expect_code :: proc(t: ^testing.T, diagnostic: Diagnostic, code: Diagnostic
 contracts_test_accepts_valid_legacy_snapshot_and_resident_records :: proc(t: ^testing.T) {
 	legacy := test_legacy_update()
 	testing.expect(t, diagnostic_valid(validate_legacy(legacy, test_context(legacy.header))))
+	legacy.full_reason = .Raster_Journal
+	testing.expect(t, diagnostic_valid(validate_legacy(legacy, test_context(legacy.header))))
 
 	snapshot := test_gsw_snapshot()
 	testing.expect(

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package hv
 
+import persona "../persona"
+
 // Hypervisor interface. M1: WHPX backend only (the KVM seam comes later).
 
 Exit_Kind :: enum {
@@ -78,8 +80,10 @@ Memory_Reservation_Kind :: enum {
 
 DEVICE_DIRTY_PAGE_SHIFT :: 12
 DEVICE_DIRTY_PAGE_SIZE :: u64(1 << DEVICE_DIRTY_PAGE_SHIFT)
-DEVICE_DIRTY_MAX_PAGES :: 8192
+DEVICE_DIRTY_MAX_PAGES :: 16_384
 DEVICE_DIRTY_WORDS :: DEVICE_DIRTY_MAX_PAGES / 64
+
+#assert(u64(DEVICE_DIRTY_MAX_PAGES) * DEVICE_DIRTY_PAGE_SIZE >= u64(persona.GUEST_PERSONA.vram_bytes))
 
 Dirty_Page_Set :: struct {
 	count: u32,

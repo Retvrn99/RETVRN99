@@ -102,7 +102,7 @@ expansion_test_legacy_uses_immutable_raw_descriptor_after_source_changes :: proc
 
 	descriptor: vga.Scanout_Descriptor
 	defer vga.scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target)) {return}
+	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target, 1)) {return}
 	first_index := descriptor.vram[0]
 	second_index := descriptor.vram[1]
 	first_red := descriptor.state.dac[3]
@@ -111,7 +111,7 @@ expansion_test_legacy_uses_immutable_raw_descriptor_after_source_changes :: proc
 
 	expansion: Expansion
 	defer expansion_destroy(&expansion)
-	frame := expand_legacy(&expansion, &descriptor)
+	frame := expand_legacy_result(&expansion, &descriptor).frame
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame.updated_pixels, u64(2))
 	testing.expect_value(t, frame.pixels[0], u32(0xFFFF0000))
@@ -144,7 +144,7 @@ expansion_test_palette_only_capture_remains_raw_until_host_expansion :: proc(t: 
 
 	descriptor: vga.Scanout_Descriptor
 	defer vga.scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target)) {return}
+	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target, 1)) {return}
 	testing.expect_value(
 		t,
 		descriptor.legacy_update.damage_kind,
@@ -154,7 +154,7 @@ expansion_test_palette_only_capture_remains_raw_until_host_expansion :: proc(t: 
 
 	expansion: Expansion
 	defer expansion_destroy(&expansion)
-	frame := expand_legacy(&expansion, &descriptor)
+	frame := expand_legacy_result(&expansion, &descriptor).frame
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame.updated_pixels, u64(2))
 }
@@ -175,10 +175,10 @@ expansion_test_legacy_full_then_coalesced_partial_preserves_complete_frame :: pr
 
 	descriptor: vga.Scanout_Descriptor
 	defer vga.scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target)) {return}
+	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target, 1)) {return}
 	expansion: Expansion
 	defer expansion_destroy(&expansion)
-	seed := expand_legacy(&expansion, &descriptor)
+	seed := expand_legacy_result(&expansion, &descriptor).frame
 	if !testing.expect(t, seed != nil) {return}
 	seed_storage := &expansion.legacy_pixels[0]
 	if !testing.expect(
@@ -191,11 +191,11 @@ expansion_test_legacy_full_then_coalesced_partial_preserves_complete_frame :: pr
 	if !testing.expect(t, vga.vga_mmio_write(&target, target.framebuffer_base + 4, 1, 0x44)) {
 		return
 	}
-	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target)) {return}
+	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target, 1)) {return}
 	if !testing.expect(t, vga.vga_mmio_write(&target, target.framebuffer_base + 8, 1, 0x55)) {
 		return
 	}
-	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target)) {return}
+	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target, 1)) {return}
 	testing.expect_value(t, descriptor.legacy_update.header.dirty.count, u32(1))
 	testing.expect_value(
 		t,
@@ -221,7 +221,7 @@ expansion_test_legacy_full_then_coalesced_partial_preserves_complete_frame :: pr
 	duration_before := descriptor.copy_duration_ns
 	update_before := descriptor.legacy_update
 
-	frame := expand_legacy(&expansion, &descriptor)
+	frame := expand_legacy_result(&expansion, &descriptor).frame
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect(t, &expansion.legacy_pixels[0] == seed_storage)
 	testing.expect_value(t, expansion_test_pixel_hash(frame.pixels), reference_hash)
@@ -240,7 +240,7 @@ expansion_test_legacy_full_then_coalesced_partial_preserves_complete_frame :: pr
 	testing.expect_value(t, descriptor.bytes_copied, bytes_before)
 	testing.expect_value(t, descriptor.copy_duration_ns, duration_before)
 	testing.expect(t, descriptor.legacy_update == update_before)
-	repeated := expand_legacy(&expansion, &descriptor)
+	repeated := expand_legacy_result(&expansion, &descriptor).frame
 	if !testing.expect(t, repeated != nil) {return}
 	testing.expect_value(t, expansion_test_pixel_hash(repeated.pixels), reference_hash)
 	testing.expect(t, bytes.equal(raw_before, descriptor.vram[4:12]))
@@ -306,7 +306,7 @@ expansion_test_gsw_full_then_coalesced_partial_preserves_complete_frame :: proc(
 }
 
 @(test)
-expansion_test_legacy_lifecycle_change_requires_complete_raw_baseline :: proc(t: ^testing.T) {
+expansion_test_legacy_partial_without_baseline_requests_full_capture :: proc(t: ^testing.T) {
 	backing := make([]u8, vga.VRAM_SIZE)
 	defer delete(backing)
 	target: vga.Vga
@@ -317,11 +317,10 @@ expansion_test_legacy_lifecycle_change_requires_complete_raw_baseline :: proc(t:
 	vga.vga_note_content_change(&target)
 	descriptor: vga.Scanout_Descriptor
 	defer vga.scanout_descriptor_destroy(&descriptor)
-	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target)) {return}
-	descriptor.legacy_update.header.lifecycle_generation = 1
+	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target, 1)) {return}
 	expansion: Expansion
 	defer expansion_destroy(&expansion)
-	seed := expand_legacy(&expansion, &descriptor)
+	seed := expand_legacy_result(&expansion, &descriptor).frame
 	if !testing.expect(t, seed != nil) {return}
 	seed_hash := expansion_test_pixel_hash(seed.pixels)
 	if !testing.expect(
@@ -333,21 +332,25 @@ expansion_test_legacy_lifecycle_change_requires_complete_raw_baseline :: proc(t:
 	if !testing.expect(t, vga.vga_mmio_write(&target, target.framebuffer_base + 4, 1, 0x44)) {
 		return
 	}
-	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target)) {return}
-	descriptor.legacy_update.header.lifecycle_generation = 2
+	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target, 1)) {return}
 	testing.expect(t, !descriptor.raw_complete)
-	testing.expect(t, expand_legacy(&expansion, &descriptor) == nil)
+	recovery: Expansion
+	defer expansion_destroy(&recovery)
+	partial := expand_legacy_result(&recovery, &descriptor)
+	testing.expect_value(t, partial.status, Expansion_Status.Needs_Full_Baseline)
+	testing.expect(t, partial.frame == nil)
 	testing.expect_value(t, expansion_test_pixel_hash(expansion.legacy_pixels), seed_hash)
 	testing.expect_value(t, expansion.legacy_baseline.header.lifecycle_generation, u64(1))
 
 	vga.vga_note_content_change(&target)
-	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target)) {return}
-	descriptor.legacy_update.header.lifecycle_generation = 2
+	if !testing.expect(t, vga.scanout_descriptor_capture(&descriptor, &target, 1)) {return}
 	testing.expect(t, descriptor.raw_complete)
-	frame := expand_legacy(&expansion, &descriptor)
+	result := expand_legacy_result(&recovery, &descriptor)
+	testing.expect_value(t, result.status, Expansion_Status.Ready)
+	frame := result.frame
 	if !testing.expect(t, frame != nil) {return}
 	testing.expect_value(t, frame.pixels[1], u32(0xFF43_3244))
-	testing.expect_value(t, expansion.legacy_baseline.header.lifecycle_generation, u64(2))
+	testing.expect_value(t, recovery.legacy_baseline.header.lifecycle_generation, u64(1))
 }
 
 @(test)

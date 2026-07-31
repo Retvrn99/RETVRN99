@@ -81,6 +81,66 @@ host_presentation_upload_plan :: proc(
 	}
 }
 
+host_presentation_upload_plan_from_capture :: proc(
+	frame: ^vga.Display_Frame,
+	header: contract.Header,
+	capture: ^vga.Scanout_Capture_Plan,
+) -> Host_Presentation_Upload_Plan {
+	if frame == nil ||
+	   capture == nil ||
+	   capture.owner != .Legacy ||
+	   capture.owner_generation != header.lifecycle_generation ||
+	   capture.mode_generation != header.mode_generation ||
+	   capture.surface_id != header.surface.id ||
+	   capture.surface_generation != header.surface.generation ||
+	   capture.required_ranges.count == 0 ||
+	   frame.width <= 0 ||
+	   frame.height <= 0 ||
+	   frame.width > max(int) / frame.height ||
+	   u64(frame.width) != u64(header.surface_extent.width) ||
+	   u64(frame.height) != u64(header.surface_extent.height) ||
+	   len(frame.pixels) < frame.width * frame.height {return {}}
+	full_rects := contract.rect_set_full(header.surface_extent)
+	if full_rects.count != 1 || !contract.rect_equal(header.source, full_rects.rects[0]) {
+		return {}
+	}
+	rects: contract.Rect_Set
+	full := false
+	switch capture.coverage {
+	case .Full:
+		if !contract.rect_set_equal(header.dirty, full_rects) ||
+		   !contract.rect_set_equal(frame.dirty, full_rects) {return {}}
+		rects = full_rects
+		full = true
+	case .Partial:
+		result: contract.Rect_Set_Result
+		rects, result = contract.rect_set_canonicalize(header.dirty, header.surface_extent)
+		if result != .Exact ||
+		   rects.count == 0 ||
+		   !contract.rect_set_equal(rects, header.dirty) ||
+		   !contract.rect_set_equal(frame.dirty, rects) {return {}}
+	case .None:
+		return {}
+	}
+	pixels: u64
+	for i in 0 ..< int(rects.count) {
+		rect := rects.rects[i]
+		area := u64(rect.width) * u64(rect.height)
+		if area > max(u64) - pixels {return {}}
+		pixels += area
+	}
+	if !full && pixels == u64(frame.width) * u64(frame.height) {return {}}
+	if pixels > max(u64) / size_of(u32) || frame.updated_pixels != pixels {return {}}
+	return {
+		valid = true,
+		full = full,
+		rects = rects,
+		pixels = pixels,
+		bytes = pixels * size_of(u32),
+		regions = u64(rects.count),
+	}
+}
+
 host_presentation_resource_identity_equal :: proc(
 	kind: Host_Presentation_Kind,
 	a, b: contract.Header,

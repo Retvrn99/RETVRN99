@@ -22,6 +22,7 @@ Damage_Full_Reason :: enum u8 {
 	Ambiguous_Mapping,
 	Capacity_Exceeded,
 	External_Tracking,
+	Raster_Journal,
 }
 
 Damage_Record :: struct {
@@ -329,7 +330,6 @@ damage_kind_merge :: proc(a, b: Damage_Kind) -> Damage_Kind {
 	return .Invalid
 }
 
-@(private = "file")
 damage_full_reason_priority :: proc(reason: Damage_Full_Reason) -> u8 {
 	#partial switch reason {
 	case .Initial_Surface:
@@ -340,14 +340,15 @@ damage_full_reason_priority :: proc(reason: Damage_Full_Reason) -> u8 {
 		return 3
 	case .Ambiguous_Mapping:
 		return 4
-	case .Capacity_Exceeded:
+	case .Raster_Journal:
 		return 5
+	case .Capacity_Exceeded:
+		return 6
 	case:
 		return 0
 	}
 }
 
-@(private = "file")
 damage_full_reason_merge :: proc(a, b: Damage_Full_Reason) -> Damage_Full_Reason {
 	return damage_full_reason_priority(b) > damage_full_reason_priority(a) ? b : a
 }

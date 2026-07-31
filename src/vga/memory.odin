@@ -82,6 +82,7 @@ vga_aperture_access_paired :: proc(
 	timestamp_ns: u64,
 ) -> bool {
 	if !vga_mmio_range_contains(v, gpa, len(data)) || v.vram == nil {return false}
+	if write {v.frame_valid = false}
 	serial := v.legacy_damage.write_serial
 	changed_start := u32(VRAM_SIZE)
 	changed_end: u32
@@ -134,6 +135,7 @@ vga_mmio_read :: proc(v: ^Vga, gpa: u64, size: u8) -> (u32, bool) {
 
 vga_mmio_write :: proc(v: ^Vga, gpa: u64, size: u8, value: u32) -> bool {
 	if !vga_mmio_contains(v, gpa, size) || v.vram == nil {return false}
+	v.frame_valid = false
 	serial := v.legacy_damage.write_serial
 	for i in 0 ..< int(max(size, 1)) {
 		if !vga_memory_write_byte(v, gpa + u64(i), u8(value >> uint(i * 8))) {

@@ -104,9 +104,14 @@ damage_test_palette_and_pixel_merge_preserves_full_fallback :: proc(t: ^testing.
 @(test)
 damage_test_full_fallback_merge_is_order_independent :: proc(t: ^testing.T) {
 	mode := damage_record_full({8, 8}, .Pixel_Memory, .Mode_Boundary)
+	journal := damage_record_full({8, 8}, .Pixel_Memory, .Raster_Journal)
 	capacity := damage_record_full({8, 8}, .Pixel_Memory, .Capacity_Exceeded)
-	forward := damage_record_merge(mode, capacity, {8, 8})
-	reverse := damage_record_merge(capacity, mode, {8, 8})
+	journal_merge := damage_record_merge(mode, journal, {8, 8})
+	journal_reverse := damage_record_merge(journal, mode, {8, 8})
+	testing.expect_value(t, journal_merge, journal_reverse)
+	testing.expect_value(t, journal_merge.full_reason, Damage_Full_Reason.Raster_Journal)
+	forward := damage_record_merge(journal, capacity, {8, 8})
+	reverse := damage_record_merge(capacity, journal, {8, 8})
 	testing.expect_value(t, forward, reverse)
 	testing.expect_value(t, forward.full_reason, Damage_Full_Reason.Capacity_Exceeded)
 }

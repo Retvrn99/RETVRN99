@@ -10,6 +10,17 @@ Expansion_Baseline :: struct {
 	header: presentation.Header,
 }
 
+Expansion_Status :: enum u8 {
+	Invalid,
+	Ready,
+	Needs_Full_Baseline,
+}
+
+Expansion_Result :: struct {
+	status: Expansion_Status,
+	frame:  ^vga.Display_Frame,
+}
+
 Expansion :: struct {
 	allocator:       runtime.Allocator,
 	legacy_pixels:   []u32,
@@ -40,6 +51,20 @@ expansion_baseline_matches :: proc(
 	)
 }
 
+@(private = "file")
+expansion_legacy_plan_matches :: proc(
+	plan: vga.Scanout_Capture_Plan,
+	header: presentation.Header,
+) -> bool {
+	return(
+		plan.owner == .Legacy &&
+		plan.owner_generation == header.lifecycle_generation &&
+		plan.mode_generation == header.mode_generation &&
+		plan.surface_id == header.surface.id &&
+		plan.surface_generation == header.surface.generation \
+	)
+}
+
 @(private = "package")
 expansion_init :: proc(expansion: ^Expansion, allocator := context.allocator) {
 	if expansion == nil {return}
@@ -49,15 +74,20 @@ expansion_init :: proc(expansion: ^Expansion, allocator := context.allocator) {
 }
 
 @(private = "package")
-expand_legacy :: proc(
+expand_legacy_result :: proc(
 	expansion: ^Expansion,
 	descriptor: ^vga.Scanout_Descriptor,
-) -> ^vga.Display_Frame {
-	if expansion == nil || descriptor == nil {return nil}
+) -> Expansion_Result {
+	if expansion == nil || descriptor == nil {return {}}
 	if expansion.allocator.procedure == nil {expansion.allocator = context.allocator}
 	header := descriptor.legacy_update.header
-	if !expansion_baseline_matches(&expansion.legacy_baseline, header) &&
-	   !descriptor.raw_complete {return nil}
+	if !expansion_legacy_plan_matches(descriptor.capture_plan, header) {return {}}
+	if !expansion_baseline_matches(&expansion.legacy_baseline, header) {
+		if descriptor.capture_plan.coverage == .Partial {
+			return {status = .Needs_Full_Baseline}
+		}
+		if descriptor.capture_plan.coverage != .Full {return {}}
+	}
 	expansion.legacy_frame = {}
 	frame := vga.scanout_descriptor_expand_legacy(
 		descriptor,
@@ -66,7 +96,8 @@ expand_legacy :: proc(
 		expansion.allocator,
 	)
 	if frame != nil {expansion.legacy_baseline = {true, header}}
-	return frame
+	if frame == nil {return {}}
+	return {status = .Ready, frame = frame}
 }
 
 @(private = "package")

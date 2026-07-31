@@ -51,6 +51,16 @@ Frame_Mailbox_Legacy_Commit :: struct {
 	update: contract.Legacy_Frame_Update,
 }
 
+Frame_Mailbox_Legacy_Baseline_Request :: struct {
+	valid:              bool,
+	issued:             bool,
+	owner:              contract.Display_Owner,
+	owner_generation:   u64,
+	mode_generation:    u64,
+	surface_id:         u64,
+	surface_generation: u64,
+}
+
 @(private = "package")
 Frame_Mailbox_Gsw_Commit :: struct {
 	valid:   bool,
@@ -70,6 +80,7 @@ Video_Presentation :: struct {
 	gsw_ack:              Frame_Mailbox_Gsw_Ack,
 	legacy_committed:     Frame_Mailbox_Legacy_Commit,
 	gsw_committed:        Frame_Mailbox_Gsw_Commit,
+	legacy_baseline:      Frame_Mailbox_Legacy_Baseline_Request,
 	expansion:            Expansion,
 	postmortem:           Graphics_Postmortem,
 	host_state:           host.Host_Presentation_State,
@@ -252,6 +263,7 @@ frame_mailbox_publish_observed :: proc(
 			},
 		)
 	}
+	_ = frame_mailbox_apply_legacy_full_baseline(mailbox, source)
 	started := time.tick_now()
 	generation := machine.machine_scanout_generation(source)
 	producer_sample := graphics_producer_sample(source, session_generation, vm)
@@ -290,6 +302,7 @@ frame_mailbox_publish_observed :: proc(
 		_ = frame_mailbox_commit(mailbox, slot, false)
 		return false
 	}
+	slot.epoch.scanout_generation = slot.scanout.generation
 	slot.scanout.legacy_update.header.lifecycle_generation = slot.reserved_lifecycle_generation
 	graphics_frame_epoch_descriptor_copy(&slot.epoch, slot.scanout.copy_duration_ns)
 	graphics_frame_epoch_capture_complete(&slot.epoch, slot.scanout.bytes_copied, time.tick_now())
@@ -464,6 +477,120 @@ frame_mailbox_take_gsw_ack :: proc(mailbox: ^Frame_Mailbox) -> (Frame_Mailbox_Gs
 	return ack, ack.valid && ack.lifecycle_generation == mailbox.lifecycle_generation
 }
 
+@(private = "file")
+frame_mailbox_legacy_baseline_valid :: proc(plan: vga.Scanout_Capture_Plan) -> bool {
+	return(
+		plan.owner == .Legacy &&
+		plan.owner_generation != 0 &&
+		plan.mode_generation != 0 &&
+		plan.surface_id != 0 &&
+		plan.surface_generation != 0 \
+	)
+}
+
+@(private = "file")
+frame_mailbox_legacy_baseline_matches :: proc(
+	request: Frame_Mailbox_Legacy_Baseline_Request,
+	plan: vga.Scanout_Capture_Plan,
+) -> bool {
+	return(
+		request.valid &&
+		request.owner == plan.owner &&
+		request.owner_generation == plan.owner_generation &&
+		request.mode_generation == plan.mode_generation &&
+		request.surface_id == plan.surface_id &&
+		request.surface_generation == plan.surface_generation \
+	)
+}
+
+@(private = "file")
+frame_mailbox_legacy_baseline_newer :: proc(
+	plan: vga.Scanout_Capture_Plan,
+	request: Frame_Mailbox_Legacy_Baseline_Request,
+) -> bool {
+	mode_order := contract.generation_order(plan.mode_generation, request.mode_generation)
+	if mode_order == .Newer {return true}
+	if mode_order != .Same || plan.surface_id != request.surface_id {return false}
+	return contract.generation_order(
+		plan.surface_generation,
+		request.surface_generation,
+	) == .Newer
+}
+
+@(private = "package")
+frame_mailbox_request_legacy_full_baseline :: proc(
+	mailbox: ^Frame_Mailbox,
+	plan: vga.Scanout_Capture_Plan,
+) -> bool {
+	if mailbox == nil || plan.coverage != .Partial || !frame_mailbox_legacy_baseline_valid(plan) {
+		return false
+	}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	if plan.owner_generation != mailbox.lifecycle_generation {return false}
+	request := &mailbox.legacy_baseline
+	if request.valid && request.owner_generation != mailbox.lifecycle_generation {request^ = {}}
+	if frame_mailbox_legacy_baseline_matches(request^, plan) {return true}
+	if request.valid && !frame_mailbox_legacy_baseline_newer(plan, request^) {return false}
+	request^ = {
+		valid              = true,
+		owner              = plan.owner,
+		owner_generation   = plan.owner_generation,
+		mode_generation    = plan.mode_generation,
+		surface_id         = plan.surface_id,
+		surface_generation = plan.surface_generation,
+	}
+	return true
+}
+
+@(private = "package")
+frame_mailbox_apply_legacy_full_baseline :: proc(
+	mailbox: ^Frame_Mailbox,
+	source: ^machine.Machine,
+) -> bool {
+	if mailbox == nil || source == nil {return false}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	request := &mailbox.legacy_baseline
+	if !request.valid || request.owner_generation != mailbox.lifecycle_generation {
+		request^ = {}
+		return false
+	}
+	if request.issued {return false}
+	request.issued = true
+	if !machine.machine_request_legacy_full_baseline(
+		source,
+		request.owner_generation,
+		request.mode_generation,
+		request.surface_id,
+		request.surface_generation,
+	) {
+		request.issued = false
+		return false
+	}
+	return true
+}
+
+@(private = "package")
+frame_mailbox_complete_legacy_full_baseline :: proc(
+	mailbox: ^Frame_Mailbox,
+	plan: vga.Scanout_Capture_Plan,
+) -> bool {
+	if mailbox == nil || plan.coverage != .Full {return false}
+	sync.lock(&mailbox.mu)
+	defer sync.unlock(&mailbox.mu)
+	frame_mailbox_ensure_lifecycle_locked(mailbox)
+	if plan.owner_generation != mailbox.lifecycle_generation {return false}
+	request := mailbox.legacy_baseline
+	if !request.valid || request.owner_generation != mailbox.lifecycle_generation {return false}
+	if !frame_mailbox_legacy_baseline_matches(request, plan) &&
+	   !frame_mailbox_legacy_baseline_newer(plan, request) {return false}
+	mailbox.legacy_baseline = {}
+	return true
+}
+
 @(private = "package")
 frame_mailbox_reset :: proc(mailbox: ^Frame_Mailbox) {
 	sync.lock(&mailbox.mu)
@@ -483,6 +610,7 @@ frame_mailbox_reset :: proc(mailbox: ^Frame_Mailbox) {
 	mailbox.gsw_ack = {}
 	mailbox.legacy_committed = {}
 	mailbox.gsw_committed = {}
+	mailbox.legacy_baseline = {}
 	mailbox.next_epoch += 1
 	if mailbox.next_epoch == 0 {mailbox.next_epoch = 1}
 	reset_epoch := graphics_telemetry_begin_epoch(&mailbox.telemetry, mailbox.next_epoch, 0, now)

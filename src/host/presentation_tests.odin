@@ -165,6 +165,7 @@ host_presentation_test_apply_legacy :: proc(h: ^Host, admission: Host_Presentati
 	h.presentation_state.mode_clock = admission.mode_clock
 	h.presentation_state.vga_mode_clock = admission.vga_mode_clock
 	h.presentation_state.legacy = admission.legacy
+	h.presentation_state.legacy_source_mode_generation = admission.source_mode_generation
 	h.presentation_state.last_vga_sequence = admission.source_sequence
 	host_apply_display_aspect(h, admission.legacy.header)
 	h.has_frame = true
@@ -1280,7 +1281,7 @@ host_presentation_test_staged_gsw_snapshot_swaps_transactionally :: proc(t: ^tes
 		stage_generation = 11,
 	}
 	present := host_presentation_test_snapshot(20)
-	admission := host_presentation_admit_gsw(&h, present, 640 * 480 * 4, .Capacity_Exceeded)
+	admission := host_presentation_admit_gsw(&h, present, 640 * 480 * 4, .Raster_Journal)
 	if !testing.expect(t, admission.valid) {return}
 	staged := host_presentation_test_staged(&admission, new_texture, 11)
 
@@ -1294,7 +1295,7 @@ host_presentation_test_staged_gsw_snapshot_swaps_transactionally :: proc(t: ^tes
 	)
 	testing.expect_value(t, h.presentation_metrics.gsw_snapshot_full_updates, u64(1))
 	testing.expect_value(t, h.presentation_metrics.gsw_snapshot_partial_updates, u64(0))
-	testing.expect_value(t, h.presentation_metrics.source_full_capacity, u64(1))
+	testing.expect_value(t, h.presentation_metrics.source_full_raster_journal, u64(1))
 
 	stale_texture := transmute(^sdl3.Texture)(uintptr(8))
 	h.presentation_state.gsw_staging = {

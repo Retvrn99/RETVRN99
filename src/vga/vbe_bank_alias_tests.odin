@@ -80,3 +80,23 @@ vga_test_external_vbe_dirty_publication_accepts_banked_mode :: proc(t: ^testing.
 	testing.expect(t, vga_publish_external_vbe_writes(&v, true))
 	testing.expect_value(t, v.content_generation, generation + 1)
 }
+
+@(test)
+vga_test_external_backing_dirty_invalidates_cached_frame_during_raster_fallback :: proc(
+	t: ^testing.T,
+) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	if !testing.expect(t, test_set_vbe_mode(&v, 640, 480, 8)) {return}
+	v.raster_fallback = true
+	v.frame_valid = true
+	content_generation := v.content_generation
+	presentation_sequence := v.legacy_presentation_sequence
+
+	testing.expect(t, vga_publish_external_backing_writes(&v, true))
+	testing.expect(t, !v.frame_valid)
+	testing.expect_value(t, v.content_generation, content_generation + 1)
+	testing.expect(t, v.legacy_presentation_sequence != presentation_sequence)
+}

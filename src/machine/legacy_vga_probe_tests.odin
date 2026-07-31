@@ -13,7 +13,6 @@ LEGACY_VGA_PHASE_ADDRESS :: 0x0501
 LEGACY_VGA_ACK_ADDRESS :: 0x0502
 LEGACY_VGA_RETURN_BASE :: 0x0520
 LEGACY_VGA_RETURN_BDA_BASE :: LEGACY_VGA_RETURN_BASE + 10
-RETVRN99_LEGACY_VGA_EVIDENCE_STRICT :: #config(RETVRN99_LEGACY_VGA_EVIDENCE_STRICT, false)
 
 Legacy_Vga_Probe_Watchdog :: struct {
 	vm:   ^hv.Vm,
@@ -246,31 +245,18 @@ legacy_vga_probe_run_mode_x :: proc(
 		frame := video.vga_display_frame(&m.vga)
 		if frame.kind != .Indexed_8 || frame.width != entry.width || frame.height != entry.height {
 			if presentation_mismatch != nil {presentation_mismatch^ = true}
-			if RETVRN99_LEGACY_VGA_EVIDENCE_STRICT {
-				log.errorf(
-					"Mode X %dx%d produced %v %dx%d",
-					entry.width,
-					entry.height,
-					frame.kind,
-					frame.width,
-					frame.height,
-				)
-			} else {
-				log.warnf(
-					"Mode X evidence: %dx%d produced %v %dx%d",
-					entry.width,
-					entry.height,
-					frame.kind,
-					frame.width,
-					frame.height,
-				)
-			}
+			log.errorf(
+				"Mode X %dx%d produced %v %dx%d",
+				entry.width,
+				entry.height,
+				frame.kind,
+				frame.width,
+				frame.height,
+			)
 		}
-		if RETVRN99_LEGACY_VGA_EVIDENCE_STRICT {
-			testing.expect_value(t, frame.kind, video.Display_Kind.Indexed_8)
-			testing.expect_value(t, frame.width, entry.width)
-			testing.expect_value(t, frame.height, entry.height)
-		}
+		testing.expect_value(t, frame.kind, video.Display_Kind.Indexed_8)
+		testing.expect_value(t, frame.width, entry.width)
+		testing.expect_value(t, frame.height, entry.height)
 		testing.expect_value(t, m.vga.seq[4] & 0x0E, u8(0x06))
 		testing.expect_value(t, m.vga.crtc[0x01], u8(entry.width / 4 - 1))
 		testing.expect_value(t, m.vga.crtc[0x13], u8(entry.width / 8))
@@ -286,7 +272,7 @@ legacy_vga_probe_run_mode_x :: proc(
 			}
 			last := frame.pixels[len(frame.pixels) - 1]
 			testing.expect(t, last != frame.pixels[0])
-		} else if RETVRN99_LEGACY_VGA_EVIDENCE_STRICT {
+		} else {
 			testing.expect_value(t, len(frame.pixels), entry.width * entry.height)
 		}
 		m.vm.ram[LEGACY_VGA_ACK_ADDRESS] = next
@@ -312,7 +298,7 @@ legacy_vga_probe_run_mode_x :: proc(
 }
 
 @(test)
-test_machine_public_port_mode_x_geometry_matrix_records_restoration_gap :: proc(t: ^testing.T) {
+test_machine_public_port_mode_x_geometry_matrix_returns_to_mode_3 :: proc(t: ^testing.T) {
 	if !hv.available() {
 		log.warn("WHPX not available")
 		return
@@ -350,12 +336,8 @@ test_machine_public_port_mode_x_geometry_matrix_records_restoration_gap :: proc(
 	}
 	frame := video.vga_display_frame(&m.vga)
 	if frame.kind != .Text {presentation_mismatch = true}
-	if RETVRN99_LEGACY_VGA_EVIDENCE_STRICT {
-		testing.expect(t, !presentation_mismatch)
-		testing.expect_value(t, frame.kind, video.Display_Kind.Text)
-	} else {
-		testing.expect(t, presentation_mismatch)
-	}
+	testing.expect(t, !presentation_mismatch)
+	testing.expect_value(t, frame.kind, video.Display_Kind.Text)
 }
 
 Legacy_Reserved_Field :: enum {

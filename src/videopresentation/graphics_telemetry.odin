@@ -1139,7 +1139,7 @@ graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> str
 	)
 	fmt.sbprintf(
 		&builder,
-		" presentation_resources=reuse:%d recreate:%d retire:%d host_full_fallback:%d overlay:%d/%d source_full:%d/%d/%d/%d/%d",
+		" presentation_resources=reuse:%d recreate:%d retire:%d host_full_fallback:%d overlay:%d/%d source_full:%d/%d/%d/%d/%d/%d",
 		pm.resource_reuses,
 		pm.resource_recreations,
 		pm.resource_retirements,
@@ -1151,6 +1151,7 @@ graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> str
 		pm.source_full_ambiguous,
 		pm.source_full_capacity,
 		pm.source_full_external,
+		pm.source_full_raster_journal,
 	)
 	fmt.sbprintf(
 		&builder,
@@ -1341,7 +1342,7 @@ graphics_telemetry_trace_text :: proc(telemetry: ^Graphics_Telemetry) -> string 
 		)
 		fmt.sbprintf(
 			&builder,
-			" presentation_resources=reuse:%d recreate:%d retire:%d host_full_fallback:%d overlay:%d/%d source_full:%d/%d/%d/%d/%d",
+			" presentation_resources=reuse:%d recreate:%d retire:%d host_full_fallback:%d overlay:%d/%d source_full:%d/%d/%d/%d/%d/%d",
 			pm.resource_reuses,
 			pm.resource_recreations,
 			pm.resource_retirements,
@@ -1353,6 +1354,7 @@ graphics_telemetry_trace_text :: proc(telemetry: ^Graphics_Telemetry) -> string 
 			pm.source_full_ambiguous,
 			pm.source_full_capacity,
 			pm.source_full_external,
+			pm.source_full_raster_journal,
 		)
 		fmt.sbprintf(
 			&builder,
