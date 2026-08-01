@@ -277,6 +277,12 @@ DDENTRY(WaitForVerticalBlank32, LPDDHAL_WAITFORVERTICALBLANKDATA, data)
 
 DDENTRY(SetExclusiveMode32, LPDDHAL_SETEXCLUSIVEMODEDATA, data)
 {
+	if(data == NULL) return DDHAL_DRIVER_NOTHANDLED;
+	if(data->dwEnterExcl)
+		FBHDA_access_begin(FBHDA_ACCESS_EXCLUSIVE_BEGIN);
+	else
+		FBHDA_access_begin(FBHDA_ACCESS_EXCLUSIVE_END);
+	FBHDA_access_end(0);
 	data->ddRVal = DD_OK;
 	return DDHAL_DRIVER_NOTHANDLED;
 }

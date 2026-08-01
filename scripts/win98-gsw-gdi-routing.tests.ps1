@@ -128,13 +128,13 @@ Assert-Match $transport 'GSW_VGA_CAP_GDI_FAST_DOORBELL\) == 0\)[\s\S]+gsw_submit
     'Hosts without the fast-doorbell capability must retain generic fenced submission.'
 )
 Assert-Match $inf 'DriverVer=07/26/2026,0\.2\.0\.8' 'The fixed driver version must be 0.2.0.8.'
-Assert-Match $readme '16,988[^\r\n]+2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0' (
+Assert-Match $readme '16,980[^\r\n]+9a4f6b7ad8d9b111d8aef8765f594d496bfa395ea7cda42eccd7b39f3145301d' (
     'The documented Win16 driver identity must match the deterministic build.'
 )
-Assert-Match $readme '39,361[^\r\n]+fe51fe90fc986082b236fc3926341ed418cf97d8f7f514d985d8d294c6625ecb' (
+Assert-Match $readme '43,629[^\r\n]+d581e28550371a7c444dc85a5d03737d799da06e7885fb8860e1bfb98a61b05a' (
     'The documented VxD identity must match the deterministic build.'
 )
-Assert-Match $readme '48,128[^\r\n]+c1b0dd934da52684886f01bcabb38fb812ad610bba147e65ead99cca2d980cc0' (
+Assert-Match $readme '48,128[^\r\n]+2e74078fce12dcc729d5121d4838d5051a3dd1df43fe45817be890a90ffa3955' (
     'The documented DirectDraw HAL identity must match the deterministic build.'
 )
 

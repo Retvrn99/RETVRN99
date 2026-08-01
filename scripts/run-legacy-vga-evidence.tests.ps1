@@ -36,7 +36,7 @@ function Assert-LegacyVgaEvidenceTestThrows {
         }
         return
     }
-    throw 'Expected an exception.'
+    throw "Expected an exception matching '$Pattern'."
 }
 
 function Invoke-LegacyVgaEvidenceTest {
@@ -50,6 +50,37 @@ function Invoke-LegacyVgaEvidenceTest {
         $script:LegacyVgaEvidenceTestFailures += 1
         [Console]::Error.WriteLine("FAIL $Name`: $($_.Exception.Message)")
     }
+}
+
+function New-LegacyVgaEvidenceShutdownTraceFixture {
+    param([string[]]$Markers)
+
+    $count = $Markers.Count
+    $lines = [Collections.Generic.List[string]]::new()
+    [void]$lines.Add(
+        "enabled`tarmed`tcapacity`tcount`trecorded`tdropped_unarmed`tdropped_markers`toverwritten"
+    )
+    [void]$lines.Add("true`ttrue`t65536`t$count`t$count`t0`t0`t0")
+    [void]$lines.Add("sequence`tkind`tvalue`tcs`tflags`trip`taddress`tdetail")
+    $sequence = 0
+    foreach ($marker in $Markers) {
+        $sequence += 1
+        [void]$lines.Add(
+            "$sequence`tmarker`t$marker`t0000`t00000000`t0000000000000000" +
+            "`t0000000000000000`t0000000000000000"
+        )
+    }
+    return $lines.ToArray()
+}
+
+function Write-LegacyVgaEvidenceShutdownTraceFixture {
+    param([string]$Path, [string[]]$Lines)
+
+    [IO.File]::WriteAllText(
+        $Path,
+        ($Lines -join "`r`n") + "`r`n",
+        [Text.UTF8Encoding]::new($false)
+    )
 }
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
@@ -90,6 +121,45 @@ try {
         Assert-LegacyVgaEvidenceTestThrows {
             ConvertTo-LegacyVgaEvidenceGuestPath 'QUAKE/BAD & X.PIF' 'Guest PIF'
         } 'without spaces or traversal'
+    }
+
+    Invoke-LegacyVgaEvidenceTest 'Candidate driver set is exact and hash-bearing' {
+        $driverRoot = Join-Path $testRoot 'candidate-drivers'
+        New-Item -ItemType Directory -Path $driverRoot | Out-Null
+        $names = @('gswmini.drv', 'gswmini.vxd', 'gswhal9x.dll', 'gswdd32.dll')
+        foreach ($name in $names) {
+            [IO.File]::WriteAllBytes((Join-Path $driverRoot $name), [byte[]](0x4D, 0x5A))
+        }
+        $drivers = @(Get-LegacyVgaEvidenceCandidateDrivers $driverRoot)
+        Assert-LegacyVgaEvidenceTestEqual $drivers.Count 4 `
+            'Candidate driver count changed.'
+        Assert-LegacyVgaEvidenceTestEqual $drivers[0].guest_path `
+            'WINDOWS/SYSTEM/GSWMINI.DRV' 'Mini driver guest path changed.'
+        Assert-LegacyVgaEvidenceTestEqual $drivers[3].guest_path `
+            'WINDOWS/SYSTEM/GSWDD32.DLL' 'DirectDraw bridge guest path changed.'
+        foreach ($driver in $drivers) {
+            Assert-LegacyVgaEvidenceTestEqual $driver.bytes 2 `
+                "Candidate driver size was not recorded for $($driver.name)."
+            Assert-LegacyVgaEvidenceTestTrue ($driver.sha256 -match '^[0-9A-F]{64}$') `
+                "Candidate driver hash was not recorded for $($driver.name)."
+        }
+        [IO.File]::Delete((Join-Path $driverRoot 'gswmini.vxd'))
+        Assert-LegacyVgaEvidenceTestThrows {
+            Get-LegacyVgaEvidenceCandidateDrivers $driverRoot
+        } 'Candidate driver gswmini.vxd'
+    }
+
+    Invoke-LegacyVgaEvidenceTest 'Launcher receives the validated guest REG path' {
+        $arguments = @(New-LegacyVgaEvidenceLauncherArguments `
+            'clone.img' 'driver.reg' 'autoexec.bat' 'C:\QUAKE\DRIVER.REG')
+        Assert-LegacyVgaEvidenceTestEqual $arguments.Count 4 `
+            'Launcher argument count changed.'
+        Assert-LegacyVgaEvidenceTestEqual $arguments[3] 'QUAKE/DRIVER.REG' `
+            'Launcher did not receive the FAT-relative REG path.'
+        Assert-LegacyVgaEvidenceTestThrows {
+            New-LegacyVgaEvidenceLauncherArguments `
+                'clone.img' 'driver.reg' 'autoexec.bat' 'QUAKE\DRIVER.REG'
+        } 'absolute DOS path'
     }
 
     Invoke-LegacyVgaEvidenceTest 'Run REG is derived by replacing known-good bytes' {
@@ -244,33 +314,228 @@ try {
             'Katea helper must not add another guest-host port.'
     }
 
-    Invoke-LegacyVgaEvidenceTest 'Shutdown trace requires ordered D5 through DC' {
+    Invoke-LegacyVgaEvidenceTest 'Shutdown trace is complete ordered balanced and fault free' {
         $trace = Join-Path $testRoot 'shutdown-trace.tsv'
-        $lines = @(
-            "enabled`tarmed`tcapacity`tcount`trecorded`tdropped_unarmed`toverwritten",
-            "true`ttrue`t65536`t8`t8`t0`t0",
-            "sequence`tkind`tvalue`tcs`tflags`trip`taddress`tdetail"
+        $markers = @(
+            'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'e8',
+            'd7', 'd8', 'd9', 'da', 'db', 'dc'
         )
-        $sequence = 0
-        foreach ($marker in @('d5', 'd6', 'd7', 'd8', 'd9', 'da', 'db', 'dc')) {
-            $sequence += 1
-            $lines += "$sequence`tmarker`t$marker`t0000`t00000000`t0000000000000000`t0000000000000000`t0000000000000000"
-        }
-        [IO.File]::WriteAllText(
-            $trace,
-            ($lines -join "`r`n") + "`r`n",
-            [Text.UTF8Encoding]::new($false)
-        )
+        $lines = @(New-LegacyVgaEvidenceShutdownTraceFixture $markers)
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $lines
         Assert-LegacyVgaEvidenceShutdownTrace $trace
-        $broken = ($lines | Where-Object { $_ -notmatch "`tmarker`td6`t" })
-        [IO.File]::WriteAllText(
-            $trace,
-            ($broken -join "`r`n") + "`r`n",
-            [Text.UTF8Encoding]::new($false)
-        )
+
+        $broken = @(New-LegacyVgaEvidenceShutdownTraceFixture `
+            @($markers | Where-Object { $_ -cne 'd6' }))
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $broken
         Assert-LegacyVgaEvidenceTestThrows {
             Assert-LegacyVgaEvidenceShutdownTrace $trace
-        } 'ordered marker d6'
+        } 'ordered marker d6 through dc'
+
+        $prematureSystemExit = @(New-LegacyVgaEvidenceShutdownTraceFixture `
+            (@('d6') + $markers))
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $prematureSystemExit
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'terminal lifecycle marker before driver disabling'
+
+        $rebasedLifecycle = @(New-LegacyVgaEvidenceShutdownTraceFixture @(
+            'd1', 'd2', 'd3', 'd4', 'd5',
+            'd1', 'd2', 'd3', 'd4', 'd5',
+            'd6', 'e8', 'd7', 'd8', 'd9', 'da', 'db', 'dc'
+        ))
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $rebasedLifecycle
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'transition after driver disabling'
+
+        $prematureTerminal = @(New-LegacyVgaEvidenceShutdownTraceFixture @(
+            'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'd7', 'e8',
+            'd7', 'd8', 'd9', 'da', 'db', 'dc'
+        ))
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $prematureTerminal
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'ordered marker d6 through dc'
+
+        $withoutQuiesce = @(New-LegacyVgaEvidenceShutdownTraceFixture `
+            @($markers | Where-Object { $_ -cne 'e8' }))
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $withoutQuiesce
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'ordered marker d6 through dc'
+
+        $unbalanced = @(New-LegacyVgaEvidenceShutdownTraceFixture `
+            @($markers | Where-Object { $_ -cne 'd2' }))
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $unbalanced
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'balanced D1-D4'
+
+        $orphanedTransition = @(New-LegacyVgaEvidenceShutdownTraceFixture `
+            (@('d2') + $markers))
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $orphanedTransition
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'balanced D1-D4'
+
+        $postDisableTransition = @(New-LegacyVgaEvidenceShutdownTraceFixture `
+            (@($markers[0..4]) + @('d1') + @($markers[5..12])))
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $postDisableTransition
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'transition after driver disabling'
+
+        $splicedTerminal = @(New-LegacyVgaEvidenceShutdownTraceFixture @(
+            'd1', 'd2', 'd3', 'd4', 'd5', 'd6', 'e8', 'd7', 'd8',
+            'd5', 'd9', 'da', 'db', 'dc'
+        ))
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $splicedTerminal
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'ordered marker d6 through dc'
+
+        foreach ($fault in @('eb', 'ef')) {
+            $faultedMarkers = @($markers[0..3]) + @($fault) + @($markers[4..12])
+            $faulted = @(New-LegacyVgaEvidenceShutdownTraceFixture $faultedMarkers)
+            Write-LegacyVgaEvidenceShutdownTraceFixture $trace $faulted
+            Assert-LegacyVgaEvidenceTestThrows {
+                Assert-LegacyVgaEvidenceShutdownTrace $trace
+            } "failure marker $fault"
+        }
+
+        $dropped = @($lines)
+        $dropped[1] = "true`ttrue`t65536`t13`t13`t0`t1`t0"
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $dropped
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'dropped lifecycle markers'
+
+        $truncated = @($lines[0..($lines.Count - 2)])
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $truncated
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'event count'
+
+        $missingField = @($lines)
+        $missingField[1] = "true`ttrue`t65536`t13`t13`t0`t0"
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $missingField
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'metadata row is malformed'
+
+        $inconsistent = @($lines)
+        $inconsistent[1] = "true`ttrue`t65536`t13`t14`t0`t0`t0"
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $inconsistent
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'accounting is inconsistent'
+
+        $negative = @($lines)
+        $negative[1] = "true`ttrue`t65536`t13`t13`t0`t0`t-1"
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $negative
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'invalid counter'
+
+        $regressed = @($lines)
+        $regressed[4] = $regressed[4] -replace "^2`t", "1`t"
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $regressed
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'not strictly increasing'
+
+        $shifted = @($lines)
+        for ($index = 3; $index -lt $shifted.Count; $index += 1) {
+            $fields = @($shifted[$index].Split("`t"))
+            $fields[0] = ([uint64]$fields[0] + 1).ToString()
+            $shifted[$index] = $fields -join "`t"
+        }
+        $shifted[1] = "true`ttrue`t65536`t13`t14`t0`t0`t1"
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $shifted
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'sequence accounting is inconsistent'
+
+        $accountedOverwrite = @(New-LegacyVgaEvidenceShutdownTraceFixture @(
+            'd1', 'd2', 'd3', 'd4', 'aa', 'd5', 'd6', 'e8',
+            'd7', 'd8', 'd9', 'da', 'db', 'dc'
+        ))
+        $accountedOverwrite[7] = $accountedOverwrite[7] -replace `
+            "`tmarker`taa`t", "`tmmio`taa`t"
+        $accountedOverwrite = @($accountedOverwrite[0..6]) + `
+            @($accountedOverwrite[8..($accountedOverwrite.Count - 1)])
+        $accountedOverwrite[1] = "true`ttrue`t65536`t13`t14`t0`t0`t1"
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $accountedOverwrite
+        Assert-LegacyVgaEvidenceShutdownTrace $trace
+
+        $caseMismatchedKind = @($lines)
+        $caseMismatchedKind[3] = $caseMismatchedKind[3] -replace `
+            "`tmarker`td1`t", "`tMarker`teb`t"
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $caseMismatchedKind
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'event kind is invalid'
+
+        $malformedEvent = @($lines)
+        $malformedEvent[3] = $malformedEvent[3] -replace "`t0000000000000000$", ''
+        Write-LegacyVgaEvidenceShutdownTraceFixture $trace $malformedEvent
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceShutdownTrace $trace
+        } 'event row is malformed'
+    }
+
+    Invoke-LegacyVgaEvidenceTest 'Guest result and logs reject every reset path' {
+        $newResult = {
+            [pscustomobject]@{
+                stop_reason = 'power_off'
+                exit_code = 0
+                reset_count = 0
+                boot_epoch = 1
+                guest_requested_resets = 0
+                unclassified_io = 0
+                unclassified_mmio = 0
+            }
+        }
+        Assert-LegacyVgaEvidenceResult (& $newResult) 0
+        foreach ($field in @('reset_count', 'guest_requested_resets')) {
+            $invalid = & $newResult
+            $invalid.$field = 1
+            Assert-LegacyVgaEvidenceTestThrows {
+                Assert-LegacyVgaEvidenceResult $invalid 0
+            } 'without a guest or lifetime reset'
+        }
+        $invalidEpoch = & $newResult
+        $invalidEpoch.boot_epoch = 2
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceResult $invalidEpoch 0
+        } 'without a guest or lifetime reset'
+        foreach ($field in @(
+            'exit_code', 'reset_count', 'guest_requested_resets', 'boot_epoch',
+            'unclassified_io', 'unclassified_mmio'
+        )) {
+            $invalid = & $newResult
+            $invalid.$field = $null
+            Assert-LegacyVgaEvidenceTestThrows {
+                Assert-LegacyVgaEvidenceResult $invalid 0
+            } 'missing or null'
+        }
+
+        $cleanLog = Join-Path $testRoot 'clean-reset.log'
+        $warmLog = Join-Path $testRoot 'warm-reset.log'
+        $stormLog = Join-Path $testRoot 'mmio-storm.log'
+        [IO.File]::WriteAllText($cleanLog, 'normal power off')
+        [IO.File]::WriteAllText($warmLog, 'warm CPU reset 1 after 10 iterations')
+        [IO.File]::WriteAllText(
+            $stormLog,
+            'diagnostic: MMIO exit storm fallbacks=42209 scalar=38583 string=3626'
+        )
+        Assert-LegacyVgaEvidenceLogs @($cleanLog)
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceLogs @($cleanLog, $warmLog)
+        } 'warm CPU reset'
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceLogs @($cleanLog, $stormLog)
+        } 'MMIO exit storm'
     }
 
     Invoke-LegacyVgaEvidenceTest 'ValidateOnly performs no guest mutation' {
@@ -316,6 +581,11 @@ try {
             )) {
                 [IO.File]::WriteAllBytes((Join-Path $tools $name), [byte[]](0x4D, 0x5A))
             }
+            foreach ($name in @(
+                'gswmini.drv', 'gswmini.vxd', 'gswhal9x.dll', 'gswdd32.dll'
+            )) {
+                [IO.File]::WriteAllBytes((Join-Path $assets $name), [byte[]](0x4D, 0x5A))
+            }
             $knownReg = @(
                 'REGEDIT4',
                 '',
@@ -346,6 +616,7 @@ try {
                 -HostExecutable (Join-Path $tools 'retvrn99.exe') `
                 -GuestImportExecutable (Join-Path $tools 'guest-import.exe') `
                 -LauncherStageExecutable (Join-Path $tools 'gswgfx-launcher-stage.exe') `
+                -CandidateDriverRoot $assets `
                 -NasmExecutable (Get-Command nasm -ErrorAction Stop).Source `
                 -Case 'quake-mode-x' -Mode '2' -Width 320 -Height 200 -Repetition 1 `
                 -SentinelX 16 -SentinelY 16 -SentinelWidth 32 -SentinelHeight 32 `
@@ -359,6 +630,17 @@ try {
                 'ValidateOnly did not return one validation record.'
             Assert-LegacyVgaEvidenceTestTrue ([bool]$record[0].validated) `
                 'ValidateOnly did not report success.'
+            Assert-LegacyVgaEvidenceTestTrue `
+                (-not (@($record[0].host_arguments) -contains '--graphics-trace')) `
+                'Console evidence must not request the GUI-only graphics trace.'
+            foreach ($requiredArgument in @(
+                '--test-device', '--strict-io', '--guest-report-kind:legacy-vga',
+                '--shutdown-trace'
+            )) {
+                Assert-LegacyVgaEvidenceTestTrue `
+                    (@($record[0].host_arguments) -contains $requiredArgument) `
+                    "Console evidence lost required argument $requiredArgument."
+            }
             Assert-LegacyVgaEvidenceTestTrue `
                 (-not (Test-Path -LiteralPath $profile)) `
                 'ValidateOnly created a disposable guest profile.'

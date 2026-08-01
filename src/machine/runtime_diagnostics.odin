@@ -216,11 +216,11 @@ machine_runtime_diagnostic_note_apm_write :: proc(m: ^Machine, size: u8, value: 
 
 @(private = "package")
 machine_runtime_diagnostic_note_shutdown_marker :: proc(m: ^Machine, value: u8) {
-	if m == nil || value < 0xD0 || value > 0xDE {return}
+	if m == nil || value < 0xD0 || value > 0xEF {return}
 	d := &m.runtime_diagnostic
 	d.shutdown_markers[d.shutdown_marker_count % MACHINE_SHUTDOWN_MARKER_CAPACITY] = value
 	d.shutdown_marker_count += 1
-	if (value == 0xD5 || value == 0xD6) && !d.shutdown_marker_active {
+	if (value == 0xD5 || value == 0xD6 || value == 0xDF) && !d.shutdown_marker_active {
 		d.shutdown_marker_active = true
 		d.shutdown_marker_started = m.active_ns
 		d.shutdown_io_count = 0

@@ -217,10 +217,10 @@ The current independently reproduced package payloads are:
 
 | Artifact | Bytes | SHA-256 |
 |---|---:|---|
-| `gswmini.drv` | 16,988 | `2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0` |
-| `gswmini.vxd` | 39,361 | `fe51fe90fc986082b236fc3926341ed418cf97d8f7f514d985d8d294c6625ecb` |
+| `gswmini.drv` | 16,980 | `9a4f6b7ad8d9b111d8aef8765f594d496bfa395ea7cda42eccd7b39f3145301d` |
+| `gswmini.vxd` | 43,629 | `d581e28550371a7c444dc85a5d03737d799da06e7885fb8860e1bfb98a61b05a` |
 | `gswmini.inf` | 3,210 | `5b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea` |
-| `gswhal9x.dll` | 48,128 | `c1b0dd934da52684886f01bcabb38fb812ad610bba147e65ead99cca2d980cc0` |
+| `gswhal9x.dll` | 48,128 | `2e74078fce12dcc729d5121d4838d5051a3dd1df43fe45817be890a90ffa3955` |
 | `gswdd32.dll` | 32,256 | `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4` |
 
 The DLL identity is GSW-specific. `gswhal9x.dll` is the DirectDraw HAL and
@@ -242,18 +242,28 @@ retaining the two-exit and generic fenced paths for older hosts.
 Version 0.2.0.8 revalidates PCI BARs and decode state across ConfigMgr
 re-enumeration, updates the existing Win16 framebuffer selector after a BAR
 move, reconnects a resident Win16 driver to a dynamically reloaded mini-VDD,
-and balances VDD mode-change notifications on every restore outcome. While
-Windows owns high-resolution mode, the mini-VDD rejects BIOS standard and VBE
-mode-set probes and swallows direct Bochs VBE register access. Mode 13h remains
-available for fullscreen Win32 software renderers, and explicit VDD transitions
-release the guard. The required V86 hook has checked installation and removal,
-  and a failed unhook rejects dynamic unload. If a full display-driver Disable
-  is followed by ReEnable, the Win16 driver restores the removed screen-switch
-  hook and matching I/O-trap state; ordinary in-place ReEnable remains
-  unchanged. Per-process teardown releases all owned 2D surfaces and guarded 3D
-  contexts before Windows completes driver exit. Its source and INF contracts
-  add exactly one low-resolution exception, 320x240x8. Guest discovery and
-  runtime acceptance remain separate required gates before that mode can be
+and balances VDD mode-change notifications on every restore outcome. A
+generation-bearing display arbiter assigns authority to firmware, the Windows
+desktop, or a foreground VGA VM. VDD direction changes and the existing
+DirectDraw-exclusive messages authorize transitions; stable Windows ownership
+consumes every other BIOS, VBE, and DISPI mode change, including mode 13h.
+Driver disable cancels transitions, bypasses DISPI trapping, and permits the
+Windows mode 3 or 83h BIOS restore without waiting for DirectDraw. The required
+V86 hook has checked installation and removal, and a failed unhook rejects
+dynamic unload. The earlier screen-switch re-entry workaround is superseded
+because retained A/B evidence showed no change in the first divergence or
+shutdown outcome. Ordered Win16 disable markers now bound trap restart,
+physical disable, VDD unregister, mode-3 restore, and INT 2Fh unhooking.
+Terminal `System_Exit` does not assume Win16 `Disable` ran: it makes display
+policy forward-only, disables the GSW DISPI extension directly, and restores
+the borrowed mini-VDD dispatch before ordinary cleanup. If INT 10h unhooking
+fails there, terminal cleanup still completes while dynamic unload remains
+fail-closed. A bounded `Sys_Critical_Exit` fallback retries only that outstanding
+owned hook; it performs no BIOS call, wait, allocation, or general teardown.
+Per-process teardown releases all owned 2D surfaces and guarded 3D contexts
+before Windows completes driver exit. Its source and INF contracts add exactly
+one low-resolution exception, 320x240x8. Guest discovery and runtime acceptance
+remain separate required gates before that mode can be
   promoted.
 
 ## GSW-Sound deferred native package

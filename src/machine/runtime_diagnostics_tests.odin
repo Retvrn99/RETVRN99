@@ -90,6 +90,65 @@ test_machine_runtime_diagnostic_reports_gsw_shutdown_marker_stall :: proc(t: ^te
 }
 
 @(test)
+test_machine_runtime_diagnostic_arms_on_win16_disable_entry :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	m.active_ns = 1
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xDF)
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xE0)
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xE4)
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xEF)
+	m.active_ns += MACHINE_GSW_SHUTDOWN_STALL_NS
+	machine_runtime_diagnostic_check_shutdown(m)
+
+	message, available := machine_take_runtime_diagnostic(m)
+	defer delete(message)
+	testing.expect(t, available)
+	testing.expect(t, strings.contains(message, "GSW shutdown stalled for 5s"))
+	testing.expect(t, strings.contains(message, "markers=dfe0e4ef"))
+}
+
+@(test)
+test_machine_runtime_diagnostic_second_arm_marker_preserves_start :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	m.active_ns = 1
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xDF)
+	started := m.runtime_diagnostic.shutdown_marker_started
+	m.active_ns += MACHINE_GSW_SHUTDOWN_STALL_NS / 2
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xE0)
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xD5)
+	testing.expect_value(t, m.runtime_diagnostic.shutdown_marker_started, started)
+
+	m.active_ns = started + MACHINE_GSW_SHUTDOWN_STALL_NS
+	machine_runtime_diagnostic_check_shutdown(m)
+	message, available := machine_take_runtime_diagnostic(m)
+	defer delete(message)
+	testing.expect(t, available)
+	testing.expect(t, strings.contains(message, "markers=dfe0d5"))
+}
+
+@(test)
+test_machine_runtime_diagnostic_inverse_arm_markers_preserve_start :: proc(t: ^testing.T) {
+	m := new(Machine)
+	defer free(m)
+	m.active_ns = 1
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xD5)
+	started := m.runtime_diagnostic.shutdown_marker_started
+	m.active_ns += MACHINE_GSW_SHUTDOWN_STALL_NS / 2
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xE1)
+	machine_runtime_diagnostic_note_shutdown_marker(m, 0xDF)
+	testing.expect_value(t, m.runtime_diagnostic.shutdown_marker_started, started)
+
+	m.active_ns = started + MACHINE_GSW_SHUTDOWN_STALL_NS
+	machine_runtime_diagnostic_check_shutdown(m)
+	message, available := machine_take_runtime_diagnostic(m)
+	defer delete(message)
+	testing.expect(t, available)
+	testing.expect(t, strings.contains(message, "markers=d5e1df"))
+}
+
+@(test)
 test_machine_runtime_diagnostic_saturates_shutdown_io_count :: proc(t: ^testing.T) {
 	m := new(Machine)
 	defer free(m)

@@ -23,6 +23,12 @@
 extern DWORD ThisVM;
 BOOL update_pm16(DWORD vm, DWORD oldmap, DWORD linear, DWORD size);
 
+void GSW_VBE_quiesce(void)
+{
+	outpw(VBE_DISPI_IOPORT_INDEX, VBE_DISPI_INDEX_ENABLE);
+	outpw(VBE_DISPI_IOPORT_DATA, VBE_DISPI_DISABLED);
+}
+
 static char gsw_vxd_name[] = "gswmini.vxd";
 
 static BOOL GSW_init_failure(void)

@@ -323,12 +323,12 @@ stage_parse_manifest :: proc(path: string, contract: ^Stage_Contract) -> bool {
 
 stage_reviewed_current_contract :: proc() -> Stage_Contract {
 	contract := stage_contract_default()
-	bytes := [GSW_VGA_FILE_COUNT]u64{3210, 16988, 39361, 48128, 32256}
+	bytes := [GSW_VGA_FILE_COUNT]u64{3210, 16980, 43629, 48128, 32256}
 	hashes := [GSW_VGA_FILE_COUNT]string {
 		"5b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea",
-		"2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0",
-		"fe51fe90fc986082b236fc3926341ed418cf97d8f7f514d985d8d294c6625ecb",
-		"c1b0dd934da52684886f01bcabb38fb812ad610bba147e65ead99cca2d980cc0",
+		"9a4f6b7ad8d9b111d8aef8765f594d496bfa395ea7cda42eccd7b39f3145301d",
+		"d581e28550371a7c444dc85a5d03737d799da06e7885fb8860e1bfb98a61b05a",
+		"2e74078fce12dcc729d5121d4838d5051a3dd1df43fe45817be890a90ffa3955",
 		"bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4",
 	}
 	for index in 0 ..< GSW_VGA_FILE_COUNT {
@@ -345,12 +345,12 @@ stage_reviewed_current_contract :: proc() -> Stage_Contract {
 
 stage_reviewed_prior_contract :: proc() -> Stage_Contract {
 	contract := stage_contract_default()
-	bytes := [GSW_VGA_FILE_COUNT]u64{3210, 16988, 39341, 48128, 32256}
+	bytes := [GSW_VGA_FILE_COUNT]u64{3210, 16988, 39361, 48128, 32256}
 	hashes := [GSW_VGA_FILE_COUNT]string {
 		"5b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea",
 		"2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0",
-		"f03acc02b4c1a1d8908f4374380d2cf9f6ed1e08ec8f6920e92af673c5dfc58b",
-		"d1f8bf9402215ab45088fa7d92a1ead024c31de0861d74fb2582d3ade4915b8d",
+		"fe51fe90fc986082b236fc3926341ed418cf97d8f7f514d985d8d294c6625ecb",
+		"c1b0dd934da52684886f01bcabb38fb812ad610bba147e65ead99cca2d980cc0",
 		"bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4",
 	}
 	for index in 0 ..< GSW_VGA_FILE_COUNT {

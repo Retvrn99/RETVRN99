@@ -92,56 +92,6 @@ function Assert-GswLowModeMutationRejected {
     throw $Message
 }
 
-function Assert-GswScreenSwitchReentryContract {
-    param([string]$PatchText)
-
-    $changedFiles = @(
-        [regex]::Matches($PatchText, '(?m)^diff --git a/(?<path>[^ ]+) b/[^\r\n]+\r?$') |
-            ForEach-Object { $_.Groups['path'].Value }
-    )
-    if (($changedFiles -join ',') -cne 'enable.c,minidrv.h,scrsw.c') {
-        throw "Screen-switch re-entry must change only enable.c, minidrv.h, and scrsw.c; found $($changedFiles -join ',')."
-    }
-    Assert-Match $PatchText '(?m)^\+        bRestoreSwitchHooks = !bReEnabling \|\| !Int2FhHooked\(\);\r?$' (
-        'Re-entry must restore switch state only for normal Enable or a missing INT 2Fh hook.'
-    )
-    Assert-Match $PatchText '(?m)^\+        if\( bRestoreSwitchHooks \) \{\r?\n^             int_2Fh\( STOP_IO_TRAP \);\r?\n^         \}\r?$' (
-        'The re-entry decision must guard STOP_IO_TRAP directly.'
-    )
-    Assert-Match $PatchText '(?m)^\+        if\( bRestoreSwitchHooks \) \{\r?\n^             HookInt2Fh\(\);\r?\n^         \}\r?$' (
-        'The re-entry decision must guard HookInt2Fh directly.'
-    )
-    Assert-Match $PatchText '(?m)^\+extern BOOL Int2FhHooked\( void \);\r?$' (
-        'The re-entry decision must use one read-only screen-switch hook query.'
-    )
-    Assert-Match $PatchText '(?m)^\+BOOL Int2FhHooked\( void \)\r?\n^\+\{\r?\n^\+    return\( \(SwitchFlags & INT_2F_HOOKED\) != 0 \);\r?\n^\+\}\r?$' (
-        'The hook query must be read-only and report only the existing INT 2Fh ownership bit.'
-    )
-    Assert-Match $PatchText '(?m)^\+#define INT_2F_SAVED\s+0x02\s+/\* Previous INT 2Fh vector is saved\. \*/\r?$' (
-        'Screen-switch state must distinguish a saved chain target from active hook ownership.'
-    )
-    Assert-Match $PatchText 'if\( SwitchFlags & INT_2F_HOOKED \)\s*\r?\n\+        return;[\s\S]+if\( !\(SwitchFlags & INT_2F_SAVED\) \)[\s\S]+DOSGetIntVec\( 0x2F \)[\s\S]+SwitchFlags \|= INT_2F_SAVED;[\s\S]+DOSSetIntVec\( 0x2F, SWHook \);[\s\S]+SwitchFlags \|= INT_2F_HOOKED;' (
-        'Hook installation must be idempotent and preserve the first stable INT 2Fh chain target across re-entry.'
-    )
-    Assert-NotMatch $PatchText '(?m)^\+.*SwitchFlags\s*&=\s*~(?:INT_2F_SAVED|\([^\r\n]*INT_2F_SAVED)' (
-        'Disable must not discard the stable INT 2Fh chain target needed by later ReEnable.'
-    )
-    Assert-NotMatch $PatchText '(?m)^\+.*(?:bReEnabling\s*=|START_IO_TRAP|UnhookInt2Fh|VDD_DRIVER_(?:REGISTER|UNREGISTER))' (
-        'The re-entry patch must not alter the established ReEnable, Disable, or VDD registration state machine.'
-    )
-}
-
-function Assert-GswScreenSwitchReentryMutationRejected {
-    param([string]$PatchText, [string]$Message)
-
-    try {
-        Assert-GswScreenSwitchReentryContract -PatchText $PatchText
-    } catch {
-        return
-    }
-    throw $Message
-}
-
 function Get-SimpleFunctionBody {
     param([string]$Text, [string]$Signature)
     $match = [regex]::Match(
@@ -150,6 +100,34 @@ function Get-SimpleFunctionBody {
     )
     if (-not $match.Success) { throw "Function body not found: $Signature" }
     return $match.Groups['body'].Value
+}
+
+function Get-SwitchCaseBody {
+    param([string]$Text, [string]$CaseLabel)
+
+    $label = [regex]::Escape($CaseLabel)
+    $pattern = '(?ms)^\s*case\s+' + $label + ':\s*(?<body>.*?)(?=^\s*(?:case\s+|default:))'
+    $match = [regex]::Match($Text, $pattern)
+    if (-not $match.Success) {
+        throw "Missing switch case: $CaseLabel"
+    }
+    return $match.Groups['body'].Value
+}
+
+function Get-PatchDeltaText {
+    param([string]$PatchText, [char]$Prefix)
+
+    return @(
+        foreach ($line in ($PatchText -split "`r?`n")) {
+            if (
+                $line.Length -gt 0 -and
+                $line[0] -ceq $Prefix -and
+                -not $line.StartsWith("$Prefix$Prefix$Prefix")
+            ) {
+                $line.Substring(1)
+            }
+        }
+    ) -join "`n"
 }
 
 $root = Join-Path $PSScriptRoot '..\drivers\win98\derived\vmdisp9x-gsw'
@@ -163,9 +141,47 @@ $shutdownTrace = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw_shu
 $modePatch = Get-Content -Raw -LiteralPath (
     Join-Path $root 'patches\0011-gsw-320x240x8-mode.patch'
 )
-$reentryPatch = Get-Content -Raw -LiteralPath (
-    Join-Path $root 'patches\0012-gsw-win16-screen-switch-reentry.patch'
+$arbiterPatch = Get-Content -Raw -LiteralPath (
+    Join-Path $root 'patches\0013-gsw-display-arbiter.patch'
 )
+$arbiterAdded = Get-PatchDeltaText -PatchText $arbiterPatch -Prefix '+'
+$arbiterRemoved = Get-PatchDeltaText -PatchText $arbiterPatch -Prefix '-'
+$displayAdapter = Get-Content -Raw -LiteralPath (
+    Join-Path $root 'overlay\gsw_display_adapter.c'
+)
+$displayAdapterHeader = Get-Content -Raw -LiteralPath (
+    Join-Path $root 'overlay\gsw_display_adapter.h'
+)
+$displayArbiter = Get-Content -Raw -LiteralPath (
+    Join-Path $root 'overlay\gsw_display_arbiter.c'
+)
+$displayArbiterHeader = Get-Content -Raw -LiteralPath (
+    Join-Path $root 'overlay\gsw_display_arbiter.h'
+)
+$deviceRegisteredCase = Get-SwitchCaseBody $displayArbiter 'GSW_DISPLAY_EVENT_DEVICE_REGISTERED'
+$desktopProgrammedCase = Get-SwitchCaseBody $displayArbiter 'GSW_DISPLAY_EVENT_DESKTOP_PROGRAMMED'
+$desktopProgramFailedCase = Get-SwitchCaseBody $displayArbiter 'GSW_DISPLAY_EVENT_DESKTOP_PROGRAM_FAILED'
+$ddrawExclusiveBeginCase = Get-SwitchCaseBody $displayArbiter 'GSW_DISPLAY_EVENT_DDRAW_EXCLUSIVE_BEGIN'
+$ddrawExclusiveEndCase = Get-SwitchCaseBody $displayArbiter 'GSW_DISPLAY_EVENT_DDRAW_EXCLUSIVE_END'
+$vddPreForegroundBody = Get-SimpleFunctionBody $displayAdapter (
+    'void GSW_display_vdd_pre_foreground(unsigned long vm)'
+)
+$vddPreDesktopBody = Get-SimpleFunctionBody $displayAdapter (
+    'void GSW_display_vdd_pre_desktop(unsigned long vm)'
+)
+$desktopProgrammedBody = Get-SimpleFunctionBody $displayAdapter (
+    'void GSW_display_desktop_programmed(unsigned long vm)'
+)
+$desktopProgramFailedBody = Get-SimpleFunctionBody $displayAdapter (
+    'void GSW_display_desktop_program_failed(unsigned long vm)'
+)
+$systemQuiesceBody = Get-SimpleFunctionBody $arbiterAdded (
+    'static void GSW_system_quiesce(DWORD VM)'
+)
+$criticalExitBody = Get-SimpleFunctionBody $arbiterAdded (
+    'void __stdcall GSW_critical_exit_proc(DWORD VM)'
+)
+$gswMake = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gsw.mak')
 $inf = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\gswmini.inf')
 $versionResource = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\res\gswmini.rc')
 $shutdownPatch = Get-Content -Raw -LiteralPath (
@@ -173,6 +189,7 @@ $shutdownPatch = Get-Content -Raw -LiteralPath (
 )
 $vxdMain = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\vxd_main_gsw.c')
 $vbe = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\vxd_vbe_gsw.c')
+$vbeQuiesceBody = Get-SimpleFunctionBody $vbe 'void GSW_VBE_quiesce(void)'
 $pm16 = Get-Content -Raw -LiteralPath (Join-Path $root 'overlay\pm16_calls_gsw.c')
 $lifecycle = Get-Content -Raw -LiteralPath (
     Join-Path $root 'patches\0009-gsw-pnp-display-lifecycle.patch'
@@ -181,7 +198,6 @@ $halDdraw = Get-Content -Raw -LiteralPath (Join-Path $halRoot 'overlay\gsw_ddraw
 $halBackend = Get-Content -Raw -LiteralPath (Join-Path $halRoot 'overlay\gsw_backend.c')
 
 Assert-GswLowModeSourceContract -PatchText $modePatch -InfText $inf
-Assert-GswScreenSwitchReentryContract -PatchText $reentryPatch
 Assert-Match $inf '(?m)^DriverVer=07/26/2026,0\.2\.0\.8\r?$' (
     'The PnP package must advertise driver version 0.2.0.8 dated 07/26/2026.'
 )
@@ -246,56 +262,279 @@ foreach ($mutation in $infMutations) {
     )
 }
 
-$reentryCases = @(
-    [pscustomobject]@{ ReEnabling = $false; Hooked = $false; Restore = $true },
-    [pscustomobject]@{ ReEnabling = $false; Hooked = $true; Restore = $true },
-    [pscustomobject]@{ ReEnabling = $true; Hooked = $false; Restore = $true },
-    [pscustomobject]@{ ReEnabling = $true; Hooked = $true; Restore = $false }
+Assert-Match $arbiterRemoved 'bRestoreSwitchHooks = !bReEnabling \|\| !Int2FhHooked\(\);' (
+    'The display-arbiter patch must explicitly supersede the screen-switch re-entry heuristic.'
 )
-foreach ($case in $reentryCases) {
-    $observed = -not $case.ReEnabling -or -not $case.Hooked
-    if ($observed -ne $case.Restore) {
-        throw "Unexpected screen-switch re-entry decision for ReEnabling=$($case.ReEnabling) Hooked=$($case.Hooked)."
-    }
-}
-$reentryFixture = $reentryPatch.Replace("`r`n", "`n")
-$readOnlyMutation = $reentryFixture.Replace(
-    "+{`n+    return( (SwitchFlags & INT_2F_HOOKED) != 0 );",
-    "+{`n+    SwitchFlags |= INT_2F_HOOKED;`n+    return( (SwitchFlags & INT_2F_HOOKED) != 0 );"
+Assert-Match $arbiterRemoved 'extern BOOL Int2FhHooked\( void \);' (
+    'The display-arbiter patch must remove the screen-switch hook query introduced by patch 0012.'
 )
-$unguardedCallsMutation = $reentryFixture.Replace(
-    "+        if( bRestoreSwitchHooks ) {`n             int_2Fh( STOP_IO_TRAP );`n         }",
-    "+        if( bRestoreSwitchHooks ) {`n+        }`n             int_2Fh( STOP_IO_TRAP );`n-        }"
-).Replace(
-    "+        if( bRestoreSwitchHooks ) {`n             HookInt2Fh();`n         }",
-    "+        if( bRestoreSwitchHooks ) {`n+        }`n             HookInt2Fh();`n-        }"
+Assert-Match $arbiterRemoved '#define INT_2F_SAVED\s+0x02' (
+    'The display-arbiter patch must remove patch 0012 saved-chain state.'
 )
-$recaptureMutation = $reentryFixture.Replace(
-    'if( !(SwitchFlags & INT_2F_SAVED) ) {',
-    'if( SwitchFlags & INT_2F_SAVED ) {'
+Assert-Match $arbiterPatch '(?m)^\+        if\( !bReEnabling \) \{\r?\n^             int_2Fh\( STOP_IO_TRAP \);[\s\S]+^\+        if\( !bReEnabling \) \{\r?\n^             HookInt2Fh\(\);' (
+    'Patch 0013 must restore the original bounded Win16 Enable hook conditions explicitly.'
 )
-$clearSavedMutation = $reentryFixture.Replace(
-    'SwitchFlags |= INT_2F_SAVED;',
-    'SwitchFlags &= ~INT_2F_SAVED;'
+Assert-Match $arbiterAdded 'selAlias = AllocCStoDSAlias[\s\S]+DOSGetIntVec\( 0x2F \)[\s\S]+DOSSetIntVec\( 0x2F, SWHook \);[\s\S]+FreeSelector\( selAlias \);' (
+    'Patch 0013 must restore one ordinary INT 2Fh chain capture per real hook installation.'
 )
-$reentryMutations = @(
-    $reentryFixture.Replace('!bReEnabling || !Int2FhHooked()', '!bReEnabling && !Int2FhHooked()'),
-    $reentryFixture.Replace(' || !Int2FhHooked()', ''),
-    $reentryFixture.Replace('(SwitchFlags & INT_2F_HOOKED) != 0', '(SwitchFlags & INT_2F_HOOKED) == 0'),
-    $reentryFixture.Replace('if( bRestoreSwitchHooks ) {', 'if( !bReEnabling ) {'),
-    $readOnlyMutation,
-    $unguardedCallsMutation,
-    $recaptureMutation,
-    $clearSavedMutation
+Assert-NotMatch $arbiterAdded 'bRestoreSwitchHooks|Int2FhHooked|INT_2F_SAVED' (
+    'No part of the superseded screen-switch re-entry heuristic may survive in the patch result.'
 )
-foreach ($mutation in $reentryMutations) {
-    if ($mutation -ceq $reentryFixture) {
-        throw 'A screen-switch re-entry mutation did not alter its fixture.'
-    }
-    Assert-GswScreenSwitchReentryMutationRejected -PatchText $mutation (
-        'A weakened screen-switch re-entry contract was accepted.'
+
+Assert-Match $arbiterRemoved 'BOOL gsw_windows_hires_active = FALSE;' (
+    'Patch 0013 must remove the Boolean high-resolution ownership surrogate.'
+)
+Assert-Match $arbiterRemoved 'extern BOOL mode_changing;' (
+    'The INT 10h policy path must stop reading the upstream mode_changing implementation flag.'
+)
+Assert-NotMatch $arbiterAdded 'gsw_windows_hires_active|GSW_MARK_INT10_MODE13|if\s*\(\s*al\s*==\s*0x13\s*\)' (
+    'Patch 0013 must not retain a mode-13 exception or Boolean display authority.'
+)
+Assert-NotMatch ($displayAdapter + $displayAdapterHeader + $displayArbiter + $displayArbiterHeader) (
+    'gsw_windows_hires_active|GSW_MARK_INT10_MODE13|mode_changing'
+) 'Display arbitration must not depend on the retired high-resolution flag or mode_changing policy reads.'
+Assert-NotMatch $arbiterAdded '(?m)^.*(?:if|while|&&|\|\|)[^\r\n]*mode_changing' (
+    'Patch 0013 may preserve upstream mode_changing assignments but must not add a policy read.'
+)
+Assert-Match $arbiterAdded 'GSW_display_bios_mode_set\(vm, al\)[\s\S]+GSW_MARK_INT10_MODE_SET' (
+    'Every BIOS standard mode set must use the arbiter before the generic mode-set marker.'
+)
+
+Assert-Match $arbiterAdded 'GSW_display_vdd_pre_foreground\(vm\);[\s\S]+GSW_display_vdd_post_foreground\(vm\);[\s\S]+GSW_display_vdd_pre_desktop\(vm\);[\s\S]+GSW_display_vdd_post_desktop\(vm\);' (
+    'The mini-VDD callbacks must preserve all four directional VDD boundaries.'
+)
+foreach ($body in @(
+    $vddPreForegroundBody,
+    $vddPreDesktopBody,
+    $desktopProgrammedBody,
+    $desktopProgramFailedBody
+)) {
+    Assert-Match $body 'gsw_display_state\.lifecycle != GSW_DISPLAY_REGISTERED[\s\S]+return;[\s\S]+GSW_display_emit' (
+        'PRE and programming callbacks must be dropped until registration opens the conventional transition.'
     )
 }
+Assert-Match $displayAdapter 'GSW_display_vdd_post_foreground\(unsigned long vm\)[\s\S]+owner = GSW_display_physical_owner\(vm\);[\s\S]+GSW_DISPLAY_EVENT_VDD_POST_FOREGROUND[\s\S]+GSW_DISPLAY_EVENT_PHYSICAL_OWNER_FRESH' (
+    'Foreground POST must carry a fresh physical-owner observation.'
+)
+Assert-Match $displayAdapter 'GSW_display_vdd_post_desktop\(unsigned long vm\)[\s\S]+owner = GSW_display_physical_owner\(vm\);[\s\S]+GSW_DISPLAY_EVENT_VDD_POST_DESKTOP[\s\S]+GSW_DISPLAY_EVENT_PHYSICAL_OWNER_FRESH' (
+    'Desktop POST must carry a fresh physical-owner observation.'
+)
+Assert-Match $displayArbiter 'GSW_DISPLAY_EVENT_VDD_PRE_FOREGROUND[\s\S]+state\.transition == GSW_DISPLAY_DESKTOP_RECONFIGURE[\s\S]+GSW_DISPLAY_TO_FOREGROUND_VGA' (
+    'A same-VM DirectDraw reconfigure must refine into the directional foreground transition.'
+)
+Assert-Match $displayArbiter 'GSW_DISPLAY_EVENT_VDD_PRE_DESKTOP[\s\S]+state\.transition == GSW_DISPLAY_DESKTOP_RECONFIGURE[\s\S]+GSW_DISPLAY_TO_WINDOWS_DESKTOP' (
+    'A same-Windows DirectDraw reconfigure must refine into the directional desktop transition.'
+)
+Assert-Match $displayArbiter 'fresh && event\.observed_physical_owner != target_vm[\s\S]+protocol_fault = 1U;[\s\S]+exact \|\| fresh[\s\S]+gsw_display_commit_authority' (
+    'POST must preserve prior authority on contradictory fresh ownership and commit only exact or fresh matching transitions.'
+)
+
+Assert-Match $arbiterPatch 'rs = VBE_setmode[\s\S]+if\(rs\)[\s\S]+GSW_display_desktop_programmed\(ThisVM\);[\s\S]+else[\s\S]+GSW_display_desktop_program_failed\(ThisVM\);' (
+    'Direct desktop programming must report the existing VBE operation result without inventing transition authority.'
+)
+Assert-NotMatch $arbiterAdded 'GSW_display_desktop_programming\(ThisVM\);' (
+    'OP_VBE_SETMODE must not manufacture desktop-reconfigure authority over a real directional VDD PRE.'
+)
+Assert-NotMatch $arbiterAdded 'GSW_display_desktop_programmed\(vm\);' (
+    'Pinned VMDisp9x SAVE_REGISTERS must remain a NOP rather than acting as a synthetic success fence.'
+)
+Assert-Match $arbiterPatch 'VDDPROC\(SAVE_REGISTERS, save_registers\)[\s\S]+Ownership is committed only by VDD POST callbacks\.[\s\S]+VDDPROC\(RESTORE_REGISTERS, restore_registers\)' (
+    'The derived SAVE_REGISTERS result must remain an explicit ownership NOP.'
+)
+Assert-Match $displayAdapter 'GSW_display_desktop_programmed\(unsigned long vm\)[\s\S]+GSW_MARK_DESKTOP_PROGRAMMED[\s\S]+GSW_DISPLAY_EVENT_DESKTOP_PROGRAMMED' (
+    'Successful desktop programming must emit its lifecycle event and marker.'
+)
+Assert-Match $displayAdapter 'GSW_display_desktop_program_failed\(unsigned long vm\)[\s\S]+GSW_DISPLAY_EVENT_DESKTOP_PROGRAM_FAILED' (
+    'Failed desktop programming must emit a distinct failure event.'
+)
+Assert-Match $displayArbiterHeader 'GSW_DISPLAY_EVENT_DESKTOP_PROGRAMMED,[\s\S]+GSW_DISPLAY_EVENT_DESKTOP_PROGRAM_FAILED,' (
+    'The pure arbiter interface must distinguish desktop programming success from failure.'
+)
+Assert-NotMatch ($displayAdapter + $displayAdapterHeader + $displayArbiter + $displayArbiterHeader) 'GSW_DISPLAY_EVENT_(?:VDD_(?:PRE|POST)_RECONFIGURE|DESKTOP_PROGRAMMING)|GSW_display_desktop_programming' (
+    'Desktop completion must not depend on a synthetic PRE or reconfigure event.'
+)
+Assert-Match $desktopProgrammedCase 'state\.transition == GSW_DISPLAY_DESKTOP_RECONFIGURE &&[\s\S]+state\.transition_vm == state\.windows_vm[\s\S]+gsw_display_commit_authority\([\s\S]+GSW_DISPLAY_WINDOWS_DESKTOP' (
+    'Desktop success may commit authority only from an owned desktop-reconfigure transition.'
+)
+Assert-Match $desktopProgrammedCase 'state\.transition == GSW_DISPLAY_TO_WINDOWS_DESKTOP &&[\s\S]+state\.transition_vm == state\.windows_vm[\s\S]+break;' (
+    'Desktop success inside a real VDD desktop transition must defer authority to VDD POST.'
+)
+Assert-NotMatch $desktopProgrammedCase 'GSW_DISPLAY_TO_WINDOWS_DESKTOP[\s\S]+gsw_display_commit_authority' (
+    'Desktop success must not commit a directional VDD transition early.'
+)
+Assert-Match $desktopProgramFailedCase 'state\.transition == GSW_DISPLAY_TRANSITION_NONE\)[\s\S]+break;' (
+    'A duplicate desktop-programming failure with no active transition must be idempotent.'
+)
+Assert-Match $desktopProgramFailedCase 'state\.transition_vm == state\.windows_vm\)[\s\S]+result\.next\.transition = GSW_DISPLAY_TRANSITION_NONE;[\s\S]+result\.next\.transition_vm = 0UL;' (
+    'Desktop failure must cancel only the matching Windows transition without inventing authority.'
+)
+
+Assert-Match $deviceRegisteredCase 'state\.lifecycle == GSW_DISPLAY_DISABLING &&[\s\S]+event\.vm != 0UL && event\.vm == state\.windows_vm[\s\S]+result\.next\.lifecycle = GSW_DISPLAY_REGISTERED;[\s\S]+GSW_DISPLAY_DESKTOP_RECONFIGURE,[\s\S]+state\.windows_vm' (
+    'A full ReEnable must re-register only the retained nonzero Windows VM and begin desktop reconfiguration.'
+)
+Assert-NotMatch $deviceRegisteredCase 'generation' (
+    'Re-registration must leave the authority generation unchanged until desktop programming succeeds.'
+)
+Assert-Match $arbiterPatch 'VDDPROC\(REGISTER_DISPLAY_DRIVER, register_display_driver\)[\s\S]+GSW_display_device_registered\(vm\);' (
+    'Every successful VDD display-driver registration, including full ReEnable, must reach the arbiter.'
+)
+
+Assert-Match $displayAdapter 'GSW_display_dispi_access\(unsigned long vm\)[\s\S]+owner = GSW_display_physical_owner\(vm\);[\s\S]+vm != 0UL && vm == owner[\s\S]+GSW_DISPLAY_EVENT_PHYSICAL_OWNER[\s\S]+GSW_DISPLAY_EVENT_PHYSICAL_OWNER_FRESH[\s\S]+GSW_DISPLAY_EVENT_DISPI_ACCESS' (
+    'DISPI access must first reconcile only a fresh matching physical owner, then apply request policy.'
+)
+Assert-Match $displayAdapter 'GSW_display_physical_owner\(unsigned long vm\)[\s\S]+mov ebx, \[vm\][\s\S]+VxDCall\(VDD, Get_VM_Info\);[\s\S]+mov \[owner\], edi[\s\S]+return owner;' (
+    'The adapter must query VDD_Get_VM_Info with the caller VM and preserve the physical CRTC owner from EDI.'
+)
+Assert-Match $arbiterPatch 'call GSW_display_dispi_access[\s\S]+test eax,eax[\s\S]+jz _Virtual1CEPhysical[\s\S]+ret[\s\S]+VxDJmp\(VDD, Do_Physical_IO\);' (
+    'The DISPI trap must reach physical I/O only when the arbiter returns Forward.'
+)
+
+Assert-Match $displayArbiterHeader '#define GSW_DISPLAY_VBE_REJECT_AX 0x034FU' (
+    'The portable contract must define the required VBE failure AX value.'
+)
+Assert-Match $displayArbiterHeader 'typedef struct GSW_Display_Result \{[\s\S]+GSW_Display_Action action;[\s\S]+unsigned short vbe_ax;' (
+    'The arbiter result must carry the VBE AX response alongside its action.'
+)
+Assert-Match $displayArbiter 'result->action = GSW_DISPLAY_REJECT_VBE;[\s\S]+result->vbe_ax = GSW_DISPLAY_VBE_REJECT_AX;' (
+    'Every rejected VBE request must publish AX=034F through the result.'
+)
+Assert-Match $displayAdapterHeader 'GSW_Display_Result GSW_display_vbe_mode_set\(' (
+    'The VBE adapter must return the complete arbiter result, not only its action.'
+)
+Assert-Match $displayAdapter 'GSW_Display_Result GSW_display_vbe_mode_set\([\s\S]+return GSW_display_emit\([\s\S]+GSW_DISPLAY_EVENT_VBE_MODE_SET[\s\S]+\);' (
+    'The VBE adapter must preserve Result.vbe_ax when returning the arbiter decision.'
+)
+Assert-NotMatch $displayAdapter 'GSW_DISPLAY_EVENT_VBE_MODE_SET,\s*vm,\s*0UL,\s*mode,\s*0U\s*\)\.action;' (
+    'The VBE adapter must not truncate its result to the action field.'
+)
+Assert-Match $arbiterAdded 'result = GSW_display_vbe_mode_set[\s\S]+result\.action == GSW_DISPLAY_REJECT_VBE[\s\S]+result\.vbe_ax' (
+    'The INT 10h adapter must use Result.vbe_ax rather than hard-coding or discarding it.'
+)
+
+Assert-Match $arbiterPatch 'GSW_MARK_SYSTEM_EXIT[\s\S]+call GSW_system_exit_proc[\s\S]+#endif[\s\S]+pushad[\s\S]+push ebx ; VM handle' (
+    'System Exit must quiesce GSW before the existing ordinary teardown sequence.'
+)
+Assert-Match $lifecycle 'cmp eax,System_Exit[\s\S]+push ebx ; VM handle[\s\S]+call Device_Exit_proc' (
+    'The existing System Exit sequence must still delegate to Device Exit after lifecycle publication.'
+)
+Assert-Match $systemQuiesceBody 'GSW_display_system_exit\(VM\);[\s\S]+if\(is_qemu\)[\s\S]+GSW_VBE_quiesce\(\);[\s\S]+GSW_MARK_SYSTEM_DISPLAY_QUIESCED[\s\S]+GSW_restore_vdd_dispatch\(\);' (
+    'Terminal exit must publish forward-only ownership, directly quiesce DISPI, and restore the borrowed VDD dispatch.'
+)
+Assert-Match $arbiterAdded 'static BOOL gsw_system_exiting = FALSE;' (
+    'The VxD must distinguish terminal System Exit from a rejectable dynamic unload.'
+)
+Assert-Match $arbiterPatch 'gsw_system_exiting = FALSE;[\s\S]+gsw_device_initializing = TRUE;' (
+    'Each device initialization must clear terminal-exit policy before fallible setup begins.'
+)
+Assert-Match $arbiterAdded 'GSW_system_exit_proc\(DWORD VM\)[\s\S]+gsw_system_exiting = TRUE;[\s\S]+GSW_system_quiesce\(VM\);' (
+    'System Exit must enable terminal cleanup before the ordinary Device Exit callback runs.'
+)
+Assert-Match $vbeQuiesceBody 'outpw\(VBE_DISPI_IOPORT_INDEX, VBE_DISPI_INDEX_ENABLE\);[\s\S]+outpw\(VBE_DISPI_IOPORT_DATA, VBE_DISPI_DISABLED\);' (
+    'Terminal exit must disable the GSW DISPI extension without BIOS nesting.'
+)
+Assert-Match $arbiterPatch 'cmp eax,Sys_Critical_Exit[\s\S]+call GSW_critical_exit_proc' (
+    'Sys_Critical_Exit must reach the bounded owned-hook fallback.'
+)
+Assert-Match $criticalExitBody 'GSW_MARK_CRITICAL_EXIT_ENTER[\s\S]+GSW_system_quiesce\(VM\);[\s\S]+if\(!gsw_int10_hooked\)[\s\S]+Unhook_V86_Int_Chain[\s\S]+gsw_int10_hooked = FALSE;[\s\S]+GSW_MARK_CRITICAL_UNHOOKED[\s\S]+GSW_MARK_CRITICAL_UNHOOK_FAILED' (
+    'Critical exit must idempotently retry only the outstanding owned INT 10h hook and mark its result.'
+)
+Assert-NotMatch ($systemQuiesceBody + $criticalExitBody) 'Device_Exit_proc|PhysicalDisable|\bint_10h\s*\(|Exec_Int|Simulate_Int|Wait_|Create_|Destroy_|GSW_transport_(?:shutdown|release)|FBHDA_release_hw|wram_release|mouse_release' (
+    'Terminal quiesce and critical fallback must not allocate, wait, invoke BIOS, or run general teardown.'
+)
+Assert-Match $arbiterPatch 'if\(gsw_int10_hooked\)[\s\S]+if\(!Unhook_V86_Int_Chain[\s\S]+if\(!gsw_system_exiting\)[\s\S]+return FALSE;[\s\S]+else[\s\S]+gsw_int10_hooked = FALSE;[\s\S]+GSW_display_device_exit\(VM\);[\s\S]+gsw_device_initialized = FALSE;[\s\S]+GSW_restore_vdd_dispatch\(\);' (
+    'Dynamic unload must remain fail-closed, while terminal cleanup continues with an outstanding hook for Critical Exit.'
+)
+Assert-NotMatch $criticalExitBody 'Device_Exit_proc|GSW_transport_release|FBHDA_release_hw|wram_release|mouse_release' (
+    'Critical Exit must not resume or duplicate the ordinary cleanup completed during System Exit.'
+)
+
+Assert-Match $shutdownTrace 'GSW_MARK_DRIVER_DISABLING\s+0xD5' (
+    'The mini-VDD driver-disabling boundary must retain marker D5.'
+)
+$win16DisableEnterMarker = [regex]::Match(
+    $shutdownTrace,
+    '(?m)^#define GSW_MARK_WIN16_DISABLE_ENTER\s+0x(?<value>[0-9A-Fa-f]{2})\s*$'
+)
+if (-not $win16DisableEnterMarker.Success) {
+    throw 'The Win16 Disable entry boundary must have a fixed shutdown marker.'
+}
+if ($win16DisableEnterMarker.Groups['value'].Value.ToUpperInvariant() -eq 'D5') {
+    throw 'The Win16 Disable entry marker must not alias the mini-VDD D5 boundary.'
+}
+if ($win16DisableEnterMarker.Groups['value'].Value.ToUpperInvariant() -ne 'DF') {
+    throw 'The distinct Win16 Disable entry boundary must retain marker DF.'
+}
+Assert-Match $shutdownTrace 'GSW_MARK_WIN16_TRAPS_STARTED\s+0xE0[\s\S]+GSW_MARK_WIN16_PHYSICAL_OFF\s+0xE1[\s\S]+GSW_MARK_WIN16_UNREGISTERED\s+0xE2[\s\S]+GSW_MARK_WIN16_TEXT_RESTORED\s+0xE3[\s\S]+GSW_MARK_WIN16_HOOK_REMOVED\s+0xE4' (
+    'The shutdown trace must assign the ordered Win16 disable stages to E0-E4.'
+)
+Assert-Match $shutdownTrace 'GSW_MARK_SYSTEM_DISPLAY_QUIESCED\s+0xE8[\s\S]+GSW_MARK_CRITICAL_EXIT_ENTER\s+0xE9[\s\S]+GSW_MARK_CRITICAL_UNHOOKED\s+0xEA[\s\S]+GSW_MARK_CRITICAL_UNHOOK_FAILED\s+0xEB' (
+    'Terminal shutdown must retain distinct quiesce and critical-unhook markers.'
+)
+Assert-Match $arbiterPatch 'GSW_MARK_WIN16_DISABLE_ENTER[\s\S]+int_2Fh\( START_IO_TRAP \);[\s\S]+GSW_MARK_WIN16_TRAPS_STARTED[\s\S]+PhysicalDisable\(\);[\s\S]+GSW_MARK_WIN16_PHYSICAL_OFF[\s\S]+CallVDD\( VDD_DRIVER_UNREGISTER \);[\s\S]+GSW_MARK_WIN16_UNREGISTERED[\s\S]+int_10h\( 3 \);[\s\S]+GSW_MARK_WIN16_TEXT_RESTORED[\s\S]+UnhookInt2Fh\(\);[\s\S]+GSW_MARK_WIN16_HOOK_REMOVED' (
+    'Win16 Disable must mark trap start, physical disable, unregister, text restoration, and unhook in execution order.'
+)
+Assert-Match $arbiterPatch 'DISPLAY_DRIVER_DISABLING, display_driver_disabling\)[\s\S]+GSW_MARK_DRIVER_DISABLING[\s\S]+GSW_display_driver_disabling\(vm\);' (
+    'The D5 mini-VDD callback must enter the arbiter disabling lifecycle.'
+)
+
+$setExclusiveBody = Get-SimpleFunctionBody $halDdraw (
+    'DDENTRY(SetExclusiveMode32, LPDDHAL_SETEXCLUSIVEMODEDATA, data)'
+)
+Assert-Match $setExclusiveBody 'if\(data == NULL\) return DDHAL_DRIVER_NOTHANDLED;[\s\S]+if\(data->dwEnterExcl\)[\s\S]+FBHDA_access_begin\(FBHDA_ACCESS_EXCLUSIVE_BEGIN\);[\s\S]+else[\s\S]+FBHDA_access_begin\(FBHDA_ACCESS_EXCLUSIVE_END\);[\s\S]+FBHDA_access_end\(0\);' (
+    'SetExclusiveMode must restore the existing FBHDA exclusive begin/end flag ABI and balance access.'
+)
+Assert-Match $setExclusiveBody 'data->ddRVal = DD_OK;[\s\S]+return DDHAL_DRIVER_NOTHANDLED;' (
+    'SetExclusiveMode must notify the existing ABI and still forward handling to DirectDraw.'
+)
+Assert-Match $arbiterPatch 'case OP_FBHDA_ACCESS_BEGIN:[\s\S]+GSW_display_ddraw_exclusive\(vmhandle, inBuf\[0\]\);[\s\S]+FBHDA_access_begin\(inBuf\[0\]\);' (
+    'The existing FBHDA access-begin operation must feed arbitration without replacing its behavior.'
+)
+Assert-Match $displayAdapter 'flags &[\s\S]+FBHDA_ACCESS_EXCLUSIVE_BEGIN \| FBHDA_ACCESS_EXCLUSIVE_END[\s\S]+exclusive == FBHDA_ACCESS_EXCLUSIVE_BEGIN[\s\S]+GSW_DISPLAY_EVENT_DDRAW_EXCLUSIVE_BEGIN[\s\S]+exclusive == FBHDA_ACCESS_EXCLUSIVE_END[\s\S]+GSW_DISPLAY_EVENT_DDRAW_EXCLUSIVE_END[\s\S]+exclusive != 0UL[\s\S]+GSW_MARK_DISPLAY_PROTOCOL_FAULT' (
+    'The adapter must accept exactly one existing exclusive flag and reject an ambiguous combination.'
+)
+Assert-Match $ddrawExclusiveBeginCase 'state\.authority == GSW_DISPLAY_FOREGROUND_VGA &&[\s\S]+state\.authority_vm == state\.windows_vm\)[\s\S]+break;' (
+    'A duplicate DirectDraw begin from the Windows VM already owning foreground VGA must be a no-op.'
+)
+Assert-Match $ddrawExclusiveEndCase 'state\.transition != GSW_DISPLAY_TRANSITION_NONE[\s\S]+state\.transition_vm != state\.windows_vm[\s\S]+state\.transition == GSW_DISPLAY_DESKTOP_RECONFIGURE[\s\S]+state\.authority == GSW_DISPLAY_WINDOWS_DESKTOP[\s\S]+result\.next\.transition = GSW_DISPLAY_TRANSITION_NONE;[\s\S]+result\.next\.transition_vm = 0UL;' (
+    'DirectDraw end must close only a begin-only desktop reconfigure on the stable Windows desktop.'
+)
+Assert-Match $ddrawExclusiveEndCase 'state\.authority == GSW_DISPLAY_FOREGROUND_VGA &&[\s\S]+state\.authority_vm == state\.windows_vm\)[\s\S]+gsw_display_set_transition' (
+    'DirectDraw end must not seize desktop authorization from a foreign foreground VGA owner.'
+)
+Assert-NotMatch $ddrawExclusiveEndCase 'GSW_DISPLAY_TO_(?:FOREGROUND_VGA|WINDOWS_DESKTOP)' (
+    'DirectDraw end must preserve stronger directional VDD transitions unchanged.'
+)
+Assert-NotMatch ($displayAdapterHeader + $displayArbiterHeader + $arbiterAdded) '(?m)^\s*#define\s+OP_' (
+    'Display arbitration must not add a guest-host operation or ABI command.'
+)
+
+Assert-Match $displayArbiter 'gsw_display_trap_for[\s\S]+state\.lifecycle == GSW_DISPLAY_REGISTERED[\s\S]+GSW_DISPLAY_DISPI_INTERCEPT[\s\S]+GSW_DISPLAY_DISPI_BYPASS' (
+    'The pure trap policy must intercept only while the display driver is registered.'
+)
+Assert-Match $displayArbiter 'case GSW_DISPLAY_EVENT_DRIVER_DISABLING:[\s\S]+state\.lifecycle == GSW_DISPLAY_EXITED[\s\S]+state\.lifecycle == GSW_DISPLAY_REGISTERED &&[\s\S]+event\.vm != 0UL && event\.vm == state\.windows_vm[\s\S]+state\.lifecycle != GSW_DISPLAY_DISABLING \|\|[\s\S]+event\.vm == 0UL \|\| event\.vm != state\.windows_vm[\s\S]+result\.protocol_fault = 1U;' (
+    'Only the retained Windows VM may enter or duplicate the disabling lifecycle.'
+)
+Assert-Match $displayAdapter 'if \(!force && policy == gsw_display_applied_trap\) \{[\s\S]+return;[\s\S]+gsw_display_applied_trap = policy;' (
+    'Ordinary trap-policy application must be idempotent.'
+)
+Assert-Match $displayAdapter 'result = gsw_display_step\(gsw_display_state, event\);[\s\S]+gsw_display_state = result\.next;[\s\S]+GSW_display_apply_dispi_traps\(result\.dispi_trap, 0\);' (
+    'Every state transition must apply the trap policy returned by that exact pure step.'
+)
+Assert-Match $arbiterAdded 'GSW_display_sync_dispi_traps\(\);' (
+    'The VDD ENABLE_TRAPS callback must resynchronize the arbiter-owned trap policy.'
+)
+Assert-NotMatch $arbiterAdded 'Enable_Global_Trapping\(0x1C[EF]\)|Disable_Global_Trapping\(0x1C[EF]\)' (
+    'Patch 0013 must not bypass the adapter with a new direct trap-policy mutation.'
+)
+Assert-Match $gswMake 'GSW_VXD_OBJS = &[\s\S]+gsw_display_arbiter\.obj gsw_display_adapter\.obj' (
+    'The VxD object inventory must include the pure arbiter and its adapter.'
+)
+Assert-Match $gswMake 'gsw_display_arbiter\.obj : gsw_display_arbiter\.c gsw_display_arbiter\.h[\s\S]+gsw_display_adapter\.obj : gsw_display_adapter\.c gsw_display_adapter\.h gsw_display_arbiter\.h' (
+    'The makefile must compile both display lifecycle modules with explicit dependencies.'
+)
+Assert-Match $gswMake 'file gsw_display_arbiter\.obj[\s\S]+file gsw_display_adapter\.obj' (
+    'The shipping VxD link must include both display lifecycle modules.'
+)
 
 Assert-Match $transport '#define GSW_PCI_COMMAND_REQUIRED 0x0006' (
     'The transport must require memory decode and bus mastering without claiming I/O decode.'
@@ -469,38 +708,6 @@ Assert-Match $lifecycle 'BOOL Hook_V86_Int_Chain\(DWORD int_num, DWORD HookProc\
 Assert-Match $lifecycle 'BOOL Unhook_V86_Int_Chain\(DWORD int_num, DWORD HookProc\)[\s\S]+VMMCall\(Unhook_V86_Int_Chain\)[\s\S]+setnc al[\s\S]+return result;' (
     'The V86 interrupt unhook wrapper must preserve the VMM carry-clear success result.'
 )
-Assert-Match $lifecycle 'if\(gsw_windows_hires_active && !mode_changing\)[\s\S]+if\(ah == 0\)[\s\S]+if\(al == 0x13\)[\s\S]+gsw_windows_hires_active = FALSE;[\s\S]+return 0;[\s\S]+if\(vm == ThisVM && al == 0x03\)[^;]+return 0;[\s\S]+return 1;[\s\S]+ah == 0x4F && al == 0x02[\s\S]+0xFFFF0000UL\) \| 0x034FUL;[\s\S]+return 1;' (
-    'PnP BIOS standard and VBE mode sets must be blocked only while Windows owns high-resolution mode.'
-)
-# The ownership term belongs to the mode 3 escape alone. Widening it to the
-# outer guard would stop swallowing the system-VM ConfigMgr probes the guard
-# exists for, so the literal outer condition above is asserted without it. The
-# escape carries no statement before its return, which pins the pass-through:
-# a DOS box asking for mode 3 must not disarm the hook for Windows.
-Assert-Match $lifecycle 'if\(vm == ThisVM && al == 0x03\)[^;]+return 0;' (
-    "Windows' own INT 10h return to text mode 3 must reach the BIOS without clearing high-resolution ownership."
-)
-Assert-Match $lifecycle 'if\(al == 0x13\)[\s\S]+gsw_windows_hires_active = FALSE;[\s\S]+return 0;' (
-    'A WinQuake-style BIOS mode 13h request must release high-resolution ownership and continue to the VGA BIOS.'
-)
-Assert-Match $lifecycle 'cmp gsw_windows_hires_active,0[\s\S]+je _Virtual1CECheckOwner[\s\S]+ret[\s\S]+_Virtual1CECheckOwner:[\s\S]+VxDCall\(VDD, Get_VM_Info\)' (
-    'Physical Bochs VBE port access must be swallowed before the ambiguous system-VM owner heuristic.'
-)
-Assert-Match $lifecycle 'REGISTER_DISPLAY_DRIVER, register_display_driver\)[\s\S]+state->Client_ESI = \(DWORD\)hda;[\s\S]+gsw_windows_hires_active = TRUE;[\s\S]+VDD_CY;' (
-    'High-resolution ownership must begin only after successful display-driver registration.'
-)
-Assert-Match $lifecycle 'PRE_HIRES_TO_VGA, pre_hires_to_vga\)[\s\S]+gsw_windows_hires_active = FALSE;[\s\S]+mode_changing = TRUE;' (
-    'A legitimate high-resolution-to-VGA transition must release the PnP mode-set guard first.'
-)
-Assert-Match $lifecycle 'POST_VGA_TO_HIRES, post_vga_to_hires\)[\s\S]+Enable_Global_Trapping\(0x1CE\);[\s\S]+Enable_Global_Trapping\(0x1CF\);' (
-    'Returning to high resolution must trap Bochs VBE ports before a DOS-style PnP probe can alter the physical framebuffer.'
-)
-Assert-Match $lifecycle 'POST_VGA_TO_HIRES, post_vga_to_hires\)[\s\S]+mode_changing = FALSE;[\s\S]+gsw_windows_hires_active = TRUE;' (
-    'A completed VGA-to-high-resolution transition must restore the PnP mode-set guard.'
-)
-Assert-Match $lifecycle 'DISPLAY_DRIVER_DISABLING, display_driver_disabling\)[\s\S]+gsw_windows_hires_active = FALSE;' (
-    'Display-driver shutdown must release high-resolution ownership before BIOS mode changes.'
-)
 Assert-Match $lifecycle 'gsw_device_initializing = FALSE;[\s\S]+gsw_device_initialized = FALSE;' (
     'The VxD must track initialization and completion independently.'
 )
@@ -510,17 +717,11 @@ Assert-Match $lifecycle 'call Device_Init_proc[\s\S]+dynamic init does not recei
 Assert-Match $lifecycle 'if\(gsw_device_initialized\)[\s\S]+return TRUE;' (
     'Duplicate Device_Init calls must not overwrite saved Main VDD dispatch entries.'
 )
-Assert-Match $lifecycle 'if\(gsw_device_initialized\)[\s\S]+return TRUE;[\s\S]+gsw_windows_hires_active = FALSE;' (
-    'Duplicate Device_Init calls must preserve the active high-resolution guard.'
-)
 Assert-Match $lifecycle 'gsw_dispatch_installed = TRUE;[\s\S]+if\(!Hook_V86_Int_Chain\(0x10, \(\(DWORD\)virtual_int_10h\)\+8\)\)[\s\S]+Device_Exit_proc\(VM\);[\s\S]+return FALSE;[\s\S]+gsw_int10_hooked = TRUE;' (
     'The required INT 10h guard must install after fallible setup and fail initialization closed.'
 )
 Assert-Match $lifecycle 'if\(!gsw_device_initialized && !gsw_device_initializing\)[\s\S]+return TRUE;' (
     'Duplicate Device_Exit calls must be harmless.'
-)
-Assert-Match $lifecycle 'gsw_windows_hires_active = FALSE;[\s\S]+if\(gsw_int10_hooked\)[\s\S]+if\(!Unhook_V86_Int_Chain\(0x10, \(\(DWORD\)virtual_int_10h\)\+8\)\)[\s\S]+gsw_windows_hires_active = was_hires_active;[\s\S]+return FALSE;[\s\S]+gsw_device_initialized = FALSE;[\s\S]+GSW_restore_vdd_dispatch\(\);' (
-    'Dynamic unload must retain all VxD state when the INT 10h hook cannot be removed.'
 )
 Assert-Match $lifecycle 'Sys_Dynamic_Device_Exit[\s\S]+call Device_Exit_proc[\s\S]+test eax,eax[\s\S]+jz control_dynamic_exit_failed[\s\S]+control_dynamic_exit_failed:[\s\S]+stc' (
     'A failed unhook must reject dynamic VxD unload with carry set.'
@@ -534,9 +735,9 @@ Write-Host 'PASS GSW-VGA desktop restore balances VDD notifications and stays BU
 Write-Host 'PASS GSW-VGA dynamic initialization is idempotent and completes framebuffer mapping.'
 Write-Host 'PASS GSW-VGA Win16 enable refreshes a dynamically reloaded mini-VDD service vector.'
 Write-Host 'PASS GSW-VGA physical enable avoids a redundant destructive transport rebind.'
-Write-Host 'PASS GSW-VGA blocks PnP BIOS mode sets while preserving explicit VGA transitions.'
+Write-Host 'PASS GSW-VGA display arbitration owns BIOS, VBE, DISPI, VDD, and DirectDraw transitions.'
 Write-Host 'PASS GSW-VGA installs and removes its V86 INT 10h hook with fail-closed unload semantics.'
 Write-Host 'PASS GSW-VGA DirectDraw and 3D resources carry process ownership for lifecycle cleanup.'
 Write-Host 'PASS GSW-VGA DirectDraw defers surface registration until runtime allocation.'
 Write-Host 'PASS GSW-VGA derived, PnP, mode-return, and negative contracts admit only 320x240x8.'
-Write-Host 'PASS GSW-VGA restores screen-switch ownership only when ReEnable follows a full Disable.'
+Write-Host 'PASS GSW-VGA patch 0013 explicitly supersedes the screen-switch re-entry workaround.'

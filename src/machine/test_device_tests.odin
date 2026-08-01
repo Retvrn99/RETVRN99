@@ -51,6 +51,7 @@ test_test_device_rectangle_crc_and_results :: proc(t: ^testing.T) {
 	testing.expect_value(t, test_device_rect(&device), Test_Device_Rect{x = 1, y = 2, width = 3, height = 4})
 	test_device_set_crc(&device, 0x1234_5678)
 	testing.expect_value(t, test_device_register_u32(&device, TEST_DEVICE_REG_CRC), u32(0x1234_5678))
+	testing.expect_value(t, device.regs[TEST_DEVICE_REG_REPORT_STATUS], u8(1))
 	device.regs[TEST_DEVICE_REG_EXIT] = 0xA5
 	testing.expect_value(t, test_device_exit_code(&device), u8(0xA5))
 	testing.expect_value(t, test_device_crc32({1, 2, 3, 4}), u32(0xB63C_FBcd))

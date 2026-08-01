@@ -117,6 +117,7 @@ test_device_rect :: proc(device: ^Test_Device) -> Test_Device_Rect {
 
 test_device_set_crc :: proc(device: ^Test_Device, value: u32) {
 	for i in 0 ..< 4 {device.regs[TEST_DEVICE_REG_CRC + i] = u8(value >> (8 * u32(i)))}
+	device.regs[TEST_DEVICE_REG_REPORT_STATUS] = 1
 }
 
 test_device_snapshot_index :: proc(device: ^Test_Device) -> u8 {

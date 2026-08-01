@@ -24,15 +24,17 @@ test_machine_port_80_arms_and_orders_shutdown_trace :: proc(t: ^testing.T) {
 
 	snapshot := hv.shutdown_trace_snapshot(&m.vm)
 	testing.expect(t, snapshot.armed)
-	testing.expect_value(t, snapshot.dropped_unarmed, u64(1))
-	testing.expect_value(t, snapshot.count, u32(3))
-	events: [3]hv.Shutdown_Trace_Event
-	testing.expect_value(t, hv.shutdown_trace_export(&m.vm, events[:]), 3)
+	testing.expect_value(t, snapshot.dropped_unarmed, u64(0))
+	testing.expect_value(t, snapshot.count, u32(4))
+	testing.expect_value(t, snapshot.recorded, u64(4))
+	events: [4]hv.Shutdown_Trace_Event
+	testing.expect_value(t, hv.shutdown_trace_export(&m.vm, events[:]), 4)
 	for event, index in events {
 		testing.expect_value(t, event.kind, hv.Shutdown_Trace_Event_Kind.Marker)
 		testing.expect_value(t, event.sequence, u64(index + 1))
 	}
-	testing.expect_value(t, events[0].value, u8(0xD5))
-	testing.expect_value(t, events[1].value, u8(0xD6))
-	testing.expect_value(t, events[2].value, u8(0xDC))
+	testing.expect_value(t, events[0].value, u8(0xD4))
+	testing.expect_value(t, events[1].value, u8(0xD5))
+	testing.expect_value(t, events[2].value, u8(0xD6))
+	testing.expect_value(t, events[3].value, u8(0xDC))
 }

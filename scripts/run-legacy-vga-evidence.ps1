@@ -11,6 +11,7 @@ param(
     [string]$HostExecutable,
     [string]$GuestImportExecutable,
     [string]$LauncherStageExecutable,
+    [string]$CandidateDriverRoot,
     [string]$NasmExecutable,
     [string]$Case,
     [string]$Mode,
@@ -102,6 +103,39 @@ function Assert-LegacyVgaEvidenceFile {
     }
 }
 
+function Get-LegacyVgaEvidenceCandidateDrivers {
+    param([string]$Root)
+
+    $rootPath = Get-LegacyVgaEvidenceFullPath $Root 'Candidate driver root'
+    if (-not (Test-Path -LiteralPath $rootPath -PathType Container)) {
+        throw "Candidate driver root is missing: $rootPath"
+    }
+    $specifications = @(
+        @('gswmini.drv', 'WINDOWS/SYSTEM/GSWMINI.DRV'),
+        @('gswmini.vxd', 'WINDOWS/SYSTEM/GSWMINI.VXD'),
+        @('gswhal9x.dll', 'WINDOWS/SYSTEM/GSWHAL9X.DLL'),
+        @('gswdd32.dll', 'WINDOWS/SYSTEM/GSWDD32.DLL')
+    )
+    return @(
+        foreach ($specification in $specifications) {
+            $source = Join-Path $rootPath ([string]$specification[0])
+            Assert-LegacyVgaEvidenceFile $source "Candidate driver $($specification[0])"
+            $item = Get-Item -LiteralPath $source -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                $item.Length -le 0) {
+                throw "Candidate driver must be a nonempty regular file: $source"
+            }
+            [pscustomobject]@{
+                name = [string]$specification[0]
+                source = $source
+                guest_path = [string]$specification[1]
+                bytes = [long]$item.Length
+                sha256 = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            }
+        }
+    )
+}
+
 function Assert-LegacyVgaEvidencePifMetadata {
     param([long]$Length, [string]$Sha256)
 
@@ -139,6 +173,28 @@ function ConvertTo-LegacyVgaEvidenceGuestPath {
         throw "$Label must be a relative DOS path without spaces or traversal."
     }
     return 'C:\' + $Path.Replace('/', '\')
+}
+
+function New-LegacyVgaEvidenceLauncherArguments {
+    param(
+        [string]$CloneDisk,
+        [string]$RegSource,
+        [string]$AutoexecSource,
+        [string]$GuestRegWindows
+    )
+
+    if (-not $GuestRegWindows.StartsWith(
+        'C:\',
+        [StringComparison]::OrdinalIgnoreCase
+    )) {
+        throw 'Launcher guest REG must be an absolute DOS path.'
+    }
+    $guestRegImage = $GuestRegWindows.Substring(3).Replace('\', '/')
+    if ([string]::IsNullOrWhiteSpace($guestRegImage) -or
+        $guestRegImage.Contains(':') -or $guestRegImage.Contains('..')) {
+        throw 'Launcher guest REG must resolve to one FAT-relative file path.'
+    }
+    return @($CloneDisk, $RegSource, $AutoexecSource, $guestRegImage)
 }
 
 function Assert-LegacyVgaEvidenceToken {
@@ -477,27 +533,243 @@ function Assert-LegacyVgaEvidenceShutdownTrace {
 
     Assert-LegacyVgaEvidenceFile $Path 'Shutdown trace'
     $lines = @(Get-Content -LiteralPath $Path)
+    $metadataHeader = 'enabled' + "`t" + 'armed' + "`t" + 'capacity' + "`t" +
+        'count' + "`t" + 'recorded' + "`t" + 'dropped_unarmed' + "`t" +
+        'dropped_markers' + "`t" + 'overwritten'
+    $metadataIndex = [Array]::IndexOf($lines, $metadataHeader)
+    if ($metadataIndex -lt 0 -or $metadataIndex + 1 -ge $lines.Count) {
+        throw 'Shutdown trace has no bounded-ring metadata.'
+    }
+    $metadataFields = @(([string]$lines[$metadataIndex + 1]).Split("`t"))
+    if ($metadataFields.Count -ne 8) {
+        throw 'Shutdown trace bounded-ring metadata row is malformed.'
+    }
+    foreach ($counter in $metadataFields[2..7]) {
+        if ($counter -cnotmatch '^(0|[1-9][0-9]*)$') {
+            throw 'Shutdown trace bounded-ring metadata contains an invalid counter.'
+        }
+    }
+    try {
+        [uint64]$capacity = $metadataFields[2]
+        [uint64]$count = $metadataFields[3]
+        [uint64]$recorded = $metadataFields[4]
+        [uint64]$droppedUnarmed = $metadataFields[5]
+        [uint64]$droppedMarkers = $metadataFields[6]
+        [uint64]$overwritten = $metadataFields[7]
+    } catch {
+        throw 'Shutdown trace bounded-ring metadata contains an invalid counter.'
+    }
+    if ($metadataFields[0] -cne 'true' -or
+        $metadataFields[1] -cne 'true' -or
+        $capacity -ne 65536 -or
+        $count -lt 1 -or
+        $count -gt $capacity) {
+        throw 'Shutdown trace bounded-ring metadata is invalid.'
+    }
+    if ($recorded -ne $count + $overwritten) {
+        throw 'Shutdown trace bounded-ring accounting is inconsistent.'
+    }
+    if ($droppedMarkers -ne 0) {
+        throw 'Shutdown trace dropped lifecycle markers.'
+    }
+    $null = $droppedUnarmed
     $header = 'sequence' + "`t" + 'kind' + "`t" + 'value' + "`t" +
         'cs' + "`t" + 'flags' + "`t" + 'rip' + "`t" + 'address' + "`t" + 'detail'
     $headerIndex = [Array]::IndexOf($lines, $header)
     if ($headerIndex -lt 0 -or $headerIndex + 1 -ge $lines.Count) {
         throw 'Shutdown trace has no event table.'
     }
-    $events = @($lines[($headerIndex + 1)..($lines.Count - 1)] |
-        ConvertFrom-Csv -Delimiter "`t" -Header @(
-            'sequence', 'kind', 'value', 'cs', 'flags', 'rip', 'address', 'detail'
-        ))
-    $markers = @($events | Where-Object { $_.kind -ceq 'marker' } |
-        ForEach-Object { ([string]$_.value).ToLowerInvariant() })
-    $cursor = 0
-    foreach ($required in @('d5', 'd6', 'd7', 'd8', 'd9', 'da', 'db', 'dc')) {
-        while ($cursor -lt $markers.Count -and $markers[$cursor] -cne $required) {
-            $cursor += 1
+    $eventLines = @($lines[($headerIndex + 1)..($lines.Count - 1)])
+    if ([uint64]$eventLines.Count -ne $count) {
+        throw 'Shutdown trace event count does not match bounded-ring metadata.'
+    }
+    $events = @()
+    [uint64]$previousSequence = 0
+    [uint64]$missingSequences = 0
+    foreach ($line in $eventLines) {
+        $fields = @(([string]$line).Split("`t"))
+        if ($fields.Count -ne 8) {
+            throw 'Shutdown trace event row is malformed.'
         }
-        if ($cursor -ge $markers.Count) {
-            throw "Shutdown trace did not complete ordered marker $required."
+        if ($fields[0] -cnotmatch '^[1-9][0-9]*$') {
+            throw 'Shutdown trace event sequence is invalid.'
         }
-        $cursor += 1
+        try {
+            [uint64]$sequence = $fields[0]
+        } catch {
+            throw 'Shutdown trace event sequence is invalid.'
+        }
+        if ($sequence -le $previousSequence) {
+            throw 'Shutdown trace event sequence is not strictly increasing.'
+        }
+        $missingSequences += $sequence - $previousSequence - 1
+        $previousSequence = $sequence
+        $kind = $fields[1]
+        $value = $fields[2]
+        if ($kind -cnotin @(
+            'marker', 'mmio', 'irq-injected', 'irq-deferred', 'fault-injected'
+        )) {
+            throw 'Shutdown trace event kind is invalid.'
+        }
+        if ($value -cnotmatch '^[0-9a-f]{2}$' -or
+            $fields[3] -cnotmatch '^[0-9a-f]{4}$' -or
+            $fields[4] -cnotmatch '^[0-9a-f]{8}$' -or
+            $fields[5] -cnotmatch '^[0-9a-f]{16}$' -or
+            $fields[6] -cnotmatch '^[0-9a-f]{16}$' -or
+            $fields[7] -cnotmatch '^[0-9a-f]{16}$') {
+            throw 'Shutdown trace event row has malformed encoded values.'
+        }
+        $events += [pscustomobject]@{
+            sequence = $sequence
+            kind = $kind
+            value = $value
+        }
+    }
+    if ($events[0].sequence -ne 1 -or
+        $events[$events.Count - 1].sequence -ne $recorded -or
+        $missingSequences -ne $overwritten) {
+        throw 'Shutdown trace event sequence accounting is inconsistent.'
+    }
+    $markers = @($events | Where-Object { $_.kind -ceq 'marker' })
+    foreach ($failureMarker in @('eb', 'ef')) {
+        if (@($markers | Where-Object { $_.value -ceq $failureMarker }).Count -ne 0) {
+            throw "Shutdown trace contains lifecycle failure marker $failureMarker."
+        }
+    }
+
+    $terminalRequired = @('d6', 'e8', 'd7', 'd8', 'd9', 'da', 'db', 'dc')
+    $firstD5 = -1
+    for ($index = 0; $index -lt $markers.Count; $index += 1) {
+        if ($markers[$index].value -ceq 'd5') {
+            $firstD5 = $index
+            break
+        }
+    }
+    if ($firstD5 -lt 0) {
+        throw 'Shutdown trace did not complete ordered marker d5.'
+    }
+
+    $beforeTerminal = @()
+    if ($firstD5 -gt 0) {
+        $beforeTerminal = @($markers[0..($firstD5 - 1)])
+    }
+    $prematureTerminal = @($beforeTerminal | Where-Object {
+        $_.value -cin @('d6', 'e8', 'd7', 'dc', 'e9', 'ea')
+    })
+    if ($prematureTerminal.Count -ne 0) {
+        throw 'Shutdown trace contains a terminal lifecycle marker before driver disabling.'
+    }
+    $transitions = @($beforeTerminal |
+        Where-Object { $_.value -match '^d[1-4]$' } |
+        ForEach-Object { $_.value })
+    $expectedTransition = @('d1', 'd2', 'd3', 'd4')
+    if ($transitions.Count -lt 4 -or $transitions.Count % 4 -ne 0) {
+        throw 'Shutdown trace has no balanced D1-D4 fullscreen transition.'
+    }
+    for ($index = 0; $index -lt $transitions.Count; $index += 1) {
+        if ($transitions[$index] -cne $expectedTransition[$index % 4]) {
+            throw 'Shutdown trace has no balanced D1-D4 fullscreen transition.'
+        }
+    }
+    $afterDisable = @($markers[$firstD5..($markers.Count - 1)] |
+        Where-Object { $_.value -match '^d[1-4]$' })
+    if ($afterDisable.Count -ne 0) {
+        throw 'Shutdown trace contains a fullscreen transition after driver disabling.'
+    }
+
+    $terminalCursor = 0
+    for ($index = $firstD5 + 1; $index -lt $markers.Count; $index += 1) {
+        $value = $markers[$index].value
+        if ($value -ceq 'd5') {
+            if ($terminalCursor -ne 0) {
+                throw 'Shutdown trace did not complete ordered marker d6 through dc.'
+            }
+            continue
+        }
+        if ($terminalRequired -cnotcontains $value) { continue }
+        if ($value -cne $terminalRequired[$terminalCursor]) {
+            throw 'Shutdown trace did not complete ordered marker d6 through dc.'
+        }
+        $terminalCursor += 1
+        if ($terminalCursor -eq $terminalRequired.Count) { break }
+    }
+    if ($terminalCursor -ne $terminalRequired.Count) {
+        throw 'Shutdown trace did not complete ordered marker d6 through dc.'
+    }
+}
+
+function Assert-LegacyVgaEvidenceResult {
+    param([object]$Result, [int]$HostExit)
+
+    foreach ($field in @(
+        'stop_reason', 'exit_code', 'reset_count', 'guest_requested_resets',
+        'boot_epoch', 'unclassified_io', 'unclassified_mmio'
+    )) {
+        if ($null -eq $Result -or
+            $Result.PSObject.Properties.Name -cnotcontains $field -or
+            $null -eq $Result.$field) {
+            throw "Legacy VGA result field '$field' is missing or null."
+        }
+    }
+    if ($Result.stop_reason -isnot [string]) {
+        throw 'Legacy VGA result stop_reason is invalid.'
+    }
+    $integerTypes = @(
+        [TypeCode]::SByte, [TypeCode]::Byte,
+        [TypeCode]::Int16, [TypeCode]::UInt16,
+        [TypeCode]::Int32, [TypeCode]::UInt32,
+        [TypeCode]::Int64, [TypeCode]::UInt64
+    )
+    foreach ($field in @(
+        'exit_code', 'reset_count', 'guest_requested_resets', 'boot_epoch',
+        'unclassified_io', 'unclassified_mmio'
+    )) {
+        if ([Type]::GetTypeCode($Result.$field.GetType()) -notin $integerTypes) {
+            throw "Legacy VGA result field '$field' is not an integer."
+        }
+    }
+    try {
+        [int]$exitCode = $Result.exit_code
+        [uint64]$resetCount = $Result.reset_count
+        [uint64]$guestRequestedResets = $Result.guest_requested_resets
+        [uint64]$bootEpoch = $Result.boot_epoch
+        [uint64]$unclassifiedIo = $Result.unclassified_io
+        [uint64]$unclassifiedMmio = $Result.unclassified_mmio
+    } catch {
+        throw 'Legacy VGA result contains an invalid numeric field.'
+    }
+    if ($HostExit -ne 0 -or
+        [string]$Result.stop_reason -cne 'power_off' -or
+        $exitCode -ne 0) {
+        throw (
+            "Expected host exit 0 and power_off/0, observed host=$HostExit " +
+            "stop=$($Result.stop_reason) result=$exitCode."
+        )
+    }
+    if ($resetCount -ne 0 -or
+        $guestRequestedResets -ne 0 -or
+        $bootEpoch -ne 1) {
+        throw 'Legacy VGA evidence must complete without a guest or lifetime reset.'
+    }
+    if ($unclassifiedIo -ne 0 -or $unclassifiedMmio -ne 0) {
+        throw (
+            'Legacy VGA evidence contains unclassified I/O: io={0} mmio={1}.' -f
+            $unclassifiedIo, $unclassifiedMmio
+        )
+    }
+}
+
+function Assert-LegacyVgaEvidenceLogs {
+    param([string[]]$Paths)
+
+    foreach ($failureText in @(
+        'MMIO exit storm', 'upload-failed', 'render failure', 'warm CPU reset'
+    )) {
+        $matches = @(Select-String -LiteralPath $Paths -Pattern $failureText `
+            -SimpleMatch -ErrorAction Stop)
+        if ($matches.Count -ne 0) {
+            throw "Legacy VGA evidence contains '$failureText'."
+        }
     }
 }
 
@@ -550,6 +822,7 @@ foreach ($required in @(
     @($HostExecutable, 'Host executable'),
     @($GuestImportExecutable, 'guest-import executable'),
     @($LauncherStageExecutable, 'launcher-stage executable'),
+    @($CandidateDriverRoot, 'Candidate driver root'),
     @($Case, 'Case'),
     @($Mode, 'Mode'),
     @($ExpectedDesktopSentinelCrc, 'Expected desktop sentinel CRC'),
@@ -567,6 +840,12 @@ $autoexecPath = Get-LegacyVgaEvidenceFullPath $KnownGoodAutoexecFile 'Known-good
 $hostPath = Get-LegacyVgaEvidenceFullPath $HostExecutable 'Host executable'
 $importPath = Get-LegacyVgaEvidenceFullPath $GuestImportExecutable 'guest-import executable'
 $launcherPath = Get-LegacyVgaEvidenceFullPath $LauncherStageExecutable 'launcher-stage executable'
+$candidateDriverPath = Get-LegacyVgaEvidenceFullPath `
+    $CandidateDriverRoot 'Candidate driver root'
+if (-not $ValidateOnly) {
+    Assert-LegacyVgaEvidenceTemporaryPath $candidateDriverPath 'Candidate driver root'
+}
+$candidateDrivers = Get-LegacyVgaEvidenceCandidateDrivers $candidateDriverPath
 Assert-LegacyVgaEvidenceTemporaryPath $profilePath 'Disposable profile'
 Assert-LegacyVgaEvidenceTemporaryPath $evidencePath 'Evidence directory'
 if ((Test-LegacyVgaEvidencePathWithin $profilePath $sourcePath) -or
@@ -642,9 +921,10 @@ if ($ValidateOnly) {
         guest_pif = $guestPifWindows
         guest_batch = $guestBatchWindows
         guest_helper = $guestHelperWindows
+        candidate_drivers = $candidateDrivers
         desktop_sentinel = $sentinel
         host_arguments = @(
-            '--start', '--test-device', '--strict-io', '--graphics-trace',
+            '--start', '--test-device', '--strict-io',
             '--guest-report-kind:legacy-vga', '--shutdown-trace',
             "--legacy-aperture-mode:$LegacyApertureMode"
         )
@@ -664,8 +944,10 @@ if ($active.Count -ne 0) {
 
 [void][IO.Directory]::CreateDirectory($profilePath)
 [void][IO.Directory]::CreateDirectory($evidencePath)
-$stagePath = Join-Path $evidencePath 'stage'
-[void][IO.Directory]::CreateDirectory($stagePath)
+    $stagePath = Join-Path $evidencePath 'stage'
+    [void][IO.Directory]::CreateDirectory($stagePath)
+    Write-LegacyVgaEvidenceJsonCreateNew `
+        (Join-Path $evidencePath 'candidate-drivers.json') $candidateDrivers
 $primaryError = $null
 $sourceDiskHashAfter = $null
 $hostExit = $null
@@ -716,7 +998,12 @@ try {
         $stagePath $nasmPath $kateaTemplate $payloads $sentinel
 
     $importArguments = @(
-        $cloneDisk,
+        $cloneDisk
+    )
+    foreach ($driver in $candidateDrivers) {
+        $importArguments += @($driver.source, $driver.guest_path)
+    }
+    $importArguments += @(
         $stagedPif, $GuestPifPath,
         $stagedBatch, $GuestBatchPath,
         $helperIdentity.Path, $GuestHelperPath
@@ -725,7 +1012,9 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "guest-import failed with exit $LASTEXITCODE."
     }
-    & $launcherPath $cloneDisk $stagedReg $stagedAutoexec
+    $launcherArguments = New-LegacyVgaEvidenceLauncherArguments `
+        $cloneDisk $stagedReg $stagedAutoexec $guestRegWindows
+    & $launcherPath @launcherArguments
     if ($LASTEXITCODE -ne 0) {
         throw "launcher staging failed with exit $LASTEXITCODE."
     }
@@ -743,7 +1032,6 @@ try {
         '--start',
         '--test-device',
         '--strict-io',
-        '--graphics-trace',
         '--guest-report-kind:legacy-vga',
         '--shutdown-trace',
         "--legacy-aperture-mode:$LegacyApertureMode",
@@ -762,26 +1050,8 @@ try {
     $result = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
     $stopReason = [string]$result.stop_reason
     $resultExit = [int]$result.exit_code
-    if ($hostExit -ne 0 -or $stopReason -cne 'power_off' -or $resultExit -ne 0) {
-        throw (
-            "Expected host exit 0 and power_off/0, observed host=$hostExit " +
-            "stop=$stopReason result=$resultExit."
-        )
-    }
-    if ([long]$result.unclassified_io -ne 0 -or
-        [long]$result.unclassified_mmio -ne 0) {
-        throw (
-            'Legacy VGA evidence contains unclassified I/O: io={0} mmio={1}.' -f
-            [long]$result.unclassified_io, [long]$result.unclassified_mmio
-        )
-    }
-    foreach ($failureText in @('MMIO storm', 'upload-failed', 'render failure')) {
-        $matches = @(Select-String -LiteralPath @($stdoutPath, $stderrPath) `
-            -Pattern $failureText -SimpleMatch -ErrorAction Stop)
-        if ($matches.Count -ne 0) {
-            throw "Legacy VGA evidence contains '$failureText'."
-        }
-    }
+    Assert-LegacyVgaEvidenceResult $result $hostExit
+    Assert-LegacyVgaEvidenceLogs @($stdoutPath, $stderrPath)
     Assert-LegacyVgaEvidenceGuestReport `
         (Join-Path $artifactsPath $script:LegacyVgaEvidenceReportName)
     Assert-LegacyVgaEvidenceCaptures $artifactsPath
@@ -810,6 +1080,7 @@ try {
             verified_after_pif = $true
         }
         pif = $pifIdentity
+        candidate_drivers = $candidateDrivers
         katea_helper = [ordered]@{
             bytes = $helperIdentity.Bytes
             sha256 = $helperIdentity.Sha256

@@ -28,11 +28,31 @@ an incomplete set. The Win16 normalizer must run on `gswmini.drv` before its
 final size and SHA-256 are recorded.
 
 The 0.2.0.8 patch set preserves the existing low-resolution rejection except
-for exactly 320x240x8, and the INF exposes only that added low mode. Re-entry
-after a full display-driver disable restores the screen-switch hook and VDD I/O
-trap state without changing the ordinary in-place ReEnable path. The original
-INT 2Fh chain target is retained across Disable and ReEnable so a temporary DOS
-VM vector cannot become the persistent fallback target.
+for exactly 320x240x8, and the INF exposes only that added low mode. The display
+arbiter owns firmware, Windows desktop, and foreground VGA authority through
+VDD transitions and the existing DirectDraw-exclusive messages. Stable Windows
+ownership consumes unauthorized legacy and DISPI mode changes without granting
+mode 13h special authority. Driver disable cancels transitions, bypasses DISPI
+trapping, and permits only the Windows mode 3 or 83h BIOS restoration before
+unhooking. The private VBE operation reports its real completion but does not
+self-authorize a transition, and the pinned VDD `SAVE_REGISTERS` callback
+remains a no-op. Desktop return commits through the directional VDD POST only
+when its fresh physical-owner observation agrees.
+
+Terminal shutdown follows the Win9x VxD phases without assuming the Win16
+driver received `Disable`. `System_Exit` first publishes forward-only firmware
+authority, bypasses DISPI trapping, disables the extension directly, and
+restores the borrowed VDD dispatch. A failed INT 10h unhook cannot strand
+terminal cleanup, but still rejects dynamic unload. `Sys_Critical_Exit` only
+retries an outstanding owned hook and repeats that bounded quiescence; it never
+enters BIOS, waits, allocates, or invokes general device teardown.
+
+Patch 0013 supersedes the screen-switch re-entry workaround in patch 0012. A
+retained A/B run showed that workaround changed neither the first divergent
+state nor the shutdown outcome, so the final derived source restores the prior
+Win16 hook behavior and records ordered disable markers instead. Guest mode
+return and shutdown remain runtime acceptance gates; source or build success
+alone does not establish either result.
 
 The driver retains the QEMU/Bochs VBE mode programming used by the real VGA
 BIOS, then mirrors Windows mode sets and flips to GSW-VGA ABI v2. Its VxD:

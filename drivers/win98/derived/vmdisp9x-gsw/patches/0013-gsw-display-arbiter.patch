@@ -1,0 +1,566 @@
+diff --git a/enable.c b/enable.c
+index 8932e9a..979b04a 100644
+--- a/enable.c
++++ b/enable.c
+@@ -33,6 +33,9 @@ THE SOFTWARE.
+ #include <string.h>
+ 
+ #include "3d_accel.h"
++#ifdef RETVRN99_GSW_DRIVER
++#include "gsw_shutdown_trace.h"
++#endif
+ 
+ /* Pretend we have a 208 by 156 mm screen. */
+ #define DISPLAY_HORZ_MM     208
+@@ -183,7 +186,6 @@ UINT WINAPI __loadds Enable( LPVOID lpDevice, UINT style, LPSTR lpDeviceType,
+         LPDIBENGINE     lpEng = lpDevice;
+         LPBITMAPINFO    lpInfo;
+         WORD            wFlags;
+-        BOOL            bRestoreSwitchHooks;
+ 
+         /* Initialize the PDEVICE. */
+         lpDriverPDevice = lpDevice;
+@@ -192,8 +194,7 @@ UINT WINAPI __loadds Enable( LPVOID lpDevice, UINT style, LPSTR lpDeviceType,
+             dbg_printf( "Enable: PhysicalEnable failed!\n" );
+             return( 0 );
+         }
+-        bRestoreSwitchHooks = !bReEnabling || !Int2FhHooked();
+-        if( bRestoreSwitchHooks ) {
++        if( !bReEnabling ) {
+             int_2Fh( STOP_IO_TRAP );
+         }
+ 
+@@ -309,7 +310,7 @@ UINT WINAPI __loadds Enable( LPVOID lpDevice, UINT style, LPSTR lpDeviceType,
+             SetRAMDAC_far( 0, wPalCnt, lpColorTable );
+         }
+ 
+-        if( bRestoreSwitchHooks ) {
++        if( !bReEnabling ) {
+             HookInt2Fh();
+         }
+         
+@@ -509,6 +510,9 @@ UINT WINAPI __loadds Disable( LPVOID lpDevice )
+ {
+     LPDIBENGINE lpEng = lpDevice;
+ 
++#ifdef RETVRN99_GSW_DRIVER
++    GSW_shutdown_marker( GSW_MARK_WIN16_DISABLE_ENTER );
++#endif
+     dbg_printf( "Disable: lpDevice=%WP\n", lpDevice );
+ 
+     /* Start disabling and mark the PDevice busy. */
+@@ -517,18 +521,33 @@ UINT WINAPI __loadds Disable( LPVOID lpDevice )
+ 
+     /* Re-enable I/O trapping before we start setting a standard VGA mode. */
+     int_2Fh( START_IO_TRAP );
++#ifdef RETVRN99_GSW_DRIVER
++    GSW_shutdown_marker( GSW_MARK_WIN16_TRAPS_STARTED );
++#endif
+     
+     /* Disable device if needed */
+     PhysicalDisable();
++#ifdef RETVRN99_GSW_DRIVER
++    GSW_shutdown_marker( GSW_MARK_WIN16_PHYSICAL_OFF );
++#endif
+ 
+     /* Tell VDD we're going away. */
+     CallVDD( VDD_DRIVER_UNREGISTER );
++#ifdef RETVRN99_GSW_DRIVER
++    GSW_shutdown_marker( GSW_MARK_WIN16_UNREGISTERED );
++#endif
+ 
+     /* Set standard 80x25 text mode using the BIOS. */
+     int_10h( 3 );
++#ifdef RETVRN99_GSW_DRIVER
++    GSW_shutdown_marker( GSW_MARK_WIN16_TEXT_RESTORED );
++#endif
+ 
+     /* And unhook INT 2F. */
+     UnhookInt2Fh();
++#ifdef RETVRN99_GSW_DRIVER
++    GSW_shutdown_marker( GSW_MARK_WIN16_HOOK_REMOVED );
++#endif
+ 
+     return( 1 );
+ }
+diff --git a/minidrv.h b/minidrv.h
+index 7385310..00edb7d 100644
+--- a/minidrv.h
++++ b/minidrv.h
+@@ -55,7 +55,6 @@ extern void ReadDisplayConfig( void );
+ #endif
+ extern void FAR RestoreDesktopMode( void );
+ extern FARPROC RepaintFunc;
+-extern BOOL Int2FhHooked( void );
+ extern void HookInt2Fh( void );
+ extern void UnhookInt2Fh( void );
+ 
+diff --git a/scrsw.c b/scrsw.c
+index ae46efb..e8396df 100644
+--- a/scrsw.c
++++ b/scrsw.c
+@@ -33,7 +33,6 @@ THE SOFTWARE.
+ /* SwitchFlags bits. */
+ #define PREVENT_SWITCH  0x80    /* Don't allow screen switching. */
+ #define INT_2F_HOOKED   0x01    /* INT 2Fh is hooked. */
+-#define INT_2F_SAVED    0x02    /* Previous INT 2Fh vector is saved. */
+ 
+ /* Accessed from sswhook.asm. */
+ BYTE SwitchFlags = 0;           /* Screen switch flags, see above. */
+@@ -83,11 +82,6 @@ void DOSSetIntVec( BYTE bIntNo, void __far *NewVector );
+  */
+ extern UINT WINAPI AllocCStoDSAlias( UINT selCode );
+ 
+-BOOL Int2FhHooked( void )
+-{
+-    return( (SwitchFlags & INT_2F_HOOKED) != 0 );
+-}
+-
+ /* Internal function to install INT 2Fh hook. */
+ void HookInt2Fh( void )
+ {
+@@ -103,17 +97,19 @@ void HookInt2Fh( void )
+     }
+     dbg_printf( "HookInt2Fh: RepaintFunc=%WP\n", RepaintFunc );
+ 
+-    if( SwitchFlags & INT_2F_HOOKED )
+-        return;
+-    if( !(SwitchFlags & INT_2F_SAVED) ) {
+-        selAlias = AllocCStoDSAlias( (__segment)&OldInt2Fh );
+-        OldInt2FhAlias = selAlias :> (WORD)&OldInt2Fh;
+-        *OldInt2FhAlias = DOSGetIntVec( 0x2F );
+-        FreeSelector( selAlias );
+-        SwitchFlags |= INT_2F_SAVED;
+-    }
+-    DOSSetIntVec( 0x2F, SWHook );
++    /* Now hook INT 2Fh. Since the address of the previous INT 2Fh handler
++     * is in the code segment, we have to create a writable alias. Just
++     * a little tricky.
++     */
++    selAlias = AllocCStoDSAlias( (__segment)&OldInt2Fh );
++
+     SwitchFlags |= INT_2F_HOOKED;
++    /* Build a pointer to OldInt2Fh using the aliased selector. */
++    OldInt2FhAlias = selAlias :> (WORD)&OldInt2Fh;
++    *OldInt2FhAlias = DOSGetIntVec( 0x2F );
++    DOSSetIntVec( 0x2F, SWHook );
++
++    FreeSelector( selAlias );
+ }
+ 
+ /* Internal function to unhook INT 2Fh. */
+@@ -232,4 +228,3 @@ void ScrSwEnable( void )
+ }
+ 
+ #endif
+-
+diff --git a/vxd_main.c b/vxd_main.c
+index d7ae926..b77b9fe 100644
+--- a/vxd_main.c
++++ b/vxd_main.c
+@@ -45,6 +45,7 @@ THE SOFTWARE.
+ 
+ #include "3d_accel.h"
+ #ifdef GSW
++# include "gsw_display_adapter.h"
+ # include "gsw_transport.h"
+ # include "gsw_shutdown_trace.h"
+ # include "wram.h"
+@@ -72,6 +73,12 @@ BOOL __stdcall Device_Init_proc(DWORD VM);
+ BOOL __stdcall Device_Exit_proc(DWORD VM);
+ void __stdcall Device_Init_Complete(DWORD VM);
+ void __stdcall win32_destroy_process_proc(DWORD pid);
++#ifdef GSW
++void __stdcall GSW_system_exit_proc(DWORD VM);
++void __stdcall GSW_critical_exit_proc(DWORD VM);
++void GSW_VBE_quiesce(void);
++static void GSW_restore_vdd_dispatch(void);
++#endif
+ 
+ #define SERVICE_TABLE_CNT (FBHDA__OVERLAY_UNLOCK+1)
+ extern DWORD service_table[SERVICE_TABLE_CNT];
+@@ -115,13 +122,12 @@ void *DeviceCTX = NULL;
+ DWORD is_qemu = FALSE;
+ 
+ #ifdef GSW
+-BOOL gsw_windows_hires_active = FALSE;
+ static DWORD gsw_saved_dispatch[0x31];
+ static BOOL gsw_dispatch_installed = FALSE;
+ static BOOL gsw_device_initializing = FALSE;
+ static BOOL gsw_device_initialized = FALSE;
+ static BOOL gsw_int10_hooked = FALSE;
++static BOOL gsw_system_exiting = FALSE;
+-extern BOOL mode_changing;
+ 
+ static void GSW_remove_io_handler(DWORD port)
+ {
+@@ -147,39 +152,32 @@ DWORD __stdcall virtual_int_proc(DWORD int_num, DWORD vm, PCRS_32 regs)
+ #ifdef GSW
+ 		BYTE ah = (BYTE)((regs->Client_EAX >> 8) & 0xFF);
+ 		BYTE al = (BYTE)(regs->Client_EAX & 0xFF);
++		GSW_Display_Action action;
++		GSW_Display_Result result;
+ 
+-		/*
+-		 * ConfigMgr probes BIOS video modes from the Windows system VM.  The
+-		 * ordinary VM-owner heuristic therefore cannot distinguish those probes
+-		 * from the active display driver.  Keep them from dropping the physical
+-		 * display to VGA while Windows still owns the high-resolution desktop.
+-		 */
+-		if(gsw_windows_hires_active && !mode_changing)
++		if(ah == 0)
+ 		{
+-			if(ah == 0)
++			action = GSW_display_bios_mode_set(vm, al);
++			if(action != GSW_DISPLAY_FORWARD)
+ 			{
+-				if(al == 0x13)
+-				{
+-					GSW_shutdown_marker(GSW_MARK_INT10_MODE13);
+-					gsw_windows_hires_active = FALSE;
+-					return 0;
+-				}
+-				/*
+-				 * enable.c Disable() restores text mode 3 through the BIOS, so
+-				 * Windows' own restore must never be swallowed.  A DOS box
+-				 * asking for mode 3 still is, and the hi-res flag stays set:
+-				 * only mode 13h hands the display over.
+-				 */
+-				if(vm == ThisVM && al == 0x03)
+-				{
+-					return 0;
+-				}
+ 				return 1;
+ 			}
+-			if(ah == 0x4F && al == 0x02)
++			GSW_shutdown_marker(GSW_MARK_INT10_MODE_SET);
++		}
++		else if(ah == 0x4F && al == 0x02)
++		{
++			result = GSW_display_vbe_mode_set(
++				vm,
++				(WORD)(regs->Client_EBX & 0xFFFF)
++			);
++			if(result.action != GSW_DISPLAY_FORWARD)
+ 			{
+-				regs->Client_EAX =
+-					(regs->Client_EAX & 0xFFFF0000UL) | 0x034FUL;
++				if(result.action == GSW_DISPLAY_REJECT_VBE)
++				{
++					regs->Client_EAX =
++						(regs->Client_EAX & 0xFFFF0000UL) |
++						result.vbe_ax;
++				}
+ 				return 1;
+ 			}
+ 		}
+@@ -219,22 +217,27 @@ void __declspec(naked) virtual_0x1ce()
+ 		popad
+ 	}*/
+ #ifdef GSW
+-	_asm {
+-		cmp gsw_windows_hires_active,0
+-		je _Virtual1CECheckOwner
++	_asm{
++		pushad
++		push ebx
++		call GSW_display_dispi_access
++		test eax,eax
++		popad
++		jz _Virtual1CEPhysical
+ 		ret
+-		_Virtual1CECheckOwner:
++		_Virtual1CEPhysical:
+ 	}
+-#endif
++#else
+ 	VxDCall(VDD, Get_VM_Info); // esi = result
+ 	_asm{
+ 		cmp edi, ThisVM             ; Is the CRTC controlled by Windows?
+     jne _Virtual1CEPhysical     ; If not, we should allow the I/O
+     cmp ebx, edi                ; Is the calling VM Windows?
+     je _Virtual1CEPhysical      ; If not, we should eat the I/O
+-    	ret
++		ret
+ 		_Virtual1CEPhysical:
+ 	}
++#endif
+ 	VxDJmp(VDD, Do_Physical_IO);
+ }
+ 
+@@ -390,11 +393,15 @@ void __declspec(naked) VXD_control()
+ 			jmp Device_IO_Control_entry
+ 		control_5:
+ 		cmp eax,System_Exit
+-		jnz control_dynamic_exit
++		jnz control_critical_exit
+ #ifdef GSW
+ 			mov al,GSW_MARK_SYSTEM_EXIT
+ 			mov dx,80h
+ 			out dx,al
++			pushad
++			push ebx
++			call GSW_system_exit_proc
++			popad
+ #endif
+ 			pushad
+ 			push ebx ; VM handle
+@@ -402,6 +409,17 @@ void __declspec(naked) VXD_control()
+ 			popad
+ 			clc
+ 			ret
++		control_critical_exit:
++		cmp eax,Sys_Critical_Exit
++		jnz control_dynamic_exit
++#ifdef GSW
++			pushad
++			push ebx
++			call GSW_critical_exit_proc
++			popad
++#endif
++			clc
++			ret
+ 		control_dynamic_exit:
+ 		cmp eax,Sys_Dynamic_Device_Exit
+ 		jnz control_6
+@@ -630,6 +648,12 @@ WORD __stdcall VXD_API_Proc(PCRS_32 state)
+ 			critical_section_enter();
+ 			rs = VBE_setmode(state->Client_ESI, state->Client_EDI, state->Client_ECX);
+ 			critical_section_leave();
++#ifdef GSW
++			if(rs)
++				GSW_display_desktop_programmed(ThisVM);
++			else
++				GSW_display_desktop_program_failed(ThisVM);
++#endif
+ 			state->Client_ECX = (DWORD)rs;
+ 			rc = 1;
+ 			break;
+@@ -860,7 +884,7 @@ BOOL Device_Init_proc(DWORD VM)
+ 		critical_section_leave();
+ 		return TRUE;
+ 	}
+-	gsw_windows_hires_active = FALSE;
++	gsw_system_exiting = FALSE;
+ 	gsw_device_initializing = TRUE;
+ #endif
+ 
+@@ -947,6 +970,7 @@ BOOL Device_Init_proc(DWORD VM)
+ 	vxd_hstats_update();
+ #endif
+ #ifdef GSW
++	GSW_display_device_ready();
+ 	gsw_device_initializing = FALSE;
+ 	gsw_device_initialized = TRUE;
+ #endif
+@@ -972,6 +996,40 @@ static void GSW_restore_vdd_dispatch(void)
+ #undef VDDFUNC
+ 	gsw_dispatch_installed = FALSE;
+ }
++
++static void GSW_system_quiesce(DWORD VM)
++{
++	GSW_display_system_exit(VM);
++	if(is_qemu)
++	{
++		GSW_VBE_quiesce();
++		GSW_shutdown_marker(GSW_MARK_SYSTEM_DISPLAY_QUIESCED);
++	}
++	GSW_restore_vdd_dispatch();
++}
++
++void __stdcall GSW_system_exit_proc(DWORD VM)
++{
++	gsw_system_exiting = TRUE;
++	GSW_system_quiesce(VM);
++}
++
++void __stdcall GSW_critical_exit_proc(DWORD VM)
++{
++	GSW_shutdown_marker(GSW_MARK_CRITICAL_EXIT_ENTER);
++	GSW_system_quiesce(VM);
++	if(!gsw_int10_hooked)
++		return;
++	if(Unhook_V86_Int_Chain(0x10, ((DWORD)virtual_int_10h)+8))
++	{
++		gsw_int10_hooked = FALSE;
++		GSW_shutdown_marker(GSW_MARK_CRITICAL_UNHOOKED);
++	}
++	else
++	{
++		GSW_shutdown_marker(GSW_MARK_CRITICAL_UNHOOK_FAILED);
++	}
++}
+ #endif
+ 
+ static DWORD io_open_cnt = 0;
+@@ -1040,6 +1097,9 @@ DWORD __stdcall Device_IO_Control_proc(DWORD vmhandle, struct DIOCParams *params
+ 			rc = 0;
+ 			break;
+ 		case OP_FBHDA_ACCESS_BEGIN:
++#ifdef GSW
++			GSW_display_ddraw_exclusive(vmhandle, inBuf[0]);
++#endif
+ 			FBHDA_access_begin(inBuf[0]);
+ 			rc = 0;
+ 			break;
+@@ -1264,26 +1324,28 @@ void Device_Init_Complete(DWORD VM)
+ BOOL Device_Exit_proc(DWORD VM)
+ {
+ #ifdef GSW
+-	BOOL was_hires_active = gsw_windows_hires_active;
+ 	GSW_shutdown_marker(GSW_MARK_DEVICE_EXIT_ENTER);
+ 
+ 	if(!gsw_device_initialized && !gsw_device_initializing)
+ 	{
+-		gsw_windows_hires_active = FALSE;
++		GSW_display_device_exit(VM);
+ 		return TRUE;
+ 	}
+-	gsw_windows_hires_active = FALSE;
+ 	if(gsw_int10_hooked)
+ 	{
+ 		if(!Unhook_V86_Int_Chain(0x10, ((DWORD)virtual_int_10h)+8))
+ 		{
+-			gsw_windows_hires_active = was_hires_active;
+-			return FALSE;
++			if(!gsw_system_exiting)
++				return FALSE;
++		}
++		else
++		{
++			gsw_int10_hooked = FALSE;
+ 		}
+-		gsw_int10_hooked = FALSE;
+ 	}
++	GSW_display_device_exit(VM);
+ 	gsw_device_initialized = FALSE;
+ 	gsw_device_initializing = FALSE;
+ 	GSW_restore_vdd_dispatch();
+ 	if(is_qemu)
+ 	{
+diff --git a/vxd_vdd.c b/vxd_vdd.c
+index dc3e59a..8cc00b5 100644
+--- a/vxd_vdd.c
++++ b/vxd_vdd.c
+@@ -55,7 +55,7 @@ extern DWORD ThisVM;
+ 
+ extern DWORD is_qemu;
+ #ifdef GSW
+-extern BOOL gsw_windows_hires_active;
++#include "gsw_display_adapter.h"
+ #include "gsw_shutdown_trace.h"
+ #endif
+ 
+@@ -204,7 +204,7 @@ VDDPROC(REGISTER_DISPLAY_DRIVER, register_display_driver)
+ 	state->Client_ECX = mouse_pm16;
+ 	state->Client_ESI = (DWORD)hda;
+ #ifdef GSW
+-	gsw_windows_hires_active = TRUE;
++	GSW_display_device_registered(vm);
+ #endif
+ 	
+ 	VDD_CY;
+@@ -524,15 +524,10 @@ VDDPROC(PRE_HIRES_TO_VGA, pre_hires_to_vga)
+ {
+ #ifdef GSW
+ 	GSW_shutdown_marker(GSW_MARK_PRE_HIRES_TO_VGA);
+-	gsw_windows_hires_active = FALSE;
++	GSW_display_vdd_pre_foreground(vm);
+ #endif
+ 	dbg_printf("PRE_HIRES_TO_VGA\n");
+ 	mode_changing = TRUE;
+-	if(is_qemu)
+-	{
+-		Disable_Global_Trapping(0x1CE);
+-		Disable_Global_Trapping(0x1CF);
+-	}
+ 	VDD_NC;
+ }
+ 
+@@ -540,14 +535,10 @@ VDDPROC(POST_HIRES_TO_VGA, post_hires_to_vga)
+ {
+ #ifdef GSW
+ 	GSW_shutdown_marker(GSW_MARK_POST_HIRES_TO_VGA);
++	GSW_display_vdd_post_foreground(vm);
+ #endif
+ 	dbg_printf("POST_HIRES_TO_VGA\n");
+ 	mode_changing = FALSE;
+-	if(is_qemu)
+-	{
+-		Enable_Global_Trapping(0x1CE);
+-		Enable_Global_Trapping(0x1CF);
+-	}
+ 	VDD_NC;
+ }
+ 
+@@ -555,6 +546,7 @@ VDDPROC(PRE_VGA_TO_HIRES, pre_vga_to_hires)
+ {
+ #ifdef GSW
+ 	GSW_shutdown_marker(GSW_MARK_PRE_VGA_TO_HIRES);
++	GSW_display_vdd_pre_desktop(vm);
+ #endif
+ 	dbg_printf("PRE_VGA_TO_HIRES\n");
+ 	mode_changing = TRUE;
+@@ -565,17 +557,10 @@ VDDPROC(POST_VGA_TO_HIRES, post_vga_to_hires)
+ {
+ #ifdef GSW
+ 	GSW_shutdown_marker(GSW_MARK_POST_VGA_TO_HIRES);
++	GSW_display_vdd_post_desktop(vm);
+ #endif
+ 	dbg_printf("POST_VGA_TO_HIRES\n");
+ 	mode_changing = FALSE;
+-#ifdef GSW
+-	gsw_windows_hires_active = TRUE;
+-#endif
+-	if(is_qemu)
+-	{
+-		Enable_Global_Trapping(0x1CE);
+-		Enable_Global_Trapping(0x1CF);
+-	}
+ 	VDD_NC;
+ }
+ 
+@@ -583,11 +568,15 @@ VDDPROC(ENABLE_TRAPS, enable_traps)
+ {
+ 	dbg_printf("ENABLE_TRAPS: VM: %ld\n", vm);
+ 
++#ifdef GSW
++	GSW_display_sync_dispi_traps();
++#else
+ 	if(is_qemu)
+ 	{
+ 		Enable_Global_Trapping(0x1CE);
+ 		Enable_Global_Trapping(0x1CF);
+ 	}
++#endif
+ }
+ 
+ VDDPROC(DISABLE_TRAPS, disable_traps)
+@@ -599,13 +588,15 @@ VDDPROC(DISPLAY_DRIVER_DISABLING, display_driver_disabling)
+ {
+ #ifdef GSW
+ 	GSW_shutdown_marker(GSW_MARK_DRIVER_DISABLING);
+-	gsw_windows_hires_active = FALSE;
++	GSW_display_driver_disabling(vm);
+ #endif
++#ifndef GSW
+ 	if(is_qemu)
+ 	{
+ 		Disable_Global_Trapping(0x1CE);
+ 		Disable_Global_Trapping(0x1CF);
+ 	}
++#endif
+ }
+ 
+ /**
+@@ -636,8 +627,7 @@ VDDPROC(PRE_INT_10_MODE_SET, pre_int_10_mode_set)
+ 
+ VDDPROC(SAVE_REGISTERS, save_registers)
+ {
+-	//dbg_printf("SAVE_REGISTERS\n");
+-	// NOP
++	/* Ownership is committed only by VDD POST callbacks. */
+ }
+ 
+ VDDPROC(RESTORE_REGISTERS, restore_registers)

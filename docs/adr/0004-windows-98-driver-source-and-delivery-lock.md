@@ -124,15 +124,20 @@ validates every normalized output before atomic publication, performs no
 network operation, and cannot consume a `reference-only` source row. The
 current independently reproduced GSW-VGA payloads are:
 
-- `gswmini.drv`: 16,988 bytes, `2fccc72676e9ec67b0abe7f7db8ce266dc081d39e7722848579d79f550cea6e0`.
-- `gswmini.vxd`: 39,361 bytes, `fe51fe90fc986082b236fc3926341ed418cf97d8f7f514d985d8d294c6625ecb`.
+- `gswmini.drv`: 16,980 bytes, `9a4f6b7ad8d9b111d8aef8765f594d496bfa395ea7cda42eccd7b39f3145301d`.
+- `gswmini.vxd`: 43,629 bytes, `d581e28550371a7c444dc85a5d03737d799da06e7885fb8860e1bfb98a61b05a`.
 - `gswmini.inf`: 3,210 bytes, `5b954dc86a1c4e2e4e06c7fd16f3ea8c93991e485f1bae5512121c371d39b8ea`.
-- `gswhal9x.dll`: 48,128 bytes, `c1b0dd934da52684886f01bcabb38fb812ad610bba147e65ead99cca2d980cc0`.
+- `gswhal9x.dll`: 48,128 bytes, `2e74078fce12dcc729d5121d4838d5051a3dd1df43fe45817be890a90ffa3955`.
 - `gswdd32.dll`: 32,256 bytes, `bfb72b4641e8e45e5ec90eb5c30e44aa4fac64fc37164c3429f428717d3964b4`.
 
 Amendment (2026-07-28): the DirectDraw bridge fixes refreshed `gswmini.vxd` and
 `gswhal9x.dll` to the identities above; the displaced five-file set became the
 reviewed prior-only replacement target.
+
+Amendment (2026-08-01): the display-ownership arbiter, terminal lifecycle, and
+DirectDraw-exclusive notification changes refreshed `gswmini.drv`,
+`gswmini.vxd`, and `gswhal9x.dll` to the identities above. The immediately
+displaced five-file set became the reviewed prior-only replacement target.
 
 This proof covers deterministic derivation and compilation, not Windows 98
 installation or device operation.

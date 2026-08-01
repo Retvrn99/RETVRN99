@@ -506,6 +506,7 @@ console_acceptance_test_shutdown_trace_text_is_marker_armed_tsv :: proc(t: ^test
 	hv.shutdown_trace_set_enabled(&m.vm, true)
 	defer hv.shutdown_trace_set_enabled(&m.vm, false)
 	hv.shutdown_trace_record(&m.vm, {kind = .Mmio, address = 0xA0000})
+	hv.shutdown_trace_note_marker(&m.vm, 0xD1)
 	hv.shutdown_trace_note_marker(&m.vm, 0xD5)
 	hv.shutdown_trace_record(
 		&m.vm,
@@ -517,12 +518,39 @@ console_acceptance_test_shutdown_trace_text_is_marker_armed_tsv :: proc(t: ^test
 		t,
 		strings.contains(
 			trace,
-			"true\ttrue\t65536\t2\t2\t1\t0\nsequence\tkind\tvalue\tcs\tflags\trip\taddress\tdetail",
+			"recorded\tdropped_unarmed\tdropped_markers\toverwritten",
 		),
 	)
-	testing.expect(t, strings.contains(trace, "1\tmarker\td5\t0000"))
-	testing.expect(t, strings.contains(trace, "2\tirq-deferred\t09\t0028\t00000003"))
+	testing.expect(
+		t,
+		strings.contains(
+			trace,
+			"true\ttrue\t65536\t3\t3\t1\t0\t0\nsequence\tkind\tvalue\tcs\tflags\trip\taddress\tdetail",
+		),
+	)
+	testing.expect(t, strings.contains(trace, "1\tmarker\td1\t0000"))
+	testing.expect(t, strings.contains(trace, "2\tmarker\td5\t0000"))
+	testing.expect(t, strings.contains(trace, "3\tirq-deferred\t09\t0028\t00000003"))
 	testing.expect(t, len(trace) <= acceptance.ARTIFACT_SHUTDOWN_TRACE_MAX_BYTES)
+}
+
+@(test)
+console_acceptance_test_shutdown_trace_text_reports_marker_archive_overflow :: proc(t: ^testing.T) {
+	m := new(machine.Machine)
+	defer free(m)
+	hv.shutdown_trace_set_enabled(&m.vm, true)
+	defer hv.shutdown_trace_set_enabled(&m.vm, false)
+	hv.shutdown_trace_note_marker(&m.vm, 0xD5)
+	for index in 0 ..< hv.SHUTDOWN_TRACE_MARKER_CAPACITY + 1 {
+		hv.shutdown_trace_note_marker(&m.vm, u8(0xE0 + index % 16))
+	}
+
+	trace := console_shutdown_trace_text(m)
+	defer delete(trace)
+	testing.expect(
+		t,
+		strings.contains(trace, "true\ttrue\t65536\t514\t514\t0\t2\t0\n"),
+	)
 }
 
 @(test)

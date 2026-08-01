@@ -576,17 +576,18 @@ console_shutdown_trace_text :: proc(m: ^machine.Machine) -> string {
 	builder := strings.builder_make()
 	fmt.sbprintfln(
 		&builder,
-		"enabled\tarmed\tcapacity\tcount\trecorded\tdropped_unarmed\toverwritten",
+		"enabled\tarmed\tcapacity\tcount\trecorded\tdropped_unarmed\tdropped_markers\toverwritten",
 	)
 	fmt.sbprintfln(
 		&builder,
-		"%t\t%t\t%d\t%d\t%d\t%d\t%d",
+		"%t\t%t\t%d\t%d\t%d\t%d\t%d\t%d",
 		snapshot.enabled,
 		snapshot.armed,
 		snapshot.capacity,
 		count,
 		snapshot.recorded,
 		snapshot.dropped_unarmed,
+		snapshot.dropped_markers,
 		snapshot.overwritten,
 	)
 	fmt.sbprintfln(&builder, "sequence\tkind\tvalue\tcs\tflags\trip\taddress\tdetail")
