@@ -178,6 +178,7 @@ Vm :: struct {
 	irq_ctx:                     rawptr,
 	irq_delivered:               proc(ctx: rawptr, vector: u8) -> bool,
 	io_string_translations:      u64,
+	legacy_aperture_execution:   Legacy_Aperture_Execution,
 	mmio_fallbacks:              u64,
 	mmio_scalar_fallbacks:       u64,
 	mmio_string_fallbacks:       u64,

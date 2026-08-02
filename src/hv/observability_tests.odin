@@ -13,6 +13,10 @@ whpx_observability_test_exit_and_fallback_counters :: proc(t: ^testing.T) {
 	whpx_note_mmio_fallback(&vm, .Scalar_Load, .Success)
 	whpx_note_mmio_fallback(&vm, .Invalid, .Attempt)
 	whpx_note_mmio_fallback(&vm, .Invalid, .Failure)
+	legacy_aperture_execution_set_mode(&vm, .Scalar)
+	vp: WHV_VP_EXIT_CONTEXT
+	mmio := WHV_MEMORY_ACCESS_CONTEXT{Gpa = 0xA0000}
+	_, _ = legacy_aperture_execution_step(&vm, &vp, &mmio)
 
 	snapshot := whpx_graphics_observability(&vm)
 	testing.expect_value(t, snapshot.physical_exit_count, u64(3))
@@ -34,4 +38,7 @@ whpx_observability_test_exit_and_fallback_counters :: proc(t: ^testing.T) {
 	testing.expect_value(t, invalid.attempts, u64(1))
 	testing.expect_value(t, invalid.successes, u64(0))
 	testing.expect_value(t, invalid.failures, u64(1))
+	testing.expect_value(t, snapshot.legacy_aperture_execution.mode, Legacy_Aperture_Execution_Mode.Scalar)
+	testing.expect_value(t, snapshot.legacy_aperture_execution.memory_access_exits, u64(1))
+	testing.expect_value(t, snapshot.legacy_aperture_execution.forwarded_exits, u64(1))
 }

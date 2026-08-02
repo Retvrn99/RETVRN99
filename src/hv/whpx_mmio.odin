@@ -7,7 +7,7 @@ WHPX_EMULATOR_INTERNAL_FAILURE :: u32(1 << 1)
 WHPX_EMULATOR_CALLBACK_FAILURES :: u32(0xFC)
 WHPX_EMULATOR_NON_FALLBACK_STATUS :: u32(0x300)
 
-@(private = "file")
+@(private = "package")
 whpx_mmio_instruction_bytes :: proc(
 	vm: ^Vm,
 	vp: ^WHV_VP_EXIT_CONTEXT,
@@ -114,6 +114,14 @@ whpx_emulate_mmio :: proc(
 			},
 		)
 	}
+	action, action_detail := legacy_aperture_execution_step(vm, vp, mmio)
+	switch action {
+	case .Handled:
+		return true, ""
+	case .Failed:
+		return false, action_detail
+	case .Forward:
+	}
 	status: WHV_EMULATOR_STATUS
 	hr := WHvEmulatorTryMmioEmulation(vm.emu, vm, vp, mmio, &status)
 	if hr >= 0 && status.AsUINT32 & 1 != 0 {return true, ""}
@@ -134,8 +142,7 @@ whpx_emulate_mmio :: proc(
 				vm.mmio_fallbacks += 1
 				if decoded.kind == .Scalar_Load ||
 				   decoded.kind == .Scalar_Store_Register ||
-				   decoded.kind == .Scalar_Store_Immediate ||
-				   decoded.kind == .Winquake_Store_Loop {
+				   decoded.kind == .Scalar_Store_Immediate {
 					vm.mmio_scalar_fallbacks += 1
 				}
 				return true, ""

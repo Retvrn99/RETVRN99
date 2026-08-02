@@ -6,30 +6,33 @@ import "core:strings"
 import "core:testing"
 
 Whpx_Mmio_Fallback_Probe :: struct {
-	reads:       int,
-	writes:      int,
-	call_count:  int,
-	call_gpas:   [8]u64,
-	call_sizes:  [8]int,
-	written:     [32]u8,
-	written_len: int,
-	read_data:   [8]u8,
-	budget:      u64,
-	begin_count: int,
-	end_count:   int,
+	reads:              int,
+	writes:             int,
+	call_count:         int,
+	call_gpas:          [8]u64,
+	call_sizes:         [8]int,
+	written:            [32]u8,
+	written_len:        int,
+	read_data:          [8]u8,
+	budget:             u64,
+	begin_count:        int,
+	end_count:          int,
+	budget_begin_count: int,
 }
 
-@(private = "file")
+@(private = "package")
 whpx_test_fallback_budget :: proc(ctx: rawptr) -> u64 {
-	return (^Whpx_Mmio_Fallback_Probe)(ctx).budget
+	probe := (^Whpx_Mmio_Fallback_Probe)(ctx)
+	probe.budget_begin_count = probe.begin_count
+	return probe.budget
 }
 
-@(private = "file")
+@(private = "package")
 whpx_test_fallback_begin :: proc(ctx: rawptr) {
 	(^Whpx_Mmio_Fallback_Probe)(ctx).begin_count += 1
 }
 
-@(private = "file")
+@(private = "package")
 whpx_test_fallback_end :: proc(ctx: rawptr) {
 	(^Whpx_Mmio_Fallback_Probe)(ctx).end_count += 1
 }
@@ -52,7 +55,7 @@ whpx_test_fallback_mmio :: proc(ctx: rawptr, gpa: u64, write: bool, data: []u8) 
 	for &byte, i in data {byte = probe.read_data[i]}
 }
 
-@(private = "file")
+@(private = "package")
 whpx_test_mmio_state :: proc(
 	t: ^testing.T,
 	vm: ^Vm,
@@ -123,7 +126,7 @@ whpx_test_decode :: proc(
 }
 
 @(test)
-test_whpx_mmio_decoder_exact_winquake_scalar_store :: proc(t: ^testing.T) {
+test_whpx_mmio_decoder_scalar_sib_store :: proc(t: ^testing.T) {
 	decoded, ok := whpx_test_decode(t, []u8{0x89, 0x0C, 0x86})
 	if !ok {return}
 	testing.expect_value(t, decoded.kind, Whpx_Mmio_Kind.Scalar_Store_Register)
@@ -139,17 +142,17 @@ test_whpx_mmio_decoder_exact_winquake_scalar_store :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_whpx_mmio_decoder_exact_winquake_store_loop :: proc(t: ^testing.T) {
+test_whpx_mmio_decoder_stops_at_the_scalar_store_inside_a_counted_loop :: proc(t: ^testing.T) {
 	decoded, ok := whpx_test_decode(t, []u8{0x89, 0x0C, 0x86, 0x40, 0x39, 0xD8, 0x7C, 0xF8})
 	if !ok {return}
-	testing.expect_value(t, decoded.kind, Whpx_Mmio_Kind.Winquake_Store_Loop)
+	testing.expect_value(t, decoded.kind, Whpx_Mmio_Kind.Scalar_Store_Register)
 	testing.expect_value(t, decoded.memory_width, u8(4))
 	testing.expect_value(t, decoded.register, u8(1))
 	testing.expect_value(t, decoded.address.base_register, u8(6))
 	testing.expect_value(t, decoded.address.index_register, u8(0))
 	testing.expect_value(t, decoded.address.scale, u8(4))
 	testing.expect_value(t, decoded.address.segment, WHV_REGISTER_NAME.Ds)
-	testing.expect_value(t, decoded.length, u8(8))
+	testing.expect_value(t, decoded.length, u8(3))
 
 	decoded, ok, _ = whpx_decode_mmio_instruction(
 		[]u8{0x89, 0x0C, 0x86, 0x40, 0x39, 0xD8, 0x7C, 0xF8},
@@ -157,24 +160,6 @@ test_whpx_mmio_decoder_exact_winquake_store_loop :: proc(t: ^testing.T) {
 	)
 	testing.expect(t, ok)
 	testing.expect_value(t, decoded.kind, Whpx_Mmio_Kind.Scalar_Store_Register)
-}
-
-@(test)
-test_whpx_mmio_cmp32_flags_drive_signed_jl :: proc(t: ^testing.T) {
-	equal := whpx_mmio_cmp32_flags(0x202, 1, 1)
-	testing.expect_value(t, equal, u64(0x246))
-	testing.expect(t, !whpx_mmio_signed_less(equal))
-
-	positive_vs_negative := whpx_mmio_cmp32_flags(0x202, 0x7FFF_FFFF, 0x8000_0000)
-	testing.expect(t, positive_vs_negative & WHPX_RFLAGS_CF != 0)
-	testing.expect(t, positive_vs_negative & WHPX_RFLAGS_SF != 0)
-	testing.expect(t, positive_vs_negative & WHPX_RFLAGS_OF != 0)
-	testing.expect(t, !whpx_mmio_signed_less(positive_vs_negative))
-
-	negative_vs_positive := whpx_mmio_cmp32_flags(0x202, 0x8000_0000, 1)
-	testing.expect(t, negative_vs_positive & WHPX_RFLAGS_SF == 0)
-	testing.expect(t, negative_vs_positive & WHPX_RFLAGS_OF != 0)
-	testing.expect(t, whpx_mmio_signed_less(negative_vs_positive))
 }
 
 @(test)
@@ -257,13 +242,14 @@ test_whpx_mmio_decoder_rejects_unbounded_or_nonmemory_forms :: proc(t: ^testing.
 }
 
 @(test)
-test_whpx_exact_winquake_store_handles_flat_and_wrapped_ds :: proc(t: ^testing.T) {
+test_whpx_scalar_sib_store_handles_flat_and_wrapped_ds :: proc(t: ^testing.T) {
 	if !available() {log.warn("WHPX not available"); return}
 	vm: Vm
 	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
 	defer destroy(&vm)
 	if !testing.expect(t, reserve_mmio(&vm, 0xA0000, 0x1000)) {return}
 
+	instruction := []u8{0x89, 0x0C, 0x86, 0x40, 0x39, 0xD8, 0x7C, 0xF8}
 	ds_bases := [?]u64{0, 0xFFF0_0000}
 	for ds_base, i in ds_bases {
 		probe: Whpx_Mmio_Fallback_Probe
@@ -283,12 +269,12 @@ test_whpx_exact_winquake_store_handles_flat_and_wrapped_ds :: proc(t: ^testing.T
 			gpr,
 			ds_base,
 			0xFFFF_FFFF,
-			[]u8{0x89, 0x0C, 0x86},
+			instruction,
 			0xA0000,
 			true,
 			0x2,
 		) {return}
-		decoded, ok := whpx_test_decode(t, mmio.InstructionBytes[:3])
+		decoded, ok := whpx_test_decode(t, mmio.InstructionBytes[:mmio.InstructionByteCount])
 		if !ok {return}
 		executed, detail := whpx_execute_mmio_fallback(&vm, &vp, &mmio, decoded)
 		if !testing.expectf(t, executed, "%s", detail) {return}
@@ -300,249 +286,6 @@ test_whpx_exact_winquake_store_handles_flat_and_wrapped_ds :: proc(t: ^testing.T
 		testing.expect_value(t, probe.written[3], u8(0x44))
 		testing.expect_value(t, get_regs(&vm).rip, u64(0x7003))
 	}
-}
-
-@(test)
-test_whpx_exact_winquake_loop_completes_with_cmp_flags :: proc(t: ^testing.T) {
-	if !available() {log.warn("WHPX not available"); return}
-	vm: Vm
-	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
-	defer destroy(&vm)
-	if !testing.expect(t, reserve_mmio(&vm, 0xA0000, 0x1000)) {return}
-
-	probe := Whpx_Mmio_Fallback_Probe{budget = WHPX_IO_STRING_BUDGET}
-	vm.io_ctx = &probe
-	vm.mmio = whpx_test_fallback_mmio
-	vm.io_string_budget = whpx_test_fallback_budget
-	vm.io_string_begin = whpx_test_fallback_begin
-	vm.io_string_end = whpx_test_fallback_end
-	gpr: [8]u64
-	gpr[0] = 0
-	gpr[1] = 0x4433_2211
-	gpr[3] = 4
-	gpr[6] = 0xA0000
-	vp: WHV_VP_EXIT_CONTEXT
-	mmio: WHV_MEMORY_ACCESS_CONTEXT
-	instruction := []u8{0x89, 0x0C, 0x86, 0x40, 0x39, 0xD8, 0x7C, 0xF8}
-	if !whpx_test_mmio_state(
-		t, &vm, &vp, &mmio, gpr, 0, 0xFFFF_FFFF,
-		instruction, 0xA0000, true, 0x202,
-	) {return}
-	decoded, ok := whpx_test_decode(t, instruction)
-	if !ok {return}
-	executed, detail := whpx_execute_mmio_fallback(&vm, &vp, &mmio, decoded)
-	if !testing.expectf(t, executed, "%s", detail) {return}
-	regs := get_regs(&vm)
-	testing.expect_value(t, probe.call_count, 4)
-	for i in 0 ..< 4 {
-		testing.expect_value(t, probe.call_gpas[i], u64(0xA0000 + i * 4))
-		testing.expect_value(t, probe.call_sizes[i], 4)
-	}
-	testing.expect_value(t, probe.written_len, 16)
-	for i in 0 ..< 4 {
-		base := i * 4
-		testing.expect_value(t, probe.written[base], u8(0x11))
-		testing.expect_value(t, probe.written[base + 1], u8(0x22))
-		testing.expect_value(t, probe.written[base + 2], u8(0x33))
-		testing.expect_value(t, probe.written[base + 3], u8(0x44))
-	}
-	testing.expect_value(t, u32(regs.rax), u32(4))
-	testing.expect_value(t, regs.rip, u64(0x7008))
-	testing.expect_value(t, regs.rflags, u64(0x246))
-	testing.expect_value(t, probe.begin_count, 1)
-	testing.expect_value(t, probe.end_count, 1)
-}
-
-@(test)
-test_whpx_exact_winquake_loop_wraps_eax_and_effective_address :: proc(t: ^testing.T) {
-	if !available() {log.warn("WHPX not available"); return}
-	vm: Vm
-	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
-	defer destroy(&vm)
-	if !testing.expect(t, reserve_mmio(&vm, 0xA0000, 0x1000)) {return}
-	probe := Whpx_Mmio_Fallback_Probe{budget = WHPX_IO_STRING_BUDGET}
-	vm.io_ctx = &probe
-	vm.mmio = whpx_test_fallback_mmio
-	gpr: [8]u64
-	gpr[0] = 0xFFFF_FFFF
-	gpr[1] = 0xA5A5_5A5A
-	gpr[3] = 1
-	gpr[6] = 0x1A0004
-	vp: WHV_VP_EXIT_CONTEXT
-	mmio: WHV_MEMORY_ACCESS_CONTEXT
-	instruction := []u8{0x89, 0x0C, 0x86, 0x40, 0x39, 0xD8, 0x7C, 0xF8}
-	if !whpx_test_mmio_state(
-		t, &vm, &vp, &mmio, gpr, 0xFFF0_0000, 0xFFFF_FFFF,
-		instruction, 0xA0000, true, 0x202,
-	) {return}
-	decoded, ok := whpx_test_decode(t, instruction)
-	if !ok {return}
-	executed, detail := whpx_execute_mmio_fallback(&vm, &vp, &mmio, decoded)
-	if !testing.expectf(t, executed, "%s", detail) {return}
-	regs := get_regs(&vm)
-	testing.expect_value(t, probe.call_count, 2)
-	testing.expect_value(t, probe.call_gpas[0], u64(0xA0000))
-	testing.expect_value(t, probe.call_gpas[1], u64(0xA0004))
-	testing.expect_value(t, u32(regs.rax), u32(1))
-	testing.expect_value(t, regs.rip, u64(0x7008))
-	testing.expect_value(t, regs.rflags, u64(0x246))
-}
-
-@(test)
-test_whpx_exact_winquake_loop_honors_dynamic_and_hard_budgets :: proc(t: ^testing.T) {
-	if !available() {log.warn("WHPX not available"); return}
-	budgets := [2]u64{2, WHPX_IO_STRING_BUDGET + 1}
-	for budget in budgets {
-		vm: Vm
-		if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
-		if !testing.expect(t, reserve_mmio(&vm, 0xA0000, 0x5000)) {destroy(&vm); return}
-		probe := Whpx_Mmio_Fallback_Probe{budget = budget}
-		vm.io_ctx = &probe
-		vm.mmio = whpx_test_fallback_mmio
-		vm.io_string_budget = whpx_test_fallback_budget
-		gpr: [8]u64
-		gpr[1] = 0x1122_3344
-		gpr[3] = u64(WHPX_IO_STRING_BUDGET + 1)
-		gpr[6] = 0xA0000
-		vp: WHV_VP_EXIT_CONTEXT
-		mmio: WHV_MEMORY_ACCESS_CONTEXT
-		instruction := []u8{0x89, 0x0C, 0x86, 0x40, 0x39, 0xD8, 0x7C, 0xF8}
-		if !whpx_test_mmio_state(
-			t, &vm, &vp, &mmio, gpr, 0, 0xFFFF_FFFF,
-			instruction, 0xA0000, true, 0x202,
-		) {destroy(&vm); return}
-		decoded, ok := whpx_test_decode(t, instruction)
-		if !ok {destroy(&vm); return}
-		executed, detail := whpx_execute_mmio_fallback(&vm, &vp, &mmio, decoded)
-		if !testing.expectf(t, executed, "%s", detail) {destroy(&vm); return}
-		expected := min(budget, WHPX_IO_STRING_BUDGET)
-		regs := get_regs(&vm)
-		testing.expect_value(t, u64(probe.call_count), expected)
-		testing.expect_value(t, u64(u32(regs.rax)), expected)
-		testing.expect_value(t, regs.rip, u64(0x7000))
-		testing.expect(t, whpx_mmio_signed_less(regs.rflags))
-		destroy(&vm)
-	}
-}
-
-@(test)
-test_whpx_exact_winquake_loop_fault_commits_only_completed_iterations :: proc(t: ^testing.T) {
-	if !available() {log.warn("WHPX not available"); return}
-	vm: Vm
-	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
-	defer destroy(&vm)
-	if !testing.expect(t, reserve_mmio(&vm, 0xA0000, 0x1000)) {return}
-	whpx_test_write_u32(vm.ram, 0x1000, 0x2003)
-	whpx_test_write_u32(vm.ram, 0x2000 + 0x9F * 4, 0xA0003)
-	probe := Whpx_Mmio_Fallback_Probe{budget = WHPX_IO_STRING_BUDGET}
-	vm.io_ctx = &probe
-	vm.mmio = whpx_test_fallback_mmio
-	gpr: [8]u64
-	gpr[1] = 0x8877_6655
-	gpr[3] = 2
-	gpr[6] = 0x9FFFC
-	vp: WHV_VP_EXIT_CONTEXT
-	mmio: WHV_MEMORY_ACCESS_CONTEXT
-	instruction := []u8{0x89, 0x0C, 0x86, 0x40, 0x39, 0xD8, 0x7C, 0xF8}
-	if !whpx_test_mmio_state(
-		t, &vm, &vp, &mmio, gpr, 0, 0xFFFF_FFFF,
-		instruction, 0xA0FFC, true, 0x202,
-	) {return}
-	names := [?]WHV_REGISTER_NAME{.Cr3, .Cr0}
-	values: [len(names)]WHV_REGISTER_VALUE
-	values[0].Reg64 = 0x1000
-	values[1].Reg64 = 0x8000_0011
-	if !testing.expect(
-		t,
-		WHvSetVirtualProcessorRegisters(vm.part, 0, &names[0], u32(len(names)), &values[0]) >= 0,
-	) {return}
-	decoded, ok := whpx_test_decode(t, instruction)
-	if !ok {return}
-	executed, detail := whpx_execute_mmio_fallback(&vm, &vp, &mmio, decoded)
-	testing.expect(t, executed)
-	testing.expect_value(t, detail, "")
-	regs := get_regs(&vm)
-	testing.expect_value(t, probe.call_count, 1)
-	testing.expect_value(t, u32(regs.rax), u32(1))
-	testing.expect_value(t, regs.rip, u64(0x7000))
-	testing.expect(t, whpx_mmio_signed_less(regs.rflags))
-	name := WHV_REGISTER_NAME.PendingEvent
-	pending: WHV_REGISTER_VALUE
-	if !testing.expect(t, WHvGetVirtualProcessorRegisters(vm.part, 0, &name, 1, &pending) >= 0) {
-		return
-	}
-	testing.expect_value(t, pending.Reg128[0] >> 16 & 0xFFFF, u64(14))
-}
-
-@(test)
-test_whpx_exact_winquake_loop_segment_fault_has_no_partial_write :: proc(t: ^testing.T) {
-	if !available() {log.warn("WHPX not available"); return}
-	vm: Vm
-	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
-	defer destroy(&vm)
-	if !testing.expect(t, reserve_mmio(&vm, 0xA0000, 0x1000)) {return}
-	probe := Whpx_Mmio_Fallback_Probe{budget = WHPX_IO_STRING_BUDGET}
-	vm.io_ctx = &probe
-	vm.mmio = whpx_test_fallback_mmio
-	gpr: [8]u64
-	gpr[1] = 0x4433_2211
-	gpr[3] = 2
-	gpr[6] = 0xA0000
-	vp: WHV_VP_EXIT_CONTEXT
-	mmio: WHV_MEMORY_ACCESS_CONTEXT
-	instruction := []u8{0x89, 0x0C, 0x86, 0x40, 0x39, 0xD8, 0x7C, 0xF8}
-	if !whpx_test_mmio_state(
-		t, &vm, &vp, &mmio, gpr, 0, 0x9FFFF,
-		instruction, 0xA0000, true, 0x202,
-	) {return}
-	decoded, ok := whpx_test_decode(t, instruction)
-	if !ok {return}
-	executed, detail := whpx_execute_mmio_fallback(&vm, &vp, &mmio, decoded)
-	testing.expect(t, executed)
-	testing.expect_value(t, detail, "")
-	regs := get_regs(&vm)
-	testing.expect_value(t, probe.call_count, 0)
-	testing.expect_value(t, u32(regs.rax), u32(0))
-	testing.expect_value(t, regs.rip, u64(0x7000))
-	testing.expect_value(t, regs.rflags, u64(0x202))
-	name := WHV_REGISTER_NAME.PendingEvent
-	pending: WHV_REGISTER_VALUE
-	if !testing.expect(t, WHvGetVirtualProcessorRegisters(vm.part, 0, &name, 1, &pending) >= 0) {
-		return
-	}
-	testing.expect_value(t, pending.Reg128[0] >> 16 & 0xFFFF, u64(13))
-}
-
-@(test)
-test_whpx_exact_winquake_loop_does_not_accelerate_single_step :: proc(t: ^testing.T) {
-	if !available() {log.warn("WHPX not available"); return}
-	vm: Vm
-	if !testing.expect(t, create(&vm, 64 * 1024 * 1024)) {return}
-	defer destroy(&vm)
-	if !testing.expect(t, reserve_mmio(&vm, 0xA0000, 0x1000)) {return}
-	probe: Whpx_Mmio_Fallback_Probe
-	vm.io_ctx = &probe
-	vm.mmio = whpx_test_fallback_mmio
-	gpr: [8]u64
-	gpr[1] = 0x4433_2211
-	gpr[3] = 4
-	gpr[6] = 0xA0000
-	vp: WHV_VP_EXIT_CONTEXT
-	mmio: WHV_MEMORY_ACCESS_CONTEXT
-	instruction := []u8{0x89, 0x0C, 0x86, 0x40, 0x39, 0xD8, 0x7C, 0xF8}
-	if !whpx_test_mmio_state(
-		t, &vm, &vp, &mmio, gpr, 0, 0xFFFF_FFFF,
-		instruction, 0xA0000, true, 0x302,
-	) {return}
-	decoded, ok := whpx_test_decode(t, instruction)
-	if !ok {return}
-	executed, detail := whpx_execute_mmio_fallback(&vm, &vp, &mmio, decoded)
-	if !testing.expectf(t, executed, "%s", detail) {return}
-	regs := get_regs(&vm)
-	testing.expect_value(t, probe.call_count, 1)
-	testing.expect_value(t, u32(regs.rax), u32(0))
-	testing.expect_value(t, regs.rip, u64(0x7003))
-	testing.expect_value(t, regs.rflags, u64(0x302))
 }
 
 @(test)

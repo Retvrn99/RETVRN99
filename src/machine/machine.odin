@@ -261,6 +261,7 @@ machine_init :: proc(m: ^Machine, ram_size: int) -> bool {
 	m.vm.irq_ctx = m
 	m.vm.irq_delivered = machine_irq_delivered
 	m.vm.mmio = machine_mmio
+	machine_bind_legacy_aperture_execution(m)
 
 	now := time.now()
 	year, month, day := time.date(now)

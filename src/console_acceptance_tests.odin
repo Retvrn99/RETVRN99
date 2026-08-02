@@ -14,6 +14,127 @@ import "profile"
 import "vga"
 
 @(test)
+console_legacy_vga_metrics_test_requires_explicit_legacy_report_and_aperture_mode :: proc(
+	t: ^testing.T,
+) {
+	options := acceptance.Options {
+		test_device              = true,
+		artifacts                = "out",
+		guest_report_kind        = .Legacy_VGA,
+		guest_report_kind_set    = true,
+		legacy_aperture_mode     = .Auto,
+		legacy_aperture_mode_set = true,
+	}
+	testing.expect(t, console_legacy_vga_host_metrics_enabled(&options))
+	options.guest_report_kind = .GSWGFX
+	testing.expect(t, !console_legacy_vga_host_metrics_enabled(&options))
+	options.guest_report_kind = .Legacy_VGA
+	options.legacy_aperture_mode_set = false
+	testing.expect(t, !console_legacy_vga_host_metrics_enabled(&options))
+}
+
+@(test)
+console_legacy_vga_metrics_test_only_presents_mode_x_candidates :: proc(t: ^testing.T) {
+	m := new(machine.Machine)
+	defer free(m)
+	m.vga.seq[4] = 0x06
+	m.vga.gfx[5] = 0x40
+	m.vga.gfx[6] = 0x05
+	m.vga.crtc[0x09] = 0x41
+	m.vga.crtc[0x13] = 40
+	m.vga.timing.visible_dots = 640
+	m.vga.timing.visible_lines = 480
+	testing.expect(t, console_legacy_vga_mode_x_candidate(m))
+	m.vga.seq[4] = 0x02
+	testing.expect(t, !console_legacy_vga_mode_x_candidate(m))
+}
+
+@(test)
+console_acceptance_test_applies_legacy_aperture_execution_mode :: proc(t: ^testing.T) {
+	cases := [?]struct {
+		option:   acceptance.Legacy_Aperture_Mode,
+		expected: hv.Legacy_Aperture_Execution_Mode,
+	}{{.Auto, .Auto}, {.Scalar, .Scalar}}
+	for test_case in cases {
+		m := new(machine.Machine)
+		options := acceptance.Options {
+			artifacts                = "out",
+			legacy_aperture_mode     = test_case.option,
+			legacy_aperture_mode_set = true,
+		}
+		console_configure_legacy_aperture_execution(m, &options)
+		snapshot := hv.legacy_aperture_execution_observability(&m.vm)
+		testing.expect_value(t, snapshot.mode, test_case.expected)
+		testing.expect(t, snapshot.histogram_enabled)
+		testing.expect(t, !snapshot.histogram_collecting)
+		hv.legacy_aperture_execution_destroy(&m.vm)
+		free(m)
+	}
+}
+
+@(test)
+console_legacy_vga_metrics_test_histogram_matches_completed_performance_window :: proc(
+	t: ^testing.T,
+) {
+	m := new(machine.Machine)
+	defer free(m)
+	defer hv.legacy_aperture_execution_destroy(&m.vm)
+	options := acceptance.Options {
+		artifacts                = "out",
+		legacy_aperture_mode     = .Scalar,
+		legacy_aperture_mode_set = true,
+	}
+	console_configure_legacy_aperture_execution(m, &options)
+	metrics: acceptance.Legacy_Vga_Host_Metrics
+	acceptance.legacy_vga_host_metrics_init(&metrics, true, .Scalar)
+	sample := acceptance.Legacy_Aperture_Performance_Sample {
+		active_mode_x      = true,
+		width              = 360,
+		height             = 200,
+		content_generation = 1,
+		owner_generation   = 3,
+		mode_generation    = 5,
+		surface_generation = 7,
+	}
+	console_legacy_vga_sample_performance(m, &metrics, sample)
+
+	vp: hv.WHV_VP_EXIT_CONTEXT
+	mmio := hv.WHV_MEMORY_ACCESS_CONTEXT {
+		InstructionByteCount = 1,
+		Gpa                  = 0xA0000,
+	}
+	mmio.InstructionBytes[0] = 0xAA
+	_, _ = hv.legacy_aperture_execution_step(&m.vm, &vp, &mmio)
+	sample.wall_ns = acceptance.LEGACY_APERTURE_PERFORMANCE_WARMUP_NS
+	sample.content_generation = 2
+	sample.aperture_exits = 1
+	console_legacy_vga_sample_performance(m, &metrics, sample)
+	testing.expect_value(
+		t,
+		metrics.performance.phase,
+		acceptance.Legacy_Aperture_Performance_Phase.Measuring,
+	)
+	testing.expect(t, hv.legacy_aperture_execution_observability(&m.vm).histogram_collecting)
+
+	for _ in 0 ..< 3 {
+		_, _ = hv.legacy_aperture_execution_step(&m.vm, &vp, &mmio)
+	}
+	sample.wall_ns += acceptance.LEGACY_APERTURE_PERFORMANCE_MEASURE_NS
+	sample.content_generation = 3
+	sample.aperture_exits = 4
+	console_legacy_vga_sample_performance(m, &metrics, sample)
+	snapshot := hv.legacy_aperture_execution_observability(&m.vm)
+	testing.expect_value(
+		t,
+		metrics.performance.phase,
+		acceptance.Legacy_Aperture_Performance_Phase.Complete,
+	)
+	testing.expect_value(t, metrics.performance.result.aperture_exits, u64(3))
+	testing.expect(t, !snapshot.histogram_collecting)
+	testing.expect_value(t, snapshot.histogram_exits, u64(3))
+}
+
+@(test)
 console_acceptance_test_reset_history_owns_bounded_reasons :: proc(t: ^testing.T) {
 	context.allocator = context.temp_allocator
 	result := acceptance.Result {
@@ -475,6 +596,9 @@ console_acceptance_test_hardware_diagnostics_always_requests_artifacts :: proc(t
 	testing.expect(t, console_acceptance_should_write_artifacts(&options, &result, 0))
 	options.setup_diagnostics = .None
 	testing.expect(t, !console_acceptance_should_write_artifacts(&options, &result, 0))
+	options.legacy_aperture_mode_set = true
+	testing.expect(t, console_acceptance_should_write_artifacts(&options, &result, 0))
+	options.legacy_aperture_mode_set = false
 	options.shutdown_trace = true
 	testing.expect(t, console_acceptance_should_write_artifacts(&options, &result, 0))
 	options.shutdown_trace = false
@@ -516,10 +640,7 @@ console_acceptance_test_shutdown_trace_text_is_marker_armed_tsv :: proc(t: ^test
 	defer delete(trace)
 	testing.expect(
 		t,
-		strings.contains(
-			trace,
-			"recorded\tdropped_unarmed\tdropped_markers\toverwritten",
-		),
+		strings.contains(trace, "recorded\tdropped_unarmed\tdropped_markers\toverwritten"),
 	)
 	testing.expect(
 		t,
@@ -535,7 +656,9 @@ console_acceptance_test_shutdown_trace_text_is_marker_armed_tsv :: proc(t: ^test
 }
 
 @(test)
-console_acceptance_test_shutdown_trace_text_reports_marker_archive_overflow :: proc(t: ^testing.T) {
+console_acceptance_test_shutdown_trace_text_reports_marker_archive_overflow :: proc(
+	t: ^testing.T,
+) {
 	m := new(machine.Machine)
 	defer free(m)
 	hv.shutdown_trace_set_enabled(&m.vm, true)
@@ -547,10 +670,7 @@ console_acceptance_test_shutdown_trace_text_reports_marker_archive_overflow :: p
 
 	trace := console_shutdown_trace_text(m)
 	defer delete(trace)
-	testing.expect(
-		t,
-		strings.contains(trace, "true\ttrue\t65536\t514\t514\t0\t2\t0\n"),
-	)
+	testing.expect(t, strings.contains(trace, "true\ttrue\t65536\t514\t514\t0\t2\t0\n"))
 }
 
 @(test)

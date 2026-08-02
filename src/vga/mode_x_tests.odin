@@ -7,7 +7,7 @@ import "core:testing"
 // then reach the unchained mode entirely through the public ports. Register
 // values follow the widely used sequence, which sets 480-line vertical timing
 // with double scanning to reach 240 rows.
-@(private = "file")
+@(private = "package")
 mode_x_program_320x240 :: proc(v: ^Vga) {
 	// 480-line vertical timing.
 	vga_out(v, 0x3C2, 0xE3)

@@ -11,7 +11,7 @@ org 0x7C00
 %define SOURCE_BUFFER  0x00020000
 %define READBACK_BUFFER 0x00030000
 
-; Match WinQuake's WinDirect selector wrap and 320x200 scanline copy.
+; Exercise a wrapped selector and a 320x200 scanline copy.
 
 start:
     cli

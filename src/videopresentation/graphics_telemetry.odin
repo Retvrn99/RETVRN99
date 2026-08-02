@@ -985,7 +985,7 @@ graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> str
 	p := window.producer
 	fmt.sbprintf(
 		&builder,
-		" producer_samples=%d resets=%d generation_changes=%d session=%d device=%d scanout=%d source_mode=%dx%d/%s bpp=%d/%d pitch_derived=%d bank=%d/%d bank_programs=%d bank_changes=%d vm_steps=%d vm_wall_us=%d vm_inactive_us=%d whpx=%d/%d mmio=%d/%d/%d winquake_mmio=%d/%d/%d aperture_bytes=%d/%d lfb_dirty=%d/%d_upper_bound bank_dirty=%d/%d_upper_bound gsw2d_fenced=%d gsw3d_present_retry_reject=%d/%d/%d gsw3d_reject_causes=%d/%d/%d/%d gsw3d_queue=current:%d sampled_peak:%d lifetime_high_water:%d present_queue=current:%d sampled_peak:%d lifetime_high_water:%d owned_bytes=current:%d sampled_peak:%d lifetime_high_water:%d completion_depth=%d completed_fence=%d audio_underrun_frames=%d audio_underrun_events=%d native_pcm_starvation_frames=%d",
+		" producer_samples=%d resets=%d generation_changes=%d session=%d device=%d scanout=%d source_mode=%dx%d/%s bpp=%d/%d pitch_derived=%d bank=%d/%d bank_programs=%d bank_changes=%d vm_steps=%d vm_wall_us=%d vm_inactive_us=%d whpx=%d/%d mmio=%d/%d/%d legacy_aperture=%v/%d/%d aperture_bytes=%d/%d lfb_dirty=%d/%d_upper_bound bank_dirty=%d/%d_upper_bound gsw2d_fenced=%d gsw3d_present_retry_reject=%d/%d/%d gsw3d_reject_causes=%d/%d/%d/%d gsw3d_queue=current:%d sampled_peak:%d lifetime_high_water:%d present_queue=current:%d sampled_peak:%d lifetime_high_water:%d owned_bytes=current:%d sampled_peak:%d lifetime_high_water:%d completion_depth=%d completed_fence=%d audio_underrun_frames=%d audio_underrun_events=%d native_pcm_starvation_frames=%d",
 		p.samples,
 		p.counter_resets,
 		p.generation_changes,
@@ -1010,9 +1010,9 @@ graphics_telemetry_window_text :: proc(window: Graphics_Telemetry_Window) -> str
 		p.mmio_fallback_attempts,
 		p.mmio_fallback_successes,
 		p.mmio_fallback_failures,
-		p.winquake_fallback_attempts,
-		p.winquake_fallback_successes,
-		p.winquake_fallback_failures,
+		p.legacy_aperture_mode,
+		p.legacy_aperture_memory_access_exits,
+		p.legacy_aperture_forwarded_exits,
 		p.legacy_aperture_read_bytes,
 		p.legacy_aperture_write_bytes,
 		p.lfb_dirty_pages,
@@ -1231,7 +1231,7 @@ graphics_telemetry_trace_text :: proc(telemetry: ^Graphics_Telemetry) -> string 
 		g := epoch.host_gpu
 		fmt.sbprintf(
 			&builder,
-			"epoch=%d lifecycle=%d source=%s scanout_generation=%d result=%s mode=%dx%d/%s descriptor_copy=%d/%dns texture_upload_bytes=%d proof_gpu=%d/%d/%d input=%d/%dus/%dus/%dus producer_samples=%d session=%d device=%d vm_steps=%d vm_wall_us=%d whpx=%d/%d mmio=%d/%d/%d aperture=%d/%d dirty_pages=%d/%d gsw2d_fenced=%d gsw3d=%d/%d/%d queue=%d/%d/%d owned=%d/%d/%d fence=%d audio=%d/%d/%d",
+			"epoch=%d lifecycle=%d source=%s scanout_generation=%d result=%s mode=%dx%d/%s descriptor_copy=%d/%dns texture_upload_bytes=%d proof_gpu=%d/%d/%d input=%d/%dus/%dus/%dus producer_samples=%d session=%d device=%d vm_steps=%d vm_wall_us=%d whpx=%d/%d mmio=%d/%d/%d legacy_aperture=%v/%d/%d aperture_bytes=%d/%d dirty_pages=%d/%d gsw2d_fenced=%d gsw3d=%d/%d/%d queue=%d/%d/%d owned=%d/%d/%d fence=%d audio=%d/%d/%d",
 			epoch.sequence,
 			epoch.lifecycle_generation,
 			graphics_frame_source_name(epoch.source),
@@ -1260,6 +1260,9 @@ graphics_telemetry_trace_text :: proc(telemetry: ^Graphics_Telemetry) -> string 
 			p.mmio_fallback_attempts,
 			p.mmio_fallback_successes,
 			p.mmio_fallback_failures,
+			p.legacy_aperture_mode,
+			p.legacy_aperture_memory_access_exits,
+			p.legacy_aperture_forwarded_exits,
 			p.legacy_aperture_read_bytes,
 			p.legacy_aperture_write_bytes,
 			p.lfb_dirty_pages,

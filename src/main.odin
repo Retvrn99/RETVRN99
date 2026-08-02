@@ -2249,6 +2249,21 @@ Console_Vm_Lifetime_Config :: struct {
 	has_cmos:      bool,
 }
 
+console_configure_legacy_aperture_execution :: proc(
+	m: ^machine.Machine,
+	options: ^acceptance.Options,
+) {
+	if m == nil || options == nil {return}
+	mode := hv.Legacy_Aperture_Execution_Mode.Auto
+	if options.legacy_aperture_mode == .Scalar {mode = .Scalar}
+	hv.legacy_aperture_execution_set_mode(&m.vm, mode)
+	histogram_enabled := options.legacy_aperture_mode_set && options.artifacts != ""
+	if hv.legacy_aperture_execution_set_histogram_enabled(&m.vm, histogram_enabled) &&
+	   histogram_enabled {
+		_ = hv.legacy_aperture_execution_histogram_end(&m.vm)
+	}
+}
+
 console_vm_lifetime_configure :: proc(ctx: rawptr, m: ^machine.Machine, _: []u8) -> bool {
 	config := (^Console_Vm_Lifetime_Config)(ctx)
 	if config == nil || config.options == nil || config.install_state == nil {return false}
@@ -2261,6 +2276,7 @@ console_vm_lifetime_configure :: proc(ctx: rawptr, m: ^machine.Machine, _: []u8)
 	if config.has_cmos {_ = machine.machine_cmos_import(m, config.loaded_cmos[:])}
 	if !machine.load_roms(&m.vm) {return false}
 	machine.machine_set_cpu_mode(m, config.settings.cpu_mode)
+	console_configure_legacy_aperture_execution(m, config.options)
 	machine.bus_set_strict_io(&m.platform.bus, config.options.strict_io)
 	machine.machine_set_diagnostic_tracing(m, config.options.strict_io)
 	machine.machine_set_bus_diagnostic_tracing(m, config.options.setup_diagnostics == .Hardware)
@@ -2345,6 +2361,13 @@ console_main :: proc(
 	}
 	defer firmware_log_destroy(&firmware)
 	machine_segment_accumulated := false
+	legacy_vga_host_metrics: acceptance.Legacy_Vga_Host_Metrics
+	legacy_vga_metrics_enabled := console_legacy_vga_host_metrics_enabled(&run_options)
+	acceptance.legacy_vga_host_metrics_init(
+		&legacy_vga_host_metrics,
+		legacy_vga_metrics_enabled,
+		run_options.legacy_aperture_mode,
+	)
 	defer console_acceptance_finalize_lifetime(
 		&run_options,
 		&run_result,
@@ -2356,6 +2379,7 @@ console_main :: proc(
 		start,
 		&result,
 		&machine_segment_accumulated,
+		&legacy_vga_host_metrics,
 	)
 	guest_report: acceptance.Guest_Report_Collector
 	guest_report_artifacts := run_options.test_device ? run_options.artifacts : ""
@@ -2490,6 +2514,7 @@ console_main :: proc(
 	}
 
 	last_vga := start
+	legacy_vga_metrics_last_sample := start
 	prev: vga.Text_Snapshot
 	shown := false
 	last_frame_kind := vga.Display_Kind.Invalid
@@ -2753,6 +2778,21 @@ console_main :: proc(
 			fmt.println(diagnostic)
 			delete(diagnostic)
 		}
+		if legacy_vga_metrics_enabled &&
+		   time.tick_diff(legacy_vga_metrics_last_sample, now) >=
+			   time.Duration(acceptance.LEGACY_APERTURE_PERFORMANCE_SAMPLE_NS) {
+			frame: ^vga.Display_Frame
+			if console_legacy_vga_mode_x_candidate(m) {
+				frame = machine.machine_display_frame(m)
+			}
+			wall_ns := u64(max(time.Duration(0), time.tick_diff(start, now)))
+			console_legacy_vga_sample_performance(
+				m,
+				&legacy_vga_host_metrics,
+				console_legacy_vga_performance_sample(m, &lifetime, frame, wall_ns),
+			)
+			legacy_vga_metrics_last_sample = now
+		}
 		switch command := machine.machine_test_device_take_command(m); command {
 		case .Crc:
 			_ = machine.machine_test_device_frame_crc(m)
@@ -2771,6 +2811,13 @@ console_main :: proc(
 					) ==
 					.None
 				console_note_capture(options.artifacts, "canvas", label, m, frame)
+				if legacy_vga_metrics_enabled {
+					wall_ns := u64(max(time.Duration(0), time.tick_diff(start, time.tick_now())))
+					acceptance.legacy_vga_host_metrics_note_capture(
+						&legacy_vga_host_metrics,
+						console_legacy_vga_capture_sample(m, &lifetime, frame, label, wall_ns),
+					)
+				}
 			}
 			// A guest that waits for this is still standing where it asked, so the
 			// frame it captured is the one it meant. One that does not wait races

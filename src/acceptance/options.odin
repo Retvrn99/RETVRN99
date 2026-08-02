@@ -165,7 +165,8 @@ options_parse :: proc(args: []string) -> (Options, Options_Diagnostic) {
 	if options.guest_report_kind_set && !options.test_device {
 		return {}, .Test_Device_Required
 	}
-	if (options.guest_report_kind_set || options.shutdown_trace) && options.artifacts == "" {
+	if (options.guest_report_kind_set || options.legacy_aperture_mode_set || options.shutdown_trace) &&
+	   options.artifacts == "" {
 		return {}, .Artifacts_Required
 	}
 	return options, .None

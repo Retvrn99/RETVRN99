@@ -25,9 +25,14 @@ graphics_producer_test_interval_separates_measured_and_derived_counters :: proc(
 	previous.machine.whpx.mmio_string_fallbacks = 1
 	previous.machine.whpx.mmio_string_chunks = 2
 	previous.machine.whpx.mmio_string_elements = 16
-	previous.machine.whpx.mmio_fallback_by_kind[int(hv.Whpx_Mmio_Kind.Winquake_Store_Loop)] = {
+	previous.machine.whpx.mmio_fallback_by_kind[int(hv.Whpx_Mmio_Kind.Scalar_Store_Register)] = {
 		attempts  = 2,
 		successes = 2,
+	}
+	previous.machine.whpx.legacy_aperture_execution = {
+		mode                = .Scalar,
+		memory_access_exits = 10,
+		forwarded_exits     = 10,
 	}
 	previous.machine.lfb_dirty_page_observations = 3
 	previous.machine.bank_alias_dirty_page_observations = 1
@@ -93,10 +98,15 @@ graphics_producer_test_interval_separates_measured_and_derived_counters :: proc(
 	current.machine.whpx.mmio_string_fallbacks = 3
 	current.machine.whpx.mmio_string_chunks = 5
 	current.machine.whpx.mmio_string_elements = 40
-	current.machine.whpx.mmio_fallback_by_kind[int(hv.Whpx_Mmio_Kind.Winquake_Store_Loop)] = {
+	current.machine.whpx.mmio_fallback_by_kind[int(hv.Whpx_Mmio_Kind.Scalar_Store_Register)] = {
 		attempts  = 5,
 		successes = 4,
 		failures  = 1,
+	}
+	current.machine.whpx.legacy_aperture_execution = {
+		mode                = .Scalar,
+		memory_access_exits = 16,
+		forwarded_exits     = 16,
 	}
 	current.machine.lfb_dirty_page_observations = 5
 	current.machine.bank_alias_dirty_page_observations = 4
@@ -157,9 +167,9 @@ graphics_producer_test_interval_separates_measured_and_derived_counters :: proc(
 	testing.expect_value(t, interval.mmio_string_fallbacks, u64(2))
 	testing.expect_value(t, interval.mmio_string_chunks, u64(3))
 	testing.expect_value(t, interval.mmio_string_elements, u64(24))
-	testing.expect_value(t, interval.winquake_fallback_attempts, u64(3))
-	testing.expect_value(t, interval.winquake_fallback_successes, u64(2))
-	testing.expect_value(t, interval.winquake_fallback_failures, u64(1))
+	testing.expect_value(t, interval.legacy_aperture_mode, hv.Legacy_Aperture_Execution_Mode.Scalar)
+	testing.expect_value(t, interval.legacy_aperture_memory_access_exits, u64(6))
+	testing.expect_value(t, interval.legacy_aperture_forwarded_exits, u64(6))
 	testing.expect_value(t, interval.lfb_dirty_pages, u64(2))
 	testing.expect_value(t, interval.lfb_dirty_page_coverage_bytes_upper_bound, u64(8192))
 	testing.expect_value(t, interval.bank_alias_dirty_pages, u64(3))

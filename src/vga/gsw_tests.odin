@@ -96,6 +96,15 @@ gsw_vga_test_v2_surface_offset_present_publishes_without_legacy_mutation :: proc
 	testing.expect_value(t, g.present_generation, u64(1))
 	testing.expect_value(t, g.metrics.presents, u64(1))
 	testing.expect_value(t, g.metrics.commands, u64(1))
+	identity := vga_active_presentation_identity(&v, &g)
+	testing.expect(t, identity.valid)
+	testing.expect(t, identity.owner == .Gsw2d)
+	testing.expect_value(t, identity.sequence, snapshot.active.header.sequence)
+	testing.expect_value(t, identity.mode_generation, snapshot.active.header.mode_generation)
+	testing.expect_value(t, identity.surface_id, snapshot.active.header.surface.id)
+	testing.expect_value(t, identity.surface_generation, snapshot.active.header.surface.generation)
+	testing.expect_value(t, identity.width, u32(2))
+	testing.expect_value(t, identity.height, u32(1))
 }
 
 @(test)

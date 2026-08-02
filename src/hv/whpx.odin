@@ -115,6 +115,7 @@ whpx_create :: proc(vm: ^Vm, ram_size: int, options: Vm_Create_Options) -> bool 
 
 whpx_destroy :: proc(vm: ^Vm) {
 	held_gate := vm.part != nil // only a create that got a partition holds the gate
+	legacy_aperture_execution_destroy(vm)
 	if vm.emu != nil {
 		WHvEmulatorDestroyEmulator(vm.emu)
 		vm.emu = nil

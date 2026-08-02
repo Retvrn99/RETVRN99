@@ -10,6 +10,8 @@ import stbi "vendor:stb/image"
 ARTIFACT_TEXT_MAX_BYTES :: 256 * 1024
 ARTIFACT_HARDWARE_TRACE_MAX_BYTES :: 512 * 1024
 ARTIFACT_SHUTDOWN_TRACE_MAX_BYTES :: 8 * 1024 * 1024
+ARTIFACT_LEGACY_APERTURE_HISTOGRAM_MAX_BYTES :: 32 * 1024 * 1024
+ARTIFACT_LEGACY_VGA_HOST_METRICS_MAX_BYTES :: 64 * 1024
 ARTIFACT_FRAME_MAX_PIXELS :: 2_000_000
 
 Artifact_Diagnostic :: enum {
@@ -55,6 +57,8 @@ artifact_write_bundle :: proc(
 	frame_height: int = 0,
 	hardware_trace: string = "",
 	shutdown_trace: string = "",
+	legacy_aperture_histogram: string = "",
+	legacy_vga_host_metrics: string = "",
 ) -> Artifact_Diagnostic {
 	if directory == "" {return .Invalid_Path}
 	if os.make_directory_all(directory) != nil {return .Create_Directory_Failed}
@@ -83,6 +87,34 @@ artifact_write_bundle :: proc(
 		shutdown_bytes := transmute([]u8)shutdown_trace
 		if len(shutdown_bytes) > ARTIFACT_SHUTDOWN_TRACE_MAX_BYTES {return .Write_Failed}
 		if os.write_entire_file(shutdown_trace_path, shutdown_bytes) != nil {return .Write_Failed}
+	}
+	aperture_path, aperture_path_error := filepath.join({directory, "legacy-aperture-histogram.tsv"})
+	if aperture_path_error != nil {return .Path_Failed}
+	defer delete(aperture_path)
+	if legacy_aperture_histogram == "" {
+		if !artifact_remove_if_present(aperture_path) {return .Write_Failed}
+	} else {
+		aperture_bytes := transmute([]u8)legacy_aperture_histogram
+		if len(aperture_bytes) > ARTIFACT_LEGACY_APERTURE_HISTOGRAM_MAX_BYTES {
+			return .Write_Failed
+		}
+		if os.write_entire_file(aperture_path, aperture_bytes) != nil {return .Write_Failed}
+	}
+	host_metrics_path, host_metrics_path_error := filepath.join(
+		{directory, "legacy-vga-host-metrics.tsv"},
+	)
+	if host_metrics_path_error != nil {return .Path_Failed}
+	defer delete(host_metrics_path)
+	if legacy_vga_host_metrics == "" {
+		if !artifact_remove_if_present(host_metrics_path) {return .Write_Failed}
+	} else {
+		host_metrics_bytes := transmute([]u8)legacy_vga_host_metrics
+		if len(host_metrics_bytes) > ARTIFACT_LEGACY_VGA_HOST_METRICS_MAX_BYTES {
+			return .Write_Failed
+		}
+		if os.write_entire_file(host_metrics_path, host_metrics_bytes) != nil {
+			return .Write_Failed
+		}
 	}
 	frame_path, path_err := filepath.join({directory, "final-frame.png"})
 	if path_err != nil {return .Path_Failed}

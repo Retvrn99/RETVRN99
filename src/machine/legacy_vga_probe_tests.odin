@@ -3,7 +3,9 @@ package machine
 
 import hv "../hv"
 import video "../vga"
+import "core:fmt"
 import "core:log"
+import "core:strings"
 import "core:sync"
 import "core:testing"
 import "core:thread"
@@ -308,6 +310,10 @@ test_machine_public_port_mode_x_geometry_matrix_returns_to_mode_3 :: proc(t: ^te
 	defer free(m)
 	if !testing.expect(t, machine_init(m, 64 * 1024 * 1024)) {return}
 	defer machine_destroy(m)
+	hv.legacy_aperture_execution_set_mode(&m.vm, .Scalar)
+	if !testing.expect(t, hv.legacy_aperture_execution_set_histogram_enabled(&m.vm, true)) {
+		return
+	}
 	machine_set_diagnostic_tracing(m, true)
 	if !testing.expect(t, load_roms(&m.vm)) {return}
 
@@ -338,6 +344,29 @@ test_machine_public_port_mode_x_geometry_matrix_returns_to_mode_3 :: proc(t: ^te
 	if frame.kind != .Text {presentation_mismatch = true}
 	testing.expect(t, !presentation_mismatch)
 	testing.expect_value(t, frame.kind, video.Display_Kind.Text)
+
+	histogram := hv.legacy_aperture_execution_observability(&m.vm)
+	testing.expect(t, histogram.histogram_exits > 0)
+	testing.expect_value(t, histogram.histogram_exits, histogram.memory_access_exits)
+	testing.expect_value(t, histogram.histogram_retained_exits, histogram.histogram_exits)
+	testing.expect_value(t, histogram.histogram_dropped_exits, u64(0))
+	report := hv.legacy_aperture_execution_histogram_text(&m.vm)
+	defer delete(report)
+	for entry in cases {
+		geometry := fmt.tprintf(
+			"\tIndexed_Unchained\t%d\t%d\t%d\t",
+			entry.width,
+			entry.height,
+			entry.width / 4,
+		)
+		testing.expectf(
+			t,
+			strings.contains(report, geometry),
+			"missing Mode X histogram geometry %dx%d",
+			entry.width,
+			entry.height,
+		)
+	}
 }
 
 Legacy_Reserved_Field :: enum {

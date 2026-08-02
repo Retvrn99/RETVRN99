@@ -19,7 +19,7 @@ Whpx_Physical_Exit_Reason :: enum {
 }
 
 WHPX_PHYSICAL_EXIT_REASON_COUNT :: int(Whpx_Physical_Exit_Reason.Unknown) + 1
-WHPX_MMIO_KIND_COUNT :: int(Whpx_Mmio_Kind.Winquake_Store_Loop) + 1
+WHPX_MMIO_KIND_COUNT :: int(Whpx_Mmio_Kind.Lods) + 1
 
 Whpx_Mmio_Fallback_Counters :: struct {
 	attempts:  u64,
@@ -36,6 +36,7 @@ Whpx_Graphics_Observability :: struct {
 	mmio_string_fallbacks: u64,
 	mmio_string_chunks:    u64,
 	mmio_string_elements:  u64,
+	legacy_aperture_execution: Legacy_Aperture_Execution_Observability,
 	mmio_fallback_by_kind: [WHPX_MMIO_KIND_COUNT]Whpx_Mmio_Fallback_Counters,
 }
 
@@ -117,6 +118,7 @@ whpx_graphics_observability :: proc(vm: ^Vm) -> Whpx_Graphics_Observability {
 		mmio_string_fallbacks = vm.mmio_string_fallbacks,
 		mmio_string_chunks = vm.mmio_string_chunks,
 		mmio_string_elements = vm.mmio_string_elements,
+		legacy_aperture_execution = legacy_aperture_execution_observability(vm),
 		mmio_fallback_by_kind = vm.mmio_fallback_by_kind,
 	}
 }

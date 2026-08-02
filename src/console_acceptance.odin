@@ -549,6 +549,7 @@ console_acceptance_should_write_artifacts :: proc(
 	}
 	return(
 		options.setup_diagnostics == .Hardware ||
+		options.legacy_aperture_mode_set ||
 		options.shutdown_trace ||
 		trace_count > 0 ||
 		console_artifact_failed(result) \
@@ -2010,6 +2011,7 @@ console_acceptance_finalize :: proc(
 	return_code: ^int,
 	machine_segment_accumulated: ^bool = nil,
 	lifetime: ^Vm_Lifetime = nil,
+	legacy_vga_host_metrics: ^acceptance.Legacy_Vga_Host_Metrics = nil,
 ) {
 	if options == nil || run_result == nil {return}
 	active_session := session != nil ? session^ : nil
@@ -2072,6 +2074,13 @@ console_acceptance_finalize :: proc(
 		defer if hardware_trace != "" {delete(hardware_trace)}
 		shutdown_trace := options.shutdown_trace ? console_shutdown_trace_text(m) : ""
 		defer if shutdown_trace != "" {delete(shutdown_trace)}
+		legacy_aperture_histogram :=
+			options.legacy_aperture_mode_set ? hv.legacy_aperture_execution_histogram_text(&m.vm) : ""
+		defer if legacy_aperture_histogram != "" {delete(legacy_aperture_histogram)}
+		legacy_vga_host_metrics_text := acceptance.legacy_vga_host_metrics_text(
+			legacy_vga_host_metrics,
+		)
+		defer if legacy_vga_host_metrics_text != "" {delete(legacy_vga_host_metrics_text)}
 		pixels: []u32
 		width, height := 0, 0
 		if frame != nil {pixels, width, height = frame.pixels, frame.width, frame.height}
@@ -2083,6 +2092,8 @@ console_acceptance_finalize :: proc(
 			height,
 			hardware_trace,
 			shutdown_trace,
+			legacy_aperture_histogram,
+			legacy_vga_host_metrics_text,
 		)
 		if diagnostic != .None {
 			fmt.eprintfln("acceptance artifact write failed: %v", diagnostic)
@@ -2156,6 +2167,7 @@ console_acceptance_finalize_lifetime :: proc(
 	start: time.Tick,
 	return_code: ^int,
 	machine_segment_accumulated: ^bool = nil,
+	legacy_vga_host_metrics: ^acceptance.Legacy_Vga_Host_Metrics = nil,
 ) {
 	console_acceptance_finalize(
 		options,
@@ -2169,6 +2181,7 @@ console_acceptance_finalize_lifetime :: proc(
 		return_code,
 		machine_segment_accumulated,
 		lifetime,
+		legacy_vga_host_metrics,
 	)
 }
 

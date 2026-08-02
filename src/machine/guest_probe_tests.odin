@@ -290,7 +290,7 @@ test_guest_probe_paged_rep_movsd_copies_to_vga_aperture :: proc(t: ^testing.T) {
 }
 
 @(test)
-test_guest_probe_scalar_winquake_mmio_forms :: proc(t: ^testing.T) {
+test_guest_probe_scalar_sib_vga_mmio_forms :: proc(t: ^testing.T) {
 	if !hv.available() {
 		log.warn("WHPX not available; skipping scalar VGA MMIO guest probe")
 		return

@@ -24,6 +24,8 @@ acceptance_artifacts_test_bundle_is_fixed_name_and_bounded :: proc(t: ^testing.T
 	frame_path, _ := filepath.join({dir, "final-frame.png"})
 	trace_path, _ := filepath.join({dir, "hardware-trace.txt"})
 	shutdown_path, _ := filepath.join({dir, "shutdown-trace.tsv"})
+	aperture_path, _ := filepath.join({dir, "legacy-aperture-histogram.tsv"})
+	host_metrics_path, _ := filepath.join({dir, "legacy-vga-host-metrics.tsv"})
 	diagnostics, _ := os.read_entire_file(diagnostics_path, context.temp_allocator)
 	frame, _ := os.read_entire_file(frame_path, context.temp_allocator)
 	testing.expect_value(t, len(diagnostics), ARTIFACT_TEXT_MAX_BYTES)
@@ -31,6 +33,8 @@ acceptance_artifacts_test_bundle_is_fixed_name_and_bounded :: proc(t: ^testing.T
 	trace, _ := os.read_entire_file(trace_path, context.temp_allocator)
 	testing.expect_value(t, string(trace), "tick=1 pit\n")
 	testing.expect(t, !os.exists(shutdown_path))
+	testing.expect(t, !os.exists(aperture_path))
+	testing.expect(t, !os.exists(host_metrics_path))
 	testing.expect_value(
 		t,
 		artifact_write_bundle(
@@ -41,12 +45,23 @@ acceptance_artifacts_test_bundle_is_fixed_name_and_bounded :: proc(t: ^testing.T
 			0,
 			"",
 			"sequence\tkind\n1\tmarker\n",
+			"schema\tlegacy-aperture-histogram-v1\n",
+			"schema\trecord\n1\tperformance\n",
 		),
 		Artifact_Diagnostic.None,
 	)
 	shutdown, shutdown_error := os.read_entire_file(shutdown_path, context.temp_allocator)
 	testing.expect(t, shutdown_error == nil)
 	testing.expect_value(t, string(shutdown), "sequence\tkind\n1\tmarker\n")
+	aperture, aperture_error := os.read_entire_file(aperture_path, context.temp_allocator)
+	testing.expect(t, aperture_error == nil)
+	testing.expect_value(t, string(aperture), "schema\tlegacy-aperture-histogram-v1\n")
+	host_metrics, host_metrics_error := os.read_entire_file(
+		host_metrics_path,
+		context.temp_allocator,
+	)
+	testing.expect(t, host_metrics_error == nil)
+	testing.expect_value(t, string(host_metrics), "schema\trecord\n1\tperformance\n")
 	testing.expect_value(
 		t,
 		artifact_write_bundle(dir, "new diagnostics", nil, max(int), 2),
@@ -55,6 +70,8 @@ acceptance_artifacts_test_bundle_is_fixed_name_and_bounded :: proc(t: ^testing.T
 	testing.expect(t, !os.exists(frame_path))
 	testing.expect(t, !os.exists(trace_path))
 	testing.expect(t, !os.exists(shutdown_path))
+	testing.expect(t, !os.exists(aperture_path))
+	testing.expect(t, !os.exists(host_metrics_path))
 }
 
 @(test)
@@ -80,6 +97,44 @@ acceptance_artifacts_test_trace_keeps_bounded_complete_tail :: proc(t: ^testing.
 	testing.expect(t, len(trace) <= ARTIFACT_HARDWARE_TRACE_MAX_BYTES)
 	testing.expect(t, len(trace) >= ARTIFACT_HARDWARE_TRACE_MAX_BYTES - 64)
 	testing.expect(t, len(trace) >= 5 && string(trace[len(trace) - 5:]) == "tail\n")
+}
+
+@(test)
+acceptance_artifacts_test_rejects_oversize_legacy_aperture_histogram :: proc(
+	t: ^testing.T,
+) {
+	context.allocator = context.temp_allocator
+	base, _ := os.temp_directory(context.temp_allocator)
+	dir, _ := os.make_directory_temp(base, "retvrn99_aperture_artifact_*", context.temp_allocator)
+	defer acceptance_test_remove_tree(dir)
+	oversize := make(
+		[]u8,
+		ARTIFACT_LEGACY_APERTURE_HISTOGRAM_MAX_BYTES + 1,
+		context.temp_allocator,
+	)
+	testing.expect_value(
+		t,
+		artifact_write_bundle(dir, "diagnostics", nil, 0, 0, "", "", string(oversize)),
+		Artifact_Diagnostic.Write_Failed,
+	)
+}
+
+@(test)
+acceptance_artifacts_test_rejects_oversize_legacy_vga_host_metrics :: proc(t: ^testing.T) {
+	context.allocator = context.temp_allocator
+	base, _ := os.temp_directory(context.temp_allocator)
+	dir, _ := os.make_directory_temp(base, "retvrn99_vga_metrics_artifact_*", context.temp_allocator)
+	defer acceptance_test_remove_tree(dir)
+	oversize := make(
+		[]u8,
+		ARTIFACT_LEGACY_VGA_HOST_METRICS_MAX_BYTES + 1,
+		context.temp_allocator,
+	)
+	testing.expect_value(
+		t,
+		artifact_write_bundle(dir, "diagnostics", nil, 0, 0, "", "", "", string(oversize)),
+		Artifact_Diagnostic.Write_Failed,
+	)
 }
 
 @(test)

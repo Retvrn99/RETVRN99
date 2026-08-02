@@ -11,6 +11,7 @@ param(
     [string]$HostExecutable,
     [string]$GuestImportExecutable,
     [string]$LauncherStageExecutable,
+    [string]$PifLauncherExecutable,
     [string]$CandidateDriverRoot,
     [string]$NasmExecutable,
     [string]$Case,
@@ -26,9 +27,11 @@ param(
     [string]$QuakeArguments,
     [ValidateSet('auto', 'scalar')]
     [string]$LegacyApertureMode = 'auto',
+    [switch]$ScalarControl,
     [ValidateRange(90, 900)]
     [int]$Seconds = 180,
     [string]$GuestPifPath = 'QUAKE/QUAKEPIF.PIF',
+    [string]$GuestPifLauncherPath = 'QUAKE/PIFRUN.EXE',
     [string]$GuestBatchPath = 'QUAKE/RETURN3.BAT',
     [string]$GuestHelperPath = 'QUAKE/EXITVM.COM',
     [string]$GuestRegPath = 'QUAKE/DRIVER.REG',
@@ -48,6 +51,10 @@ $script:LegacyVgaEvidencePostCapture = 225
 $script:LegacyVgaEvidenceFailureCapture = 239
 $script:LegacyVgaEvidenceReportName = 'legacy-vga-result.tsv'
 $script:LegacyVgaEvidenceShutdownTraceName = 'shutdown-trace.tsv'
+$script:LegacyVgaEvidenceQuakeExitConfigPath = 'QUAKE/ID1/RETVRN99.CFG'
+$script:LegacyVgaEvidenceQuakeExitWaitFrames = 1100
+$script:LegacyVgaEvidenceLauncherStageContract =
+    'usage: gswgfx-launcher-stage IMAGE REG_FILE AUTOEXEC_FILE [GUEST_REG_PATH]'
 
 function Assert-LegacyVgaEvidenceRequiredText {
     param([string]$Value, [string]$Label)
@@ -214,8 +221,67 @@ function Assert-LegacyVgaEvidenceQuakeArguments {
         $Arguments.IndexOfAny([char[]]@("`r", "`n", "`t", '&', '|', '<', '>', '%', '"')) -ge 0) {
         throw 'Quake arguments contain unsafe Win98 command characters.'
     }
-    if ($Arguments -notmatch '(?i)(?:^|\s)\+quit(?:\s|$)') {
-        throw 'Quake arguments must contain +quit so the PIF return is bounded.'
+    if ($Arguments -match '(?i)(?:^|\s)\+quit(?:\s|$)') {
+        throw 'Quake arguments must not contain +quit; the test-owned config exits through the console.'
+    }
+    if ($Arguments -match '(?i)(?:^|\s)\+exec(?:\s|$)') {
+        throw 'Quake arguments must not contain +exec; the harness owns the exit config.'
+    }
+    if ($Arguments -notmatch '(?i)(?:^|\s)\+timedemo\s+[A-Za-z0-9_.-]+(?:\s|$)') {
+        throw 'Quake arguments must contain +timedemo with one bounded workload.'
+    }
+}
+
+function Assert-LegacyVgaEvidencePifLauncherFile {
+    param([string]$Path)
+
+    Assert-LegacyVgaEvidenceFile $Path 'PIF launcher executable'
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -lt 1024 -or $item.Length -gt 1048576) {
+        throw 'PIF launcher must be a bounded regular executable.'
+    }
+    $stream = [IO.File]::Open(
+        $item.FullName,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    try {
+        if ($stream.ReadByte() -ne 0x4D -or $stream.ReadByte() -ne 0x5A) {
+            throw 'PIF launcher must be a Windows MZ executable.'
+        }
+    } finally {
+        $stream.Dispose()
+    }
+    return [pscustomobject]@{
+        path = $item.FullName
+        bytes = [long]$item.Length
+        sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+    }
+}
+
+function Assert-LegacyVgaEvidenceLauncherStageFile {
+    param([string]$Path)
+
+    Assert-LegacyVgaEvidenceFile $Path 'launcher-stage executable'
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $item.Length -lt 1024 -or $item.Length -gt 16777216) {
+        throw 'launcher-stage must be a bounded regular executable.'
+    }
+    [byte[]]$bytes = [IO.File]::ReadAllBytes($item.FullName)
+    if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+        throw 'launcher-stage must be a Windows MZ executable.'
+    }
+    $text = [Text.Encoding]::ASCII.GetString($bytes)
+    if (-not $text.Contains($script:LegacyVgaEvidenceLauncherStageContract)) {
+        throw 'launcher-stage does not support the required guest REG path contract.'
+    }
+    return [pscustomobject]@{
+        path = $item.FullName
+        bytes = [long]$item.Length
+        sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
     }
 }
 
@@ -282,6 +348,17 @@ function Get-LegacyVgaEvidenceAsciiBytes {
         }
     }
     return [Text.Encoding]::ASCII.GetBytes($Text)
+}
+
+function Get-LegacyVgaEvidenceSha256 {
+    param([byte[]]$Bytes)
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [BitConverter]::ToString($sha256.ComputeHash($Bytes)).Replace('-', '')
+    } finally {
+        $sha256.Dispose()
+    }
 }
 
 function Get-LegacyVgaEvidenceDerivedRegBytes {
@@ -368,6 +445,7 @@ function Assert-LegacyVgaEvidenceAutoexec {
 function New-LegacyVgaEvidenceBatchText {
     param(
         [string]$PifWindowsPath,
+        [string]$PifLauncherWindowsPath,
         [string]$HelperWindowsPath,
         [string]$Arguments
     )
@@ -378,19 +456,41 @@ function New-LegacyVgaEvidenceBatchText {
         "$HelperWindowsPath P",
         'IF ERRORLEVEL 2 GOTO SHUTDOWN',
         'IF ERRORLEVEL 1 GOTO REPORTFAIL',
-        "START /W $PifWindowsPath $Arguments",
+        'DEL C:\QUAKE\ID1\QCONSOLE.LOG >NUL 2>NUL',
+        "START $PifWindowsPath $Arguments +exec RETVRN99.CFG",
+        "$PifLauncherWindowsPath /wait",
         'IF ERRORLEVEL 1 GOTO QUAKEFAIL',
         "$HelperWindowsPath O",
         'GOTO SHUTDOWN',
         ':QUAKEFAIL',
         "$HelperWindowsPath Q",
-        'GOTO SHUTDOWN',
+        ':FAILHOLD',
+        'PAUSE >NUL',
+        'GOTO FAILHOLD',
         ':REPORTFAIL',
         "$HelperWindowsPath R",
         ':SHUTDOWN',
         'RUNDLL32.EXE user.exe,ExitWindows'
     )
     return ($lines -join "`r`n") + "`r`n"
+}
+
+function New-LegacyVgaEvidenceQuakeExitConfig {
+    $lines = [Collections.Generic.List[string]]::new(
+        $script:LegacyVgaEvidenceQuakeExitWaitFrames + 4
+    )
+    [void]$lines.Add('startdemos')
+    for ($frame = 0; $frame -lt $script:LegacyVgaEvidenceQuakeExitWaitFrames; $frame += 1) {
+        [void]$lines.Add('wait')
+    }
+    [void]$lines.Add('echo RETVRN99_NORMAL_EXIT')
+    [void]$lines.Add('toggleconsole')
+    [void]$lines.Add('quit')
+    $text = ($lines -join "`r`n") + "`r`n"
+    if ($text.Length -gt 16384) {
+        throw 'Generated Quake exit config exceeded its test-only bound.'
+    }
+    return $text
 }
 
 function New-LegacyVgaEvidenceReportPayloads {
@@ -760,11 +860,11 @@ function Assert-LegacyVgaEvidenceResult {
 }
 
 function Assert-LegacyVgaEvidenceLogs {
-    param([string[]]$Paths)
+    param([string[]]$Paths, [switch]$AllowMmioStorm)
 
-    foreach ($failureText in @(
-        'MMIO exit storm', 'upload-failed', 'render failure', 'warm CPU reset'
-    )) {
+    $failures = @('upload-failed', 'render failure', 'warm CPU reset')
+    if (-not $AllowMmioStorm) { $failures = @('MMIO exit storm') + $failures }
+    foreach ($failureText in $failures) {
         $matches = @(Select-String -LiteralPath $Paths -Pattern $failureText `
             -SimpleMatch -ErrorAction Stop)
         if ($matches.Count -ne 0) {
@@ -773,13 +873,547 @@ function Assert-LegacyVgaEvidenceLogs {
     }
 }
 
+function Assert-LegacyVgaEvidenceScalarControl {
+    param([string]$Mode, [bool]$Enabled)
+
+    if ($Enabled -and $Mode -cne 'scalar') {
+        throw 'Scalar control is valid only with legacy aperture mode scalar.'
+    }
+}
+
+function Assert-LegacyVgaEvidencePairedPerformance {
+    param([object[]]$Summaries)
+
+    if ($null -eq $Summaries -or $Summaries.Count -ne 60) {
+        throw 'Legacy VGA paired performance requires exactly 60 summaries.'
+    }
+    $records = @{}
+    foreach ($summary in $Summaries) {
+        foreach ($field in @(
+            'schema', 'width', 'height', 'repetition', 'legacy_aperture_mode',
+            'aperture_exits', 'presented_hz_milli', 'mmio_storm_observed',
+            'legacy_aperture_histogram'
+        )) {
+            if ($null -eq $summary -or
+                $summary.PSObject.Properties.Name -cnotcontains $field -or
+                $null -eq $summary.$field) {
+                throw "Legacy VGA paired performance summary field $field is missing."
+            }
+        }
+        [uint64]$schema = ConvertTo-LegacyVgaEvidenceUInt64 `
+            $summary.schema 'Legacy VGA paired performance schema'
+        [uint64]$width = ConvertTo-LegacyVgaEvidenceUInt64 `
+            $summary.width 'Legacy VGA paired performance width'
+        [uint64]$height = ConvertTo-LegacyVgaEvidenceUInt64 `
+            $summary.height 'Legacy VGA paired performance height'
+        [uint64]$repetition = ConvertTo-LegacyVgaEvidenceUInt64 `
+            $summary.repetition 'Legacy VGA paired performance repetition'
+        [uint64]$exits = ConvertTo-LegacyVgaEvidenceUInt64 `
+            $summary.aperture_exits 'Legacy VGA paired performance aperture exits'
+        [uint64]$hzMilli = ConvertTo-LegacyVgaEvidenceUInt64 `
+            $summary.presented_hz_milli 'Legacy VGA paired performance presented rate'
+        [uint64]$dropped = ConvertTo-LegacyVgaEvidenceUInt64 `
+            $summary.legacy_aperture_histogram.dropped `
+            'Legacy VGA paired performance dropped histogram exits'
+        $mode = [string]$summary.legacy_aperture_mode
+        if ($schema -ne 1 -or $width -notin @(320, 360) -or
+            $height -notin @(200, 240, 350, 400, 480) -or
+            $repetition -lt 1 -or $repetition -gt 3 -or
+            $mode -notin @('auto', 'scalar') -or $exits -eq 0 -or $dropped -ne 0 -or
+            $summary.mmio_storm_observed -isnot [bool]) {
+            throw 'Legacy VGA paired performance summary is invalid.'
+        }
+        if ($mode -ceq 'auto' -and $summary.mmio_storm_observed) {
+            throw 'Legacy VGA auto performance contains an MMIO storm.'
+        }
+        if ($mode -ceq 'auto' -and $hzMilli -lt 55000) {
+            throw 'Legacy VGA auto performance did not reach 55 presented frames per second.'
+        }
+        $key = "${width}x${height}:$repetition`:$mode"
+        if ($records.ContainsKey($key)) {
+            throw 'Legacy VGA paired performance contains a duplicate summary.'
+        }
+        $records.Add($key, [pscustomobject]@{
+            exits = $exits
+            presented_hz_milli = $hzMilli
+        })
+    }
+
+    foreach ($width in @(320, 360)) {
+        foreach ($height in @(200, 240, 350, 400, 480)) {
+            foreach ($repetition in 1..3) {
+                $scalarKey = "${width}x${height}:$repetition`:scalar"
+                $autoKey = "${width}x${height}:$repetition`:auto"
+                if (-not $records.ContainsKey($scalarKey) -or
+                    -not $records.ContainsKey($autoKey)) {
+                    throw 'Legacy VGA paired performance matrix is incomplete.'
+                }
+                $scalar = $records[$scalarKey]
+                $auto = $records[$autoKey]
+                if ([decimal]$scalar.exits -lt [decimal]$auto.exits * 10) {
+                    throw 'Legacy VGA auto mode did not achieve a 10x aperture exit reduction.'
+                }
+            }
+        }
+    }
+    return [pscustomobject]@{
+        summaries = 60
+        geometries = 10
+        repetitions = 3
+        scalar_controls = 30
+        auto_runs = 30
+    }
+}
+
+function Write-LegacyVgaEvidenceFileAtomic {
+    param([string]$Path, [byte[]]$Bytes)
+
+    $temporary = $Path + '.joining-' + [Guid]::NewGuid().ToString('N')
+    try {
+        Write-LegacyVgaEvidenceFileCreateNew $temporary $Bytes
+        [IO.File]::Move($temporary, $Path, $true)
+    } finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+            [IO.File]::Delete($temporary)
+        }
+    }
+}
+
+function Assert-LegacyVgaEvidenceApertureHistogram {
+    param([string]$Path, [string]$ExpectedMode)
+
+    Assert-LegacyVgaEvidenceFile $Path 'Legacy aperture histogram'
+    if ($ExpectedMode -cnotin @('auto', 'scalar')) {
+        throw 'Legacy aperture histogram expected mode is invalid.'
+    }
+    $lines = @(Get-Content -LiteralPath $Path)
+    if ($lines.Count -lt 8) {
+        throw 'Legacy aperture histogram is incomplete.'
+    }
+    $metadataNames = @('schema', 'mode', 'capacity', 'rows', 'exits', 'retained', 'dropped')
+    $metadata = @{}
+    for ($index = 0; $index -lt $metadataNames.Count; $index += 1) {
+        $fields = @(([string]$lines[$index]).Split("`t"))
+        if ($fields.Count -ne 2 -or $fields[0] -cne $metadataNames[$index]) {
+            throw 'Legacy aperture histogram metadata is malformed.'
+        }
+        $metadata[$fields[0]] = $fields[1]
+    }
+    if ($metadata.schema -cne 'legacy-aperture-histogram-v1' -or
+        $metadata.mode -cne $ExpectedMode) {
+        throw 'Legacy aperture histogram schema or mode is invalid.'
+    }
+    foreach ($name in @('capacity', 'rows', 'exits', 'retained', 'dropped')) {
+        if ([string]$metadata[$name] -cnotmatch '^(0|[1-9][0-9]*)$') {
+            throw 'Legacy aperture histogram counter is invalid.'
+        }
+    }
+    try {
+        [uint64]$capacity = $metadata.capacity
+        [uint64]$rows = $metadata.rows
+        [uint64]$exits = $metadata.exits
+        [uint64]$retained = $metadata.retained
+        [uint64]$dropped = $metadata.dropped
+    } catch {
+        throw 'Legacy aperture histogram counter is invalid.'
+    }
+    if ($capacity -ne 65536 -or $rows -lt 1 -or $rows -gt $capacity -or $exits -lt 1) {
+        throw 'Legacy aperture histogram bounded metadata is invalid.'
+    }
+    if ($retained -gt [uint64]::MaxValue - $dropped -or $retained + $dropped -ne $exits) {
+        throw 'Legacy aperture histogram accounting is inconsistent.'
+    }
+    if ($dropped -ne 0) {
+        throw 'Legacy aperture histogram dropped exits.'
+    }
+
+    $header = 'instruction' + "`t" + 'operation' + "`t" + 'cs' + "`t" +
+        'rip' + "`t" + 'gpa' + "`t" + 'layout' + "`t" + 'width' + "`t" +
+        'height' + "`t" + 'pitch' + "`t" + 'aperture_base' + "`t" +
+        'aperture_size' + "`t" + 'exits'
+    if ([string]$lines[7] -cne $header) {
+        throw 'Legacy aperture histogram row header is invalid.'
+    }
+    $rowLines = @()
+    if ($lines.Count -gt 8) { $rowLines = @($lines[8..($lines.Count - 1)]) }
+    if ([uint64]$rowLines.Count -ne $rows) {
+        throw 'Legacy aperture histogram row count is inconsistent.'
+    }
+    [uint64]$rowExitSum = 0
+    $patternCounts = [Collections.Generic.Dictionary[string, uint64]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($line in $rowLines) {
+        $fields = @(([string]$line).Split("`t"))
+        if ($fields.Count -ne 12 -or
+            $fields[0] -cnotmatch '^(?:[0-9a-f]{2}){0,15}$' -or
+            $fields[1] -cnotin @(
+                'Invalid', 'Scalar_Load', 'Scalar_Store_Register',
+                'Scalar_Store_Immediate', 'Movs', 'Stos', 'Lods'
+            ) -or
+            $fields[2] -cnotmatch '^[0-9a-f]{4}$' -or
+            $fields[3] -cnotmatch '^[0-9a-f]{16}$' -or
+            $fields[4] -cnotmatch '^[0-9a-f]{16}$' -or
+            $fields[5] -cnotin @('Unavailable', 'Indexed_Unchained') -or
+            $fields[6] -cnotmatch '^(0|[1-9][0-9]*)$' -or
+            $fields[7] -cnotmatch '^(0|[1-9][0-9]*)$' -or
+            $fields[8] -cnotmatch '^(0|[1-9][0-9]*)$' -or
+            $fields[9] -cnotmatch '^[0-9a-f]{16}$' -or
+            $fields[10] -cnotmatch '^(0|[1-9][0-9]*)$' -or
+            $fields[11] -cnotmatch '^[1-9][0-9]*$') {
+            throw 'Legacy aperture histogram row is malformed.'
+        }
+        try { [uint64]$rowExits = $fields[11] } catch {
+            throw 'Legacy aperture histogram row exit count is invalid.'
+        }
+        if ($rowExitSum -gt [uint64]::MaxValue - $rowExits) {
+            throw 'Legacy aperture histogram row exit count is invalid.'
+        }
+        $rowExitSum += $rowExits
+        $patternKey = @(
+            $fields[0], $fields[1], $fields[2], $fields[3],
+            $fields[5], $fields[6], $fields[7], $fields[8],
+            $fields[9], $fields[10]
+        ) -join "`t"
+        [uint64]$patternExits = 0
+        if ($patternCounts.TryGetValue($patternKey, [ref]$patternExits)) {
+            if ($patternExits -gt [uint64]::MaxValue - $rowExits) {
+                throw 'Legacy aperture histogram pattern count is invalid.'
+            }
+            $patternCounts[$patternKey] = $patternExits + $rowExits
+        } else {
+            $patternCounts.Add($patternKey, $rowExits)
+        }
+    }
+    if ($rowExitSum -ne $retained) {
+        throw 'Legacy aperture histogram accounting is inconsistent.'
+    }
+    $rankedPatterns = @($patternCounts.GetEnumerator() | Sort-Object `
+        @{ Expression = { $_.Value }; Descending = $true }, `
+        @{ Expression = { $_.Key }; Descending = $false })
+    [uint64]$targetExits = [decimal]::Ceiling(([decimal]$exits * 9) / 10)
+    [uint64]$attributedExits = 0
+    $patternsToTarget = 0
+    foreach ($pattern in $rankedPatterns) {
+        if ($attributedExits -ge $targetExits) { break }
+        $attributedExits += [uint64]$pattern.Value
+        $patternsToTarget += 1
+    }
+    $attributedBasisPoints = [int][decimal]::Floor(
+        ([decimal]$attributedExits * 10000) / [decimal]$exits
+    )
+    return [pscustomobject]@{
+        mode = $ExpectedMode
+        capacity = $capacity
+        rows = $rows
+        exits = $exits
+        retained = $retained
+        dropped = $dropped
+        patterns = $patternCounts.Count
+        patterns_to_90_percent = $patternsToTarget
+        attributed_exits = $attributedExits
+        attributed_basis_points = $attributedBasisPoints
+    }
+}
+
+function ConvertTo-LegacyVgaEvidenceUInt64 {
+    param([object]$Value, [string]$Label)
+
+    $text = [string]$Value
+    [uint64]$parsed = 0
+    if ($text -notmatch '^\d+$' -or -not [uint64]::TryParse(
+        $text,
+        [Globalization.NumberStyles]::None,
+        [Globalization.CultureInfo]::InvariantCulture,
+        [ref]$parsed
+    )) {
+        throw "$Label is not an unsigned integer."
+    }
+    return $parsed
+}
+
+function Assert-LegacyVgaEvidenceHostMetrics {
+    param(
+        [string]$Path,
+        [string]$ExpectedMode,
+        [int]$ExpectedWidth,
+        [int]$ExpectedHeight
+    )
+
+    Assert-LegacyVgaEvidenceFile $Path 'Legacy VGA host metrics'
+    if ($ExpectedMode -notin @('auto', 'scalar')) {
+        throw 'Legacy VGA host metrics expected mode is invalid.'
+    }
+    $rows = @(Import-Csv -LiteralPath $Path -Delimiter "`t")
+    if ($rows.Count -ne 3) {
+        throw 'Legacy VGA host metrics must contain exactly three rows.'
+    }
+    $required = @(
+        'schema', 'record', 'mode', 'label', 'valid', 'time_ns', 'width', 'height',
+        'owner_generation', 'mode_generation', 'surface_generation',
+        'content_generation', 'elapsed_ns', 'sample_count', 'presented_frames',
+        'presented_hz_milli', 'aperture_exits', 'counter_regressions', 'complete'
+    )
+    foreach ($name in $required) {
+        if ($rows[0].PSObject.Properties.Name -notcontains $name) {
+            throw "Legacy VGA host metrics are missing field $name."
+        }
+    }
+    $byRecord = @{}
+    foreach ($row in $rows) {
+        if ([string]$row.schema -cne '1' -or [string]$row.mode -cne $ExpectedMode) {
+            throw 'Legacy VGA host metrics schema or mode does not match.'
+        }
+        $record = [string]$row.record
+        if ($record -notin @('pre-pif', 'desktop-restored', 'performance') -or
+            $byRecord.ContainsKey($record)) {
+            throw 'Legacy VGA host metrics record set is invalid.'
+        }
+        $byRecord.Add($record, $row)
+    }
+    foreach ($record in @('pre-pif', 'desktop-restored', 'performance')) {
+        if (-not $byRecord.ContainsKey($record)) {
+            throw "Legacy VGA host metrics are missing $record."
+        }
+    }
+
+    $normalized = @{}
+    foreach ($record in @('pre-pif', 'desktop-restored', 'performance')) {
+        $row = $byRecord[$record]
+        $entry = [ordered]@{}
+        foreach ($field in @(
+            'label', 'valid', 'time_ns', 'width', 'height', 'owner_generation',
+            'mode_generation', 'surface_generation', 'content_generation',
+            'elapsed_ns', 'sample_count', 'presented_frames', 'presented_hz_milli',
+            'aperture_exits', 'counter_regressions', 'complete'
+        )) {
+            $entry[$field] = ConvertTo-LegacyVgaEvidenceUInt64 `
+                $row.$field "Legacy VGA host metrics $record $field"
+        }
+        $normalized[$record] = [pscustomobject]$entry
+    }
+
+    $pre = $normalized['pre-pif']
+    $post = $normalized['desktop-restored']
+    $performance = $normalized['performance']
+    foreach ($capture in @(
+        @($pre, [uint64]$script:LegacyVgaEvidencePreCapture, 'pre-pif'),
+        @($post, [uint64]$script:LegacyVgaEvidencePostCapture, 'desktop-restored')
+    )) {
+        $row = $capture[0]
+        $expectedLabel = [uint64]$capture[1]
+        $record = [string]$capture[2]
+        if ($row.valid -ne 1 -or $row.label -ne $expectedLabel -or
+            $row.width -ne 800 -or $row.height -ne 600 -or
+            $row.owner_generation -eq 0 -or $row.mode_generation -eq 0 -or
+            $row.surface_generation -eq 0 -or $row.content_generation -eq 0) {
+            throw "Legacy VGA host metrics $record capture is invalid."
+        }
+    }
+    if ($pre.mode_generation -eq $post.mode_generation) {
+        throw 'Legacy VGA host metrics did not observe a new restored desktop mode generation.'
+    }
+    if ($performance.valid -ne 1 -or $performance.complete -ne 1) {
+        throw 'Legacy VGA host metrics performance window is incomplete.'
+    }
+    if ($performance.label -ne 0 -or
+        $performance.width -ne [uint64]$ExpectedWidth -or
+        $performance.height -ne [uint64]$ExpectedHeight) {
+        throw 'Legacy VGA host metrics performance geometry does not match the requested mode.'
+    }
+    if ($performance.owner_generation -eq 0 -or $performance.mode_generation -eq 0 -or
+        $performance.surface_generation -eq 0 -or
+        $performance.elapsed_ns -lt 10000000000 -or
+        $performance.sample_count -eq 0 -or
+        $performance.presented_frames -gt $performance.sample_count -or
+        $performance.aperture_exits -eq 0 -or
+        $performance.counter_regressions -ne 0) {
+        throw 'Legacy VGA host metrics performance counters are invalid.'
+    }
+    $expectedHzMilli = [uint64][decimal]::Floor(
+        ([decimal]$performance.presented_frames * 1000000000000) /
+        [decimal]$performance.elapsed_ns
+    )
+    if ($performance.presented_hz_milli -ne $expectedHzMilli) {
+        throw 'Legacy VGA host metrics presented rate is inconsistent.'
+    }
+    return [pscustomobject]@{
+        mode = $ExpectedMode
+        pre = $pre
+        post = $post
+        performance = $performance
+    }
+}
+
+function Assert-LegacyVgaEvidencePerformanceWindow {
+    param([object]$Histogram, [object]$HostMetrics)
+
+    if ($null -eq $Histogram -or $null -eq $HostMetrics -or
+        $Histogram.PSObject.Properties.Name -cnotcontains 'mode' -or
+        $Histogram.PSObject.Properties.Name -cnotcontains 'exits' -or
+        $HostMetrics.PSObject.Properties.Name -cnotcontains 'mode' -or
+        $HostMetrics.PSObject.Properties.Name -cnotcontains 'performance' -or
+        $null -eq $HostMetrics.performance -or
+        $HostMetrics.performance.PSObject.Properties.Name -cnotcontains 'aperture_exits') {
+        throw 'Legacy VGA performance window join is incomplete.'
+    }
+    if ([string]$Histogram.mode -cne [string]$HostMetrics.mode) {
+        throw 'Legacy VGA histogram mode does not match the performance window.'
+    }
+    [uint64]$histogramExits = ConvertTo-LegacyVgaEvidenceUInt64 `
+        $Histogram.exits 'Legacy VGA histogram window exits'
+    [uint64]$performanceExits = ConvertTo-LegacyVgaEvidenceUInt64 `
+        $HostMetrics.performance.aperture_exits 'Legacy VGA performance window exits'
+    if ($histogramExits -eq 0 -or $histogramExits -ne $performanceExits) {
+        throw 'Legacy VGA histogram exit count does not match the performance window.'
+    }
+}
+
+function Join-LegacyVgaEvidenceGuestReport {
+    param(
+        [string]$Path,
+        [pscustomobject]$HostMetrics,
+        [string]$ShutdownMarkerCompletion
+    )
+
+    if ($ShutdownMarkerCompletion -cne 'd5-through-dc') {
+        throw 'Legacy VGA shutdown marker completion is invalid.'
+    }
+    Assert-LegacyVgaEvidenceGuestReport $Path -AllowHostJoinRequired
+    $rows = @(Import-Csv -LiteralPath $Path -Delimiter "`t")
+    $columns = @(
+        'schema', 'case', 'mode', 'width', 'height', 'repetition', 'phase',
+        'owner_generation', 'mode_generation', 'surface_generation',
+        'aperture_exits', 'presented_hz', 'desktop_sentinel_crc',
+        'shutdown_marker_completion', 'status', 'reason'
+    )
+    $hz = ([decimal]$HostMetrics.performance.presented_hz_milli / 1000).ToString(
+        '0.000',
+        [Globalization.CultureInfo]::InvariantCulture
+    )
+    foreach ($row in $rows) {
+        switch ([string]$row.phase) {
+            'pre-pif' {
+                $identity = $HostMetrics.pre
+                $row.aperture_exits = '0'
+                $row.presented_hz = '0.000'
+            }
+            'desktop-restored' {
+                $identity = $HostMetrics.post
+                $row.aperture_exits = [string]$HostMetrics.performance.aperture_exits
+                $row.presented_hz = $hz
+            }
+            'terminal' {
+                $identity = $HostMetrics.post
+                $row.aperture_exits = [string]$HostMetrics.performance.aperture_exits
+                $row.presented_hz = $hz
+            }
+            default {
+                throw "Legacy VGA guest report phase is invalid: $($row.phase)."
+            }
+        }
+        $row.owner_generation = [string]$identity.owner_generation
+        $row.mode_generation = [string]$identity.mode_generation
+        $row.surface_generation = [string]$identity.surface_generation
+        $row.shutdown_marker_completion = $ShutdownMarkerCompletion
+    }
+    $lines = [Collections.Generic.List[string]]::new($rows.Count + 1)
+    [void]$lines.Add(($columns -join "`t"))
+    foreach ($row in $rows) {
+        [void]$lines.Add((@($columns | ForEach-Object { [string]$row.$_ }) -join "`t"))
+    }
+    return ($lines -join "`r`n") + "`r`n"
+}
+
 function Assert-LegacyVgaEvidenceGuestReport {
-    param([string]$Path)
+    param([string]$Path, [switch]$AllowHostJoinRequired)
 
     Assert-LegacyVgaEvidenceFile $Path 'Legacy VGA guest report'
     $rows = @(Import-Csv -LiteralPath $Path -Delimiter "`t")
-    if ($rows.Count -lt 3) {
-        throw 'Legacy VGA guest report is incomplete.'
+    if ($rows.Count -ne 3) {
+        throw 'Legacy VGA guest report must contain exactly three rows.'
+    }
+    $columns = @(
+        'schema', 'case', 'mode', 'width', 'height', 'repetition', 'phase',
+        'owner_generation', 'mode_generation', 'surface_generation',
+        'aperture_exits', 'presented_hz', 'desktop_sentinel_crc',
+        'shutdown_marker_completion', 'status', 'reason'
+    )
+    foreach ($column in $columns) {
+        if ($rows[0].PSObject.Properties.Name -cnotcontains $column) {
+            throw "Legacy VGA guest report is missing field $column."
+        }
+    }
+    $phaseContracts = @(
+        @('pre-pif', 'INFO', 'launching-exact-pif'),
+        @('desktop-restored', 'PASS', 'pif-returned'),
+        @('terminal', 'PASS', 'launcher-complete')
+    )
+    [uint64]$width = ConvertTo-LegacyVgaEvidenceUInt64 `
+        $rows[0].width 'Legacy VGA guest report width'
+    [uint64]$height = ConvertTo-LegacyVgaEvidenceUInt64 `
+        $rows[0].height 'Legacy VGA guest report height'
+    [uint64]$repetition = ConvertTo-LegacyVgaEvidenceUInt64 `
+        $rows[0].repetition 'Legacy VGA guest report repetition'
+    if ([string]$rows[0].schema -cne '1' -or
+        $width -notin @(320, 360) -or $height -notin @(200, 240, 350, 400, 480) -or
+        $repetition -lt 1 -or $repetition -gt 99 -or
+        [string]$rows[0].desktop_sentinel_crc -notmatch '^[0-9A-F]{8}$') {
+        throw 'Legacy VGA guest report common contract is invalid.'
+    }
+    Assert-LegacyVgaEvidenceToken ([string]$rows[0].case) 'Guest report case'
+    Assert-LegacyVgaEvidenceToken ([string]$rows[0].mode) 'Guest report mode'
+    for ($index = 0; $index -lt $rows.Count; $index += 1) {
+        $row = $rows[$index]
+        $contract = $phaseContracts[$index]
+        foreach ($field in @(
+            'schema', 'case', 'mode', 'width', 'height', 'repetition',
+            'desktop_sentinel_crc'
+        )) {
+            if ([string]$row.$field -cne [string]$rows[0].$field) {
+                throw 'Legacy VGA guest report rows do not describe the same case.'
+            }
+        }
+        if ([string]$row.phase -cne $contract[0] -or
+            [string]$row.status -cne $contract[1] -or
+            [string]$row.reason -cne $contract[2]) {
+            throw 'Legacy VGA guest report phase contract is invalid.'
+        }
+        foreach ($field in @(
+            'owner_generation', 'mode_generation', 'surface_generation',
+            'aperture_exits', 'presented_hz'
+        )) {
+            $value = [string]$row.$field
+            if ($AllowHostJoinRequired) {
+                if ($value -cne 'host-join-required') {
+                    throw "Legacy VGA raw guest report $field is not awaiting the host join."
+                }
+            } elseif ($value -ceq 'host-join-required' -or [string]::IsNullOrWhiteSpace($value)) {
+                throw "Legacy VGA guest report retained an unresolved $field."
+            }
+        }
+        if (-not $AllowHostJoinRequired) {
+            foreach ($field in @(
+                'owner_generation', 'mode_generation', 'surface_generation',
+                'aperture_exits'
+            )) {
+                $parsed = ConvertTo-LegacyVgaEvidenceUInt64 `
+                    $row.$field "Legacy VGA guest report $field"
+                if ($field -ne 'aperture_exits' -and $parsed -eq 0) {
+                    throw "Legacy VGA guest report $field is zero."
+                }
+            }
+            if ([string]$row.presented_hz -notmatch '^\d+\.\d{3}$') {
+                throw 'Legacy VGA guest report presented_hz is invalid.'
+            }
+        }
+        if ($AllowHostJoinRequired) {
+            if ([string]$row.shutdown_marker_completion -cne 'pending') {
+                throw 'Legacy VGA raw guest report shutdown completion is invalid.'
+            }
+        } elseif ([string]$row.shutdown_marker_completion -cne 'd5-through-dc') {
+            throw 'Legacy VGA guest report shutdown completion is unresolved.'
+        }
     }
     $terminal = $rows[$rows.Count - 1]
     if ([string]$terminal.phase -cne 'terminal' -or
@@ -812,6 +1446,8 @@ function Write-LegacyVgaEvidenceJsonCreateNew {
 
 if ($DefineFunctionsOnly) { return }
 
+Assert-LegacyVgaEvidenceScalarControl $LegacyApertureMode $ScalarControl.IsPresent
+
 foreach ($required in @(
     @($SourceProfile, 'Source profile'),
     @($DisposableProfile, 'Disposable profile'),
@@ -822,6 +1458,7 @@ foreach ($required in @(
     @($HostExecutable, 'Host executable'),
     @($GuestImportExecutable, 'guest-import executable'),
     @($LauncherStageExecutable, 'launcher-stage executable'),
+    @($PifLauncherExecutable, 'PIF launcher executable'),
     @($CandidateDriverRoot, 'Candidate driver root'),
     @($Case, 'Case'),
     @($Mode, 'Mode'),
@@ -840,12 +1477,16 @@ $autoexecPath = Get-LegacyVgaEvidenceFullPath $KnownGoodAutoexecFile 'Known-good
 $hostPath = Get-LegacyVgaEvidenceFullPath $HostExecutable 'Host executable'
 $importPath = Get-LegacyVgaEvidenceFullPath $GuestImportExecutable 'guest-import executable'
 $launcherPath = Get-LegacyVgaEvidenceFullPath $LauncherStageExecutable 'launcher-stage executable'
+$launcherIdentity = Assert-LegacyVgaEvidenceLauncherStageFile $launcherPath
+$pifLauncherPath = Get-LegacyVgaEvidenceFullPath `
+    $PifLauncherExecutable 'PIF launcher executable'
 $candidateDriverPath = Get-LegacyVgaEvidenceFullPath `
     $CandidateDriverRoot 'Candidate driver root'
 if (-not $ValidateOnly) {
     Assert-LegacyVgaEvidenceTemporaryPath $candidateDriverPath 'Candidate driver root'
 }
 $candidateDrivers = Get-LegacyVgaEvidenceCandidateDrivers $candidateDriverPath
+$pifLauncherIdentity = Assert-LegacyVgaEvidencePifLauncherFile $pifLauncherPath
 Assert-LegacyVgaEvidenceTemporaryPath $profilePath 'Disposable profile'
 Assert-LegacyVgaEvidenceTemporaryPath $evidencePath 'Evidence directory'
 if ((Test-LegacyVgaEvidencePathWithin $profilePath $sourcePath) -or
@@ -866,7 +1507,8 @@ if (Test-Path -LiteralPath $evidencePath) {
 foreach ($tool in @(
     @($hostPath, 'Host executable'),
     @($importPath, 'guest-import executable'),
-    @($launcherPath, 'launcher-stage executable')
+    @($launcherPath, 'launcher-stage executable'),
+    @($pifLauncherPath, 'PIF launcher executable')
 )) {
     Assert-LegacyVgaEvidenceFile ([string]$tool[0]) ([string]$tool[1])
 }
@@ -896,6 +1538,12 @@ $sentinel = Get-LegacyVgaEvidenceSentinel `
 $payloads = New-LegacyVgaEvidenceReportPayloads `
     $Case $Mode $Width $Height $Repetition $sentinel.CrcHex
 $guestPifWindows = ConvertTo-LegacyVgaEvidenceGuestPath $GuestPifPath 'Guest PIF path'
+$guestPifLauncherWindows = ConvertTo-LegacyVgaEvidenceGuestPath `
+    $GuestPifLauncherPath 'Guest PIF launcher path'
+if ($guestPifWindows -cne 'C:\QUAKE\QUAKEPIF.PIF' -or
+    $guestPifLauncherWindows -cne 'C:\QUAKE\PIFRUN.EXE') {
+    throw 'The test-only PIF launcher requires its fixed approved guest paths.'
+}
 $guestBatchWindows = ConvertTo-LegacyVgaEvidenceGuestPath $GuestBatchPath 'Guest batch path'
 $guestHelperWindows = ConvertTo-LegacyVgaEvidenceGuestPath $GuestHelperPath 'Guest helper path'
 $guestRegWindows = ConvertTo-LegacyVgaEvidenceGuestPath $GuestRegPath 'Guest REG path'
@@ -904,7 +1552,15 @@ $null = Assert-LegacyVgaEvidenceAutoexec $autoexecPath $guestRegWindows
 [byte[]]$derivedRegBytes = Get-LegacyVgaEvidenceDerivedRegBytes `
     $knownRegBytes $guestBatchWindows
 $batchText = New-LegacyVgaEvidenceBatchText `
-    $guestPifWindows $guestHelperWindows $QuakeArguments
+    $guestPifWindows $guestPifLauncherWindows $guestHelperWindows $QuakeArguments
+$quakeExitConfigText = New-LegacyVgaEvidenceQuakeExitConfig
+[byte[]]$quakeExitConfigBytes = Get-LegacyVgaEvidenceAsciiBytes $quakeExitConfigText
+$quakeExitConfigIdentity = [ordered]@{
+    guest_path = $script:LegacyVgaEvidenceQuakeExitConfigPath
+    wait_frames = $script:LegacyVgaEvidenceQuakeExitWaitFrames
+    bytes = $quakeExitConfigBytes.Length
+    sha256 = Get-LegacyVgaEvidenceSha256 $quakeExitConfigBytes
+}
 $sourceDisk = Join-Path $sourcePath 'c_drive.img'
 $sourceDiskHashBefore = (Get-FileHash -LiteralPath $sourceDisk -Algorithm SHA256).Hash
 
@@ -912,6 +1568,7 @@ if ($ValidateOnly) {
     [pscustomobject]@{
         validated = $true
         guest_run_authorized = $false
+        scalar_control = $ScalarControl.IsPresent
         source_profile = $sourcePath
         disposable_profile = $profilePath
         evidence_directory = $evidencePath
@@ -919,8 +1576,14 @@ if ($ValidateOnly) {
         pif_bytes = $pifIdentity.bytes
         pif_sha256 = $pifIdentity.sha256
         guest_pif = $guestPifWindows
+        guest_pif_launcher = $guestPifLauncherWindows
+        pif_launcher_bytes = $pifLauncherIdentity.bytes
+        pif_launcher_sha256 = $pifLauncherIdentity.sha256
+        launcher_stage_bytes = $launcherIdentity.bytes
+        launcher_stage_sha256 = $launcherIdentity.sha256
         guest_batch = $guestBatchWindows
         guest_helper = $guestHelperWindows
+        quake_exit_config = $quakeExitConfigIdentity
         candidate_drivers = $candidateDrivers
         desktop_sentinel = $sentinel
         host_arguments = @(
@@ -987,9 +1650,14 @@ try {
 
     $stagedPif = Join-Path $stagePath 'legacy-vga-evidence-quake.pif'
     Copy-Item -LiteralPath $pifPath -Destination $stagedPif
+    $stagedPifLauncher = Join-Path $stagePath 'legacy-vga-evidence-pif-runner.exe'
+    Copy-Item -LiteralPath $pifLauncherPath -Destination $stagedPifLauncher
     $stagedBatch = Join-Path $stagePath 'legacy-vga-evidence-run.bat'
     Write-LegacyVgaEvidenceFileCreateNew `
         $stagedBatch (Get-LegacyVgaEvidenceAsciiBytes $batchText)
+    $stagedQuakeExitConfig = Join-Path $stagePath 'legacy-vga-evidence-quake-exit.cfg'
+    Write-LegacyVgaEvidenceFileCreateNew `
+        $stagedQuakeExitConfig $quakeExitConfigBytes
     $stagedReg = Join-Path $stagePath 'legacy-vga-evidence-driver.reg'
     Write-LegacyVgaEvidenceFileCreateNew $stagedReg $derivedRegBytes
     $stagedAutoexec = Join-Path $stagePath 'legacy-vga-evidence-autoexec.bat'
@@ -1005,7 +1673,9 @@ try {
     }
     $importArguments += @(
         $stagedPif, $GuestPifPath,
+        $stagedPifLauncher, $GuestPifLauncherPath,
         $stagedBatch, $GuestBatchPath,
+        $stagedQuakeExitConfig, $script:LegacyVgaEvidenceQuakeExitConfigPath,
         $helperIdentity.Path, $GuestHelperPath
     )
     & $importPath @importArguments
@@ -1051,12 +1721,36 @@ try {
     $stopReason = [string]$result.stop_reason
     $resultExit = [int]$result.exit_code
     Assert-LegacyVgaEvidenceResult $result $hostExit
-    Assert-LegacyVgaEvidenceLogs @($stdoutPath, $stderrPath)
-    Assert-LegacyVgaEvidenceGuestReport `
-        (Join-Path $artifactsPath $script:LegacyVgaEvidenceReportName)
+    Assert-LegacyVgaEvidenceLogs `
+        @($stdoutPath, $stderrPath) -AllowMmioStorm:$ScalarControl.IsPresent
+    $mmioStormObserved = @(
+        Select-String -LiteralPath @($stdoutPath, $stderrPath) `
+            -Pattern 'MMIO exit storm' -SimpleMatch -ErrorAction Stop
+    ).Count -ne 0
+    $guestReportPath = Join-Path $artifactsPath $script:LegacyVgaEvidenceReportName
+    Assert-LegacyVgaEvidenceGuestReport $guestReportPath -AllowHostJoinRequired
+    $rawGuestReportPath = Join-Path $artifactsPath 'legacy-vga-result.guest.tsv'
+    Write-LegacyVgaEvidenceFileCreateNew `
+        $rawGuestReportPath ([IO.File]::ReadAllBytes($guestReportPath))
     Assert-LegacyVgaEvidenceCaptures $artifactsPath
     Assert-LegacyVgaEvidenceShutdownTrace `
         (Join-Path $artifactsPath $script:LegacyVgaEvidenceShutdownTraceName)
+    $hostMetrics = Assert-LegacyVgaEvidenceHostMetrics `
+        (Join-Path $artifactsPath 'legacy-vga-host-metrics.tsv') `
+        $LegacyApertureMode $Width $Height
+    if ($LegacyApertureMode -ceq 'auto' -and
+        $hostMetrics.performance.presented_hz_milli -lt 55000) {
+        throw 'Legacy VGA auto performance did not reach 55 presented frames per second.'
+    }
+    $apertureHistogram = Assert-LegacyVgaEvidenceApertureHistogram `
+        (Join-Path $artifactsPath 'legacy-aperture-histogram.tsv') `
+        $LegacyApertureMode
+    Assert-LegacyVgaEvidencePerformanceWindow $apertureHistogram $hostMetrics
+    $joinedGuestReport = Join-LegacyVgaEvidenceGuestReport `
+        $guestReportPath $hostMetrics 'd5-through-dc'
+    Write-LegacyVgaEvidenceFileAtomic `
+        $guestReportPath ([Text.UTF8Encoding]::new($false).GetBytes($joinedGuestReport))
+    Assert-LegacyVgaEvidenceGuestReport $guestReportPath
 
     $summary = [ordered]@{
         schema = 1
@@ -1066,6 +1760,16 @@ try {
         height = $Height
         repetition = $Repetition
         legacy_aperture_mode = $LegacyApertureMode
+        scalar_control = $ScalarControl.IsPresent
+        mmio_storm_observed = $mmioStormObserved
+        legacy_aperture_histogram = $apertureHistogram
+        legacy_vga_host_metrics = [ordered]@{
+            pre = $hostMetrics.pre
+            desktop_restored = $hostMetrics.post
+            performance = $hostMetrics.performance
+        }
+        aperture_exits = $hostMetrics.performance.aperture_exits
+        presented_hz_milli = $hostMetrics.performance.presented_hz_milli
         host_exit = $hostExit
         stop_reason = $stopReason
         result_exit_code = $resultExit
@@ -1086,6 +1790,7 @@ try {
             sha256 = $helperIdentity.Sha256
             production_abi_added = $false
         }
+        quake_exit_config = $quakeExitConfigIdentity
         shutdown_marker_completion = 'd5-through-dc'
         apm_power_off = $true
     }

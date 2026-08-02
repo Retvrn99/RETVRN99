@@ -45,9 +45,9 @@ Graphics_Producer_Interval :: struct {
 	mmio_fallback_attempts:                     u64,
 	mmio_fallback_successes:                    u64,
 	mmio_fallback_failures:                     u64,
-	winquake_fallback_attempts:                 u64,
-	winquake_fallback_successes:                u64,
-	winquake_fallback_failures:                 u64,
+	legacy_aperture_mode:                       hv.Legacy_Aperture_Execution_Mode,
+	legacy_aperture_memory_access_exits:        u64,
+	legacy_aperture_forwarded_exits:            u64,
 	legacy_aperture_read_bytes:                 u64,
 	legacy_aperture_write_bytes:                u64,
 	lfb_dirty_pages:                            u64,
@@ -165,6 +165,7 @@ graphics_producer_interval :: proc(
 		session_generation                 = current.session_generation,
 		device_generation                  = current.machine.gsw3d.device_generation,
 		mode                               = current.machine.mode,
+		legacy_aperture_mode               = current.machine.whpx.legacy_aperture_execution.mode,
 		gsw2d_completed_fence              = current.machine.gsw2d.completed_fence,
 		gsw3d_queue_depth_current          = current.machine.gsw3d.queue_depth_current,
 		gsw3d_queue_depth_sampled_peak     = current.machine.gsw3d.queue_depth_current,
@@ -275,13 +276,20 @@ graphics_producer_interval :: proc(
 			result.mmio_fallback_failures,
 			failures,
 		)
-		if index == int(hv.Whpx_Mmio_Kind.Winquake_Store_Loop) {
-			result.winquake_fallback_attempts = attempts
-			result.winquake_fallback_successes = successes
-			result.winquake_fallback_failures = failures
-		}
 		reset = reset || attempts_reset || successes_reset || failures_reset
 	}
+	graphics_counter_delta_store(
+		&result.legacy_aperture_memory_access_exits,
+		&reset,
+		current.machine.whpx.legacy_aperture_execution.memory_access_exits,
+		previous.machine.whpx.legacy_aperture_execution.memory_access_exits,
+	)
+	graphics_counter_delta_store(
+		&result.legacy_aperture_forwarded_exits,
+		&reset,
+		current.machine.whpx.legacy_aperture_execution.forwarded_exits,
+		previous.machine.whpx.legacy_aperture_execution.forwarded_exits,
+	)
 	delta, wrapped = graphics_counter_delta(
 		current.machine.legacy_aperture_read_bytes,
 		previous.machine.legacy_aperture_read_bytes,
@@ -530,6 +538,7 @@ graphics_producer_interval_add :: proc(
 ) {
 	if target == nil || !addition.valid {return}
 	target.valid = true
+	target.legacy_aperture_mode = addition.legacy_aperture_mode
 	target.samples = graphics_counter_add(target.samples, addition.samples)
 	target.counter_resets = graphics_counter_add(target.counter_resets, addition.counter_resets)
 	target.generation_changes = graphics_counter_add(
@@ -559,16 +568,12 @@ graphics_producer_interval_add :: proc(
 	)
 	graphics_interval_add_counter(&target.mmio_fallback_failures, addition.mmio_fallback_failures)
 	graphics_interval_add_counter(
-		&target.winquake_fallback_attempts,
-		addition.winquake_fallback_attempts,
+		&target.legacy_aperture_memory_access_exits,
+		addition.legacy_aperture_memory_access_exits,
 	)
 	graphics_interval_add_counter(
-		&target.winquake_fallback_successes,
-		addition.winquake_fallback_successes,
-	)
-	graphics_interval_add_counter(
-		&target.winquake_fallback_failures,
-		addition.winquake_fallback_failures,
+		&target.legacy_aperture_forwarded_exits,
+		addition.legacy_aperture_forwarded_exits,
 	)
 	graphics_interval_add_counter(
 		&target.legacy_aperture_read_bytes,
@@ -692,7 +697,7 @@ graphics_producer_sample_text :: proc(sample: Graphics_Producer_Sample) -> strin
 	builder := strings.builder_make(0, 4096, context.allocator)
 	fmt.sbprintf(
 		&builder,
-		"measured.session_generation=%d measured.device_generation=%d measured.scanout_generation=%d measured.mode=%dx%d/%v measured.vbe=%d measured.bpp_raw=%d measured.bpp_effective=%d derived.pitch_bytes=%d measured.bank=%d/%d measured.bank_programs=%d measured.bank_changes=%d measured.vm_step_calls=%d measured.vm_step_wall_ns=%d measured.vm_inactive_wait_ns=%d measured.whpx_runs=%d measured.physical_exits=%d measured.aperture_read_bytes=%d measured.aperture_write_bytes=%d measured.lfb_dirty_pages=%d derived.lfb_dirty_page_coverage_bytes_upper_bound=%d measured.bank_dirty_pages=%d derived.bank_dirty_page_coverage_bytes_upper_bound=%d measured.gsw2d_fenced=%d measured.gsw3d_queue_current=%d measured.gsw3d_queue_high_water_lifetime=%d measured.gsw3d_present_queue_current=%d measured.gsw3d_present_queue_high_water_lifetime=%d measured.gsw3d_owned_bytes_current=%d measured.gsw3d_owned_bytes_high_water_lifetime=%d measured.gsw3d_completion_depth=%d measured.gsw3d_completed_fence=%d measured.gsw3d_retries=%d measured.gsw3d_rejections=%d measured.audio_underrun_frames=%d measured.audio_underrun_events=%d measured.native_pcm_starvation_frames=%d",
+		"measured.session_generation=%d measured.device_generation=%d measured.scanout_generation=%d measured.mode=%dx%d/%v measured.vbe=%d measured.bpp_raw=%d measured.bpp_effective=%d derived.pitch_bytes=%d measured.bank=%d/%d measured.bank_programs=%d measured.bank_changes=%d measured.vm_step_calls=%d measured.vm_step_wall_ns=%d measured.vm_inactive_wait_ns=%d measured.whpx_runs=%d measured.physical_exits=%d measured.legacy_aperture_mode=%v measured.legacy_aperture_memory_access_exits=%d measured.legacy_aperture_forwarded_exits=%d measured.aperture_read_bytes=%d measured.aperture_write_bytes=%d measured.lfb_dirty_pages=%d derived.lfb_dirty_page_coverage_bytes_upper_bound=%d measured.bank_dirty_pages=%d derived.bank_dirty_page_coverage_bytes_upper_bound=%d measured.gsw2d_fenced=%d measured.gsw3d_queue_current=%d measured.gsw3d_queue_high_water_lifetime=%d measured.gsw3d_present_queue_current=%d measured.gsw3d_present_queue_high_water_lifetime=%d measured.gsw3d_owned_bytes_current=%d measured.gsw3d_owned_bytes_high_water_lifetime=%d measured.gsw3d_completion_depth=%d measured.gsw3d_completed_fence=%d measured.gsw3d_retries=%d measured.gsw3d_rejections=%d measured.audio_underrun_frames=%d measured.audio_underrun_events=%d measured.native_pcm_starvation_frames=%d",
 		sample.session_generation,
 		m.gsw3d.device_generation,
 		m.mode.scanout_generation,
@@ -712,6 +717,9 @@ graphics_producer_sample_text :: proc(sample: Graphics_Producer_Sample) -> strin
 		sample.vm.inactive_wait_ns,
 		m.whpx.run_calls,
 		m.whpx.physical_exit_count,
+		m.whpx.legacy_aperture_execution.mode,
+		m.whpx.legacy_aperture_execution.memory_access_exits,
+		m.whpx.legacy_aperture_execution.forwarded_exits,
 		m.legacy_aperture_read_bytes,
 		m.legacy_aperture_write_bytes,
 		m.lfb_dirty_page_observations,

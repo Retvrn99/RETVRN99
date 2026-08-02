@@ -250,6 +250,11 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	producer_before.machine.mode.io_write_bytes = 11
 	producer_before.machine.gsw2d.metrics.mmio_write_count = 2
 	producer_before.machine.gsw2d.metrics.mmio_write_bytes = 8
+	producer_before.machine.whpx.legacy_aperture_execution = {
+		mode                = .Scalar,
+		memory_access_exits = 10,
+		forwarded_exits     = 10,
+	}
 	producer_after := producer_before
 	producer_after.output_underrun_frames = 7
 	producer_after.output_underrun_events = 2
@@ -258,6 +263,8 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	producer_after.machine.mode.io_write_bytes = 17
 	producer_after.machine.gsw2d.metrics.mmio_write_count = 4
 	producer_after.machine.gsw2d.metrics.mmio_write_bytes = 16
+	producer_after.machine.whpx.legacy_aperture_execution.memory_access_exits = 15
+	producer_after.machine.whpx.legacy_aperture_execution.forwarded_exits = 15
 	graphics_telemetry_note_producer(&telemetry, producer_before, time.Tick{106})
 	graphics_telemetry_note_producer(&telemetry, producer_after, time.Tick{107})
 	host_before := host.Host_Gsw3d_Observability_Snapshot {
@@ -384,6 +391,8 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	testing.expect_value(t, window.producer.vga_io_write_bytes, u64(6))
 	testing.expect_value(t, window.producer.gsw_control_writes, u64(2))
 	testing.expect_value(t, window.producer.gsw_control_write_bytes, u64(8))
+	testing.expect_value(t, window.producer.legacy_aperture_memory_access_exits, u64(5))
+	testing.expect_value(t, window.producer.legacy_aperture_forwarded_exits, u64(5))
 	testing.expect_value(t, window.host_gpu.sdl_gpu_submission_calls, u64(2))
 	testing.expect_value(t, window.host_gpu.sdl_gpu_submission_failures, u64(1))
 	testing.expect_value(t, window.host_gpu.sdl_gpu_submission_ns, u64(260))
@@ -454,10 +463,12 @@ graphics_telemetry_test_epoch_correlates_every_current_scanout_phase :: proc(t: 
 	testing.expect(t, strings.contains(text, "physical_flight_0=42/3/discarded:0"))
 	testing.expect(t, strings.contains(text, "vga_io_writes=3/6_bytes"))
 	testing.expect(t, strings.contains(text, "gsw_control_writes=2/8_bytes"))
+	testing.expect(t, strings.contains(text, "legacy_aperture=Scalar/5/5"))
 	trace_text := graphics_telemetry_trace_text(&telemetry)
 	defer delete(trace_text)
 	testing.expect(t, strings.contains(trace_text, "vga_io_writes=3/6_bytes"))
 	testing.expect(t, strings.contains(trace_text, "gsw_control_writes=2/8_bytes"))
+	testing.expect(t, strings.contains(trace_text, "legacy_aperture=Scalar/5/5"))
 	testing.expect(t, strings.contains(trace_text, "latest_completion=41/3/30ns/discarded:0"))
 	testing.expect(t, strings.contains(trace_text, "physical_flight_0=42/3/discarded:0"))
 	testing.expect(t, strings.contains(trace_text, "source_full:0/0/0/0/0/3"))

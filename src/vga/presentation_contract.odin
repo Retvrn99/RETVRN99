@@ -5,6 +5,23 @@ import contract "../presentation"
 
 LEGACY_PRESENTATION_SURFACE_ID :: u64(1)
 
+Legacy_Presentation_Identity :: struct {
+	valid:              bool,
+	mode_generation:    u64,
+	surface_id:         u64,
+	surface_generation: u64,
+}
+
+Active_Presentation_Identity :: struct {
+	valid:              bool,
+	owner:              contract.Display_Owner,
+	width, height:      u32,
+	sequence:           u64,
+	mode_generation:    u64,
+	surface_id:         u64,
+	surface_generation: u64,
+}
+
 vga_presentation_mode_key :: proc(
 	width, height: u32,
 	display_aspect: contract.Aspect_Ratio = {},
@@ -121,6 +138,58 @@ vga_legacy_frame_header :: proc(v: ^Vga) -> contract.Header {
 		interval = 0,
 		source_kind = .Legacy_Snapshot,
 		ownership = .Mailbox_Descriptor,
+	}
+}
+
+vga_legacy_presentation_identity :: proc(v: ^Vga) -> Legacy_Presentation_Identity {
+	header := vga_legacy_frame_header(v)
+	if header.mode_generation == 0 ||
+	   header.surface.id == 0 ||
+	   header.surface.generation == 0 {
+		return {}
+	}
+	return {
+		valid              = true,
+		mode_generation    = header.mode_generation,
+		surface_id         = header.surface.id,
+		surface_generation = header.surface.generation,
+	}
+}
+
+vga_active_presentation_identity :: proc(
+	v: ^Vga,
+	gsw: ^Gsw_Vga,
+) -> Active_Presentation_Identity {
+	if v == nil || !v.presentation_mode_clock.initialized {return {}}
+	clock := v.presentation_mode_clock
+	header: contract.Header
+	switch clock.owner {
+	case .Legacy:
+		header = vga_legacy_frame_header(v)
+	case .Gsw2d, .Gsw3d:
+		if gsw == nil || !gsw.presentation_state.active_valid {return {}}
+		header = gsw.presentation_state.active.header
+	case .None:
+		return {}
+	}
+	if header.mode_generation == 0 ||
+	   header.mode_generation != clock.generation ||
+	   contract.display_owner_from_header(header) != clock.owner ||
+	   header.surface.id == 0 ||
+	   header.surface.generation == 0 ||
+	   header.canvas_extent.width == 0 ||
+	   header.canvas_extent.height == 0 {
+		return {}
+	}
+	return {
+		valid              = true,
+		owner              = clock.owner,
+		width              = header.canvas_extent.width,
+		height             = header.canvas_extent.height,
+		sequence           = header.sequence,
+		mode_generation    = header.mode_generation,
+		surface_id         = header.surface.id,
+		surface_generation = header.surface.generation,
 	}
 }
 

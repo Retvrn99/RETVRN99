@@ -107,7 +107,13 @@ acceptance_options_test_report_and_shutdown_controls_fail_closed :: proc(t: ^tes
 
 @(test)
 acceptance_options_test_aperture_mode_requests_headless :: proc(t: ^testing.T) {
-	options, diagnostic := options_parse({"--legacy-aperture-mode:auto"})
+	_, diagnostic := options_parse({"--legacy-aperture-mode:auto"})
+	testing.expect_value(t, diagnostic, Options_Diagnostic.Artifacts_Required)
+	options: Options
+	options, diagnostic = options_parse({
+		"--legacy-aperture-mode:auto",
+		"--artifacts:out",
+	})
 	testing.expect_value(t, diagnostic, Options_Diagnostic.None)
 	testing.expect_value(t, options.legacy_aperture_mode, Legacy_Aperture_Mode.Auto)
 	testing.expect(t, options.legacy_aperture_mode_set)

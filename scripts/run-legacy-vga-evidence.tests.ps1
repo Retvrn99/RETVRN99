@@ -83,6 +83,36 @@ function Write-LegacyVgaEvidenceShutdownTraceFixture {
     )
 }
 
+function Write-LegacyVgaEvidenceHostMetricsFixture {
+    param(
+        [string]$Path,
+        [string]$Mode = 'auto',
+        [int]$Width = 320,
+        [int]$Height = 240,
+        [uint64]$PresentedHzMilli = 56000,
+        [uint64]$ApertureExits = 1000,
+        [int]$Complete = 1
+    )
+
+    $header = @(
+        'schema', 'record', 'mode', 'label', 'valid', 'time_ns', 'width', 'height',
+        'owner_generation', 'mode_generation', 'surface_generation',
+        'content_generation', 'elapsed_ns', 'sample_count', 'presented_frames',
+        'presented_hz_milli', 'aperture_exits', 'counter_regressions', 'complete'
+    ) -join "`t"
+    $rows = @(
+        $header,
+        "1`tpre-pif`t$Mode`t224`t1`t10`t800`t600`t3`t5`t7`t9`t0`t0`t0`t0`t20`t0`t0",
+        "1`tdesktop-restored`t$Mode`t225`t1`t30`t800`t600`t3`t8`t10`t12`t0`t0`t0`t0`t40`t0`t0",
+        "1`tperformance`t$Mode`t0`t1`t0`t$Width`t$Height`t3`t6`t8`t0`t10000000000`t600`t560`t$PresentedHzMilli`t$ApertureExits`t0`t$Complete"
+    )
+    [IO.File]::WriteAllText(
+        $Path,
+        ($rows -join "`r`n") + "`r`n",
+        [Text.UTF8Encoding]::new($false)
+    )
+}
+
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) (
     'retvrn99-legacy-vga-evidence-test-' + [Guid]::NewGuid().ToString('N')
 )
@@ -99,6 +129,46 @@ try {
         Assert-LegacyVgaEvidenceTestThrows {
             Assert-LegacyVgaEvidencePifMetadata 967 ('0' * 64)
         } 'approved exact PIF'
+    }
+
+    Invoke-LegacyVgaEvidenceTest 'PIF launcher is a bounded Windows executable' {
+        $launcher = Join-Path $testRoot 'PIFRUN.EXE'
+        [byte[]]$bytes = [byte[]]::new(1024)
+        $bytes[0] = 0x4D
+        $bytes[1] = 0x5A
+        [IO.File]::WriteAllBytes($launcher, $bytes)
+        $identity = Assert-LegacyVgaEvidencePifLauncherFile $launcher
+        Assert-LegacyVgaEvidenceTestEqual $identity.bytes 1024 `
+            'PIF launcher byte count changed.'
+        $bytes[0] = 0
+        [IO.File]::WriteAllBytes($launcher, $bytes)
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidencePifLauncherFile $launcher
+        } 'Windows MZ executable'
+        [IO.File]::WriteAllBytes($launcher, [byte[]](0x4D, 0x5A))
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidencePifLauncherFile $launcher
+        } 'bounded regular executable'
+    }
+
+    Invoke-LegacyVgaEvidenceTest 'Launcher stage supports the guest REG path' {
+        $launcher = Join-Path $testRoot 'gswgfx-launcher-stage.exe'
+        [byte[]]$bytes = [byte[]]::new(1024)
+        $bytes[0] = 0x4D
+        $bytes[1] = 0x5A
+        [byte[]]$contract = [Text.Encoding]::ASCII.GetBytes(
+            $script:LegacyVgaEvidenceLauncherStageContract
+        )
+        [Array]::Copy($contract, 0, $bytes, 32, $contract.Length)
+        [IO.File]::WriteAllBytes($launcher, $bytes)
+        $identity = Assert-LegacyVgaEvidenceLauncherStageFile $launcher
+        Assert-LegacyVgaEvidenceTestEqual $identity.bytes 1024 `
+            'Launcher-stage byte count changed.'
+        $bytes[32] = 0
+        [IO.File]::WriteAllBytes($launcher, $bytes)
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceLauncherStageFile $launcher
+        } 'required guest REG path contract'
     }
 
     Invoke-LegacyVgaEvidenceTest 'Disposable and evidence paths stay under V tmp' {
@@ -188,14 +258,48 @@ try {
         } 'doubled Run-value backslash'
     }
 
-    Invoke-LegacyVgaEvidenceTest 'Batch blocks on exact PIF and shuts down normally' {
+    Invoke-LegacyVgaEvidenceTest 'Batch shell-launches the PIF and monitors completion' {
+        $exitConfig = New-LegacyVgaEvidenceQuakeExitConfig
+        Assert-LegacyVgaEvidenceTestEqual `
+            $script:LegacyVgaEvidenceQuakeExitConfigPath 'QUAKE/ID1/RETVRN99.CFG' `
+            'Quake exit config must be staged on the ID1 search path.'
+        Assert-LegacyVgaEvidenceTestTrue `
+            $exitConfig.StartsWith("startdemos`r`n", [StringComparison]::Ordinal) `
+            'Quake exit config must disable the pending attract loop before waiting.'
+        Assert-LegacyVgaEvidenceTestEqual `
+            ([regex]::Matches($exitConfig, '(?m)^wait\r?$')).Count 1100 `
+            'Quake exit frame budget changed.'
+        Assert-LegacyVgaEvidenceTestTrue `
+            $exitConfig.EndsWith(
+                "echo RETVRN99_NORMAL_EXIT`r`ntoggleconsole`r`nquit`r`n"
+            ) `
+            'Quake exit config must mark its intentional quit path.'
+        Assert-LegacyVgaEvidenceTestTrue ($exitConfig.Length -lt 16384) `
+            'Quake exit config exceeded its test-only bound.'
+        [byte[]]$exitConfigBytes = Get-LegacyVgaEvidenceAsciiBytes $exitConfig
+        Assert-LegacyVgaEvidenceTestEqual `
+            $exitConfigBytes.Length 6660 'Quake exit config byte count changed.'
+        Assert-LegacyVgaEvidenceTestEqual `
+            (Get-LegacyVgaEvidenceSha256 $exitConfigBytes) `
+            '4423B8C4C1655FFF63B549E636D528481C218A175FD816864B9ACC3CB1E5552A' `
+            'Quake exit config identity changed.'
         $batch = New-LegacyVgaEvidenceBatchText `
             'C:\QUAKE\QUAKEPIF.PIF' `
+            'C:\QUAKE\PIFRUN.EXE' `
             'C:\QUAKE\EXITVM.COM' `
-            '-condebug +_vid_default_mode 2 +timedemo demo1 +quit'
+            '-condebug +_vid_default_mode 2 +timedemo demo1'
         Assert-LegacyVgaEvidenceTestTrue `
-            $batch.Contains('START /W C:\QUAKE\QUAKEPIF.PIF ') `
-            'Batch must use the blocking Win98 START form.'
+            $batch.Contains('START C:\QUAKE\QUAKEPIF.PIF -condebug ') `
+            'The Win98 shell must launch the exact PIF.'
+        Assert-LegacyVgaEvidenceTestTrue `
+            (-not $batch.Contains('START /W')) `
+            'Batch must not wait on the retained PIF window itself.'
+        Assert-LegacyVgaEvidenceTestTrue `
+            $batch.Contains("C:\QUAKE\PIFRUN.EXE /wait`r`n") `
+            'The test-only helper must monitor the shell-launched PIF.'
+        Assert-LegacyVgaEvidenceTestTrue `
+            $batch.Contains('+exec RETVRN99.CFG') `
+            'Batch must install the deterministic test-only exit config.'
         Assert-LegacyVgaEvidenceTestTrue `
             $batch.Contains("C:\QUAKE\EXITVM.COM P`r`n") `
             'Batch must emit the pre-PIF receipt.'
@@ -203,17 +307,34 @@ try {
             $batch.Contains("C:\QUAKE\EXITVM.COM O`r`n") `
             'Batch must emit the restored-desktop receipt.'
         Assert-LegacyVgaEvidenceTestTrue `
+            $batch.Contains("C:\QUAKE\EXITVM.COM Q`r`n:FAILHOLD`r`nPAUSE >NUL") `
+            'An unproven PIF completion must preserve the visible failure.'
+        Assert-LegacyVgaEvidenceTestTrue `
             $batch.EndsWith("RUNDLL32.EXE user.exe,ExitWindows`r`n") `
             'Batch must request normal Windows shutdown.'
         Assert-LegacyVgaEvidenceTestThrows {
             New-LegacyVgaEvidenceBatchText `
-                'C:\QUAKE\QUAKEPIF.PIF' 'C:\QUAKE\EXITVM.COM' `
-                '+vid_mode 2 & format c: +quit'
+                'C:\QUAKE\QUAKEPIF.PIF' 'C:\QUAKE\PIFRUN.EXE' `
+                'C:\QUAKE\EXITVM.COM' `
+                '+timedemo demo1 & format c:'
         } 'unsafe Win98 command characters'
         Assert-LegacyVgaEvidenceTestThrows {
             New-LegacyVgaEvidenceBatchText `
-                'C:\QUAKE\QUAKEPIF.PIF' 'C:\QUAKE\EXITVM.COM' '+vid_mode 2'
-        } 'must contain \+quit'
+                'C:\QUAKE\QUAKEPIF.PIF' 'C:\QUAKE\PIFRUN.EXE' `
+                'C:\QUAKE\EXITVM.COM' `
+                '+timedemo demo1 +quit'
+        } 'must not contain \+quit'
+        Assert-LegacyVgaEvidenceTestThrows {
+            New-LegacyVgaEvidenceBatchText `
+                'C:\QUAKE\QUAKEPIF.PIF' 'C:\QUAKE\PIFRUN.EXE' `
+                'C:\QUAKE\EXITVM.COM' `
+                '+timedemo demo1 +exec OTHER.CFG'
+        } 'must not contain \+exec'
+        Assert-LegacyVgaEvidenceTestThrows {
+            New-LegacyVgaEvidenceBatchText `
+                'C:\QUAKE\QUAKEPIF.PIF' 'C:\QUAKE\PIFRUN.EXE' `
+                'C:\QUAKE\EXITVM.COM' '+vid_mode 2'
+        } 'must contain \+timedemo'
     }
 
     Invoke-LegacyVgaEvidenceTest 'Report payload carries lifecycle join fields' {
@@ -241,6 +362,10 @@ try {
             New-LegacyVgaEvidenceReportPayloads `
                 'bad-geometry' '2' 640 480 1 '89ABCDEF'
         } 'ten 320/360 Mode X geometries'
+        Assert-LegacyVgaEvidenceScalarControl 'scalar' $true
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceScalarControl 'auto' $true
+        } 'valid only with legacy aperture mode scalar'
     }
 
     Invoke-LegacyVgaEvidenceTest 'Sentinel contract is bounded and little endian' {
@@ -312,6 +437,197 @@ try {
         Assert-LegacyVgaEvidenceTestTrue `
             (-not $source.Contains('0xE7')) `
             'Katea helper must not add another guest-host port.'
+    }
+
+    Invoke-LegacyVgaEvidenceTest 'Legacy aperture histogram is bounded and exactly accounted' {
+        $histogram = Join-Path $testRoot 'legacy-aperture-histogram.tsv'
+        $lines = @(
+            "schema`tlegacy-aperture-histogram-v1",
+            "mode`tscalar",
+            "capacity`t65536",
+            "rows`t2",
+            "exits`t3",
+            "retained`t3",
+            "dropped`t0",
+            ("instruction`toperation`tcs`trip`tgpa`tlayout`twidth`theight`tpitch" +
+                "`taperture_base`taperture_size`texits"),
+            ("890c86`tScalar_Store_Register`t00a7`t0000000000001234`t00000000000a0000" +
+                "`tIndexed_Unchained`t320`t240`t80`t00000000000a0000`t65536`t1"),
+            ("890c86`tScalar_Store_Register`t00a7`t0000000000001234`t00000000000a0004" +
+                "`tIndexed_Unchained`t320`t240`t80`t00000000000a0000`t65536`t2")
+        )
+        [IO.File]::WriteAllText(
+            $histogram,
+            ($lines -join "`r`n") + "`r`n",
+            [Text.UTF8Encoding]::new($false)
+        )
+        $summary = Assert-LegacyVgaEvidenceApertureHistogram $histogram 'scalar'
+        Assert-LegacyVgaEvidenceTestEqual $summary.rows 2 'Histogram row count changed.'
+        Assert-LegacyVgaEvidenceTestEqual $summary.exits 3 'Histogram exit count changed.'
+        Assert-LegacyVgaEvidenceTestEqual $summary.dropped 0 'Histogram drop count changed.'
+        Assert-LegacyVgaEvidenceTestEqual $summary.patterns 1 'Histogram pattern count changed.'
+        Assert-LegacyVgaEvidenceTestEqual `
+            $summary.patterns_to_90_percent 1 'Histogram 90 percent attribution changed.'
+        Assert-LegacyVgaEvidenceTestEqual `
+            $summary.attributed_basis_points 10000 'Histogram coverage changed.'
+
+        $broken = @($lines)
+        $broken[5] = "retained`t2"
+        [IO.File]::WriteAllText(
+            $histogram,
+            ($broken -join "`r`n") + "`r`n",
+            [Text.UTF8Encoding]::new($false)
+        )
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceApertureHistogram $histogram 'scalar'
+        } 'accounting is inconsistent'
+    }
+
+    Invoke-LegacyVgaEvidenceTest 'Host metrics join replaces every placeholder fail closed' {
+        $guestReport = Join-Path $testRoot 'legacy-vga-result.tsv'
+        $hostMetricsPath = Join-Path $testRoot 'legacy-vga-host-metrics.tsv'
+        $payloads = New-LegacyVgaEvidenceReportPayloads `
+            'quake-mode-x' '2' 320 240 1 '89ABCDEF'
+        [IO.File]::WriteAllText(
+            $guestReport,
+            $payloads.Pre + $payloads.Post,
+            [Text.Encoding]::ASCII
+        )
+        Assert-LegacyVgaEvidenceGuestReport $guestReport -AllowHostJoinRequired
+        $rawReport = $payloads.Pre + $payloads.Post
+        $rawLines = @($rawReport.TrimEnd().Split("`n"))
+        [IO.File]::WriteAllText(
+            $guestReport,
+            $rawReport + $rawLines[$rawLines.Count - 1].TrimEnd("`r") + "`r`n",
+            [Text.Encoding]::ASCII
+        )
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceGuestReport $guestReport -AllowHostJoinRequired
+        } 'exactly three rows'
+        [IO.File]::WriteAllText(
+            $guestReport,
+            $rawReport.Replace(
+                "`tpif-returned`r`n",
+                "`tunexpected-desktop-status`r`n"
+            ),
+            [Text.Encoding]::ASCII
+        )
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceGuestReport $guestReport -AllowHostJoinRequired
+        } 'phase contract is invalid'
+        [IO.File]::WriteAllText($guestReport, $rawReport, [Text.Encoding]::ASCII)
+        Write-LegacyVgaEvidenceHostMetricsFixture $hostMetricsPath
+        $metrics = Assert-LegacyVgaEvidenceHostMetrics `
+            $hostMetricsPath 'auto' 320 240
+        $joined = Join-LegacyVgaEvidenceGuestReport `
+            $guestReport $metrics 'd5-through-dc'
+        Assert-LegacyVgaEvidenceTestTrue `
+            (-not $joined.Contains('host-join-required')) `
+            'Joined report retained a host placeholder.'
+        Assert-LegacyVgaEvidenceTestTrue `
+            $joined.Contains("`t3`t5`t7`t0`t0.000`t89ABCDEF`td5-through-dc`tINFO`t") `
+            'Pre phase did not receive capture generations.'
+        Assert-LegacyVgaEvidenceTestTrue `
+            $joined.Contains("`t3`t8`t10`t1000`t56.000`t89ABCDEF`td5-through-dc`tPASS`t") `
+            'Restored and terminal phases did not receive performance metrics.'
+        [IO.File]::WriteAllText($guestReport, $joined, [Text.UTF8Encoding]::new($false))
+        Assert-LegacyVgaEvidenceGuestReport $guestReport
+
+        $corrupt = @($joined.TrimEnd().Split("`n"))
+        $fields = @($corrupt[1].TrimEnd("`r").Split("`t"))
+        $fields[7] = 'not-a-generation'
+        $corrupt[1] = $fields -join "`t"
+        [IO.File]::WriteAllText(
+            $guestReport,
+            ($corrupt -join "`r`n") + "`r`n",
+            [Text.UTF8Encoding]::new($false)
+        )
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceGuestReport $guestReport
+        } 'not an unsigned integer'
+
+        Write-LegacyVgaEvidenceHostMetricsFixture `
+            $hostMetricsPath -Complete 0
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceHostMetrics $hostMetricsPath 'auto' 320 240
+        } 'performance window is incomplete'
+        Write-LegacyVgaEvidenceHostMetricsFixture `
+            $hostMetricsPath -Width 360
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidenceHostMetrics $hostMetricsPath 'auto' 320 240
+        } 'geometry does not match'
+    }
+
+    Invoke-LegacyVgaEvidenceTest 'Histogram covers the exact measured performance window' {
+        $histogram = [pscustomobject]@{
+            mode = 'scalar'
+            exits = [uint64]1234
+        }
+        $metrics = [pscustomobject]@{
+            mode = 'scalar'
+            performance = [pscustomobject]@{ aperture_exits = [uint64]1234 }
+        }
+        Assert-LegacyVgaEvidencePerformanceWindow $histogram $metrics
+        $histogram.exits = [uint64]1233
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidencePerformanceWindow $histogram $metrics
+        } 'does not match'
+        $histogram.exits = [uint64]1234
+        $histogram.mode = 'auto'
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidencePerformanceWindow $histogram $metrics
+        } 'mode does not match'
+    }
+
+    Invoke-LegacyVgaEvidenceTest 'Paired performance gate requires the full ten mode matrix' {
+        $summaries = [Collections.Generic.List[object]]::new(60)
+        foreach ($width in @(320, 360)) {
+            foreach ($height in @(200, 240, 350, 400, 480)) {
+                foreach ($repetition in 1..3) {
+                    [void]$summaries.Add([pscustomobject]@{
+                        schema = 1
+                        width = $width
+                        height = $height
+                        repetition = $repetition
+                        legacy_aperture_mode = 'scalar'
+                        aperture_exits = [uint64]1000
+                        presented_hz_milli = [uint64]5000
+                        mmio_storm_observed = $true
+                        legacy_aperture_histogram = [pscustomobject]@{ dropped = 0 }
+                    })
+                    [void]$summaries.Add([pscustomobject]@{
+                        schema = 1
+                        width = $width
+                        height = $height
+                        repetition = $repetition
+                        legacy_aperture_mode = 'auto'
+                        aperture_exits = [uint64]100
+                        presented_hz_milli = [uint64]55000
+                        mmio_storm_observed = $false
+                        legacy_aperture_histogram = [pscustomobject]@{ dropped = 0 }
+                    })
+                }
+            }
+        }
+        $gate = Assert-LegacyVgaEvidencePairedPerformance $summaries.ToArray()
+        Assert-LegacyVgaEvidenceTestEqual $gate.geometries 10 `
+            'Paired gate geometry count changed.'
+        Assert-LegacyVgaEvidenceTestEqual $gate.repetitions 3 `
+            'Paired gate repetition count changed.'
+
+        $summaries[1].presented_hz_milli = 54999
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidencePairedPerformance $summaries.ToArray()
+        } '55 presented frames per second'
+        $summaries[1].presented_hz_milli = 55000
+        $summaries[0].aperture_exits = 999
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidencePairedPerformance $summaries.ToArray()
+        } '10x aperture exit reduction'
+        $summaries[0].aperture_exits = 1000
+        Assert-LegacyVgaEvidenceTestThrows {
+            Assert-LegacyVgaEvidencePairedPerformance @($summaries.ToArray()[0..58])
+        } 'exactly 60 summaries'
     }
 
     Invoke-LegacyVgaEvidenceTest 'Shutdown trace is complete ordered balanced and fault free' {
@@ -536,6 +852,7 @@ try {
         Assert-LegacyVgaEvidenceTestThrows {
             Assert-LegacyVgaEvidenceLogs @($cleanLog, $stormLog)
         } 'MMIO exit storm'
+        Assert-LegacyVgaEvidenceLogs @($cleanLog, $stormLog) -AllowMmioStorm
     }
 
     Invoke-LegacyVgaEvidenceTest 'ValidateOnly performs no guest mutation' {
@@ -576,11 +893,34 @@ try {
                 [Text.UTF8Encoding]::new($false)
             )
             foreach ($name in @(
-                'retvrn99.exe', 'retvrn99-fat32.exe',
-                'guest-import.exe', 'gswgfx-launcher-stage.exe'
+                'retvrn99.exe', 'retvrn99-fat32.exe', 'guest-import.exe'
             )) {
                 [IO.File]::WriteAllBytes((Join-Path $tools $name), [byte[]](0x4D, 0x5A))
             }
+            [byte[]]$launcherStageBytes = [byte[]]::new(1024)
+            $launcherStageBytes[0] = 0x4D
+            $launcherStageBytes[1] = 0x5A
+            [byte[]]$launcherStageContract = [Text.Encoding]::ASCII.GetBytes(
+                $script:LegacyVgaEvidenceLauncherStageContract
+            )
+            [Array]::Copy(
+                $launcherStageContract,
+                0,
+                $launcherStageBytes,
+                32,
+                $launcherStageContract.Length
+            )
+            [IO.File]::WriteAllBytes(
+                (Join-Path $tools 'gswgfx-launcher-stage.exe'),
+                $launcherStageBytes
+            )
+            [byte[]]$pifLauncherBytes = [byte[]]::new(1024)
+            $pifLauncherBytes[0] = 0x4D
+            $pifLauncherBytes[1] = 0x5A
+            [IO.File]::WriteAllBytes(
+                (Join-Path $tools 'PIFRUN.EXE'),
+                $pifLauncherBytes
+            )
             foreach ($name in @(
                 'gswmini.drv', 'gswmini.vxd', 'gswhal9x.dll', 'gswdd32.dll'
             )) {
@@ -616,12 +956,13 @@ try {
                 -HostExecutable (Join-Path $tools 'retvrn99.exe') `
                 -GuestImportExecutable (Join-Path $tools 'guest-import.exe') `
                 -LauncherStageExecutable (Join-Path $tools 'gswgfx-launcher-stage.exe') `
+                -PifLauncherExecutable (Join-Path $tools 'PIFRUN.EXE') `
                 -CandidateDriverRoot $assets `
                 -NasmExecutable (Get-Command nasm -ErrorAction Stop).Source `
                 -Case 'quake-mode-x' -Mode '2' -Width 320 -Height 200 -Repetition 1 `
                 -SentinelX 16 -SentinelY 16 -SentinelWidth 32 -SentinelHeight 32 `
                 -ExpectedDesktopSentinelCrc '89ABCDEF' `
-                -QuakeArguments '-condebug +_vid_default_mode 2 +timedemo demo1 +quit' `
+                -QuakeArguments '-condebug +_vid_default_mode 2 +timedemo demo1' `
                 -ValidateOnly)
             $record = @($validated | Where-Object {
                 $_ -is [psobject] -and $_.PSObject.Properties.Name -contains 'validated'
@@ -630,6 +971,12 @@ try {
                 'ValidateOnly did not return one validation record.'
             Assert-LegacyVgaEvidenceTestTrue ([bool]$record[0].validated) `
                 'ValidateOnly did not report success.'
+            Assert-LegacyVgaEvidenceTestEqual `
+                $record[0].guest_pif_launcher 'C:\QUAKE\PIFRUN.EXE' `
+                'ValidateOnly lost the staged PIF launcher path.'
+            Assert-LegacyVgaEvidenceTestEqual `
+                $record[0].launcher_stage_bytes 1024 `
+                'ValidateOnly lost the launcher-stage identity.'
             Assert-LegacyVgaEvidenceTestTrue `
                 (-not (@($record[0].host_arguments) -contains '--graphics-trace')) `
                 'Console evidence must not request the GUI-only graphics trace.'
