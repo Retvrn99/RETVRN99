@@ -212,6 +212,51 @@ vga_test_odd_even_replaces_bit_zero_rather_than_shifting :: proc(t: ^testing.T) 
 	testing.expect_value(t, u8(second), u8(0xBB))
 }
 
+// Sequencer 04h bit 2 pairs the planes by A0 on its own. Graphics 06h bit 1 is
+// a separate control that only substitutes the address bit, so an even host
+// address still reaches planes 0 and 2 with the chain bit clear.
+@(test)
+vga_test_odd_even_write_pairs_planes_from_sequencer_04h :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	v.seq[2] = 0x0F
+	v.seq[4] = 0x02
+	v.gfx[5] = 0
+	v.gfx[6] = 0x00
+	v.gfx[8] = 0xFF
+	vga_mmio_write(&v, 0xA0000, 1, 0xAA)
+	testing.expect_value(t, plane_byte(&v, 0, 0), u8(0xAA))
+	testing.expect_value(t, plane_byte(&v, 2, 0), u8(0xAA))
+	testing.expect_value(t, plane_byte(&v, 1, 0), u8(0x00))
+	testing.expect_value(t, plane_byte(&v, 3, 0), u8(0x00))
+}
+
+// The same bit pairs reads. Graphics 05h bit 4 is documented as the read
+// odd/even control and normally tracks Sequencer 04h bit 2, but the reference
+// drives reads from the Sequencer bit alone on hardware evidence, so pairing
+// holds here with Graphics 05h bit 4 clear.
+@(test)
+vga_test_odd_even_read_pairs_planes_from_sequencer_04h :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	v.seq[4] = 0x02
+	v.gfx[4] = 0
+	v.gfx[5] = 0
+	v.gfx[6] = 0x02
+	set_plane_byte(&v, 0, 0, 0xB0)
+	set_plane_byte(&v, 1, 0, 0xB1)
+	even, even_ok := vga_mmio_read(&v, 0xA0000, 1)
+	odd, odd_ok := vga_mmio_read(&v, 0xA0001, 1)
+	testing.expect(t, even_ok)
+	testing.expect(t, odd_ok)
+	testing.expect_value(t, u8(even), u8(0xB0))
+	testing.expect_value(t, u8(odd), u8(0xB1))
+}
+
 
 @(test)
 vga_test_aperture_slice_access_is_one_visible_transaction :: proc(t: ^testing.T) {
@@ -477,16 +522,19 @@ vga_test_odd_even_read_uses_graphics_controls :: proc(t: ^testing.T) {
 	backing := test_vga_init(t, &v)
 	defer delete(backing)
 	defer vga_destroy(&v)
-	v.seq[4] = 0x06
+	// Pairing is the Sequencer's, so it holds with Graphics 05h bit 4 clear.
+	// Graphics 06h bit 1 supplies the address transform beside it.
+	v.seq[4] = 0x02
 	v.gfx[4] = 0
-	v.gfx[5] = 0x10
+	v.gfx[5] = 0
 	v.gfx[6] = 0x0E
 	set_plane_byte(&v, 1, 0, 0x55)
 	value, ok := vga_mmio_read(&v, 0xB8001, 1)
 	testing.expect(t, ok)
 	testing.expect_value(t, u8(value), u8(0x55))
-	v.gfx[6] &= ~u8(0x02)
-	v.gfx[6] = (v.gfx[6] & 3) | 3 << 2
+	// With odd/even off the read map alone decides and the offset stays linear.
+	v.seq[4] = 0x06
+	v.gfx[6] = 0x0C
 	set_plane_byte(&v, 0, 1, 0x66)
 	value, ok = vga_mmio_read(&v, 0xB8001, 1)
 	testing.expect(t, ok)

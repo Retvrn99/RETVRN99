@@ -30,6 +30,10 @@ start:
     mov dx, 0x03C4
     mov ax, 0x0F02
     out dx, ax
+    ; Sequencer 04h. Odd/even would pair the planes by A0 and this probe wants
+    ; the map mask to decide, so disable it rather than inherit a reset value.
+    mov ax, 0x0604
+    out dx, ax
 
     lgdt [gdtr]
     mov eax, cr0

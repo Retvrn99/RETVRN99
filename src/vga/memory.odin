@@ -238,9 +238,9 @@ planar_read :: proc(v: ^Vga, raw: int, wrap_legacy: bool) -> u8 {
 	if v.seq[4] & 0x08 != 0 {
 		plane = raw & 3
 		offset = raw >> 2
-	} else if v.gfx[5] & 0x10 != 0 && v.gfx[6] & 0x02 != 0 {
-		plane = int(v.gfx[4] & 2) | (raw & 1)
-		offset = odd_even_plane_offset(v, raw)
+	} else {
+		if v.seq[4] & 0x04 == 0 {plane = int(v.gfx[4] & 2) | (raw & 1)}
+		if v.gfx[6] & 0x02 != 0 {offset = odd_even_plane_offset(v, raw)}
 	}
 	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
 	load_latches(v, offset)
@@ -271,9 +271,7 @@ planar_write :: proc(v: ^Vga, raw: int, value: u8, wrap_legacy: bool) {
 		offset = raw >> 2
 		plane_mask &= u8(1) << uint(plane)
 	} else {
-		if v.seq[4] & 0x04 == 0 && v.gfx[6] & 0x02 != 0 {
-			plane_mask &= u8(0x05) << uint(raw & 1)
-		}
+		if v.seq[4] & 0x04 == 0 {plane_mask &= u8(0x05) << uint(raw & 1)}
 		if v.gfx[6] & 0x02 != 0 {offset = odd_even_plane_offset(v, raw)}
 	}
 	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
