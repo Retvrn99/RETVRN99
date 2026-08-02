@@ -109,7 +109,7 @@ vga_damage_layout_test_text_odd_even_and_unchanged_store :: proc(t: ^testing.T) 
 	testing.expect_value(t, damage.rects.rects[0], contract.Rect{0, 0, 8, 8})
 
 	v.legacy_damage = {}
-	_ = vga_damage_record_backing_range(&v, 4, 1)
+	_ = vga_damage_record_backing_range(&v, 8, 1)
 	damage = vga_damage_snapshot(&v)
 	testing.expect_value(t, damage.rects.count, u32(1))
 	testing.expect_value(t, damage.rects.rects[0], contract.Rect{8, 0, 8, 8})
@@ -130,14 +130,14 @@ vga_damage_layout_test_cga_interleaved_scanline_banks :: proc(t: ^testing.T) {
 	testing.expect_value(t, damage.rects.rects[0], contract.Rect{0, 0, 4, 1})
 
 	v.legacy_damage = {}
-	_ = vga_damage_record_backing_range(&v, 0x4000, 1)
+	_ = vga_damage_record_backing_range(&v, 0x8000, 1)
 	damage = vga_damage_snapshot(&v)
 	testing.expect_value(t, damage.rects.count, u32(1))
 	testing.expect_value(t, damage.rects.rects[0], contract.Rect{0, 1, 4, 1})
 
 	vga_out(&v, 0x3D8, CGA_MODE_GRAPHICS | CGA_MODE_HIGH_RES | CGA_MODE_VIDEO_ENABLE)
 	v.legacy_damage = {}
-	_ = vga_damage_record_backing_range(&v, 0x4000, 1)
+	_ = vga_damage_record_backing_range(&v, 0x8000, 1)
 	damage = vga_damage_snapshot(&v)
 	testing.expect_value(t, damage.rects.count, u32(1))
 	testing.expect_value(t, damage.rects.rects[0], contract.Rect{0, 1, 8, 1})

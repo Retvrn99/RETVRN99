@@ -248,10 +248,9 @@ vga_damage_linear_source :: proc(v: ^Vga, raw: int) -> (u32, bool) {
 	index: int
 	if v.seq[4] & 0x08 != 0 {
 		index = raw
-	} else if v.seq[4] & 0x04 == 0 {
-		index = (raw >> 1) * 4 + (raw & 1)
 	} else {
-		index = raw * 4
+		offset := v.gfx[6] & 0x02 != 0 ? odd_even_plane_offset(v, raw) : raw
+		index = offset * 4 + (v.seq[4] & 0x04 == 0 ? raw & 1 : 0)
 	}
 	return u32(index), index >= 0 && index < len(v.vram)
 }

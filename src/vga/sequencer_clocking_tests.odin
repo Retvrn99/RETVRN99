@@ -88,8 +88,10 @@ vga_test_sequencer_memory_mode_routes_writes_through_the_ports :: proc(t: ^testi
 	vga_out(&v, 0x3CF, 0x07)
 	_ = vga_memory_write_byte(&v, 0xA0010, 0x11)
 	_ = vga_memory_write_byte(&v, 0xA0011, 0x22)
-	testing.expect_value(t, plane_byte(&v, 0, 8), u8(0x11))
-	testing.expect_value(t, plane_byte(&v, 1, 8), u8(0x22))
-	testing.expect_value(t, plane_byte(&v, 2, 8), u8(0x11))
-	testing.expect_value(t, plane_byte(&v, 3, 8), u8(0x22))
+	// A0 picks the plane pair and a higher-order bit takes its place in the
+	// address, so both host bytes land at plane offset 0x10 rather than half it.
+	testing.expect_value(t, plane_byte(&v, 0, 0x10), u8(0x11))
+	testing.expect_value(t, plane_byte(&v, 1, 0x10), u8(0x22))
+	testing.expect_value(t, plane_byte(&v, 2, 0x10), u8(0x11))
+	testing.expect_value(t, plane_byte(&v, 3, 0x10), u8(0x22))
 }

@@ -35,6 +35,16 @@ vga_aperture_access :: proc(
 	return vga_aperture_access_paired(v, nil, gpa, write, data, timestamp_ns)
 }
 
+// Odd/even addressing spends A0 on selecting the plane pair, so the hardware
+// substitutes a higher-order address bit in its place rather than shifting the
+// address down. Sequencer 04h bit 1 picks A16 or A14 as the substitute.
+@(private = "package")
+odd_even_plane_offset :: proc(v: ^Vga, raw: int) -> int {
+	shift := uint(v.seq[4] & 0x02 != 0 ? 16 : 14)
+	span := int(1) << shift
+	return (raw & (span - 2)) | ((raw >> shift) & 1)
+}
+
 @(private = "file")
 vga_planar_backing_range :: proc(v: ^Vga, raw: int, wrap_legacy: bool) -> (u32, u32, bool) {
 	if v == nil || raw < 0 {return 0, 0, false}
@@ -46,7 +56,7 @@ vga_planar_backing_range :: proc(v: ^Vga, raw: int, wrap_legacy: bool) -> (u32, 
 		if index < 0 || index >= len(v.vram) {return 0, 0, false}
 		return u32(index), 1, true
 	}
-	if v.seq[4] & 0x04 == 0 && v.gfx[6] & 0x02 != 0 {offset = raw >> 1}
+	if v.gfx[6] & 0x02 != 0 {offset = odd_even_plane_offset(v, raw)}
 	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
 	index := offset * 4
 	if index < 0 || index >= len(v.vram) {return 0, 0, false}
@@ -230,7 +240,7 @@ planar_read :: proc(v: ^Vga, raw: int, wrap_legacy: bool) -> u8 {
 		offset = raw >> 2
 	} else if v.gfx[5] & 0x10 != 0 && v.gfx[6] & 0x02 != 0 {
 		plane = int(v.gfx[4] & 2) | (raw & 1)
-		offset = raw >> 1
+		offset = odd_even_plane_offset(v, raw)
 	}
 	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
 	load_latches(v, offset)
@@ -260,9 +270,11 @@ planar_write :: proc(v: ^Vga, raw: int, value: u8, wrap_legacy: bool) {
 		plane := raw & 3
 		offset = raw >> 2
 		plane_mask &= u8(1) << uint(plane)
-	} else if v.seq[4] & 0x04 == 0 && v.gfx[6] & 0x02 != 0 {
-		offset = raw >> 1
-		plane_mask &= u8(0x05) << uint(raw & 1)
+	} else {
+		if v.seq[4] & 0x04 == 0 && v.gfx[6] & 0x02 != 0 {
+			plane_mask &= u8(0x05) << uint(raw & 1)
+		}
+		if v.gfx[6] & 0x02 != 0 {offset = odd_even_plane_offset(v, raw)}
 	}
 	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
 	result := write_mode_result(v, value)

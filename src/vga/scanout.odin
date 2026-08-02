@@ -750,8 +750,9 @@ render_indexed_legacy :: proc(v: ^Vga, pixels: []u32, width, height: int) {
 @(private = "file")
 legacy_linear_byte :: proc(v: ^Vga, raw: int) -> u8 {
 	if v.seq[4] & 0x08 != 0 {return plane_byte(v, raw & 3, raw >> 2)}
-	if v.seq[4] & 0x04 == 0 {return plane_byte(v, raw & 1, raw >> 1)}
-	return plane_byte(v, 0, raw)
+	offset := v.gfx[6] & 0x02 != 0 ? odd_even_plane_offset(v, raw) : raw
+	if v.seq[4] & 0x04 == 0 {return plane_byte(v, raw & 1, offset)}
+	return plane_byte(v, 0, offset)
 }
 
 @(private = "file")

@@ -177,8 +177,8 @@ vga_test_font_map_permutation_and_attribute_select :: proc(t: ^testing.T) {
 	testing.expect_value(t, b, 0)
 	set_plane_byte(&v, 0, 0, 'A')
 	set_plane_byte(&v, 1, 0, 0x07)
-	set_plane_byte(&v, 0, 1, 'A')
-	set_plane_byte(&v, 1, 1, 0x0F)
+	set_plane_byte(&v, 0, 2, 'A')
+	set_plane_byte(&v, 1, 2, 0x0F)
 	set_plane_byte(&v, 2, int('A') * 32, 0x80)
 	set_plane_byte(&v, 2, 2 * 8192 + int('A') * 32, 0x40)
 	v.crtc[0x0A] |= 0x20

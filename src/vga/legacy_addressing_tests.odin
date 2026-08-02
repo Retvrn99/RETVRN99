@@ -225,8 +225,8 @@ vga_test_text_preset_pan_font_and_cursor_crc :: proc(t: ^testing.T) {
 	v.latched_start = 1
 	for cell in 0 ..< 8 {
 		character := u8('A' + cell)
-		set_plane_byte(&v, 0, cell, character)
-		set_plane_byte(&v, 1, cell, u8(0x10 | (cell + 1) & 0x0f))
+		set_plane_byte(&v, 0, cell * 2, character)
+		set_plane_byte(&v, 1, cell * 2, u8(0x10 | (cell + 1) & 0x0f))
 		set_plane_byte(&v, 2, int(character) * 32, u8(0x81 >> uint(cell & 1)))
 		set_plane_byte(&v, 2, int(character) * 32 + 1, u8(0x42 << uint(cell & 1)))
 	}

@@ -186,13 +186,15 @@ vga_test_chain4_and_odd_even_route_reads_and_writes :: proc(t: ^testing.T) {
 	gfx_out(&v, 0x05, 0x10)
 	gfx_out(&v, 0x06, 0x07)
 	gfx_out(&v, 0x04, 0x00)
-	value, decoded := vga_memory_read_byte(&v, 0xA0080)
+	// The substituted address bit leaves the plane offset equal to the host
+	// address with A0 masked out, so the seeded 0x40 answers at 0x40 and 0x41.
+	value, decoded := vga_memory_read_byte(&v, 0xA0040)
 	testing.expect(t, decoded)
 	testing.expect_value(t, value, u8(0xB0))
-	value, _ = vga_memory_read_byte(&v, 0xA0081)
+	value, _ = vga_memory_read_byte(&v, 0xA0041)
 	testing.expect_value(t, value, u8(0xB1))
 	gfx_out(&v, 0x04, 0x02)
-	value, _ = vga_memory_read_byte(&v, 0xA0080)
+	value, _ = vga_memory_read_byte(&v, 0xA0040)
 	testing.expect_value(t, value, u8(0x7E))
 
 	// With neither chain the read map alone decides and the offset is linear.

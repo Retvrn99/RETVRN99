@@ -182,6 +182,37 @@ vga_test_odd_even_and_chain_four :: proc(t: ^testing.T) {
 	for p in 0 ..< 4 {testing.expect_value(t, plane_byte(&v, p, 4), u8(0x20 + p))}
 }
 
+// Odd/even addressing consumes A0 to pick the plane pair and substitutes a
+// higher-order bit in its place, so consecutive even host addresses land two
+// plane offsets apart rather than one. Sequencer 04h bit 1 chooses A14 or A16
+// as the substitute; the firmware sets it in every mode, so A16 applies here
+// and the substituted bit is zero inside a 64 KiB window.
+@(test)
+vga_test_odd_even_replaces_bit_zero_rather_than_shifting :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	v.seq[2] = 0x0F
+	v.seq[4] = 0x02
+	v.gfx[5] = 0
+	v.gfx[6] = 0x02
+	v.gfx[8] = 0xFF
+	vga_mmio_write(&v, 0xA0000, 1, 0xAA)
+	vga_mmio_write(&v, 0xA0002, 1, 0xBB)
+
+	v.seq[4] = 0x06
+	v.gfx[6] = 0x00
+	v.gfx[4] = 0
+	first, first_ok := vga_mmio_read(&v, 0xA0000, 1)
+	second, second_ok := vga_mmio_read(&v, 0xA0002, 1)
+	testing.expect(t, first_ok)
+	testing.expect(t, second_ok)
+	testing.expect_value(t, u8(first), u8(0xAA))
+	testing.expect_value(t, u8(second), u8(0xBB))
+}
+
+
 @(test)
 vga_test_aperture_slice_access_is_one_visible_transaction :: proc(t: ^testing.T) {
 	v: Vga

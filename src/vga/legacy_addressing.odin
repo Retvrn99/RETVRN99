@@ -141,5 +141,5 @@ legacy_display_offset :: proc(v: ^Vga, address: u32, row_scan: int) -> int {
 @(private = "package")
 legacy_text_byte :: proc(v: ^Vga, raw_offset: int) -> u8 {
 	offset := raw_offset & 0x7fff
-	return plane_byte(v, offset & 1, offset >> 1)
+	return plane_byte(v, offset & 1, odd_even_plane_offset(v, offset))
 }
