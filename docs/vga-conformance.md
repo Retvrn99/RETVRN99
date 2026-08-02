@@ -210,6 +210,18 @@ instead of inheriting a reset value. The probes are what caught the half-change:
 both write a dword through the aperture and read it back, and unpaired writes
 were the only reason that round trip held.
 
+Chain-4 has the same shape of question odd/even had, and it is open. The
+reference maps a chained address with `((addr & ~3) << 2) + (addr & 3)`, so its
+planar offset strides by four and it ties that to the CRT Controller doubleword
+mode, noting that byte mode breaks the display on everything but a Tseng
+ET3000/ET4000. Ours takes `addr >> 2`, which strides by one. Both are internally
+consistent, mode 13h renders correctly either way, and the difference is only
+observable by writing through chain-4 and reading back unchained, exactly as it
+was for odd/even. It is deliberately not changed yet: mode 13h is load-bearing,
+the two readings of the hardware disagree, and the case wants a run against the
+reference rather than a derivation. It matters for Mode X, where guests move
+between chained and unchained views of the same bytes.
+
 Mode X and the Windows fullscreen lifecycle remain open. The deterministic
 public-port probe now passes the ten-geometry target matrix and returns a fresh
 text frame after every case. Source-level full-baseline recovery also restores
