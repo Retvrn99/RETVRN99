@@ -217,10 +217,22 @@ mode, noting that byte mode breaks the display on everything but a Tseng
 ET3000/ET4000. Ours takes `addr >> 2`, which strides by one. Both are internally
 consistent, mode 13h renders correctly either way, and the difference is only
 observable by writing through chain-4 and reading back unchained, exactly as it
-was for odd/even. It is deliberately not changed yet: mode 13h is load-bearing,
-the two readings of the hardware disagree, and the case wants a run against the
-reference rather than a derivation. It matters for Mode X, where guests move
-between chained and unchained views of the same bytes.
+was for odd/even.
+
+The evidence points at the reference. `render_indexed_scanline` in
+`src/vga/scanout.odin` takes a separate chained branch that skips
+`legacy_display_offset`, so CRT Controller 14h doubleword mode never reaches the
+one mode whose firmware always sets it. The reference needs that multiply
+because its planar offset really does stride by four; ours drops the stride and
+the multiply together and they cancel. Two shortcuts that agree with each other
+are still two shortcuts, and a guest that moves between chained and unchained
+views of the same bytes sees the difference.
+
+Closing it means moving chain-4 write, read, damage and both chained scanout
+branches together and letting doubleword mode through, which is the same shape
+as the odd/even change and larger. It is not started: mode 13h is load-bearing
+and a half-change breaks it, exactly as the half-done odd/even change broke the
+aperture probes.
 
 Mode X and the Windows fullscreen lifecycle remain open. The deterministic
 public-port probe now passes the ten-geometry target matrix and returns a fresh
