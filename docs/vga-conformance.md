@@ -103,7 +103,7 @@ instead. Neither matched the reference, and both are corrected.
 | A0000h/B0000h/B8000h aperture selection and decode disable | IBM 2-24 to 2-38 and 2-86 | Conformant | `src/vga/memory.odin` | Aperture-map and PCI decode tests |
 | Plane latches and read modes 0/1 | IBM 2-35 to 2-40 | Conformant | `src/vga/memory.odin` | Latch/read-mode tests |
 | Write modes 0-3 | IBM 2-35 to 2-40 and 2-85 | Conformant | `src/vga/memory.odin` | Write-mode matrix |
-| Chain-4 and odd/even addressing combinations | IBM 2-24 to 2-34 and 2-54, DOSBox-X `vga_memory.cpp` at `f3483ce` | Partial | `src/vga/memory.odin` routes both directions. Odd/even substitutes a higher-order address bit for A0 rather than shifting the address down, matching the reference, and Sequencer 04h bit 1 selects A16 or A14 as that substitute. `odd_even_plane_offset` is the one place that decides it, and the write, read, damage and scanout paths all take it. The address transform is gated on Graphics 06h bit 1 alone. Plane pairing still takes the combined Sequencer 04h bit 2 and Graphics 06h bit 1 condition, which the reference does not: it pairs on Sequencer 04h bit 2 by itself, for reads as well as writes. Closing that needs the read path off Graphics 05h bit 4 and the aperture probes taught to program Sequencer 04h, which they never do | `vga_test_chain4_and_odd_even_route_reads_and_writes` drives the Sequencer and Graphics chain bits through their ports and reads the planes back for chain-4, for odd/even paired with the read map, and for the unchained linear case. `vga_test_aperture_windows_bound_the_legacy_decode` walks all four Graphics 06h windows, requires the first and last byte of each to decode and the bytes either side not to, and requires Miscellaneous Output bit 1 to gate the lot |
+| Chain-4 and odd/even addressing combinations | IBM 2-24 to 2-34 and 2-54, DOSBox-X `vga_memory.cpp` at `f3483ce` | Conformant | `src/vga/memory.odin` routes both directions. Odd/even substitutes a higher-order address bit for A0 rather than shifting the address down, and Sequencer 04h bit 1 selects A16 or A14 as that substitute. `odd_even_plane_offset` is the one place that decides it, and the write, read, damage and scanout paths all take it. The two controls are separate exactly as the reference has them: Sequencer 04h bit 2 pairs the planes, for reads as well as writes, and Graphics 06h bit 1 supplies the address transform | `vga_test_odd_even_replaces_bit_zero_rather_than_shifting` writes through odd/even and reads back with it disabled, so the substituted bit is observable rather than an internal convention. `vga_test_odd_even_write_pairs_planes_from_sequencer_04h` and `vga_test_odd_even_read_pairs_planes_from_sequencer_04h` hold the pairing with Graphics 05h bit 4 clear. `vga_test_odd_even_read_uses_graphics_controls` keeps the read map and the transform on their own registers. Graphics 05h bit 4 is documented as the read odd/even control and normally tracks Sequencer 04h bit 2; the reference drives reads from the Sequencer bit on hardware evidence and that is the divergence taken | `vga_test_chain4_and_odd_even_route_reads_and_writes` drives the Sequencer and Graphics chain bits through their ports and reads the planes back for chain-4, for odd/even paired with the read map, and for the unchained linear case. `vga_test_aperture_windows_bound_the_legacy_decode` walks all four Graphics 06h windows, requires the first and last byte of each to decode and the bytes either side not to, and requires Miscellaneous Output bit 1 to gate the lot |
 | Multi-byte aperture transactions preserve byte-cycle VGA semantics | IBM memory data flow | Conformant | `src/vga/memory.odin`, `src/machine/machine.odin` | `vga_test_aperture_slice_access_is_one_visible_transaction`, `test_machine_vga_legacy_aperture_batches_mmio_transaction` |
 | CGA 16 KiB page/address wrapping | IBM CGA compatibility modes | Conformant | `src/vga/scanout.odin` bounds the persona's display counter to one 16 KiB page in both the graphics and the text fetch | `vga_test_cga_graphics_wraps_inside_its_page` and `vga_test_cga_text_wraps_inside_its_page` enter the persona through 3D8h, write both sides of the page boundary through the aperture, and move the start address through the 6845 registers until the counter wraps. The text case also pins the glyph to the top of its cell: register 8 of a 6845 selects interlace, and reading it as a VGA preset row scan used to push every CGA text row two scan lines down |
 | Text modes 40/80 columns and 25/43/50 rows | IBM BIOS modes and font services | Conformant | `src/vga/scanout.odin`, `src/host/render.odin` | `vga_test_text_snapshot_variable_geometry`, `host_test_render_snapshot_uses_snapshot_geometry` |
@@ -202,15 +202,13 @@ rows it closes, so this section is a view of the matrix rather than a second
 source of truth. An entry disappears when its rows read `Conformant` or when the
 row records a deliberate limit instead.
 
-Odd/even plane pairing is the next work item, and it is the first entry opened
-by taking DOSBox-X as a normative reference. Three changes have to land
-together or the tree breaks in between: pairing moves to Sequencer 04h bit 2
-alone; the read path stops taking pairing from Graphics 05h bit 4 and takes it
-from Sequencer 04h bit 2 with the write path; and `assets/probes/*.asm` learn to
-program Sequencer 04h instead of inheriting the reset default. The probes are
-what caught the half-change, because `vga_scalar_mmio.asm` writes a dword
-through the aperture and reads it back, and unpaired writes are the only reason
-that round trip currently holds.
+Odd/even is closed. It was the first entry opened by taking DOSBox-X as a
+normative reference, and it took three changes landing together: pairing onto
+Sequencer 04h bit 2 alone, the read path off Graphics 05h bit 4, and
+`vga_scalar_mmio.asm` and `vga_copy_paging.asm` programming Sequencer 04h
+instead of inheriting a reset value. The probes are what caught the half-change:
+both write a dword through the aperture and read it back, and unpaired writes
+were the only reason that round trip held.
 
 Mode X and the Windows fullscreen lifecycle remain open. The deterministic
 public-port probe now passes the ten-geometry target matrix and returns a fresh
