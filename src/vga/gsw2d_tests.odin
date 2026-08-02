@@ -142,6 +142,46 @@ gsw2d_rejects_invalid_ids_rectangles_flags_and_rops_without_writes :: proc(t: ^t
 	testing.expect_value(t, framebuffer, before)
 }
 
+// Windows scrolls by blitting a surface onto itself, so source and destination
+// overlap and the copy has to behave as though the source were taken whole
+// before any destination pixel moved. The implementation reads the source into
+// its own buffer first, which gets this right for free and is easy to optimise
+// away later without noticing. Eight pixels shifted right by three: every
+// destination has to carry the original source, not a value this blit already
+// wrote earlier in the same run.
+@(test)
+gsw2d_overlapping_self_blt_takes_the_source_before_writing :: proc(t: ^testing.T) {
+	framebuffer: [64]u8
+	g: Gsw_Vga
+	gsw_vga_init(&g, framebuffer[:])
+	defer gsw_vga_destroy(&g)
+	gsw2d_test_register(t, &g, 1, 0, 16, 1, 16, .Indexed_8)
+	original := [8]u8{0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17}
+	for value, index in original {framebuffer[index] = value}
+
+	command: [GSW_SURFACE_BLT_COMMAND_BYTES]u8
+	gsw2d_test_blt_command(
+		command[:], 1, 1, 0, 0, 8, 1, 3, 0, 8, 1,
+		0, 0, 0, 0, 0xCC,
+	)
+	testing.expect(t, gsw_vga_execute_surface_blt(&g, command[:]))
+
+	for value, index in original {
+		testing.expectf(
+			t,
+			framebuffer[3 + index] == value,
+			"destination pixel %d is %02X, the untouched source says %02X",
+			index,
+			framebuffer[3 + index],
+			value,
+		)
+	}
+	// The three pixels the source left behind keep what they started with.
+	for index in 0 ..< 3 {
+		testing.expect_value(t, framebuffer[index], original[index])
+	}
+}
+
 // Windows defines a ternary raster operation as a lookup rather than a formula:
 // the result for one pattern, source and destination bit is the operation
 // byte's own bit at index P*4 + S*2 + D. `gsw_rop3` builds that answer as a sum
