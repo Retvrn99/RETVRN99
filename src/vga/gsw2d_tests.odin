@@ -142,6 +142,57 @@ gsw2d_rejects_invalid_ids_rectangles_flags_and_rops_without_writes :: proc(t: ^t
 	testing.expect_value(t, framebuffer, before)
 }
 
+// Windows defines a ternary raster operation as a lookup rather than a formula:
+// the result for one pattern, source and destination bit is the operation
+// byte's own bit at index P*4 + S*2 + D. `gsw_rop3` builds that answer as a sum
+// of minterms instead, and `gsw2d_test_rop3` builds it the same way, so the
+// advertised-operation test above cannot tell a wrong formulation from a right
+// one. This walks all 256 operations against the definition itself. Both the
+// GDI blit and the DirectDraw surface blit resolve through `gsw_rop3`, so this
+// is the shared floor under each.
+@(test)
+gsw2d_rop3_matches_the_windows_lookup_for_every_operation :: proc(t: ^testing.T) {
+	for rop in 0 ..< 256 {
+		for combination in 0 ..< 8 {
+			pattern := u32(combination >> 2 & 1)
+			source := u32(combination >> 1 & 1)
+			destination := u32(combination & 1)
+			expected := u32(rop >> uint(combination)) & 1
+			actual := gsw_rop3(u8(rop), source, destination, pattern, 1)
+			testing.expectf(
+				t,
+				actual == expected,
+				"rop %02X with pattern %d source %d destination %d gave %d, definition says %d",
+				rop,
+				pattern,
+				source,
+				destination,
+				actual,
+				expected,
+			)
+		}
+	}
+}
+
+// The same definition has to hold across a whole pixel, not just one bit, and
+// the mask has to keep the result inside the pixel width it names.
+@(test)
+gsw2d_rop3_applies_the_definition_across_a_whole_pixel :: proc(t: ^testing.T) {
+	source, destination, pattern := u32(0x3C), u32(0xA5), u32(0x5A)
+	for rop in 0 ..< 256 {
+		expected: u32
+		for bit in 0 ..< 8 {
+			index :=
+				int((pattern >> uint(bit) & 1) << 2 |
+					(source >> uint(bit) & 1) << 1 |
+					(destination >> uint(bit) & 1))
+			if rop >> uint(index) & 1 != 0 {expected |= 1 << uint(bit)}
+		}
+		actual := gsw_rop3(u8(rop), source, destination, pattern, gsw_pixel_mask(1))
+		testing.expectf(t, actual == expected, "rop %02X gave %02X, definition says %02X", rop, actual, expected)
+	}
+}
+
 @(test)
 gsw2d_every_advertised_rop_matches_its_truth_table :: proc(t: ^testing.T) {
 	rops := []u8{0x00, 0x11, 0x33, 0x44, 0x55, 0x66, 0x88, 0xBB, 0xCC, 0xEE, 0xFF}
