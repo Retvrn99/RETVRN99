@@ -45,6 +45,14 @@ odd_even_plane_offset :: proc(v: ^Vga, raw: int) -> int {
 	return (raw & (span - 2)) | ((raw >> shift) & 1)
 }
 
+// The same bit bounds the plane address itself, so without extended memory the
+// host reaches fourteen bits of each plane and anything above aliases down.
+@(private = "package")
+legacy_plane_wrap :: proc(v: ^Vga, offset: int) -> int {
+	shift := uint(v.seq[4] & 0x02 != 0 ? 16 : 14)
+	return offset & ((int(1) << shift) - 1)
+}
+
 @(private = "file")
 vga_planar_backing_range :: proc(v: ^Vga, raw: int, wrap_legacy: bool) -> (u32, u32, bool) {
 	if v == nil || raw < 0 {return 0, 0, false}
@@ -57,7 +65,7 @@ vga_planar_backing_range :: proc(v: ^Vga, raw: int, wrap_legacy: bool) -> (u32, 
 		return u32(index), 1, true
 	}
 	if v.gfx[6] & 0x02 != 0 {offset = odd_even_plane_offset(v, raw)}
-	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
+	if wrap_legacy {offset = legacy_plane_wrap(v, offset)}
 	index := offset * 4
 	if index < 0 || index >= len(v.vram) {return 0, 0, false}
 	return u32(index), u32(min(4, len(v.vram) - index)), true
@@ -242,7 +250,7 @@ planar_read :: proc(v: ^Vga, raw: int, wrap_legacy: bool) -> u8 {
 		if v.seq[4] & 0x04 == 0 {plane = int(v.gfx[4] & 2) | (raw & 1)}
 		if v.gfx[6] & 0x02 != 0 {offset = odd_even_plane_offset(v, raw)}
 	}
-	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
+	if wrap_legacy {offset = legacy_plane_wrap(v, offset)}
 	load_latches(v, offset)
 	if v.gfx[5] & 0x08 == 0 {return v.latch[plane]}
 	compare := v.gfx[2] & 0x0F
@@ -274,7 +282,7 @@ planar_write :: proc(v: ^Vga, raw: int, value: u8, wrap_legacy: bool) {
 		if v.seq[4] & 0x04 == 0 {plane_mask &= u8(0x05) << uint(raw & 1)}
 		if v.gfx[6] & 0x02 != 0 {offset = odd_even_plane_offset(v, raw)}
 	}
-	if wrap_legacy {offset &= LEGACY_PLANE_SIZE - 1}
+	if wrap_legacy {offset = legacy_plane_wrap(v, offset)}
 	result := write_mode_result(v, value)
 	for plane in 0 ..< 4 {
 		if plane_mask & (u8(1) << uint(plane)) !=

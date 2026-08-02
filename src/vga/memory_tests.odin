@@ -233,6 +233,32 @@ vga_test_odd_even_write_pairs_planes_from_sequencer_04h :: proc(t: ^testing.T) {
 	testing.expect_value(t, plane_byte(&v, 3, 0), u8(0x00))
 }
 
+// Sequencer 04h bit 1 also bounds how much of each plane the host can reach.
+// With extended memory off the plane address is fourteen bits, so a write a
+// bank above the start aliases onto it instead of landing on its own byte.
+@(test)
+vga_test_plane_address_wraps_at_the_extended_memory_boundary :: proc(t: ^testing.T) {
+	v: Vga
+	backing := test_vga_init(t, &v)
+	defer delete(backing)
+	defer vga_destroy(&v)
+	v.seq[2] = 0x0F
+	v.seq[4] = 0x04
+	v.gfx[5] = 0
+	v.gfx[6] = 0x00
+	v.gfx[8] = 0xFF
+	vga_mmio_write(&v, 0xA0000, 1, 0x11)
+	vga_mmio_write(&v, 0xA4000, 1, 0x22)
+	testing.expect_value(t, plane_byte(&v, 0, 0), u8(0x22))
+
+	// Setting the bit widens the plane address and the two stop colliding.
+	v.seq[4] = 0x06
+	vga_mmio_write(&v, 0xA0000, 1, 0x33)
+	vga_mmio_write(&v, 0xA4000, 1, 0x44)
+	testing.expect_value(t, plane_byte(&v, 0, 0), u8(0x33))
+	testing.expect_value(t, plane_byte(&v, 0, 0x4000), u8(0x44))
+}
+
 // The same bit pairs reads. Graphics 05h bit 4 is documented as the read
 // odd/even control and normally tracks Sequencer 04h bit 2, but the reference
 // drives reads from the Sequencer bit alone on hardware evidence, so pairing
